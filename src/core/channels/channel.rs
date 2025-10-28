@@ -16,14 +16,12 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-#[derive(Copy, Clone, Debug)]
-#[derive(Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct ConsumePolicy {
     pub no_ack: bool,
     pub reject_on_exception: bool,
     pub requeue_on_reject: bool,
 }
-
 
 pub struct AmqpChannel {
     // Keep a handle to the owning connection entry so we can recreate channels after reconnecting

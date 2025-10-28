@@ -1,3 +1,4 @@
+use crate::core::channels::channel::AmqpChannel;
 use crate::core::connections::connection_options::ConnectionOptions;
 use crate::core::connections::connection_pool::{
     get_connected_entry, lock_for, ConnKey, ConnectionEntry, CONNECTIONS, CONNECTION_LOCKS,
@@ -14,7 +15,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{runtime::Handle, sync::Mutex as AsyncMutex, task};
-use crate::core::channels::channel::AmqpChannel;
 
 pub struct AmqpClient {
     entry: Arc<ConnectionEntry>,

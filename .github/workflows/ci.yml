@@ -18,6 +18,9 @@ jobs:
         with:
           toolchain: 1.89.0
 
+      - name: Install rustfmt
+        run: rustup component add rustfmt
+
       - name: Cargo fmt
         run: cargo fmt --all -- --check
 
