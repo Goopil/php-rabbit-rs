@@ -1,0 +1,17 @@
+{
+  "name": "rabbitmq-client/benchmarks",
+  "description": "Benchmark suite for RabbitMQ PHP clients",
+  "type": "project",
+  "require": {
+    "php-amqplib/php-amqplib": "^3.0",
+    "bunny/bunny": "^0.5"
+  },
+  "autoload": {
+    "psr-4": {
+      "Goopil\\RabbitRs\\Benchmarks\\": "./src"
+    }
+  },
+  "scripts": {
+    "benchmark": "php run-benchmarks.php"
+  }
+}

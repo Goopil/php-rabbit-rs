@@ -1,0 +1,19 @@
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C", "link-arg=-Wl,-undefined,dynamic_lookup",
+    "-C", "link-arg=-mmacosx-version-min=11.0"
+]
+
+[target.'cfg(target_os = "linux")']
+# Linux : pas besoin de flag spécial, PHP résout les symboles au runtime
+# Mais tu peux ajouter des flags si besoin (ex: -fPIC déjà activé)
+rustflags = []
+
+# Optionnel : si tu veux forcer certaines options
+# rustflags = ["-C", "link-arg=-Wl,--no-undefined"]
+
+[target.'cfg(target_os = "windows")']
+# Sur Windows, il faut générer un .lib pour l'import
+rustflags = [
+    "-C", "link-arg=-Wl,--out-implib=ext/first_tery.lib"
+]

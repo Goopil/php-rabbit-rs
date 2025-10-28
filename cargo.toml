@@ -1,0 +1,42 @@
+[package]
+name = "rabbit-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+
+[lib]
+name = "rabbit_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+# API PHP
+ext-php-rs = { version = "*" }
+lapin = { version = "3.6", features = ["rustls"] }
+
+# Async/runtime
+tokio = { version = "1", features = ["full"] }
+futures = "*"
+# Utilitaires
+anyhow = "1"
+once_cell = "1"
+urlencoding = "2"
+flume = "*"
+parking_lot = "*"
+
+# (optionnel) si tu veux parser des chemins glob capath/*.pem
+glob = "0.3"
+rand = "*"
+
+# (optionnel) logs
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+opt-level = 1
