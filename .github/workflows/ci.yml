@@ -18,8 +18,8 @@ jobs:
         with:
           toolchain: 1.89.0
 
-      - name: Install rustfmt
-        run: rustup component add rustfmt
+      - name: Install linters
+        run: rustup component add rustfmt && rustup component add clippy
 
       - name: Cargo fmt
         run: cargo fmt --all -- --check
@@ -51,7 +51,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
-          override: true
 
       - name: Install PHP test dependencies
         working-directory: php-tests
