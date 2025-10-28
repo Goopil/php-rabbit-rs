@@ -250,10 +250,10 @@ impl Publisher {
     async fn do_publish_ff(ch: Arc<Channel>, job: PublishJob) {
         let _ = ch
             .basic_publish(
-                &*job.exchange,
-                &*job.routing_key,
+                &job.exchange,
+                &job.routing_key,
                 job.opts,
-                &*job.body,
+                &job.body,
                 job.props,
             )
             .await;
@@ -264,10 +264,10 @@ impl Publisher {
     async fn do_publish_confirms(ch: Arc<Channel>, job: PublishJob) -> anyhow::Result<()> {
         let confirm = ch
             .basic_publish(
-                &*job.exchange,
-                &*job.routing_key,
+                &job.exchange,
+                &job.routing_key,
                 job.opts,
-                &*job.body,
+                &job.body,
                 job.props,
             )
             .await?;
@@ -299,18 +299,17 @@ impl Publisher {
             attempt += 1;
             match entry.connection().create_channel().await {
                 Ok(fresh) => {
-                    if matches!(mode, PublishMode::Confirms) {
-                        if fresh
+                    if matches!(mode, PublishMode::Confirms)
+                        && fresh
                             .confirm_select(lapin::options::ConfirmSelectOptions::default())
                             .await
                             .is_err()
-                        {
-                            // failed confirm_select, retry with backoff
-                            let delay = (10u64 * (1u64 << attempt.min(6))).min(1000)
-                                + rand::rng().random_range(0..30);
-                            sleep(Duration::from_millis(delay)).await;
-                            continue;
-                        }
+                    {
+                        // failed confirm_select, retry with backoff
+                        let delay = (10u64 * (1u64 << attempt.min(6))).min(1000)
+                            + rand::rng().random_range(0..30);
+                        sleep(Duration::from_millis(delay)).await;
+                        continue;
                     }
                     let arc = Arc::new(fresh);
                     *ch_opt = Some(arc.clone());
@@ -367,7 +366,7 @@ impl Publisher {
         }
 
         let inflight_cap = self.inflight_limit.max(128);
-        let queue_cap = (inflight_cap * 2).max(256).min(65_536);
+        let queue_cap = (inflight_cap * 2).clamp(256, 65_536);
         let (tx, rx): (FlumeSender<PublishJob>, FlumeReceiver<PublishJob>) =
             flume::bounded(queue_cap);
 
@@ -436,7 +435,7 @@ impl Publisher {
                                     inflight.push(Box::pin(async move {
                                         let res = async {
                                             let c = ch
-                                                .basic_publish(&*job.exchange, &*job.routing_key, job.opts, &*job.body, job.props)
+                                                .basic_publish(&job.exchange, &job.routing_key, job.opts, &job.body, job.props)
                                                 .await
                                                 .map_err(|_| ())?;
                                             let c = c.await.map_err(|_| ())?;
@@ -672,9 +671,9 @@ impl Publisher {
         let ch = self.get_or_open_channel().await?;
 
         if !self.confirms_enabled() {
-            let _ = ch
-                .basic_publish(exchange, routing_key, pub_opts, &*message.body, props)
+            ch.basic_publish(exchange, routing_key, pub_opts, &message.body, props)
                 .await?;
+
             if pub_opts.mandatory && self.saw_mandatory_return_short(ch.as_ref(), 200).await {
                 anyhow::bail!("basic.return: unroutable (mandatory)");
             }

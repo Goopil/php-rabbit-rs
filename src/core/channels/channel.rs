@@ -17,21 +17,13 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 #[derive(Copy, Clone, Debug)]
+#[derive(Default)]
 pub struct ConsumePolicy {
     pub no_ack: bool,
     pub reject_on_exception: bool,
     pub requeue_on_reject: bool,
 }
 
-impl Default for ConsumePolicy {
-    fn default() -> Self {
-        Self {
-            no_ack: false, // Align with amqplib: manual ack by default
-            reject_on_exception: false,
-            requeue_on_reject: false,
-        }
-    }
-}
 
 pub struct AmqpChannel {
     // Keep a handle to the owning connection entry so we can recreate channels after reconnecting
@@ -605,13 +597,8 @@ impl AmqpChannel {
         // Migrate any items that were already queued in the old receiver
         if let Some(old_rx) = old_rx_opt {
             // Drain quickly without blocking
-            loop {
-                match old_rx.try_recv() {
-                    Ok(item) => {
-                        let _ = new_tx.send(item);
-                    }
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-                }
+            while let Ok(item) = old_rx.try_recv() {
+                let _ = new_tx.send(item);
             }
         }
     }
