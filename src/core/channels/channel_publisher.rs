@@ -167,7 +167,7 @@ impl Publisher {
                         match maybe_task {
                             Ok(task) => {
                                 inflight.push(task);
-                                while let Some(_) = inflight.next().now_or_never().flatten() {}
+                                while inflight.next().now_or_never().flatten().is_some() {}
                             }
                             Err(_) => { break; }
                         }
@@ -300,9 +300,10 @@ impl Publisher {
             match entry.connection().create_channel().await {
                 Ok(fresh) => {
                     if matches!(mode, PublishMode::Confirms) {
-                        if let Err(_) = fresh
+                        if fresh
                             .confirm_select(lapin::options::ConfirmSelectOptions::default())
                             .await
+                            .is_err()
                         {
                             // failed confirm_select, retry with backoff
                             let delay = (10u64 * (1u64 << attempt.min(6))).min(1000)
@@ -351,7 +352,8 @@ impl Publisher {
         tx.send_async(barrier)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let _ = brx.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        brx.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(())
     }
 
@@ -451,7 +453,7 @@ impl Publisher {
                                 }
 
                                 // Non-blocking drain to advance futures that are ready to complete
-                                while let Some(_) = inflight.next().now_or_never().flatten() {}
+                                while inflight.next().now_or_never().flatten().is_some() {}
                             }
                             Err(_) => { break; }
                         }
@@ -518,7 +520,7 @@ impl Publisher {
         // Mandatory preflight for default exchange (amqplib parity)
         if pub_opts.mandatory && exchange.is_empty() {
             if let Ok(ch) = self.get_or_open_channel().await {
-                if let Err(_) = ch
+                if ch
                     .queue_declare(
                         routing_key,
                         lapin::options::QueueDeclareOptions {
@@ -528,6 +530,7 @@ impl Publisher {
                         lapin::types::FieldTable::default(),
                     )
                     .await
+                    .is_err()
                 {
                     anyhow::bail!("basic.return: unroutable (mandatory)");
                 }
@@ -672,10 +675,8 @@ impl Publisher {
             let _ = ch
                 .basic_publish(exchange, routing_key, pub_opts, &*message.body, props)
                 .await?;
-            if pub_opts.mandatory {
-                if self.saw_mandatory_return_short(ch.as_ref(), 200).await {
-                    anyhow::bail!("basic.return: unroutable (mandatory)");
-                }
+            if pub_opts.mandatory && self.saw_mandatory_return_short(ch.as_ref(), 200).await {
+                anyhow::bail!("basic.return: unroutable (mandatory)");
             }
             return Ok(());
         }
@@ -697,10 +698,8 @@ impl Publisher {
             Ok(()) => {
                 let _ = tracker.confirmed.fetch_add(1, Ordering::Relaxed) + 1;
                 tracker.notify.notify_waiters();
-                if pub_opts.mandatory {
-                    if self.saw_mandatory_return_short(ch.as_ref(), 200).await {
-                        anyhow::bail!("basic.return: unroutable (mandatory)");
-                    }
+                if pub_opts.mandatory && self.saw_mandatory_return_short(ch.as_ref(), 200).await {
+                    anyhow::bail!("basic.return: unroutable (mandatory)");
                 }
                 Ok(())
             }

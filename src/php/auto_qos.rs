@@ -36,9 +36,8 @@ impl AutoQosConfig {
     pub fn initial(&self) -> u16 {
         let lo = self.min.max(1);
         let hi = self.max.max(lo);
-        let mid = ((lo as u32 + hi as u32) / 2) as u16;
 
-        mid
+        ((lo as u32 + hi as u32) / 2) as u16
     }
 
     pub fn from_iterable(opts: Option<Iterable>) -> Self {

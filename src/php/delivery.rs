@@ -91,7 +91,7 @@ impl AmqpDelivery {
 
         if let Some(ref hdrs) = self.delivery.properties.headers {
             for (k, v) in hdrs {
-                out.insert(k.to_string(), self.header_value_to_zval(v));
+                out.insert(k.to_string(), AmqpDelivery::header_value_to_zval(v));
             }
         }
 
@@ -130,7 +130,7 @@ impl AmqpDelivery {
         Self { delivery, no_ack }
     }
 
-    fn header_value_to_zval(&self, hv: &HeaderValue) -> Zval {
+    fn header_value_to_zval(hv: &HeaderValue) -> Zval {
         match hv {
             HeaderValue::Null => {
                 let mut z = Zval::new();
@@ -166,14 +166,14 @@ impl AmqpDelivery {
             HeaderValue::Table(map) => {
                 let mut m: HashMap<String, Zval> = HashMap::with_capacity(map.len());
                 for (k, v) in map {
-                    m.insert(k.clone(), self.header_value_to_zval(v));
+                    m.insert(k.clone(), AmqpDelivery::header_value_to_zval(v));
                 }
                 m.into_zval(false).expect("hashmap into_zval")
             }
             HeaderValue::Array(items) => {
                 let mut v: Vec<Zval> = Vec::with_capacity(items.len());
                 for it in items {
-                    v.push(self.header_value_to_zval(it));
+                    v.push(AmqpDelivery::header_value_to_zval(it));
                 }
                 v.into_zval(false).expect("vec into_zval")
             }
