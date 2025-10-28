@@ -214,6 +214,9 @@ Future work includes native Linux packages (`.deb`, `.rpm`) and Windows builds.
 - [ ] Improved error propagation (always throw `PhpException` for protocol errors).
 - [x] Benchmark harness (publish/consume throughput & latency).
 - [x] Automated release pipeline (PHP 8.2–8.5rc, Ubuntu/Alpine/macOS).
+- [ ] Transaction support (`txSelect`, `txCommit`, `txRollback`).  
+- [ ] Return Message listener
+- [ ] Improve consume performance
 
 ### 🚀 Next Milestone
 
@@ -236,7 +239,7 @@ Future work includes native Linux packages (`.deb`, `.rpm`) and Windows builds.
 - [x] Performance reports (RabbitRs vs `php-amqplib` vs `bunny`).
 - [ ] Prebuilt native packages (deb/rpm) and Windows distribution.
 - [ ] Framework integrations (Laravel, Symfony, etc.).
-- [ ] Multi-channel consumer helper.
+- [ ] Multi-channel consumer.
 
 ---
 
