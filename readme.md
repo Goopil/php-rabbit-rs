@@ -172,10 +172,10 @@ $client->connect();
 - **Rust unit tests**: `cargo test --all`
 - **PHP integration suite**: `bash run-test.sh`  
   Spins up RabbitMQ with Docker Compose, builds the extension (debug or release),
-  and runs Pest tests from `php-tests/`.
+  and runs Pest tests from `php/tests/`.
 - **Benchmarks**: `bash run-benchmarks.sh`  
   Launches a dedicated RabbitMQ instance, ensures benchmark dependencies are
-  installed, and executes the comparison suite under `benchmarks/`.
+  installed, and executes the comparison suite under `php/benchmarks/`.
 
 The GitHub Actions CI workflow executes formatting checks (`cargo fmt`),
 `clippy`, Rust tests, and the integration suite on PHP 8.2.
@@ -231,11 +231,9 @@ Future work includes native Linux packages (`.deb`, `.rpm`) and Windows builds.
 - [ ] JSON convenience APIs (`basicPublishJson`).
 - [x] Adaptive QoS for consumers.
 - [ ] Buffer reuse to cut allocations.
-- [ ] Serde-backed typed JSON API.
-- [ ] Diagnostic helpers (`mq_get_connections()`, `mq_wait_for_count()`).
-- [ ] Graceful SIGTERM drain strategy.
+- [x] Graceful SIGTERM drain strategy.
 - [ ] Best-practice guide (connection reuse, channel fan-out).
-- [x] Performance reports (RabbitRs vs `php-amqplib` vs `pecl/amqp`).
+- [x] Performance reports (RabbitRs vs `php-amqplib` vs `bunny`).
 - [ ] Prebuilt native packages (deb/rpm) and Windows distribution.
 - [ ] Framework integrations (Laravel, Symfony, etc.).
 - [ ] Multi-channel consumer helper.
