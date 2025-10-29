@@ -60,4 +60,4 @@ jobs:
         run: cargo test --all
 
       - name: PHP integration tests
-        run: ./run-test.sh
+        run: chmod +x ./run-test.sh && ./run-test.sh
