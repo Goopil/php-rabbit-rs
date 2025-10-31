@@ -13,6 +13,7 @@ impl AmqpChannel {
         opts: QueueDeclareOptions,
         args: FieldTable,
     ) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let res: Result<(), Error> = RUNTIME.block_on(async move {
@@ -33,6 +34,7 @@ impl AmqpChannel {
         opts: QueueBindOptions,
         args: FieldTable,
     ) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let res: Result<(), Error> = RUNTIME.block_on(async move {
@@ -53,6 +55,7 @@ impl AmqpChannel {
         routing_key: &str,
         args: FieldTable,
     ) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let res: Result<(), Error> = RUNTIME.block_on(async move {
@@ -66,9 +69,8 @@ impl AmqpChannel {
     }
 
     pub fn queue_purge(&self, name: &str, opts: QueuePurgeOptions) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
-        let publisher = self.publisher();
-        let _ = RUNTIME.block_on(async move { publisher.flush_fire_and_forget().await });
         let ch = self.clone_channel();
         let name = name.to_string();
         let res: Result<(), Error> = RUNTIME.block_on(async move {
@@ -82,6 +84,7 @@ impl AmqpChannel {
     }
 
     pub fn queue_delete(&self, name: &str, opts: QueueDeleteOptions) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let name = name.to_string();

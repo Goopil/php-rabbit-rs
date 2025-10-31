@@ -247,16 +247,17 @@ impl Publisher {
 
     /// Publish helper for Fire-and-Forget mode (no confirm awaited)
     #[inline(always)]
-    async fn do_publish_ff(ch: Arc<Channel>, job: PublishJob) {
-        let _ = ch
-            .basic_publish(
-                &job.exchange,
-                &job.routing_key,
-                job.opts,
-                &job.body,
-                job.props,
-            )
-            .await;
+    async fn do_publish_ff(ch: Arc<Channel>, job: PublishJob) -> anyhow::Result<()> {
+        ch.basic_publish(
+            &job.exchange,
+            &job.routing_key,
+            job.opts,
+            &job.body,
+            job.props,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!(e))
     }
 
     /// Publish helper for Confirms mode (awaits confirmation and maps NACK to error)
@@ -422,9 +423,9 @@ impl Publisher {
                                 if matches!(mode, PublishMode::FireAndForget) {
                                     let recent_close_flag = recent_close_flag.clone();
                                     inflight.push(Box::pin(async move {
-                                        Publisher::do_publish_ff(ch.clone(), job).await;
-                                        // If the broker sent Channel.Close, Lapin flags the channel as closed immediately
-                                        if !ch.status().connected() {
+                                        let res = Publisher::do_publish_ff(ch.clone(), job).await;
+                                        // Treat publish errors the same as an observed channel close.
+                                        if res.is_err() || !ch.status().connected() {
                                             recent_close_flag.store(true, Ordering::SeqCst);
                                         }
                                     }));

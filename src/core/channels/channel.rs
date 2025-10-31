@@ -305,9 +305,15 @@ impl AmqpChannel {
         self.consumer_tag.read().clone()
     }
 
-    pub fn flush_ff_publishes(&self) {
+    pub fn flush_ff_publishes(&self) -> Result<()> {
         let publisher = self.publisher();
-        let _ = RUNTIME.block_on(async move { publisher.flush_fire_and_forget().await });
+        match RUNTIME.block_on(async move { publisher.flush_fire_and_forget().await }) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.set_closed_with_error(format!("fire-and-forget flush failed: {e}"));
+                Err(e)
+            }
+        }
     }
 
     pub fn set_consume_policy(&self, policy: ConsumePolicy) {
@@ -612,7 +618,7 @@ impl AmqpChannel {
             return Ok(Vec::new());
         }
 
-        self.flush_ff_publishes();
+        self.flush_ff_publishes()?;
 
         let rx_arc = match self.inbox_rx.read().as_ref().cloned() {
             Some(rx) => rx,
@@ -664,11 +670,24 @@ impl AmqpChannel {
                         break;
                     }
                 }
-                Err(flume::RecvTimeoutError::Timeout) => break,
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    // Allow another fast-drain pass before respecting the timeout so any late
+                    // arrivals queued locally are observed.
+                    continue;
+                }
                 Err(flume::RecvTimeoutError::Disconnected) => break,
             }
 
             std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // One last non-blocking sweep to catch messages that arrived between the timeout firing
+        // and the loop exit above.
+        while out.len() < max {
+            match rx_arc.try_recv() {
+                Ok(d) => out.push(d),
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
         }
 
         Ok(out)
@@ -685,7 +704,7 @@ impl AmqpChannel {
             None => return Ok(0),
         };
 
-        self.flush_ff_publishes();
+        self.flush_ff_publishes()?;
 
         let mut count = 0usize;
         let start = std::time::Instant::now();

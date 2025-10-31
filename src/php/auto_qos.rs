@@ -97,6 +97,7 @@ pub struct AutoQosState {
     current: u16,
     last_adjust: Instant,
     acc_drained: usize,
+    low_windows: u8,
 }
 
 impl AutoQosState {
@@ -111,6 +112,7 @@ impl AutoQosState {
             current: start,
             last_adjust: Instant::now(),
             acc_drained: 0,
+            low_windows: 0,
         })
     }
 
@@ -136,18 +138,36 @@ impl AutoQosState {
                 if (drained as f64) >= 0.8 * (cur as f64) {
                     let up = ((self.current as f64) * self.cfg.step_up).round() as i64;
                     next = up.max(self.cfg.min as i64).min(self.cfg.max as i64) as u16;
+                    self.low_windows = 0;
                 } else if (drained as f64) <= 0.2 * (cur as f64) {
-                    let down = ((self.current as f64) * self.cfg.step_down).round() as i64;
-                    next = down.max(self.cfg.min as i64).min(self.cfg.max as i64) as u16;
+                    self.low_windows = self.low_windows.saturating_add(1);
+                    if self.low_windows >= 2 {
+                        let down = ((self.current as f64) * self.cfg.step_down).round() as i64;
+                        next = down.max(self.cfg.min as i64).min(self.cfg.max as i64) as u16;
+                        self.low_windows = 0;
+                    } else {
+                        next = self.current;
+                    }
+                } else {
+                    self.low_windows = 0;
                 }
             } else {
                 // Latency target: conservative up, quicker down
                 if (drained as f64) >= 0.6 * (cur as f64) {
                     let up = ((self.current as f64) * self.cfg.step_up.max(1.2)).round() as i64;
                     next = up.max(self.cfg.min as i64).min(self.cfg.max as i64) as u16;
+                    self.low_windows = 0;
                 } else if (drained as f64) <= 0.4 * (cur as f64) {
-                    let down = ((self.current as f64) * self.cfg.step_down).round() as i64;
-                    next = down.max(self.cfg.min as i64).min(self.cfg.max as i64) as u16;
+                    self.low_windows = self.low_windows.saturating_add(1);
+                    if self.low_windows >= 2 {
+                        let down = ((self.current as f64) * self.cfg.step_down).round() as i64;
+                        next = down.max(self.cfg.min as i64).min(self.cfg.max as i64) as u16;
+                        self.low_windows = 0;
+                    } else {
+                        next = self.current;
+                    }
+                } else {
+                    self.low_windows = 0;
                 }
             }
 

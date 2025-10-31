@@ -438,7 +438,9 @@ impl PhpChannel {
         }
 
         // Ensure any recent fire-and-forget publishes are flushed so the consumer can see them
-        self.inner.flush_ff_publishes();
+        self.inner
+            .flush_ff_publishes()
+            .map_err(|e| PhpException::default(php_safe(format!("wait flush failed: {e}"))))?;
 
         // Fast path: if messages are already queued locally, drain them without waiting
         let want = if max > 0 { max as usize } else { 0 };
