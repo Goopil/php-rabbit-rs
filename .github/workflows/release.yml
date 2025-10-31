@@ -38,7 +38,7 @@ jobs:
           override: true
 
       - name: Install PHP test dependencies
-        working-directory: php-tests
+        working-directory: php/tests
         run: composer install --no-interaction --no-progress
 
       - name: Build extension
