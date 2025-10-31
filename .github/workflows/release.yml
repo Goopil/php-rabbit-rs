@@ -62,8 +62,8 @@ jobs:
         with:
           name: linux-gnu-php${{ matrix.php-version }}
           path: |
-            ${RELEASE_DIR}/rabbit_rs-linux-gnu-*.zip
-            ${RELEASE_DIR}/rabbit_rs-linux-gnu-*.sha256
+            ${{ env.RELEASE_DIR }}/rabbit_rs-linux-gnu-*.zip
+            ${{ env.RELEASE_DIR }}/rabbit_rs-linux-gnu-*.sha256
 
   build-linux-alpine:
     name: linux-alpine (php ${{ matrix.php-version }})
@@ -107,8 +107,8 @@ jobs:
         with:
           name: linux-musl-php${{ matrix.php-version }}
           path: |
-            ${RELEASE_DIR}/rabbit_rs-linux-musl-*.zip
-            ${RELEASE_DIR}/rabbit_rs-linux-musl-*.sha256
+            ${{ env.RELEASE_DIR }}/rabbit_rs-linux-musl-*.zip
+            ${{ env.RELEASE_DIR }}/rabbit_rs-linux-musl-*.sha256
 
   build-macos:
     name: macOS (php ${{ matrix.php-version }} | ${{ matrix.runner }})
@@ -160,8 +160,8 @@ jobs:
         with:
           name: darwin-${{ matrix.runner }}-php${{ matrix.php-version }}
           path: |
-            ${RELEASE_DIR}/rabbit_rs-darwin-*.zip
-            ${RELEASE_DIR}/rabbit_rs-darwin-*.sha256
+            ${{ env.RELEASE_DIR }}/rabbit_rs-darwin-*.zip
+            ${{ env.RELEASE_DIR }}/rabbit_rs-darwin-*.sha256
 
   publish:
     needs:
