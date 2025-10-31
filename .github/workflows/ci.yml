@@ -18,6 +18,17 @@ jobs:
         with:
           toolchain: 1.89.0
 
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install linters
         run: rustup component add rustfmt && rustup component add clippy
 
@@ -51,6 +62,27 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Cache Composer downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/composer
+            php/tests/vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('php/tests/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
 
       - name: Install PHP test dependencies
         working-directory: php/tests
