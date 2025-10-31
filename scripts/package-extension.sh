@@ -24,6 +24,8 @@ if [[ ! -f "$binary_path" ]]; then
 fi
 
 mkdir -p "$output_dir"
+# Resolve the output directory to an absolute path so packaging works even when we cd
+output_dir="$(cd "$output_dir" && pwd)"
 
 tmp_dir="$(mktemp -d)"
 cleanup() {
@@ -70,4 +72,3 @@ artifact_path="${output_dir}/${artifact_name}"
 sha256sum "${artifact_path}" > "${artifact_path}.sha256"
 
 echo "Created ${artifact_path}"
-
