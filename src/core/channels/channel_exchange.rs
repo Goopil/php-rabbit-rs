@@ -15,6 +15,7 @@ impl AmqpChannel {
         opts: ExchangeDeclareOptions,
         args: FieldTable,
     ) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let res: Result<(), Error> = RUNTIME.block_on(async move {
@@ -28,6 +29,7 @@ impl AmqpChannel {
     }
 
     pub fn exchange_delete(&self, name: &str, opts: ExchangeDeleteOptions) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let name = name.to_string();
@@ -49,6 +51,7 @@ impl AmqpChannel {
         opts: ExchangeBindOptions,
         args: FieldTable,
     ) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let dest = destination.to_string();
@@ -72,6 +75,7 @@ impl AmqpChannel {
         opts: ExchangeUnbindOptions,
         args: FieldTable,
     ) -> Result<()> {
+        self.flush_ff_publishes()?;
         self.ensure_open()?;
         let ch = self.clone_channel();
         let dest = destination.to_string();

@@ -14,14 +14,14 @@ fn extract_iterable_options(mut arr: Option<Iterable>, mut on_kv: impl FnMut(&st
     if let Some(ref mut it) = arr {
         match it {
             Iterable::Array(ht) => {
-                let mut iter = ht.iter();
-                while let Some((k, v)) = iter.next() {
+                let iter = ht.iter();
+                for (k, v) in iter {
                     on_kv(&k.to_string(), v);
                 }
             }
             Iterable::Traversable(tr) => {
-                if let Some(mut iter) = tr.iter() {
-                    while let Some((k, v)) = iter.next() {
+                if let Some(iter) = tr.iter() {
+                    for (k, v) in iter {
                         if let Some(key) = String::from_zval(&k) {
                             on_kv(key.as_str(), v);
                         }
@@ -119,8 +119,8 @@ fn zval_to_amqp_value(z: &Zval) -> Option<ltypes::AMQPValue> {
 // Detect whether the ZendHashTable is a list (0..N-1) -> FieldArray, otherwise FieldTable
 fn ht_to_table_or_array(ht: &ZendHashTable) -> ltypes::AMQPValue {
     let mut items: Vec<(Option<i64>, String, &Zval)> = Vec::new();
-    let mut it = ht.iter();
-    while let Some((k, v)) = it.next() {
+    let it = ht.iter();
+    for (k, v) in it {
         let key_s = k.to_string();
         let key_n = key_s.parse::<i64>().ok();
         items.push((key_n, key_s, v));
@@ -260,7 +260,7 @@ pub fn parse_connection_options(arr: Option<Iterable>) -> PhpResult<ConnectionOp
     });
 
     if let Some(msg) = err {
-        return Err(PhpException::default(msg.into()));
+        return Err(PhpException::default(msg));
     }
 
     Ok(opts)
@@ -380,7 +380,7 @@ fn parse_reconnect_options(arr: Iterable) -> PhpResult<ReconnectOptions> {
     });
 
     if let Some(msg) = err {
-        return Err(PhpException::default(msg.into()));
+        return Err(PhpException::default(msg));
     }
 
     Ok(r)
@@ -507,8 +507,8 @@ pub fn parse_queue_unbind_args(arr: Option<Iterable>) -> ltypes::FieldTable {
             ltypes::FieldTable::default()
         }
         Some(Iterable::Traversable(tr)) => {
-            if let Some(mut iter) = tr.iter() {
-                while let Some((k, v)) = iter.next() {
+            if let Some(iter) = tr.iter() {
+                for (k, v) in iter {
                     if let Some(key) = String::from_zval(&k) {
                         if key.as_str() == K_ARGUMENTS {
                             if let Some(t) = parse_field_table_from_zval(v) {

@@ -1,3 +1,4 @@
+use crate::core::channels::channel::AmqpChannel;
 use crate::core::connections::connection_options::ConnectionOptions;
 use crate::core::connections::connection_pool::{
     get_connected_entry, lock_for, ConnKey, ConnectionEntry, CONNECTIONS, CONNECTION_LOCKS,
@@ -14,7 +15,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{runtime::Handle, sync::Mutex as AsyncMutex, task};
-use crate::core::channels::channel::AmqpChannel;
 
 pub struct AmqpClient {
     entry: Arc<ConnectionEntry>,
@@ -325,7 +325,7 @@ impl AmqpClient {
 
         if let Some(timeout_ms) = opts.connection_timeout_ms {
             // connection_timeout is in seconds for AMQP URI
-            let timeout_s = (timeout_ms + 999) / 1000; // round up to seconds
+            let timeout_s = timeout_ms.div_ceil(1000); // round up to seconds
             params.push(format!("connection_timeout={}", timeout_s));
         }
 

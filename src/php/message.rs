@@ -63,8 +63,9 @@ impl AmqpMessage {
     fn ht_to_header_value(ht: &ZendHashTable) -> HeaderValue {
         // Gather elements to decide between list and table
         let mut items: Vec<(Option<i64>, String, &Zval)> = Vec::new();
-        let mut it = ht.iter();
-        while let Some((k, v)) = it.next() {
+        let it = ht.iter();
+
+        for (k, v) in it {
             let key_str = k.to_string();
             let key_num = key_str.parse::<i64>().ok();
             items.push((key_num, key_str, v));

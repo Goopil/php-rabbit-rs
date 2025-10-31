@@ -16,21 +16,11 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct ConsumePolicy {
     pub no_ack: bool,
     pub reject_on_exception: bool,
     pub requeue_on_reject: bool,
-}
-
-impl Default for ConsumePolicy {
-    fn default() -> Self {
-        Self {
-            no_ack: false, // Align with amqplib: manual ack by default
-            reject_on_exception: false,
-            requeue_on_reject: false,
-        }
-    }
 }
 
 pub struct AmqpChannel {
@@ -315,9 +305,15 @@ impl AmqpChannel {
         self.consumer_tag.read().clone()
     }
 
-    pub fn flush_ff_publishes(&self) {
+    pub fn flush_ff_publishes(&self) -> Result<()> {
         let publisher = self.publisher();
-        let _ = RUNTIME.block_on(async move { publisher.flush_fire_and_forget().await });
+        match RUNTIME.block_on(async move { publisher.flush_fire_and_forget().await }) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.set_closed_with_error(format!("fire-and-forget flush failed: {e}"));
+                Err(e)
+            }
+        }
     }
 
     pub fn set_consume_policy(&self, policy: ConsumePolicy) {
@@ -605,13 +601,8 @@ impl AmqpChannel {
         // Migrate any items that were already queued in the old receiver
         if let Some(old_rx) = old_rx_opt {
             // Drain quickly without blocking
-            loop {
-                match old_rx.try_recv() {
-                    Ok(item) => {
-                        let _ = new_tx.send(item);
-                    }
-                    Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-                }
+            while let Ok(item) = old_rx.try_recv() {
+                let _ = new_tx.send(item);
             }
         }
     }
@@ -627,7 +618,7 @@ impl AmqpChannel {
             return Ok(Vec::new());
         }
 
-        self.flush_ff_publishes();
+        self.flush_ff_publishes()?;
 
         let rx_arc = match self.inbox_rx.read().as_ref().cloned() {
             Some(rx) => rx,
@@ -679,11 +670,24 @@ impl AmqpChannel {
                         break;
                     }
                 }
-                Err(flume::RecvTimeoutError::Timeout) => break,
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    // Allow another fast-drain pass before respecting the timeout so any late
+                    // arrivals queued locally are observed.
+                    continue;
+                }
                 Err(flume::RecvTimeoutError::Disconnected) => break,
             }
 
             std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // One last non-blocking sweep to catch messages that arrived between the timeout firing
+        // and the loop exit above.
+        while out.len() < max {
+            match rx_arc.try_recv() {
+                Ok(d) => out.push(d),
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+            }
         }
 
         Ok(out)
@@ -700,7 +704,7 @@ impl AmqpChannel {
             None => return Ok(0),
         };
 
-        self.flush_ff_publishes();
+        self.flush_ff_publishes()?;
 
         let mut count = 0usize;
         let start = std::time::Instant::now();

@@ -1,4 +1,5 @@
 use crate::core::connections::connection_options::ConnectionOptions;
+use crate::core::runtime::RUNTIME;
 use lapin::Connection;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
@@ -11,7 +12,6 @@ use std::{
     },
 };
 use tokio::{runtime::Handle, sync::Mutex as AsyncMutex, task};
-use crate::core::runtime::RUNTIME;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ConnKey {
@@ -78,7 +78,7 @@ impl Drop for ConnectionEntry {
 
         // Attempt to close synchronously when we're outside of Tokio.
         if Handle::try_current().is_err() {
-            let _ = RUNTIME.block_on(async move {
+            RUNTIME.block_on(async move {
                 if conn.status().connected() {
                     let _ = conn.close(200, "Connection pool drop").await;
                 }
@@ -142,11 +142,13 @@ pub fn dispose_pool() {
     for weak in entries {
         if let Some(entry) = weak.upgrade() {
             let conn = entry.connection();
-            let _ = RUNTIME.block_on(async move {
+            RUNTIME.block_on(async move {
                 if conn.status().connected() {
                     let _ = conn.close(200, "Module shutdown").await;
                 }
             });
+
+            return;
         }
     }
 

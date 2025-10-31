@@ -167,7 +167,7 @@ impl Publisher {
                         match maybe_task {
                             Ok(task) => {
                                 inflight.push(task);
-                                while let Some(_) = inflight.next().now_or_never().flatten() {}
+                                while inflight.next().now_or_never().flatten().is_some() {}
                             }
                             Err(_) => { break; }
                         }
@@ -247,16 +247,17 @@ impl Publisher {
 
     /// Publish helper for Fire-and-Forget mode (no confirm awaited)
     #[inline(always)]
-    async fn do_publish_ff(ch: Arc<Channel>, job: PublishJob) {
-        let _ = ch
-            .basic_publish(
-                &*job.exchange,
-                &*job.routing_key,
-                job.opts,
-                &*job.body,
-                job.props,
-            )
-            .await;
+    async fn do_publish_ff(ch: Arc<Channel>, job: PublishJob) -> anyhow::Result<()> {
+        ch.basic_publish(
+            &job.exchange,
+            &job.routing_key,
+            job.opts,
+            &job.body,
+            job.props,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!(e))
     }
 
     /// Publish helper for Confirms mode (awaits confirmation and maps NACK to error)
@@ -264,10 +265,10 @@ impl Publisher {
     async fn do_publish_confirms(ch: Arc<Channel>, job: PublishJob) -> anyhow::Result<()> {
         let confirm = ch
             .basic_publish(
-                &*job.exchange,
-                &*job.routing_key,
+                &job.exchange,
+                &job.routing_key,
                 job.opts,
-                &*job.body,
+                &job.body,
                 job.props,
             )
             .await?;
@@ -299,17 +300,17 @@ impl Publisher {
             attempt += 1;
             match entry.connection().create_channel().await {
                 Ok(fresh) => {
-                    if matches!(mode, PublishMode::Confirms) {
-                        if let Err(_) = fresh
+                    if matches!(mode, PublishMode::Confirms)
+                        && fresh
                             .confirm_select(lapin::options::ConfirmSelectOptions::default())
                             .await
-                        {
-                            // failed confirm_select, retry with backoff
-                            let delay = (10u64 * (1u64 << attempt.min(6))).min(1000)
-                                + rand::rng().random_range(0..30);
-                            sleep(Duration::from_millis(delay)).await;
-                            continue;
-                        }
+                            .is_err()
+                    {
+                        // failed confirm_select, retry with backoff
+                        let delay = (10u64 * (1u64 << attempt.min(6))).min(1000)
+                            + rand::rng().random_range(0..30);
+                        sleep(Duration::from_millis(delay)).await;
+                        continue;
                     }
                     let arc = Arc::new(fresh);
                     *ch_opt = Some(arc.clone());
@@ -351,7 +352,8 @@ impl Publisher {
         tx.send_async(barrier)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let _ = brx.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+        brx.await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(())
     }
 
@@ -365,7 +367,7 @@ impl Publisher {
         }
 
         let inflight_cap = self.inflight_limit.max(128);
-        let queue_cap = (inflight_cap * 2).max(256).min(65_536);
+        let queue_cap = (inflight_cap * 2).clamp(256, 65_536);
         let (tx, rx): (FlumeSender<PublishJob>, FlumeReceiver<PublishJob>) =
             flume::bounded(queue_cap);
 
@@ -421,9 +423,9 @@ impl Publisher {
                                 if matches!(mode, PublishMode::FireAndForget) {
                                     let recent_close_flag = recent_close_flag.clone();
                                     inflight.push(Box::pin(async move {
-                                        Publisher::do_publish_ff(ch.clone(), job).await;
-                                        // If the broker sent Channel.Close, Lapin flags the channel as closed immediately
-                                        if !ch.status().connected() {
+                                        let res = Publisher::do_publish_ff(ch.clone(), job).await;
+                                        // Treat publish errors the same as an observed channel close.
+                                        if res.is_err() || !ch.status().connected() {
                                             recent_close_flag.store(true, Ordering::SeqCst);
                                         }
                                     }));
@@ -434,7 +436,7 @@ impl Publisher {
                                     inflight.push(Box::pin(async move {
                                         let res = async {
                                             let c = ch
-                                                .basic_publish(&*job.exchange, &*job.routing_key, job.opts, &*job.body, job.props)
+                                                .basic_publish(&job.exchange, &job.routing_key, job.opts, &job.body, job.props)
                                                 .await
                                                 .map_err(|_| ())?;
                                             let c = c.await.map_err(|_| ())?;
@@ -451,7 +453,7 @@ impl Publisher {
                                 }
 
                                 // Non-blocking drain to advance futures that are ready to complete
-                                while let Some(_) = inflight.next().now_or_never().flatten() {}
+                                while inflight.next().now_or_never().flatten().is_some() {}
                             }
                             Err(_) => { break; }
                         }
@@ -518,7 +520,7 @@ impl Publisher {
         // Mandatory preflight for default exchange (amqplib parity)
         if pub_opts.mandatory && exchange.is_empty() {
             if let Ok(ch) = self.get_or_open_channel().await {
-                if let Err(_) = ch
+                if ch
                     .queue_declare(
                         routing_key,
                         lapin::options::QueueDeclareOptions {
@@ -528,6 +530,7 @@ impl Publisher {
                         lapin::types::FieldTable::default(),
                     )
                     .await
+                    .is_err()
                 {
                     anyhow::bail!("basic.return: unroutable (mandatory)");
                 }
@@ -669,13 +672,11 @@ impl Publisher {
         let ch = self.get_or_open_channel().await?;
 
         if !self.confirms_enabled() {
-            let _ = ch
-                .basic_publish(exchange, routing_key, pub_opts, &*message.body, props)
+            ch.basic_publish(exchange, routing_key, pub_opts, &message.body, props)
                 .await?;
-            if pub_opts.mandatory {
-                if self.saw_mandatory_return_short(ch.as_ref(), 200).await {
-                    anyhow::bail!("basic.return: unroutable (mandatory)");
-                }
+
+            if pub_opts.mandatory && self.saw_mandatory_return_short(ch.as_ref(), 200).await {
+                anyhow::bail!("basic.return: unroutable (mandatory)");
             }
             return Ok(());
         }
@@ -697,10 +698,8 @@ impl Publisher {
             Ok(()) => {
                 let _ = tracker.confirmed.fetch_add(1, Ordering::Relaxed) + 1;
                 tracker.notify.notify_waiters();
-                if pub_opts.mandatory {
-                    if self.saw_mandatory_return_short(ch.as_ref(), 200).await {
-                        anyhow::bail!("basic.return: unroutable (mandatory)");
-                    }
+                if pub_opts.mandatory && self.saw_mandatory_return_short(ch.as_ref(), 200).await {
+                    anyhow::bail!("basic.return: unroutable (mandatory)");
                 }
                 Ok(())
             }
