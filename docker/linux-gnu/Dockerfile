@@ -14,7 +14,7 @@ ARG PHP_VERSION=8.2
 ARG PHP_VARIANT=cli
 ARG RUST_VERSION=1.89.0
 
-FROM ghcr.io/shivammathur/php:${PHP_VERSION}-${PHP_VARIANT} AS build
+FROM php:${PHP_VERSION}-${PHP_VARIANT} AS build
 
 ARG RUST_VERSION
 ENV PATH="/root/.cargo/bin:${PATH}"

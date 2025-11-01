@@ -11,10 +11,10 @@
 ##
 
 ARG PHP_VERSION=8.2
-ARG PHP_VARIANT=cli-alpine
+ARG PHP_VARIANT=cli-alpine3.22
 ARG RUST_VERSION=1.89.0
 
-FROM ghcr.io/shivammathur/php:${PHP_VERSION}-${PHP_VARIANT} AS build
+FROM php:${PHP_VERSION}-${PHP_VARIANT} AS build
 
 ARG RUST_VERSION
 ENV PATH="/root/.cargo/bin:${PATH}" \
@@ -43,4 +43,3 @@ FROM alpine:3.19 AS artifact
 RUN mkdir -p /artifacts
 
 COPY --from=build /src/target/release/librabbit_rs.so /artifacts/rabbit_rs.so
-

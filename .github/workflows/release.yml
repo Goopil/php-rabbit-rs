@@ -79,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-version: ["8.2", "8.3", "8.4"]
+        php-version: ["8.3", "8.4"]
     steps:
       - uses: actions/checkout@v4
       - name: Authenticate to GHCR
@@ -94,6 +94,7 @@ jobs:
           docker build \
             -f docker/linux-alpine/Dockerfile \
             --build-arg PHP_VERSION=${{ matrix.php-version }} \
+            --build-arg PHP_VARIANT=cli-alpine3.22 \
             --build-arg RUST_VERSION=${{ env.RUST_VERSION }} \
             -t rabbit-rs-linux-alpine:${{ matrix.php-version }} .
 
@@ -130,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-version: ["8.2", "8.3", "8.4"]
+        php-version: ["8.3", "8.4"]
         runner: ["macos-13", "macos-14"]
     steps:
       - uses: actions/checkout@v4
