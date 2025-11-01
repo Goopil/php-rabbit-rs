@@ -38,7 +38,7 @@ COPY . .
 
 RUN cargo build --release --locked
 
-FROM alpine:3.19 AS artifact
+FROM alpine:3.22 AS artifact
 
 RUN mkdir -p /artifacts
 
