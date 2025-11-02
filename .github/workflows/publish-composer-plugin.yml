@@ -40,7 +40,6 @@ jobs:
           composer config github-oauth.github.com ${{ secrets.GITHUB_TOKEN }}
           composer config repositories.github '{"type": "composer", "url": "https://npm.pkg.github.com/"}'
           composer config repository github
-          composer config name goopil/rabbit-rs-installer
           composer publish --verbose
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
