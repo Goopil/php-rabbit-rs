@@ -69,6 +69,13 @@ artifact_path="${output_dir}/${artifact_name}"
 
 (cd "$tmp_dir" && zip -9 -q "${artifact_path}" "${binary_target}" rabbit_rs.ini INSTALL.md)
 
-sha256sum "${artifact_path}" > "${artifact_path}.sha256"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "${artifact_path}" > "${artifact_path}.sha256"
+elif command -v shasum >/dev/null 2>&1; then
+  shasum -a 256 "${artifact_path}" > "${artifact_path}.sha256"
+else
+  echo "Neither sha256sum nor shasum is available to compute checksums." >&2
+  exit 3
+fi
 
 echo "Created ${artifact_path}"
