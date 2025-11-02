@@ -144,6 +144,17 @@ common::resolve_extension() {
     return 0
   fi
 
-  echo "Unable to locate RabbitRs extension (looked for ${debug_candidate} and ${release_candidate}). Run 'cargo build' first." >&2
+  # Look for CI build artefacts (target/ci/<job>/release).
+  local ci_root="$root/target/ci"
+  if [[ -d "$ci_root" ]]; then
+    while IFS= read -r -d '' candidate; do
+      if [[ -f "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    done < <(find "$ci_root" -maxdepth 3 -type f -name "librabbit_rs.${ext}" -print0)
+  fi
+
+  echo "Unable to locate RabbitRs extension (looked for ${debug_candidate}, ${release_candidate}, or ${root}/target/ci/**/librabbit_rs.${ext}). Run 'cargo build' first." >&2
   return 1
 }
