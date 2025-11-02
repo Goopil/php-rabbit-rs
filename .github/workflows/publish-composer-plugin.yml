@@ -1,0 +1,46 @@
+name: Publish Composer Plugin
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+*"
+      - "[0-9]+.[0-9]+.[0-9]+-alpha*"
+      - "[0-9]+.[0-9]+.[0-9]+-beta*"
+      - "[0-9]+.[0-9]+.[0-9]+-rc*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer
+          coverage: none
+
+      - name: Validate composer.json
+        working-directory: php/composer-plugin
+        run: composer validate
+
+      - name: Install dependencies
+        working-directory: php/composer-plugin
+        run: composer install --no-dev --prefer-dist --no-progress --no-suggest
+
+      - name: Publish to GitHub Packages
+        working-directory: php/composer-plugin
+        run: |
+          composer config github-oauth.github.com ${{ secrets.GITHUB_TOKEN }}
+          composer config repositories.github '{"type": "composer", "url": "https://npm.pkg.github.com/"}'
+          composer config repository github
+          composer config name goopil/rabbit-rs-installer
+          composer publish --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

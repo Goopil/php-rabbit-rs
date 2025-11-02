@@ -14,5 +14,11 @@
   },
   "extra": {
     "class": "Goopil\\RabbitRs\\Installer\\Plugin"
-  }
+  },
+  "repositories": [
+    {
+      "type": "composer",
+      "url": "https://repo.packagist.org"
+    }
+  ]
 }
