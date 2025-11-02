@@ -442,62 +442,6 @@ impl PhpChannel {
             .flush_ff_publishes()
             .map_err(|e| PhpException::default(php_safe(format!("wait flush failed: {e}"))))?;
 
-        // Fast path: if messages are already queued locally, drain them without waiting
-        let want = if max > 0 { max as usize } else { 0 };
-        if want > 0 {
-            let batch = self.inner.simple_consume_poll_batch(0, want).map_err(|e| {
-                PhpException::default(php_safe(format!("wait pre-drain failed: {e}")))
-            })?;
-
-            if !batch.is_empty() {
-                let mut count: i64 = 0;
-                if let Some(ref mut st) = *self.auto_qos.write() {
-                    st.record_and_maybe_adjust(batch.len(), |next| {
-                        self.inner.qos(next, false).map_err(|e| {
-                            PhpException::default(php_safe(format!("Auto-QoS adjust failed: {e}")))
-                        })
-                    })?;
-                }
-
-                for delivery in batch {
-                    let tag = delivery.delivery_tag;
-                    let policy = self.inner.consume_policy();
-                    let amqp_delivery = AmqpDelivery::new(delivery.clone(), policy.no_ack);
-                    let cb_guard = self.callback.read();
-                    let cb = cb_guard.as_ref().ok_or_else(|| {
-                        PhpException::default(
-                            "No callback registered. Call simpleConsume(queue, callback) first."
-                                .into(),
-                        )
-                    })?;
-                    match Self::call_php_callback(cb, amqp_delivery) {
-                        Ok(()) => {}
-                        Err(e) => {
-                            if !policy.no_ack {
-                                if policy.reject_on_exception {
-                                    let _ = self
-                                        .inner
-                                        .simple_consume_nack_by_tag(tag, policy.requeue_on_reject);
-                                }
-                                return Err(e);
-                            }
-                            let error_message = format!("{:?}", e).to_lowercase();
-                            if error_message.contains("cannot ack in auto-ack mode")
-                                || error_message.contains("cannot nack in auto-ack mode")
-                                || error_message.contains("cannot reject in auto-ack mode")
-                            {
-                                // swallow this specific misuse in auto-ack mode
-                            } else {
-                                return Err(e);
-                            }
-                        }
-                    }
-                    count += 1;
-                }
-                return Ok(count);
-            }
-        }
-
         let cb_guard = self.callback.read();
         let cb = cb_guard.as_ref().ok_or_else(|| {
             PhpException::default(
@@ -508,6 +452,7 @@ impl PhpChannel {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
         let mut count: i64 = 0;
 
+        // Continue looping until we've received all expected messages or timeout
         while count < max {
             let now = Instant::now();
             if now >= deadline {
@@ -516,12 +461,19 @@ impl PhpChannel {
 
             let remaining_ms = (deadline - now).as_millis() as u64;
             let want = (max - count) as usize;
+
+            // Use a minimum timeout to ensure we don't miss messages
+            let effective_timeout = remaining_ms.max(10);
+
             let batch = self
                 .inner
-                .simple_consume_poll_batch(remaining_ms, want)
+                .simple_consume_poll_batch(effective_timeout, want)
                 .map_err(|e| PhpException::default(php_safe(format!("wait failed: {e}"))))?;
 
             if batch.is_empty() {
+                // Even if we got no messages, continue looping until timeout
+                // This gives more time for messages to arrive
+                std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
 

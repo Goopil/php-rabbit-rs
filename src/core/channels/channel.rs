@@ -678,7 +678,8 @@ impl AmqpChannel {
                 Err(flume::RecvTimeoutError::Disconnected) => break,
             }
 
-            std::thread::sleep(Duration::from_millis(5));
+            // Reduce sleep time for better responsiveness
+            std::thread::sleep(Duration::from_millis(1));
         }
 
         // One last non-blocking sweep to catch messages that arrived between the timeout firing
