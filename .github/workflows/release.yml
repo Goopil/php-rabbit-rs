@@ -39,7 +39,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          override: true
 
       - name: Install PHP test dependencies
         working-directory: php/tests
@@ -97,7 +96,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          override: true
 
       - name: Install PHP test dependencies
         working-directory: php/tests

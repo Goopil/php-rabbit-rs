@@ -23,7 +23,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          override: true
 
       - name: Cache cargo registry & binaries
         uses: actions/cache@v4
@@ -80,7 +79,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          override: true
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
@@ -152,7 +150,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          override: true
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
@@ -214,7 +211,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          override: true
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
