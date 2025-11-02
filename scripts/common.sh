@@ -132,23 +132,25 @@ common::resolve_extension() {
     *) ext="so" ;;
   esac
 
-  local debug_candidate="$root/target/debug/librabbit_rs.${ext}"
-  local release_candidate="$root/target/release/librabbit_rs.${ext}"
+  local debug_candidate
+  local release_candidate
 
+  # Honour overridden build output directory first.
   if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-    local cargo_dir="${CARGO_TARGET_DIR%/}"
-    local cargo_debug="$cargo_dir/debug/librabbit_rs.${ext}"
-    local cargo_release="$cargo_dir/release/librabbit_rs.${ext}"
-
-    if [[ -f "$cargo_debug" ]]; then
-      echo "$cargo_debug"
+    debug_candidate="${CARGO_TARGET_DIR%/}/debug/librabbit_rs.${ext}"
+    release_candidate="${CARGO_TARGET_DIR%/}/release/librabbit_rs.${ext}"
+    if [[ -f "$debug_candidate" ]]; then
+      echo "$debug_candidate"
       return 0
     fi
-    if [[ -f "$cargo_release" ]]; then
-      echo "$cargo_release"
+    if [[ -f "$release_candidate" ]]; then
+      echo "$release_candidate"
       return 0
     fi
   fi
+
+  debug_candidate="$root/target/debug/librabbit_rs.${ext}"
+  release_candidate="$root/target/release/librabbit_rs.${ext}"
 
   if [[ -f "$debug_candidate" ]]; then
     echo "$debug_candidate"

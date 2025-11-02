@@ -18,24 +18,23 @@ jobs:
     env:
       CARGO_TARGET_DIR: target/ci/lint
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Cache cargo registry & binaries
+      - name: Cache cargo registry & target
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/ci/lint
-          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-lint-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-lint-cargo-
+            ${{ runner.os }}-lint-
 
       - name: Install components
         run: |
@@ -51,15 +50,14 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     needs: lint
-    env:
-      CARGO_TARGET_DIR: target/ci/tests-${{ matrix.php }}
     strategy:
       fail-fast: false
       matrix:
         php: ['8.2', '8.3', '8.4']
+    env:
+      CARGO_TARGET_DIR: target/ci/tests-${{ matrix.php }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config docker-compose zip
@@ -87,10 +85,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/ci/tests-${{ matrix.php }}
-          key: ${{ runner.os }}-tests-${{ matrix.php }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-tests-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-tests-${{ matrix.php }}-cargo-
-            ${{ runner.os }}-tests-cargo-
+            ${{ runner.os }}-tests-${{ matrix.php }}-
+            ${{ runner.os }}-tests-
 
       - name: Cache Composer
         uses: actions/cache@v4
@@ -98,10 +96,10 @@ jobs:
           path: |
             ~/.cache/composer
             php/tests/vendor
-          key: ${{ runner.os }}-tests-composer-${{ matrix.php }}-${{ hashFiles('php/tests/composer.lock') }}
+          key: ${{ runner.os }}-composer-${{ matrix.php }}-${{ hashFiles('php/tests/composer.lock') }}
           restore-keys: |
-            ${{ runner.os }}-tests-composer-${{ matrix.php }}-
-            ${{ runner.os }}-tests-composer-
+            ${{ runner.os }}-composer-${{ matrix.php }}-
+            ${{ runner.os }}-composer-
 
       - name: Install PHP dependencies
         working-directory: php/tests
@@ -112,7 +110,7 @@ jobs:
         env:
           EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
 
-      - name: Cargo build (debug)
+      - name: Cargo build
         run: cargo build
         env:
           EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
@@ -125,15 +123,14 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     needs: tests
-    env:
-      CARGO_TARGET_DIR: target/ci/build-linux-${{ matrix.php }}
     strategy:
       fail-fast: false
       matrix:
         php: ['8.2', '8.3', '8.4']
+    env:
+      CARGO_TARGET_DIR: target/ci/build-linux-${{ matrix.php }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install prerequisites
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config zip
@@ -161,10 +158,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/ci/build-linux-${{ matrix.php }}
-          key: ${{ runner.os }}-build-linux-${{ matrix.php }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-build-linux-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-build-linux-${{ matrix.php }}-cargo-
-            ${{ runner.os }}-build-linux-cargo-
+            ${{ runner.os }}-build-linux-${{ matrix.php }}-
+            ${{ runner.os }}-build-linux-
 
       - name: Cargo build (release)
         run: cargo build --release --locked
@@ -176,7 +173,7 @@ jobs:
           mkdir -p dist
           ref="${GITHUB_REF_NAME:-$GITHUB_SHA}"
           short="${ref:0:7}"
-          artifact_path="${CARGO_TARGET_DIR}/release/librabbit_rs.so"
+          artifact_path="${CARGO_TARGET_DIR%/}/release/librabbit_rs.so"
           if [ ! -f "${artifact_path}" ]; then
             echo "Artifact not found at ${artifact_path}" >&2
             exit 1
@@ -197,15 +194,14 @@ jobs:
   build-macos:
     runs-on: macos-14
     needs: tests
-    env:
-      CARGO_TARGET_DIR: target/ci/build-macos-${{ matrix.php }}
     strategy:
       fail-fast: false
       matrix:
         php: ['8.2', '8.3', '8.4']
+    env:
+      CARGO_TARGET_DIR: target/ci/build-macos-${{ matrix.php }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -230,10 +226,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/ci/build-macos-${{ matrix.php }}
-          key: ${{ runner.os }}-build-macos-${{ matrix.php }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-build-macos-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-build-macos-${{ matrix.php }}-cargo-
-            ${{ runner.os }}-build-macos-cargo-
+            ${{ runner.os }}-build-macos-${{ matrix.php }}-
+            ${{ runner.os }}-build-macos-
 
       - name: Cargo build (release)
         run: cargo build --release --locked
@@ -245,7 +241,7 @@ jobs:
           mkdir -p dist
           ref="${GITHUB_REF_NAME:-$GITHUB_SHA}"
           short="${ref:0:7}"
-          artifact_path="${CARGO_TARGET_DIR}/release/librabbit_rs.dylib"
+          artifact_path="${CARGO_TARGET_DIR%/}/release/librabbit_rs.dylib"
           if [ ! -f "${artifact_path}" ]; then
             echo "Artifact not found at ${artifact_path}" >&2
             exit 1
