@@ -87,15 +87,47 @@ function mq_client(array $opts = []) {
 }
 
 function getPhpAndExtPath() {
-    $ext = realpath(__DIR__ . '/../../../target/debug/librabbit_rs.' . (
-        PHP_OS_FAMILY === 'Darwin' ? 'dylib' : (str_starts_with(strtolower(PHP_OS), 'win') ? 'dll' : 'so')
-    ));
-    $php = trim(shell_exec('which php'));
+    $root = realpath(__DIR__ . '/../../..');
+    if ($root === false) {
+        throw new RuntimeException('Unable to resolve repository root.');
+    }
 
-    return [
-      'php' => $php,
-      'ext' => $ext,
-    ];
+    $php = trim(shell_exec('which php'));
+    $suffix = PHP_OS_FAMILY === 'Darwin'
+        ? 'dylib'
+        : (str_starts_with(strtolower(PHP_OS), 'win') ? 'dll' : 'so');
+
+    $candidates = [];
+
+    $libPathEnv = getenv('LIB_PATH');
+    if ($libPathEnv !== false && $libPathEnv !== '') {
+        $candidates[] = $libPathEnv;
+    }
+
+    $cargoTarget = getenv('CARGO_TARGET_DIR');
+    if ($cargoTarget !== false && $cargoTarget !== '') {
+        $cargoTarget = rtrim($cargoTarget, DIRECTORY_SEPARATOR);
+        $candidates[] = $cargoTarget . '/debug/librabbit_rs.' . $suffix;
+        $candidates[] = $cargoTarget . '/release/librabbit_rs.' . $suffix;
+    }
+
+    $candidates[] = $root . '/target/debug/librabbit_rs.' . $suffix;
+    $candidates[] = $root . '/target/release/librabbit_rs.' . $suffix;
+
+    $ciRelease = glob($root . '/target/ci/*/release/librabbit_rs.' . $suffix) ?: [];
+    $ciDebug = glob($root . '/target/ci/*/debug/librabbit_rs.' . $suffix) ?: [];
+    $candidates = array_merge($candidates, $ciRelease, $ciDebug);
+
+    foreach ($candidates as $candidate) {
+        if ($candidate && is_file($candidate)) {
+            return [
+                'php' => $php,
+                'ext' => realpath($candidate) ?: $candidate,
+            ];
+        }
+    }
+
+    throw new RuntimeException('RabbitRs extension not found. Run "cargo build" first.');
 }
 
 function sc_expect_success(callable $fn) {

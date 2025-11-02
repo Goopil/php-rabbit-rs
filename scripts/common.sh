@@ -135,6 +135,21 @@ common::resolve_extension() {
   local debug_candidate="$root/target/debug/librabbit_rs.${ext}"
   local release_candidate="$root/target/release/librabbit_rs.${ext}"
 
+  if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+    local cargo_dir="${CARGO_TARGET_DIR%/}"
+    local cargo_debug="$cargo_dir/debug/librabbit_rs.${ext}"
+    local cargo_release="$cargo_dir/release/librabbit_rs.${ext}"
+
+    if [[ -f "$cargo_debug" ]]; then
+      echo "$cargo_debug"
+      return 0
+    fi
+    if [[ -f "$cargo_release" ]]; then
+      echo "$cargo_release"
+      return 0
+    fi
+  fi
+
   if [[ -f "$debug_candidate" ]]; then
     echo "$debug_candidate"
     return 0
