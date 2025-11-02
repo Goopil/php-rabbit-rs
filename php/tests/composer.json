@@ -3,9 +3,6 @@
   "require": {
     "php": ">=8.2"
   },
-  "require-dev": {
-    "pestphp/pest": "^4.1"
-  },
   "autoload": {
     "psr-4": {
       "Tests\\": "tests/"
@@ -17,5 +14,8 @@
     "allow-plugins": {
       "pestphp/pest-plugin": true
     }
+  },
+  "require-dev": {
+    "pestphp/pest": "*"
   }
 }

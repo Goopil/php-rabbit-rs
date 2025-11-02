@@ -1,0 +1,247 @@
+name: Build & Test
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: 1.89.0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          override: true
+
+      - name: Cache cargo registry & binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-lint-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-lint-cargo-
+
+      - name: Install components
+        run: |
+          rustup component add rustfmt
+          rustup component add clippy
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  tests:
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config docker-compose zip
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: phpize, php-config, composer
+          coverage: none
+
+      - name: Resolve php-config
+        id: php
+        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve php-config
+        id: php
+        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          override: true
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-tests-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tests-cargo-
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/composer
+            php/tests/vendor
+          key: ${{ runner.os }}-tests-composer-${{ matrix.php }}-${{ hashFiles('php/tests/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tests-composer-${{ matrix.php }}-
+            ${{ runner.os }}-tests-composer-
+
+      - name: Install PHP dependencies
+        working-directory: php/tests
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Cargo test
+        run: cargo test --all
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
+
+      - name: Cargo build (debug)
+        run: cargo build
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
+
+      - name: PHP integration tests
+        run: |
+          chmod +x ./run-test.sh
+          ./run-test.sh
+
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: tests
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install prerequisites
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config zip
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: phpize, php-config
+          coverage: none
+
+      - name: Resolve php-config
+        id: php
+        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          override: true
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-build-linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-build-linux-cargo-
+
+      - name: Cargo build (release)
+        run: cargo build --release --locked
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          ref="${GITHUB_REF_NAME:-$GITHUB_SHA}"
+          short="${ref:0:7}"
+          scripts/package-extension.sh \
+            "target/release/librabbit_rs.so" \
+            "${{ matrix.php }}" \
+            "linux-gnu-$(uname -m)" \
+            "${short}" \
+            "dist"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rabbit-rs-linux-php${{ matrix.php }}
+          path: dist/*
+
+  build-macos:
+    runs-on: macos-14
+    needs: tests
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: phpize, php-config, composer
+          coverage: none
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          override: true
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-build-macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-build-macos-cargo-
+
+      - name: Cargo build (release)
+        run: cargo build --release --locked
+
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          ref="${GITHUB_REF_NAME:-$GITHUB_SHA}"
+          short="${ref:0:7}"
+          scripts/package-extension.sh \
+            "target/release/librabbit_rs.dylib" \
+            "${{ matrix.php }}" \
+            "darwin-$(uname -m)" \
+            "${short}" \
+            "dist"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rabbit-rs-darwin-php${{ matrix.php }}
+          path: dist/*

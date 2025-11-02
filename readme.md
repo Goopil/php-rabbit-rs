@@ -187,7 +187,7 @@ The GitHub Actions CI workflow executes formatting checks (`cargo fmt`),
 Tagged releases trigger `.github/workflows/release.yml`, which:
 
 1. Builds Linux glibc binaries directly on Ubuntu runners.
-2. Builds Linux musl binaries with dedicated Docker builders (`docker/linux-*`).
+2. Builds Linux binaries directly on the GitHub-hosted runners; Docker builders were removed in favour of native builds.
 3. Compiles macOS (x86_64 & arm64) using `shivammathur/setup-php`.
 4. Packages artifacts via `scripts/package-extension.sh`, producing `.zip` files,
    `.ini` snippets, and SHA256 sums.

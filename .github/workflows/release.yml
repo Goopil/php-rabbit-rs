@@ -24,19 +24,16 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config zip
 
-      - name: Authenticate to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
           tools: phpize, php-config, composer
           coverage: none
+
+      - name: Resolve php-config
+        id: php
+        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -49,19 +46,21 @@ jobs:
         run: composer install --no-interaction --no-progress
 
       - name: Build extension
-        run: |
-          export EXT_PHP_RS_PHP_CONFIG="$(command -v php-config)"
-          cargo build --release --locked
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
+        run: cargo build --release --locked
 
       - name: Package artifact
         run: |
           mkdir -p "${RELEASE_DIR}"
+          ref="${GITHUB_REF_NAME:-$GITHUB_SHA}"
+          short="${ref:0:7}"
           ARCH="$(uname -m)"
           scripts/package-extension.sh \
             "target/release/librabbit_rs.so" \
             "${{ matrix.php-version }}" \
             "linux-gnu-${ARCH}" \
-            "${GITHUB_REF_NAME:-$(git rev-parse --short HEAD)}" \
+            "${short}" \
             "${RELEASE_DIR}"
 
       - name: Upload artifact
@@ -72,62 +71,9 @@ jobs:
             ${{ env.RELEASE_DIR }}/rabbit_rs-linux-gnu-*.zip
             ${{ env.RELEASE_DIR }}/rabbit_rs-linux-gnu-*.sha256
 
-#  build-linux-alpine:
-#    name: linux-alpine (php ${{ matrix.php-version }})
-#    runs-on: ubuntu-latest
-#    needs: build-linux-gnu
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        php-version: ["8.3", "8.4"]
-#    steps:
-#      - uses: actions/checkout@v4
-#      - name: Authenticate to GHCR
-#        uses: docker/login-action@v3
-#        with:
-#          registry: ghcr.io
-#          username: ${{ github.actor }}
-#          password: ${{ secrets.GITHUB_TOKEN }}
-#
-#      - name: Build Docker image
-#        run: |
-#          docker build \
-#            -f docker/linux-alpine/Dockerfile \
-#            --build-arg PHP_VERSION=${{ matrix.php-version }} \
-#            --build-arg PHP_VARIANT=cli-alpine3.22 \
-#            --build-arg RUST_VERSION=${{ env.RUST_VERSION }} \
-#            -t rabbit-rs-linux-alpine:${{ matrix.php-version }} .
-#
-#      - name: Extract artifact
-#        run: |
-#          mkdir -p "${RELEASE_DIR}"
-#          CID="$(docker create rabbit-rs-linux-alpine:${{ matrix.php-version }})"
-#          docker cp "${CID}:/artifacts/rabbit_rs.so" "${RELEASE_DIR}/rabbit_rs.so"
-#          docker rm "${CID}"
-#
-#      - name: Package artifact
-#        run: |
-#          ARCH="$(uname -m)"
-#          scripts/package-extension.sh \
-#            "${RELEASE_DIR}/rabbit_rs.so" \
-#            "${{ matrix.php-version }}" \
-#            "linux-musl-${ARCH}" \
-#            "${GITHUB_REF_NAME:-$(git rev-parse --short HEAD)}" \
-#            "${RELEASE_DIR}"
-#          rm -f "${RELEASE_DIR}/rabbit_rs.so"
-#
-#      - name: Upload artifact
-#        uses: actions/upload-artifact@v4
-#        with:
-#          name: linux-musl-php${{ matrix.php-version }}
-#          path: |
-#            ${{ env.RELEASE_DIR }}/rabbit_rs-linux-musl-*.zip
-#            ${{ env.RELEASE_DIR }}/rabbit_rs-linux-musl-*.sha256
-
   build-macos:
     name: macOS (php ${{ matrix.php-version }} | ${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-#    needs: build-linux-alpine
     strategy:
       fail-fast: false
       matrix:
@@ -143,6 +89,10 @@ jobs:
           tools: phpize, php-config, composer
           coverage: none
 
+      - name: Resolve php-config
+        id: php
+        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -150,23 +100,25 @@ jobs:
           override: true
 
       - name: Install PHP test dependencies
-        working-directory: php-tests
+        working-directory: php/tests
         run: composer install --no-interaction --no-progress
 
       - name: Build extension
-        run: |
-          export EXT_PHP_RS_PHP_CONFIG="$(command -v php-config)"
-          cargo build --release --locked
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
+        run: cargo build --release --locked
 
       - name: Package artifact
         run: |
           mkdir -p "${RELEASE_DIR}"
+          ref="${GITHUB_REF_NAME:-$GITHUB_SHA}"
+          short="${ref:0:7}"
           ARCH="$(uname -m)"
           scripts/package-extension.sh \
             "target/release/librabbit_rs.dylib" \
             "${{ matrix.php-version }}" \
             "darwin-${ARCH}" \
-            "${GITHUB_REF_NAME:-$(git rev-parse --short HEAD)}" \
+            "${short}" \
             "${RELEASE_DIR}"
 
       - name: Upload artifact
@@ -180,7 +132,6 @@ jobs:
   publish:
     needs:
       - build-linux-gnu
-#      - build-linux-alpine
       - build-macos
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
