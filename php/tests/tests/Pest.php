@@ -104,12 +104,15 @@ function getPhpAndExtPath() {
         $candidates[] = $libPathEnv;
     }
 
-    $cargoTarget = getenv('CARGO_TARGET_DIR');
-    if ($cargoTarget !== false && $cargoTarget !== '') {
-        $cargoTarget = rtrim($cargoTarget, DIRECTORY_SEPARATOR);
+   $cargoTarget = getenv('CARGO_TARGET_DIR');
+   if ($cargoTarget !== false && $cargoTarget !== '') {
+       $cargoTarget = rtrim($cargoTarget, DIRECTORY_SEPARATOR);
+        if ($cargoTarget[0] !== DIRECTORY_SEPARATOR) {
+            $cargoTarget = $root . DIRECTORY_SEPARATOR . $cargoTarget;
+        }
         $candidates[] = $cargoTarget . '/debug/librabbit_rs.' . $suffix;
         $candidates[] = $cargoTarget . '/release/librabbit_rs.' . $suffix;
-    }
+   }
 
     $candidates[] = $root . '/target/debug/librabbit_rs.' . $suffix;
     $candidates[] = $root . '/target/release/librabbit_rs.' . $suffix;

@@ -115,6 +115,24 @@ common::await_startup() {
   return 1
 }
 
+common::_abs_path_if_exists() {
+  local base="$1"
+  local path="$2"
+  if [[ -z "$path" ]]; then
+    return 1
+  fi
+  if [[ "$path" != /* ]]; then
+    path="$base/$path"
+  fi
+  if [[ -f "$path" ]]; then
+    local dir
+    dir=$(cd "$(dirname "$path")" && pwd -P)
+    printf '%s\n' "$dir/$(basename "$path")"
+    return 0
+  fi
+  return 1
+}
+
 # Discover compiled extension path, preferring debug builds.
 # Honors LIB_PATH if already set in the environment.
 common::resolve_extension() {
@@ -137,36 +155,27 @@ common::resolve_extension() {
 
   # Honour overridden build output directory first.
   if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-    debug_candidate="${CARGO_TARGET_DIR%/}/debug/librabbit_rs.${ext}"
-    release_candidate="${CARGO_TARGET_DIR%/}/release/librabbit_rs.${ext}"
-    if [[ -f "$debug_candidate" ]]; then
-      echo "$debug_candidate"
-      return 0
+    local cargo_dir="${CARGO_TARGET_DIR%/}"
+    if [[ "$cargo_dir" != /* ]]; then
+      cargo_dir="$root/$cargo_dir"
     fi
-    if [[ -f "$release_candidate" ]]; then
-      echo "$release_candidate"
-      return 0
-    fi
+    debug_candidate="$cargo_dir/debug/librabbit_rs.${ext}"
+    release_candidate="$cargo_dir/release/librabbit_rs.${ext}"
+    if common::_abs_path_if_exists "$root" "$debug_candidate"; then return 0; fi
+    if common::_abs_path_if_exists "$root" "$release_candidate"; then return 0; fi
   fi
 
   debug_candidate="$root/target/debug/librabbit_rs.${ext}"
   release_candidate="$root/target/release/librabbit_rs.${ext}"
 
-  if [[ -f "$debug_candidate" ]]; then
-    echo "$debug_candidate"
-    return 0
-  fi
-  if [[ -f "$release_candidate" ]]; then
-    echo "$release_candidate"
-    return 0
-  fi
+  if common::_abs_path_if_exists "$root" "$debug_candidate"; then return 0; fi
+  if common::_abs_path_if_exists "$root" "$release_candidate"; then return 0; fi
 
   # Look for CI build artefacts (target/ci/<job>/release).
   local ci_root="$root/target/ci"
   if [[ -d "$ci_root" ]]; then
     while IFS= read -r -d '' candidate; do
-      if [[ -f "$candidate" ]]; then
-        echo "$candidate"
+      if common::_abs_path_if_exists "$root" "$candidate"; then
         return 0
       fi
     done < <(find "$ci_root" -maxdepth 3 -type f -name "librabbit_rs.${ext}" -print0)
