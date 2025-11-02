@@ -60,13 +60,13 @@ final class BinaryInstaller
     {
         $vendorDir ??= $this->composer->getConfig()->get('vendor-dir');
         $targetDir = $vendorDir . '/goopil/rabbit-rs/stubs';
-        $source = __DIR__ . '/../stubs/RabbitRs.stub.php';
+        $source = __DIR__ . '/../stubs/RabbitRs.stubs.php';
 
         if (!is_dir($targetDir) && !mkdir($targetDir, 0777, true) && !is_dir($targetDir)) {
             throw new RuntimeException(sprintf('Unable to create stub directory: %s', $targetDir));
         }
 
-        if (!copy($source, $targetDir . '/RabbitRs.stub.php')) {
+        if (!copy($source, $targetDir . '/RabbitRs.stubs.php')) {
             throw new RuntimeException('Failed to copy RabbitRs stub.');
         }
     }
