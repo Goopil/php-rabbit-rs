@@ -71,10 +71,6 @@ jobs:
         id: php
         run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve php-config
-        id: php
-        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
