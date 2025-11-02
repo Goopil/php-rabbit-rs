@@ -169,8 +169,6 @@ jobs:
         run: cargo build --release --locked
         env:
           EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
-        env:
-          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
 
       - name: Package artifact
         run: |
@@ -208,6 +206,10 @@ jobs:
           tools: phpize, php-config, composer
           coverage: none
 
+      - name: Resolve php-config
+        id: php
+        run: echo "php_config=$(command -v php-config)" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -227,6 +229,8 @@ jobs:
 
       - name: Cargo build (release)
         run: cargo build --release --locked
+        env:
+          EXT_PHP_RS_PHP_CONFIG: ${{ steps.php.outputs.php_config }}
 
       - name: Package artifact
         run: |
