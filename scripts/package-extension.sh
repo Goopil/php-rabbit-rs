@@ -48,6 +48,16 @@ esac
 binary_target="rabbit_rs.${ext}"
 cp "$binary_path" "${tmp_dir}/${binary_target}"
 
+# Generate and copy stubs
+stubs_file="${tmp_dir}/RabbitRs.stubs.php"
+if command -v cargo-php >/dev/null 2>&1; then
+  echo "Generating PHP stubs..."
+  cargo php stubs --stdout > "${stubs_file}"
+else
+  echo "Warning: cargo-php not found, using existing stubs"
+  cp "php/composer-plugin/stubs/RabbitRs.stubs.php" "${stubs_file}"
+fi
+
 cat > "${tmp_dir}/rabbit_rs.ini" <<EOF
 ; Automatically generated during packaging
 extension=${binary_target}
@@ -67,7 +77,7 @@ EOF
 artifact_name="rabbit_rs-${platform_id}-php${php_version}.zip"
 artifact_path="${output_dir}/${artifact_name}"
 
-(cd "$tmp_dir" && zip -9 -q "${artifact_path}" "${binary_target}" rabbit_rs.ini INSTALL.md)
+(cd "$tmp_dir" && zip -9 -q "${artifact_path}" "${binary_target}" RabbitRs.stubs.php rabbit_rs.ini INSTALL.md)
 
 if command -v sha256sum >/dev/null 2>&1; then
   sha256sum "${artifact_path}" > "${artifact_path}.sha256"
