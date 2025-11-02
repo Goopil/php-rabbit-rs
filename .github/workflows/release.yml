@@ -155,3 +155,5 @@ jobs:
             aggregated-artifacts/**/*.sha256
             aggregated-artifacts/SHA256SUMS
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
