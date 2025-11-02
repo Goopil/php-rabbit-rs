@@ -17,14 +17,20 @@ function mq_get_connections(): array {
             CURLOPT_USERPWD => $auth,
             CURLOPT_HTTPAUTH => CURLAUTH_BASIC,
             CURLOPT_TIMEOUT => 3,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
         ]);
         $res = curl_exec($ch);
         if ($res === false) {
+            $error = curl_error($ch);
+            fwrite(STDERR, "Curl error: " . $error . "\n");
+            curl_close($ch);
             return [];
         }
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
         if ($code !== 200) {
+            fwrite(STDERR, "HTTP code: " . $code . "\n");
             return [];
         }
         $json = json_decode($res, true);
