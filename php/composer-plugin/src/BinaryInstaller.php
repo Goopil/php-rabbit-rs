@@ -118,7 +118,8 @@ final class BinaryInstaller
             throw new RuntimeException('Empty PhpRabbitRs version tag.');
         }
 
-        return $raw[0] === 'v' ? $raw : 'v' . $raw;
+        // For semver tags without 'v' prefix, we don't add 'v'
+        return $raw;
     }
 
     private function resolveDownloadUrl(string $tag, string $artifact): string
