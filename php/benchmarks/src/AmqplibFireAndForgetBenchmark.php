@@ -27,8 +27,9 @@ class AmqplibFireAndForgetBenchmark extends AbstractBenchmark
         );
 
         $this->channel = $this->connection->channel();
-        $this->channel->exchange_declare(Config::EXCHANGE_NAME, 'direct', false, true, false);
-        $this->channel->queue_declare(Config::QUEUE_NAME, false, true, false, false);
+        $this->channel->basic_qos(null, Config::PREFETCH_COUNT, false);
+        $this->channel->exchange_declare(Config::EXCHANGE_NAME, Config::EXCHANGE_TYPE, false, Config::EXCHANGE_DURABLE, false);
+        $this->channel->queue_declare(Config::QUEUE_NAME, false, Config::QUEUE_DURABLE, false, false);
         $this->channel->queue_bind(Config::QUEUE_NAME, Config::EXCHANGE_NAME, Config::ROUTING_KEY);
         $this->channel->queue_purge(Config::QUEUE_NAME);
     }
@@ -69,7 +70,7 @@ class AmqplibFireAndForgetBenchmark extends AbstractBenchmark
         $this->channel->basic_consume(Config::QUEUE_NAME, '', false, false, false, false, $callback);
 
         while ($consumed < $count) {
-            $this->channel->wait(null, false, 10);
+            $this->channel->wait(null, false, Config::CONSUMER_WAIT_TIMEOUT);
         }
     }
 }

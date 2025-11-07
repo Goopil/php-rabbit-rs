@@ -23,7 +23,8 @@ abstract class AbstractBenchmark
         return json_encode([
             'id' => uniqid(),
             'timestamp' => microtime(true),
-            'data' => $body
+            'data' => $body,
+            'payload' => str_repeat('x', Config::MESSAGE_PAYLOAD_BYTES)
         ]);
     }
 

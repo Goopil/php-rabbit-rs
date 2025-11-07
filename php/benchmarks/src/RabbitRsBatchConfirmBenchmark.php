@@ -32,12 +32,11 @@ class RabbitRsBatchConfirmBenchmark extends AbstractBenchmark
         $this->channel = $this->client->openChannel();
         $this->channel->confirmSelect();
 
-        // Use non-durable for better performance in benchmarks
-        $this->channel->exchangeDeclare(Config::EXCHANGE_NAME, 'direct', [
-            'durable' => true
+        $this->channel->exchangeDeclare(Config::EXCHANGE_NAME, Config::EXCHANGE_TYPE, [
+            'durable' => Config::EXCHANGE_DURABLE
         ]);
         $this->channel->queueDeclare(Config::QUEUE_NAME, [
-            'durable' => true,
+            'durable' => Config::QUEUE_DURABLE,
         ]);
         $this->channel->queueBind(Config::QUEUE_NAME, Config::EXCHANGE_NAME, Config::ROUTING_KEY);
         $this->channel->queuePurge(Config::QUEUE_NAME);
@@ -46,11 +45,13 @@ class RabbitRsBatchConfirmBenchmark extends AbstractBenchmark
         $messageBody = json_encode([
             'id' => 'benchmark',
             'timestamp' => microtime(true),
-            'data' => str_repeat('x', 100) // Fixed size payload
+            'data' => 'benchmark',
+            'payload' => str_repeat('x', Config::MESSAGE_PAYLOAD_BYTES)
         ]);
 
         $this->messageTemplate = new AmqpMessage($messageBody, [
-            'content_type' => 'application/json'
+            'content_type' => 'application/json',
+            'delivery_mode' => 2
         ]);
     }
 
@@ -99,8 +100,7 @@ class RabbitRsBatchConfirmBenchmark extends AbstractBenchmark
             }
         };
 
-        // Set QoS for better consume performance
-        $this->channel->qos(min($count, 1000), ['global' => false]);
+        $this->channel->qos(Config::PREFETCH_COUNT, ['global' => false]);
 
         // Start consuming on the same channel
         $this->channel->simpleConsume(Config::QUEUE_NAME, $callback, [

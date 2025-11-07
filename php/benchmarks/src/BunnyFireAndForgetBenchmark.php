@@ -30,10 +30,11 @@ class BunnyFireAndForgetBenchmark extends AbstractBenchmark
         $this->client->connect();
         $this->channel = $this->client->channel();
 
-        $this->channel->exchangeDeclare(Config::EXCHANGE_NAME, 'direct', false, true, false);
-        $this->channel->queueDeclare(Config::QUEUE_NAME, false, true, false, false);
+        $this->channel->exchangeDeclare(Config::EXCHANGE_NAME, Config::EXCHANGE_TYPE, false, Config::EXCHANGE_DURABLE, false);
+        $this->channel->queueDeclare(Config::QUEUE_NAME, false, Config::QUEUE_DURABLE, false, false);
         $this->channel->queueBind(Config::QUEUE_NAME, Config::EXCHANGE_NAME, Config::ROUTING_KEY);
         $this->channel->queuePurge(Config::QUEUE_NAME);
+        $this->channel->qos(0, Config::PREFETCH_COUNT, false);
     }
 
     public function tearDown()
