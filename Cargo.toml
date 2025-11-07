@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # API PHP
 ext-php-rs = { version = "*" }
-lapin = { version = "3.6", features = ["rustls"] }
+lapin = { version = "3", features = ["rustls"] }
 
 # Async/runtime
 tokio = { version = "1", features = ["full"] }
