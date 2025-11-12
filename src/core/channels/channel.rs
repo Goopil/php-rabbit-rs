@@ -393,6 +393,16 @@ impl AmqpChannel {
         })
     }
 
+    pub fn basic_recover(&self, requeue: bool) -> Result<()> {
+        self.ensure_open()?;
+        let ch = self.clone_channel();
+        
+        RUNTIME.block_on(async move {
+            ch.basic_recover(lapin::options::BasicRecoverOptions { requeue }).await?;
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<()> {
         if self.closed.swap(true, Ordering::SeqCst) {
             // Already closed; be idempotent

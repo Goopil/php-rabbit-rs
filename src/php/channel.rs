@@ -281,6 +281,14 @@ impl PhpChannel {
         Ok(true)
     }
 
+    pub fn basic_recover(&self, requeue: Option<bool>) -> PhpResult<bool> {
+        let requeue = requeue.unwrap_or(true);
+        self.inner
+            .basic_recover(requeue)
+            .map_err(|e| PhpException::default(php_safe(format!("basic_recover failed: {e}"))))?;
+        Ok(true)
+    }
+
     pub fn close(&self) -> PhpResult<bool> {
         // If the broker already closed the channel with an error (e.g., NOT_FOUND),
         // decide whether to surface it or tolerate close() depending on the op.
