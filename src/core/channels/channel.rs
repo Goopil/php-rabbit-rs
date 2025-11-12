@@ -363,6 +363,36 @@ impl AmqpChannel {
         res
     }
 
+    pub fn tx_select(&self) -> Result<()> {
+        self.ensure_open()?;
+        let ch = self.clone_channel();
+        
+        RUNTIME.block_on(async move {
+            ch.tx_select().await?;
+            Ok(())
+        })
+    }
+    
+    pub fn tx_commit(&self) -> Result<()> {
+        self.ensure_open()?;
+        let ch = self.clone_channel();
+        
+        RUNTIME.block_on(async move {
+            ch.tx_commit().await?;
+            Ok(())
+        })
+    }
+    
+    pub fn tx_rollback(&self) -> Result<()> {
+        self.ensure_open()?;
+        let ch = self.clone_channel();
+        
+        RUNTIME.block_on(async move {
+            ch.tx_rollback().await?;
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<()> {
         if self.closed.swap(true, Ordering::SeqCst) {
             // Already closed; be idempotent

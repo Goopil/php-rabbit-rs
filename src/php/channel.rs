@@ -260,6 +260,27 @@ impl PhpChannel {
         Ok(true)
     }
 
+    pub fn tx_select(&self) -> PhpResult<bool> {
+        self.inner
+            .tx_select()
+            .map_err(|e| PhpException::default(php_safe(format!("tx_select failed: {e}"))))?;
+        Ok(true)
+    }
+
+    pub fn tx_commit(&self) -> PhpResult<bool> {
+        self.inner
+            .tx_commit()
+            .map_err(|e| PhpException::default(php_safe(format!("tx_commit failed: {e}"))))?;
+        Ok(true)
+    }
+
+    pub fn tx_rollback(&self) -> PhpResult<bool> {
+        self.inner
+            .tx_rollback()
+            .map_err(|e| PhpException::default(php_safe(format!("tx_rollback failed: {e}"))))?;
+        Ok(true)
+    }
+
     pub fn close(&self) -> PhpResult<bool> {
         // If the broker already closed the channel with an error (e.g., NOT_FOUND),
         // decide whether to surface it or tolerate close() depending on the op.
