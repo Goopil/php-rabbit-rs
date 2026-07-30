@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/rabbit-rs-native
 
-**Prochaine étape :** Task 12 — Exposer un snapshot de métriques sans backend.
+**Prochaine étape :** Task 13 — Définir l'API et les stubs PHP du Milestone B.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -43,9 +43,9 @@
 - [x] Task 9 bis — Rétention bornée et replay publisher après reconnexion (`241f77d`).
 - [x] Task 10 — ConsumerSet et jetons de delivery (`380a95d`).
 - [x] Task 11 — Compteurs attempts et poison-message (`eb35412`).
-- [ ] Task 12 — Snapshot de métriques et gate du Milestone A.
+- [x] Task 12 — Snapshot de métriques et gate du Milestone A (`21aedee`).
 
-Le dernier checkpoint post-commit exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 94 tests Rust et validation Composer. Le worktree est propre au commit `eb35412`.
+Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
 ## Arborescence cible
 
