@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/rabbit-rs-native
 
-**Prochaine étape :** Task 11 — Ajouter les compteurs attempts et poison-message.
+**Prochaine étape :** Task 12 — Exposer un snapshot de métriques sans backend.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -42,10 +42,10 @@
 - [x] Task 9 — Délais par plugin et fallback TTL (`bae220b`).
 - [x] Task 9 bis — Rétention bornée et replay publisher après reconnexion (`241f77d`).
 - [x] Task 10 — ConsumerSet et jetons de delivery (`380a95d`).
-- [ ] Task 11 — Compteurs attempts et poison-message.
+- [x] Task 11 — Compteurs attempts et poison-message (`eb35412`).
 - [ ] Task 12 — Snapshot de métriques et gate du Milestone A.
 
-Le dernier checkpoint post-commit exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 85 tests Rust et validation Composer. Le worktree est propre au commit `380a95d`.
+Le dernier checkpoint post-commit exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 94 tests Rust et validation Composer. Le worktree est propre au commit `eb35412`.
 
 ## Arborescence cible
 
