@@ -143,6 +143,7 @@ pub struct PublishProperties {
     pub content_type: Option<String>,
     pub correlation_id: Option<String>,
     pub message_id: Option<String>,
+    pub delay_ms: Option<u64>,
     pub persistent: bool,
 }
 
@@ -152,6 +153,7 @@ impl Default for PublishProperties {
             content_type: None,
             correlation_id: None,
             message_id: None,
+            delay_ms: None,
             persistent: true,
         }
     }

@@ -48,6 +48,7 @@ pub struct MessageProperties {
     pub message_id: String,
     pub content_type: Option<String>,
     pub correlation_id: Option<String>,
+    pub delay_ms: Option<u64>,
 }
 
 impl MessageProperties {
@@ -57,6 +58,7 @@ impl MessageProperties {
             message_id: message_id.into(),
             content_type: None,
             correlation_id: None,
+            delay_ms: None,
         }
     }
 }

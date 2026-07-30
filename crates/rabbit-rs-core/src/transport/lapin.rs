@@ -397,6 +397,14 @@ fn publish_properties(request: &PublishRequest) -> BasicProperties {
     if let Some(message_id) = &request.properties.message_id {
         properties = properties.with_message_id(message_id.clone().into());
     }
+    if let Some(delay_ms) = request.properties.delay_ms {
+        let mut headers = FieldTable::default();
+        headers.insert(
+            "x-delay".into(),
+            AMQPValue::LongLongInt(i64::try_from(delay_ms).unwrap_or(i64::MAX)),
+        );
+        properties = properties.with_headers(headers);
+    }
     properties
 }
 

@@ -468,6 +468,7 @@ fn into_transport_request(request: &PublishRequest) -> TransportRequest {
             content_type: request.properties.content_type.clone(),
             correlation_id: request.properties.correlation_id.clone(),
             message_id: Some(request.properties.message_id.clone()),
+            delay_ms: request.properties.delay_ms,
             persistent: true,
         },
     }
