@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 
 use super::{
     BindingSpec, ConsumerChannel, ConsumerRequest, Delivery, DeliveryStream, ExchangeSpec,
@@ -61,6 +62,17 @@ impl MockTransport {
         self.state()
             .confirmations
             .push_back(MockConfirmation::Pending);
+    }
+
+    #[must_use]
+    pub fn push_controlled_confirmation(&self) -> MockConfirmationController {
+        let (sender, receiver) = oneshot::channel();
+        self.state()
+            .confirmations
+            .push_back(MockConfirmation::Controlled(receiver));
+        MockConfirmationController {
+            sender: Arc::new(Mutex::new(Some(sender))),
+        }
     }
 
     pub fn push_delivery(&self, delivery: TransportResult<Delivery>) {
@@ -220,6 +232,22 @@ impl PublisherChannel for MockPublisherChannel {
 enum MockConfirmation {
     Ready(TransportResult<PublishConfirmation>),
     Pending,
+    Controlled(oneshot::Receiver<TransportResult<PublishConfirmation>>),
+}
+
+#[derive(Clone)]
+pub struct MockConfirmationController {
+    sender: Arc<Mutex<Option<oneshot::Sender<TransportResult<PublishConfirmation>>>>>,
+}
+
+impl MockConfirmationController {
+    pub fn resolve(&self, result: TransportResult<PublishConfirmation>) -> bool {
+        self.sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .is_some_and(|sender| sender.send(result).is_ok())
+    }
 }
 
 struct MockPublishReceipt {
@@ -236,6 +264,9 @@ impl PublishReceipt for MockPublishReceipt {
         {
             MockConfirmation::Ready(result) => result,
             MockConfirmation::Pending => std::future::pending().await,
+            MockConfirmation::Controlled(receiver) => receiver
+                .await
+                .unwrap_or_else(|_| Err(TransportError::closed("confirmation was cancelled"))),
         }
     }
 }

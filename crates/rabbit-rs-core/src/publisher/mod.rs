@@ -3,12 +3,29 @@ pub mod batcher;
 pub mod confirms;
 pub mod delay;
 
-use std::{error::Error, fmt, time::Duration};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use tokio::{sync::oneshot, time::Instant};
 
+use crate::transport::{PublisherChannel, TransportError};
+
 pub use actor::{PublisherActor, PublisherHandle};
+
+pub enum PublisherConnectionEvent {
+    Recovering {
+        generation: u64,
+    },
+    Ready {
+        generation: u64,
+        channel: Arc<dyn PublisherChannel>,
+        topology_restored: bool,
+    },
+    FailedPermanent {
+        generation: u64,
+        error: TransportError,
+    },
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Destination {

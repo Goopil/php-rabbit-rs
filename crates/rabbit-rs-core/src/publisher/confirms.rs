@@ -1,29 +1,27 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-use tokio::sync::oneshot;
-
-use super::{PublishError, PublishOutcome};
-
-pub struct PendingConfirmation {
-    pub message_id: String,
-    pub completion: oneshot::Sender<Result<PublishOutcome, PublishError>>,
+pub struct ConfirmLedger<T> {
+    pending: BTreeMap<u64, T>,
 }
 
-#[derive(Default)]
-pub struct ConfirmLedger {
-    pending: HashMap<u64, PendingConfirmation>,
+impl<T> Default for ConfirmLedger<T> {
+    fn default() -> Self {
+        Self {
+            pending: BTreeMap::new(),
+        }
+    }
 }
 
-impl ConfirmLedger {
-    pub fn insert(&mut self, sequence: u64, pending: PendingConfirmation) {
+impl<T> ConfirmLedger<T> {
+    pub fn insert(&mut self, sequence: u64, pending: T) {
         self.pending.insert(sequence, pending);
     }
 
-    pub fn remove(&mut self, sequence: u64) -> Option<PendingConfirmation> {
+    pub fn remove(&mut self, sequence: u64) -> Option<T> {
         self.pending.remove(&sequence)
     }
 
-    pub fn drain(&mut self) -> impl Iterator<Item = PendingConfirmation> + '_ {
-        self.pending.drain().map(|(_, pending)| pending)
+    pub fn drain(&mut self) -> impl Iterator<Item = T> {
+        std::mem::take(&mut self.pending).into_values()
     }
 }

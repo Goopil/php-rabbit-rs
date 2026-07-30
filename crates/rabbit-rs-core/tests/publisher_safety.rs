@@ -5,7 +5,7 @@ use rabbit_rs_core::{
     config::{BrokerConfig, Credentials, Endpoint, TlsConfig},
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
-        PublisherActor, PublisherConfig,
+        PublisherActor, PublisherConfig, PublisherConnectionEvent,
     },
     transport::{
         PublishConfirmation, ReturnedMessage, Transport,
@@ -237,7 +237,7 @@ async fn a_full_command_buffer_returns_backpressure() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn connection_loss_before_confirm_is_ambiguous() {
+async fn connection_loss_before_confirm_is_replayed() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();
     let actor = actor(&transport, config(1, 1_024)).await;
@@ -247,10 +247,26 @@ async fn connection_loss_before_confirm_is_ambiguous() {
     wait_for_publish_count(&transport, 1).await;
 
     actor.connection_lost().await.expect("loss command");
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let replacement = transport
+        .connect(&broker())
+        .await
+        .expect("replacement connection")
+        .open_publisher()
+        .await
+        .expect("replacement channel");
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 2,
+            channel: Arc::from(replacement),
+            topology_restored: true,
+        })
+        .await
+        .expect("recovery");
 
     assert_eq!(
-        waiter.wait().await.expect("ambiguous outcome"),
-        PublishOutcome::Ambiguous {
+        waiter.wait().await.expect("replayed outcome"),
+        PublishOutcome::Confirmed {
             message_id: "uncertain".to_owned()
         }
     );
