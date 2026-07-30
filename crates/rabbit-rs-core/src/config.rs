@@ -270,6 +270,10 @@ impl ValidatedConfig {
 pub struct ConfigFingerprint([u8; 32]);
 
 impl ConfigFingerprint {
+    pub(crate) const fn into_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
     fn calculate(config: &Config) -> Self {
         let mut digest = Sha256::new();
 
