@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     error::Error,
     fmt,
     sync::{
@@ -15,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::{SubscriptionId, actor::ConsumerCommand};
 use crate::pool::ConnectionKey;
 
-pub type Headers = BTreeMap<String, Bytes>;
+pub use crate::transport::Headers;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct MessageId(String);
@@ -195,6 +194,8 @@ pub(crate) struct DeliveryTokenInner {
     pub delivery_tag: u64,
     pub message_id: MessageId,
     pub payload: Bytes,
+    pub headers: Headers,
+    pub attempts: u32,
     pub commands: mpsc::Sender<ConsumerCommand>,
     state: AtomicU8,
 }
@@ -212,6 +213,8 @@ impl DeliveryTokenInner {
         identity: DeliveryIdentity,
         message_id: MessageId,
         payload: Bytes,
+        headers: Headers,
+        attempts: u32,
         commands: mpsc::Sender<ConsumerCommand>,
     ) -> Self {
         Self {
@@ -222,6 +225,8 @@ impl DeliveryTokenInner {
             delivery_tag: identity.delivery_tag,
             message_id,
             payload,
+            headers,
+            attempts,
             commands,
             state: AtomicU8::new(DeliveryState::Pending as u8),
         }
@@ -243,6 +248,7 @@ pub enum ConsumerErrorKind {
     Publish,
     MissingPublisher,
     InvalidSubscription,
+    MaxAttempts,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

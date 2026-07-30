@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, time::Duration};
+use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -9,6 +9,7 @@ pub mod lapin;
 pub mod mock;
 
 pub type TransportResult<T> = Result<T, TransportError>;
+pub type Headers = BTreeMap<String, Bytes>;
 
 /// Stability-oriented classification used by connection recovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +145,7 @@ pub struct PublishProperties {
     pub correlation_id: Option<String>,
     pub message_id: Option<String>,
     pub delay_ms: Option<u64>,
+    pub headers: Headers,
     pub persistent: bool,
 }
 
@@ -154,6 +156,7 @@ impl Default for PublishProperties {
             correlation_id: None,
             message_id: None,
             delay_ms: None,
+            headers: Headers::new(),
             persistent: true,
         }
     }
@@ -231,6 +234,7 @@ pub struct Delivery {
     pub exchange: String,
     pub routing_key: String,
     pub redelivered: bool,
+    pub headers: Headers,
     pub payload: Bytes,
 }
 
@@ -432,6 +436,7 @@ mod tests {
             exchange: "events".to_owned(),
             routing_key: "jobs".to_owned(),
             redelivered: false,
+            headers: super::Headers::new(),
             payload: Bytes::from_static(b"job"),
         }));
 

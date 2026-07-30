@@ -8,6 +8,7 @@ use std::{error::Error, fmt, sync::Arc, time::Duration};
 use bytes::Bytes;
 use tokio::{sync::oneshot, time::Instant};
 
+use crate::transport::Headers;
 use crate::transport::{PublisherChannel, TransportError};
 
 pub use actor::{PublisherActor, PublisherHandle};
@@ -49,6 +50,7 @@ pub struct MessageProperties {
     pub content_type: Option<String>,
     pub correlation_id: Option<String>,
     pub delay_ms: Option<u64>,
+    pub headers: Headers,
 }
 
 impl MessageProperties {
@@ -59,6 +61,7 @@ impl MessageProperties {
             content_type: None,
             correlation_id: None,
             delay_ms: None,
+            headers: Headers::new(),
         }
     }
 }

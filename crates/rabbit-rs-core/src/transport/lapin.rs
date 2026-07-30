@@ -248,6 +248,7 @@ impl DeliveryStream for LapinDeliveryStream {
                         exchange: delivery.exchange.to_string(),
                         routing_key: delivery.routing_key.to_string(),
                         redelivered: delivery.redelivered,
+                        headers: map_headers(delivery.properties.headers().as_ref()),
                         payload: Bytes::from(delivery.data),
                     })
                 },
@@ -397,15 +398,58 @@ fn publish_properties(request: &PublishRequest) -> BasicProperties {
     if let Some(message_id) = &request.properties.message_id {
         properties = properties.with_message_id(message_id.clone().into());
     }
+    let mut headers = FieldTable::default();
+    for (name, value) in &request.properties.headers {
+        headers.insert(
+            name.clone().into(),
+            AMQPValue::LongString(value.to_vec().into()),
+        );
+    }
     if let Some(delay_ms) = request.properties.delay_ms {
-        let mut headers = FieldTable::default();
         headers.insert(
             "x-delay".into(),
             AMQPValue::LongLongInt(i64::try_from(delay_ms).unwrap_or(i64::MAX)),
         );
+    }
+    if !request.properties.headers.is_empty() || request.properties.delay_ms.is_some() {
         properties = properties.with_headers(headers);
     }
     properties
+}
+
+fn map_headers(headers: Option<&FieldTable>) -> super::Headers {
+    headers.map_or_else(super::Headers::new, |headers| {
+        headers
+            .into_iter()
+            .filter_map(|(name, value)| {
+                map_header_value(value).map(|value| (name.to_string(), value))
+            })
+            .collect()
+    })
+}
+
+fn map_header_value(value: &AMQPValue) -> Option<Bytes> {
+    let encoded = match value {
+        AMQPValue::Boolean(value) => value.to_string().into_bytes(),
+        AMQPValue::ShortShortInt(value) => value.to_string().into_bytes(),
+        AMQPValue::ShortShortUInt(value) => value.to_string().into_bytes(),
+        AMQPValue::ShortInt(value) => value.to_string().into_bytes(),
+        AMQPValue::ShortUInt(value) => value.to_string().into_bytes(),
+        AMQPValue::LongInt(value) => value.to_string().into_bytes(),
+        AMQPValue::LongUInt(value) => value.to_string().into_bytes(),
+        AMQPValue::LongLongInt(value) => value.to_string().into_bytes(),
+        AMQPValue::Float(value) => value.to_string().into_bytes(),
+        AMQPValue::Double(value) => value.to_string().into_bytes(),
+        AMQPValue::ShortString(value) => value.as_str().as_bytes().to_vec(),
+        AMQPValue::LongString(value) => value.as_bytes().to_vec(),
+        AMQPValue::Timestamp(value) => value.to_string().into_bytes(),
+        AMQPValue::ByteArray(value) => value.as_slice().to_vec(),
+        AMQPValue::DecimalValue(_)
+        | AMQPValue::FieldArray(_)
+        | AMQPValue::FieldTable(_)
+        | AMQPValue::Void => return None,
+    };
+    Some(Bytes::from(encoded))
 }
 
 fn map_returned_message(message: lapin::message::BasicReturnMessage) -> ReturnedMessage {
@@ -448,8 +492,12 @@ fn map_lapin_error(error: lapin::Error) -> TransportError {
 mod tests {
     use std::time::Duration;
 
-    use super::connection_uri;
+    use bytes::Bytes;
+    use lapin::types::{AMQPValue, FieldTable};
+
+    use super::{connection_uri, map_headers, publish_properties};
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
+    use crate::transport::PublishRequest;
 
     #[test]
     fn uri_percent_encodes_credentials_and_vhost_as_segments() {
@@ -468,5 +516,45 @@ mod tests {
         assert_eq!(uri.password(), Some("p%40ss%2Fword"));
         assert_eq!(uri.path(), "/tenant%2Fone");
         assert_eq!(uri.query(), Some("heartbeat=30"));
+    }
+
+    #[test]
+    fn incoming_numeric_attempt_headers_are_normalized_as_bytes() {
+        let mut table = FieldTable::default();
+        table.insert("x-acquired-count".into(), AMQPValue::LongLongInt(7));
+        table.insert("x-delivery-count".into(), AMQPValue::LongUInt(3));
+
+        let headers = map_headers(Some(&table));
+
+        assert_eq!(
+            headers.get("x-acquired-count"),
+            Some(&Bytes::from_static(b"7"))
+        );
+        assert_eq!(
+            headers.get("x-delivery-count"),
+            Some(&Bytes::from_static(b"3"))
+        );
+    }
+
+    #[test]
+    fn outgoing_application_headers_are_merged_with_delay_header() {
+        let mut request = PublishRequest::new("jobs.delayed", "high", b"job".to_vec());
+        request
+            .properties
+            .headers
+            .insert("x-rabbit-rs-attempts".to_owned(), Bytes::from_static(b"3"));
+        request.properties.delay_ms = Some(5_000);
+
+        let properties = publish_properties(&request);
+        let headers = properties.headers().as_ref().expect("AMQP headers");
+
+        assert!(matches!(
+            headers.inner().get("x-rabbit-rs-attempts"),
+            Some(AMQPValue::LongString(value)) if value.as_bytes() == b"3"
+        ));
+        assert_eq!(
+            headers.inner().get("x-delay"),
+            Some(&AMQPValue::LongLongInt(5_000))
+        );
     }
 }

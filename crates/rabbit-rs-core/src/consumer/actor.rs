@@ -7,8 +7,8 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, Headers, MessageId, Scheduler,
-    SubscriptionId, WeightedFairScheduler,
+    AttemptsResolver, ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, MessageId,
+    Scheduler, SubscriptionId, WeightedFairScheduler,
     delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner, Settlement},
     set::Subscription,
 };
@@ -138,6 +138,9 @@ impl ActorState {
                 "{}:{}:{}",
                 runtime.generation, runtime.channel_id, delivery.delivery_tag
             ));
+            let attempts = AttemptsResolver::default()
+                .resolve(&delivery.headers, delivery.redelivered)
+                .unwrap_or(if delivery.redelivered { 2 } else { 1 });
             let token = DeliveryToken::new(DeliveryTokenInner::pending(
                 DeliveryIdentity {
                     subscription: subscription.clone(),
@@ -148,14 +151,16 @@ impl ActorState {
                 },
                 message_id.clone(),
                 delivery.payload.clone(),
+                delivery.headers.clone(),
+                attempts,
                 self.commands.clone(),
             ));
             let item = Delivery::new(
                 message_id,
                 subscription,
                 delivery.payload,
-                Headers::new(),
-                if delivery.redelivered { 2 } else { 1 },
+                delivery.headers,
+                attempts,
                 token,
             );
             if waiter.send(Ok(item)).is_ok() {
@@ -330,6 +335,9 @@ async fn delayed_release(
     let route = DelayRouter::route(strategy, destination, delay_ms)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::Publish, error.to_string()))?;
     let mut properties = MessageProperties::new(token.message_id.as_str());
+    properties.headers = AttemptsResolver::default()
+        .delayed_headers(&token.headers, token.attempts)
+        .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
     if route.queue.is_none() {
         properties.delay_ms = Some(route.delay_ms);
     }

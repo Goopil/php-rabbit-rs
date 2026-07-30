@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
@@ -43,6 +47,7 @@ fn delivery(tag: u64, payload: &'static [u8]) -> TransportDelivery {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
+        headers: BTreeMap::new(),
         payload: Bytes::from_static(payload),
     }
 }
