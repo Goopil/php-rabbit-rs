@@ -5,7 +5,7 @@ use crate::config::ValidatedConfig;
 pub struct ConnectionKey([u8; 32]);
 
 impl ConnectionKey {
-    /// Builds a pool key from validated, canonical configuration.
+    /// Builds a pool key from a validated, canonical configuration.
     #[must_use]
     pub fn from_config(config: &ValidatedConfig) -> Self {
         Self(config.fingerprint().into_bytes())

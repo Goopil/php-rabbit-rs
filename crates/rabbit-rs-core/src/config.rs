@@ -27,6 +27,11 @@ impl Endpoint {
     pub fn host(&self) -> &str {
         &self.host
     }
+
+    #[must_use]
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 /// Authentication material for a broker connection.
@@ -46,6 +51,14 @@ impl Credentials {
             username: username.into(),
             password: SecretString::from(password),
         }
+    }
+
+    pub(crate) fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub(crate) fn password(&self) -> &str {
+        self.password.expose_secret()
     }
 }
 
@@ -74,6 +87,11 @@ impl TlsConfig {
             enabled: false,
             server_name: None,
         }
+    }
+
+    #[must_use]
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
     }
 }
 
