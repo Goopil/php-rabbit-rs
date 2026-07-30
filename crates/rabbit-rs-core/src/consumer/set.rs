@@ -7,6 +7,7 @@ use super::{
     actor::{ConsumerCommand, run_actor},
 };
 use crate::{
+    metrics::{Metrics, MetricsSnapshot},
     pool::ConnectionKey,
     publisher::{Destination, PublisherHandle},
     topology::delay::DelayStrategy,
@@ -101,6 +102,19 @@ impl ConsumerSet {
         subscriptions: Vec<Subscription>,
         max_in_flight: usize,
     ) -> Result<ConsumerHandle, ConsumerError> {
+        Self::spawn_with_metrics(subscriptions, max_in_flight, Metrics::default()).await
+    }
+
+    /// Configures the consumer set with a metrics registry shared by its caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transport error when `QoS` or consumer registration fails.
+    pub async fn spawn_with_metrics(
+        subscriptions: Vec<Subscription>,
+        max_in_flight: usize,
+        metrics: Metrics,
+    ) -> Result<ConsumerHandle, ConsumerError> {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let mut streams = Vec::with_capacity(subscriptions.len());
 
@@ -130,12 +144,13 @@ impl ConsumerSet {
             max_in_flight.max(1),
             receiver,
             commands.clone(),
+            metrics.clone(),
         ));
         for (subscription, stream) in streams {
             spawn_source(subscription, stream, commands.clone());
         }
 
-        Ok(ConsumerHandle { commands })
+        Ok(ConsumerHandle { commands, metrics })
     }
 }
 
@@ -163,9 +178,15 @@ fn spawn_source(
 #[derive(Clone, Debug)]
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
+    metrics: Metrics,
 }
 
 impl ConsumerHandle {
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
     /// Waits for the next scheduled delivery while respecting max in-flight.
     ///
     /// # Errors

@@ -13,6 +13,7 @@ use super::{
     set::Subscription,
 };
 use crate::{
+    metrics::Metrics,
     publisher::{
         Destination, MessageProperties, PublishOutcome, PublishRequest, delay::DelayRouter,
     },
@@ -58,6 +59,7 @@ struct ActorState {
     in_flight: usize,
     max_in_flight: usize,
     commands: mpsc::Sender<ConsumerCommand>,
+    metrics: Metrics,
 }
 
 impl ActorState {
@@ -65,6 +67,7 @@ impl ActorState {
         subscriptions: Vec<Subscription>,
         max_in_flight: usize,
         commands: mpsc::Sender<ConsumerCommand>,
+        metrics: Metrics,
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
         let mut runtime = HashMap::new();
@@ -95,6 +98,7 @@ impl ActorState {
             in_flight: 0,
             max_in_flight,
             commands,
+            metrics,
         }
     }
 
@@ -164,6 +168,7 @@ impl ActorState {
                 token,
             );
             if waiter.send(Ok(item)).is_ok() {
+                self.metrics.record_delivery();
                 self.in_flight = self.in_flight.saturating_add(1);
             }
         }
@@ -180,8 +185,9 @@ pub(crate) async fn run_actor(
     max_in_flight: usize,
     mut receiver: mpsc::Receiver<ConsumerCommand>,
     commands: mpsc::Sender<ConsumerCommand>,
+    metrics: Metrics,
 ) {
-    let mut state = ActorState::new(subscriptions, max_in_flight, commands);
+    let mut state = ActorState::new(subscriptions, max_in_flight, commands, metrics);
     while let Some(command) = receiver.recv().await {
         match command {
             ConsumerCommand::Incoming {
@@ -215,6 +221,15 @@ pub(crate) async fn run_actor(
                 let result = settle(&state, &token, settlement).await;
                 match result {
                     Ok(terminal) => {
+                        match terminal {
+                            DeliveryState::Acked => {
+                                state.metrics.record_ack(token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Rejected => {
+                                state.metrics.record_reject(token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Pending | DeliveryState::Lost => {}
+                        }
                         state.release_budget();
                         let _ = completed.send(Ok(terminal));
                     }

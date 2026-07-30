@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -196,6 +196,7 @@ pub(crate) struct DeliveryTokenInner {
     pub payload: Bytes,
     pub headers: Headers,
     pub attempts: u32,
+    pub reserved_at: Instant,
     pub commands: mpsc::Sender<ConsumerCommand>,
     state: AtomicU8,
 }
@@ -227,6 +228,7 @@ impl DeliveryTokenInner {
             payload,
             headers,
             attempts,
+            reserved_at: Instant::now(),
             commands,
             state: AtomicU8::new(DeliveryState::Pending as u8),
         }

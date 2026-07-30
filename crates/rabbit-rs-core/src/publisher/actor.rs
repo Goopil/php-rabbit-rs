@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, future, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use tokio::{
@@ -6,9 +11,12 @@ use tokio::{
     time,
 };
 
-use crate::transport::{
-    PublishConfirmation, PublishProperties as TransportProperties,
-    PublishRequest as TransportRequest, PublisherChannel, TransportError, TransportResult,
+use crate::{
+    metrics::{Metrics, MetricsSnapshot},
+    transport::{
+        PublishConfirmation, PublishProperties as TransportProperties,
+        PublishRequest as TransportRequest, PublisherChannel, TransportError, TransportResult,
+    },
 };
 
 use super::{
@@ -21,10 +29,23 @@ pub struct PublisherActor;
 impl PublisherActor {
     #[must_use]
     pub fn spawn(channel: Arc<dyn PublisherChannel>, config: PublisherConfig) -> PublisherHandle {
+        Self::spawn_with_metrics(channel, config, Metrics::default())
+    }
+
+    #[must_use]
+    pub fn spawn_with_metrics(
+        channel: Arc<dyn PublisherChannel>,
+        config: PublisherConfig,
+        metrics: Metrics,
+    ) -> PublisherHandle {
         let capacity = Arc::new(Semaphore::new(config.buffer_capacity.max(1)));
         let (commands, receiver) = mpsc::channel(config.buffer_capacity.max(1));
-        tokio::spawn(run_actor(channel, config, receiver));
-        PublisherHandle { commands, capacity }
+        tokio::spawn(run_actor(channel, config, receiver, metrics.clone()));
+        PublisherHandle {
+            commands,
+            capacity,
+            metrics,
+        }
     }
 }
 
@@ -32,6 +53,7 @@ impl PublisherActor {
 pub struct PublisherHandle {
     commands: mpsc::Sender<Command>,
     capacity: Arc<Semaphore>,
+    metrics: Metrics,
 }
 
 impl PublisherHandle {
@@ -43,6 +65,7 @@ impl PublisherHandle {
     /// retained or [`PublishErrorKind::Closed`] when the actor has stopped.
     pub fn try_publish(&self, request: PublishRequest) -> Result<PublishWaiter, PublishError> {
         let permit = self.capacity.clone().try_acquire_owned().map_err(|_| {
+            self.metrics.record_backpressure();
             PublishError::new(
                 PublishErrorKind::Backpressure,
                 "publisher global capacity is exhausted",
@@ -52,20 +75,32 @@ impl PublisherHandle {
         let command = Command::Publish(RetainedPublish {
             request,
             completion,
+            accepted_at: Instant::now(),
             _permit: permit,
         });
 
         match self.commands.try_send(command) {
-            Ok(()) => Ok(PublishWaiter::new(receiver)),
-            Err(mpsc::error::TrySendError::Full(_)) => Err(PublishError::new(
-                PublishErrorKind::Backpressure,
-                "publisher command buffer is full",
-            )),
+            Ok(()) => {
+                self.metrics.record_publish();
+                Ok(PublishWaiter::new(receiver))
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.metrics.record_backpressure();
+                Err(PublishError::new(
+                    PublishErrorKind::Backpressure,
+                    "publisher command buffer is full",
+                ))
+            }
             Err(mpsc::error::TrySendError::Closed(_)) => Err(PublishError::new(
                 PublishErrorKind::Closed,
                 "publisher actor is closed",
             )),
         }
+    }
+
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Delivers an ordered connection lifecycle event to the publisher actor.
@@ -137,6 +172,7 @@ enum Command {
 struct RetainedPublish {
     request: PublishRequest,
     completion: oneshot::Sender<Result<PublishOutcome, PublishError>>,
+    accepted_at: Instant,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -171,10 +207,11 @@ struct ActorState {
     sequence: u64,
     flush_deadline: Option<time::Instant>,
     permanent_error: Option<PublishError>,
+    metrics: Metrics,
 }
 
 impl ActorState {
-    fn new(channel: Arc<dyn PublisherChannel>, config: PublisherConfig) -> Self {
+    fn new(channel: Arc<dyn PublisherChannel>, config: PublisherConfig, metrics: Metrics) -> Self {
         Self {
             config,
             phase: Phase::Ready,
@@ -187,6 +224,7 @@ impl ActorState {
             sequence: 0,
             flush_deadline: None,
             permanent_error: None,
+            metrics,
         }
     }
 
@@ -261,8 +299,9 @@ async fn run_actor(
     initial_channel: Arc<dyn PublisherChannel>,
     config: PublisherConfig,
     mut commands: mpsc::Receiver<Command>,
+    metrics: Metrics,
 ) {
-    let mut state = ActorState::new(initial_channel, config);
+    let mut state = ActorState::new(initial_channel, config, metrics);
     if let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
     {
@@ -489,6 +528,17 @@ fn resolve_confirmation(
         return;
     }
 
+    if matches!(
+        &result,
+        ConfirmationResult::Completed(Ok(
+            PublishConfirmation::Ack(_) | PublishConfirmation::Nack(_)
+        ))
+    ) {
+        state
+            .metrics
+            .record_confirmation(in_flight.retained.accepted_at.elapsed());
+    }
+
     match result {
         ConfirmationResult::TimedOut => complete_error(
             in_flight.retained,
@@ -507,6 +557,7 @@ fn resolve_confirmation(
         ConfirmationResult::Completed(Ok(
             PublishConfirmation::Ack(Some(returned)) | PublishConfirmation::Nack(Some(returned)),
         )) => {
+            state.metrics.record_return();
             let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(
                 in_flight.retained,

@@ -4,6 +4,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     config::BrokerConfig,
+    metrics::{Metrics, MetricsSnapshot},
     recovery::{Clock, ConnectionState, EqualJitter, JitterSource, RecoveryPolicy, TokioClock},
     transport::{Transport, TransportConnection, TransportError},
 };
@@ -21,12 +22,24 @@ impl ConnectionActor {
         config: BrokerConfig,
         policy: RecoveryPolicy,
     ) -> ConnectionActorHandle {
-        Self::spawn_with_dependencies(
+        Self::spawn_with_metrics(transport, config, policy, Metrics::default())
+    }
+
+    /// Spawns an actor with a metrics registry shared by its caller.
+    #[must_use]
+    pub fn spawn_with_metrics(
+        transport: Arc<dyn Transport>,
+        config: BrokerConfig,
+        policy: RecoveryPolicy,
+        metrics: Metrics,
+    ) -> ConnectionActorHandle {
+        Self::spawn_with_dependencies_and_metrics(
             transport,
             config,
             policy,
             Arc::new(TokioClock),
             Arc::new(EqualJitter),
+            metrics,
         )
     }
 
@@ -39,6 +52,26 @@ impl ConnectionActor {
         clock: Arc<dyn Clock>,
         jitter: Arc<dyn JitterSource>,
     ) -> ConnectionActorHandle {
+        Self::spawn_with_dependencies_and_metrics(
+            transport,
+            config,
+            policy,
+            clock,
+            jitter,
+            Metrics::default(),
+        )
+    }
+
+    /// Spawns an actor with deterministic dependencies and shared metrics.
+    #[must_use]
+    pub fn spawn_with_dependencies_and_metrics(
+        transport: Arc<dyn Transport>,
+        config: BrokerConfig,
+        policy: RecoveryPolicy,
+        clock: Arc<dyn Clock>,
+        jitter: Arc<dyn JitterSource>,
+        metrics: Metrics,
+    ) -> ConnectionActorHandle {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (states, state_receiver) = watch::channel(ConnectionState::Disconnected);
 
@@ -50,11 +83,13 @@ impl ConnectionActor {
             jitter,
             commands: receiver,
             states,
+            metrics: metrics.clone(),
         }));
 
         ConnectionActorHandle {
             commands,
             states: state_receiver,
+            metrics,
         }
     }
 }
@@ -64,9 +99,15 @@ impl ConnectionActor {
 pub struct ConnectionActorHandle {
     commands: mpsc::Sender<Command>,
     states: watch::Receiver<ConnectionState>,
+    metrics: Metrics,
 }
 
 impl ConnectionActorHandle {
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<ConnectionState> {
         self.states.clone()
@@ -151,6 +192,7 @@ struct ActorContext {
     jitter: Arc<dyn JitterSource>,
     commands: mpsc::Receiver<Command>,
     states: watch::Sender<ConnectionState>,
+    metrics: Metrics,
 }
 
 async fn run_actor(mut context: ActorContext) {
@@ -238,6 +280,9 @@ async fn handle_connecting(
         Ok(new_connection) => {
             *connection = Some(new_connection);
             *generation = generation.saturating_add(1);
+            if *generation > 1 {
+                context.metrics.record_reconnect();
+            }
             context.states.send_replace(ConnectionState::Ready {
                 generation: *generation,
             });
