@@ -1,0 +1,67 @@
+@/Users/zacharyvolpi/.codex/RTK.md
+
+# Rabbit RS Repository Guide
+
+## Project Overview
+
+Rabbit RS is a high-performance RabbitMQ transport for PHP and Laravel, powered by Rust. The current workspace contains a runtime-independent Rust core and a native PHP extension scaffold. The Laravel adapter described in the plans is future work and is not yet present.
+
+The delivery contract is at-least-once: silent loss is unacceptable, while duplicates are permitted and must remain identifiable and measurable.
+
+## Sources of Truth
+
+- `docs/plans/2026-07-30-rabbitmq-native-design.md` defines the approved product architecture, supported platforms, delivery semantics, and operational constraints.
+- `docs/plans/2026-07-30-rabbitmq-native-implementation.md` defines the task sequence, current milestone status, and expected file layout.
+- Read the relevant plan sections before changing behavior. Keep milestone details in those documents instead of duplicating them here.
+
+## Workspace Map
+
+- `crates/rabbit-rs-core/`: runtime-independent configuration, connection pooling, topology, publishing, consuming, recovery, metrics, and transport abstractions.
+- `crates/rabbit-rs-core/tests/`: integration-style Rust tests for delivery semantics, fairness, recovery, topology, metrics, and publisher safety.
+- `crates/rabbit-rs-php/`: `cdylib` scaffold for the native PHP extension; it currently depends only on the core crate.
+- `composer.json`: PIE package metadata for `rabbit-rs/native`, not the future Laravel package.
+- `scripts/check.sh`: full local quality gate.
+
+## Toolchain and Commands
+
+- Rust is pinned to 1.96.0 and uses edition 2024.
+- Run focused checks while iterating:
+  - `rtk cargo test -p rabbit-rs-core config::tests`
+  - `rtk cargo test -p rabbit-rs-core --test publisher_safety`
+  - `rtk cargo test -p rabbit-rs-core`
+- Run individual quality checks when diagnosing failures:
+  - `rtk cargo fmt --all -- --check`
+  - `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  - `rtk cargo test --workspace --all-targets`
+  - `rtk composer validate --strict`
+- Before claiming completion, run the complete gate: `rtk ./scripts/check.sh`.
+
+## Rust Conventions
+
+- Unsafe Rust is forbidden. Do not weaken `#![forbid(unsafe_code)]` or the workspace lint configuration.
+- Keep Lapin behind the `Transport` abstraction so broker behavior remains mockable and replaceable.
+- Prefer typed errors with actionable context over strings; configuration failures must identify their exact input path.
+- Document public APIs and retain useful `#[must_use]` annotations.
+- Keep queues, channels, in-flight work, retries, and replay buffers explicitly bounded.
+- Never expose credentials, complete broker URIs, or private certificate material through `Debug`, errors, metrics, or logs.
+- Do not retain Zend values, PHP objects, callbacks, requests, or service-container state in Rust threads.
+
+## Reliability Invariants
+
+- Unconfirmed publications survive connection recovery only in bounded process memory and are replayed with the same `message_id` and original deadline.
+- Never describe in-memory replay as durable across a PHP process crash; durability beyond a crash requires an external outbox.
+- Publisher confirms, mandatory returns, timeouts, and terminal errors resolve each waiter once. A mandatory return takes precedence over its following ACK.
+- Runtime and connection registries are lazy and process-local. A PID change invalidates inherited resources after a fork.
+- A vhost owns a distinct AMQP connection. Consumer channels remain dedicated; publisher channels may be pooled.
+- Delivery tokens and acknowledgements are connection-generation-aware. Stale ACKs must be rejected so RabbitMQ can redeliver.
+- Recovery order remains deterministic: connection, channels, exchanges, queues, bindings, QoS, then consumers.
+
+## Testing and Workflow
+
+- Follow test-driven development for behavior changes: add a focused failing test, observe the intended failure, implement minimally, and rerun the focused test.
+- Use paused Tokio time and the scriptable mock transport for deterministic asynchronous tests. Do not add real sleeps to unit tests.
+- Add cross-module behavior tests under `crates/rabbit-rs-core/tests/`; keep private unit details next to their modules.
+- Run `rtk cargo fmt --all` after Rust edits, then run focused tests and the full quality gate.
+- Preserve unrelated work in a dirty tree. Never discard or overwrite changes you did not create.
+- Keep commits logical and scoped when the active plan calls for commits. Do not include `.air/`, IDE metadata, build artifacts, or unrelated changes.
+- Update the implementation plan when completing a planned task so its progress and next step stay accurate.
