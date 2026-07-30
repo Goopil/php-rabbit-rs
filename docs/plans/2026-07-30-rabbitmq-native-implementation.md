@@ -23,6 +23,30 @@
 - Conserver dans une capacité globale bornée les publications non envoyées ou ambiguës pendant une coupure, puis les rejouer automatiquement avec le même message_id et la deadline originale après recovery.
 - Ne pas présenter cette rétention mémoire comme durable : un crash du processus nécessite un outbox externe pour garantir le replay.
 
+## Avancement
+
+**Dernière mise à jour :** 30 juillet 2026
+
+**Branche d'implémentation :** feature/rabbit-rs-native
+
+**Prochaine étape :** Task 10 — Implémenter ConsumerSet et les jetons de delivery.
+
+- [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
+- [x] Task 2 — Configuration normalisée et validée (`c324929`).
+- [x] Task 3 — Scheduler pondéré sans famine (`17804d0`).
+- [x] Task 4 — Runtime par processus sûr après fork (`ca5dd36`).
+- [x] Task 5 — Abstraction Transport, mock scriptable et Lapin (`71680e1`).
+- [x] Task 6 — Acteur de connexion et recovery déterministe (`70d5b59`).
+- [x] Task 7 — Topologie declare, verify et external (`7ff2de9`).
+- [x] Task 8 — Publisher borné, batching, confirms et mandatory returns (`90d3089`).
+- [x] Task 9 — Délais par plugin et fallback TTL (`bae220b`).
+- [x] Task 9 bis — Rétention bornée et replay publisher après reconnexion (`241f77d`).
+- [ ] Task 10 — ConsumerSet et jetons de delivery.
+- [ ] Task 11 — Compteurs attempts et poison-message.
+- [ ] Task 12 — Snapshot de métriques et gate du Milestone A.
+
+Le dernier checkpoint post-commit exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 76 tests Rust et validation Composer. Le worktree est propre au commit `241f77d`.
+
 ## Arborescence cible
 
     Cargo.toml
