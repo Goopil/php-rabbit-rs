@@ -1,4 +1,4 @@
-# Extension PHP RabbitMQ native et driver Laravel — Conception
+# Rabbit RS — Extension PHP RabbitMQ native et driver Laravel
 
 **Statut :** validé le 30 juillet 2026
 
@@ -36,19 +36,39 @@ Construire une extension PHP écrite en Rust et un package Laravel capables de p
 
 ## Décisions principales
 
+### Nomenclature
+
+Le nom public de l'écosystème est Rabbit RS. Sa tagline est : High-performance RabbitMQ transport for PHP and Laravel, powered by Rust.
+
+Les noms techniques sont :
+
+- dépôt principal : rabbit-rs/rabbit-rs ;
+- package PIE de l'extension : rabbit-rs/native ;
+- nom interne de l'extension PHP : rabbit_rs ;
+- dépendance de plateforme Composer : ext-rabbit_rs ;
+- package Laravel : rabbit-rs/laravel-queue ;
+- namespace PHP natif : RabbitRs\Native ;
+- namespace du package Laravel : RabbitRs\Laravel ;
+- crates Rust : rabbit-rs-core et rabbit-rs-php ;
+- driver Laravel : rabbit-rs ;
+- commandes Artisan : rabbit-rs:work et rabbit-rs:status ;
+- fichier de configuration : rabbit-rs.php.
+
+L'extension et le package Laravel utilisent une version synchronisée. Une release 1.2.0 produit donc rabbit-rs/native 1.2.0 et rabbit-rs/laravel-queue 1.2.0. Le package Laravel exige une version compatible de ext-rabbit_rs.
+
 ### Architecture hybride Laravel
 
 La première couche est un driver Laravel standard. La commande queue:work reste responsable de la boucle de traitement, des signaux, des événements, des limites mémoire, des timeouts et des failed jobs.
 
 Une connexion Laravel peut référencer un profil de worker agrégé. Ce profil contient plusieurs abonnements répartis sur différents brokers et vhosts. La méthode pop du driver demande au noyau Rust le prochain message disponible dans l'ensemble du profil.
 
-Une commande rabbitmq:work sera ajoutée dans un second jalon. Elle pourra superviser plusieurs processus queue:work standards et leur transmettre les signaux. Elle ne réimplémentera pas la boucle Illuminate\Queue\Worker.
+Une commande rabbit-rs:work sera ajoutée dans un second jalon. Elle pourra superviser plusieurs processus queue:work standards et leur transmettre les signaux. Elle ne réimplémentera pas la boucle Illuminate\Queue\Worker.
 
 ### Trois couches
 
-1. rabbitmq-core : crate Rust indépendant de PHP, contenant configuration, runtime, pool, acteurs AMQP, topologie, publication, consommation, scheduling, reconnexion et métriques.
-2. rabbitmq-php : extension ext-php-rs exposant une API PHP réduite et transportant uniquement des valeurs possédées entre PHP et Rust.
-3. laravel-rabbitmq : package Composer contenant connecteur, driver Queue, Job, configuration, commandes et intégration Octane.
+1. rabbit-rs-core : crate Rust indépendant de PHP, contenant configuration, runtime, pool, acteurs AMQP, topologie, publication, consommation, scheduling, reconnexion et métriques.
+2. rabbit-rs-php : extension ext-php-rs exposant une API PHP réduite et transportant uniquement des valeurs possédées entre PHP et Rust.
+3. rabbit-rs/laravel-queue : package Composer contenant connecteur, driver Queue, Job, configuration, commandes et intégration Octane.
 
 Lapin est le client AMQP initial. Il utilise Tokio, gère AMQP 0-9-1, les publisher confirms et la récupération automatique. Il reste caché derrière une abstraction de transport afin de permettre son remplacement après benchmark.
 
@@ -223,11 +243,11 @@ Les valeurs de batch et prefetch doivent être calibrées par benchmark avant la
 
 ## Compatibilité Laravel
 
-Le package enregistre un driver rabbitmq-native via Queue::extend. Il implémente les contrats Queue, ClearableQueue et Monitor lorsque pertinents.
+Le package enregistre un driver rabbit-rs via Queue::extend. Il implémente les contrats Queue, ClearableQueue et Monitor lorsque pertinents.
 
 RabbitMqQueue implémente push, pushRaw, later, bulk, pop, size et clear. RabbitMqJob implémente delete, release, attempts, getJobId et getRawBody.
 
-Pour conserver queue:work sans remplacer Worker, la valeur queue de la connexion représente normalement un profil agrégé. Une sélection avancée de subscriptions et le mode multiprocessus seront fournis par rabbitmq:work dans le second jalon.
+Pour conserver queue:work sans remplacer Worker, la valeur queue de la connexion représente normalement un profil agrégé. Une sélection avancée de subscriptions et le mode multiprocessus seront fournis par rabbit-rs:work dans le second jalon.
 
 Les événements Laravel natifs JobQueued, JobProcessing, JobProcessed, JobFailed et JobExceptionOccurred restent émis par le framework.
 
@@ -279,14 +299,49 @@ Les objectifs absolus sont calibrés sur une machine de référence après le pr
 
 ## Distribution
 
-La CI produit des extensions pour PHP 8.4 et 8.5, x86_64 et ARM64, glibc et musl. Chaque artefact contient checksum, SBOM et métadonnées de build.
+La distribution optimise la simplicité pour l'utilisateur et sépare clairement le binaire système du code Laravel.
 
-Composer vérifie la présence et la version minimale de l'extension. Une image de développement et une documentation de compilation locale sont fournies. La V1 stable n'est publiée qu'après certification CLI, FPM et des quatre serveurs Octane annoncés.
+### Extension native
+
+Le dépôt principal est enregistré sur Packagist comme package rabbit-rs/native de type php-ext. Son composer.json racine déclare extension-name = rabbit_rs, Linux uniquement, support NTS et ZTS, et download-url-method = pre-packaged-binary.
+
+L'installation publique est :
+
+    pie install rabbit-rs/native
+
+PIE remplace PECL comme canal principal. Il sélectionne le bon binaire selon la version PHP, l'architecture, la libc et le mode NTS/ZTS, installe le fichier partagé et active l'extension dans la bonne configuration PHP.
+
+La CI produit 16 archives de release :
+
+- PHP 8.4 et 8.5 ;
+- x86_64 et ARM64 ;
+- glibc et musl ;
+- NTS et ZTS.
+
+Les builds debug ne sont pas distribués. Chaque archive suit exactement la convention de nommage PIE, par exemple :
+
+    php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip
+
+Les dépendances Rust et TLS sont liées statiquement autant que possible ; libc reste la seule dépendance système attendue. Les builds glibc utilisent une baseline documentée et suffisamment ancienne. Chaque archive est testée avec le PHP cible, accompagnée d'un SHA-256, d'une SBOM et d'une attestation de provenance GitHub.
+
+La compilation depuis les sources reste documentée pour les contributeurs avec Cargo et cargo-php, mais elle n'est pas le fallback PIE de la V1. Aucun paquet PECL, installateur Composer privilégié, paquet Debian/RPM/APK ou image PHP complète n'est maintenu en V1. Les Dockerfiles utilisateurs installent l'extension avec PIE.
+
+### Package Laravel
+
+Le package packages/laravel-queue est publié sur Packagist sous le nom rabbit-rs/laravel-queue. Son installation est :
+
+    composer require rabbit-rs/laravel-queue
+
+Il exige PHP ^8.4, Laravel 12 ou 13 et ext-rabbit_rs avec la même version majeure. Composer vérifie la présence de l'extension mais ne tente jamais d'installer ou d'activer un binaire système.
+
+Le monorepo reste la source de développement. Une CI de subtree split publie packages/laravel-queue dans un dépôt miroir en lecture seule, puis pousse le même tag que celui de l'extension. La release GitHub native n'est publiée qu'après production et validation de tous les binaires, publication du tag miroir Laravel et vérification des deux métadonnées Packagist.
+
+La V1 stable n'est publiée qu'après certification CLI, FPM et des quatre serveurs Octane annoncés.
 
 ## Évolutions prévues
 
 - prefetch adaptatif basé sur EWMA, target buffer time, hystérésis et pression mémoire ;
-- commande rabbitmq:work multiprocessus ;
+- commande rabbit-rs:work multiprocessus ;
 - exporteurs Prometheus et OpenTelemetry ;
 - stratégies de routing et de failover supplémentaires ;
 - éventuel backend AMQP alternatif si les benchmarks le justifient ;
@@ -302,3 +357,5 @@ Composer vérifie la présence et la version minimale de l'extension. Une image 
 - RabbitMQ Release Information : https://www.rabbitmq.com/release-information
 - Lapin : https://github.com/amqp-rs/lapin
 - ext-php-rs : https://github.com/davidcole1340/ext-php-rs
+- PIE : https://github.com/php/pie
+- Composer Platform Packages : https://getcomposer.org/doc/01-basic-usage.md#platform-packages

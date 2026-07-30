@@ -1,12 +1,12 @@
-# RabbitMQ Native PHP Extension and Laravel Queue Driver Implementation Plan
+# Rabbit RS Native PHP Extension and Laravel Queue Driver Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Livrer une extension PHP Rust et un driver Laravel Queue performants, at-least-once, capables de mutualiser publication et consommation sur plusieurs vhosts avec reconnexion automatique.
+**Goal:** Livrer l'écosystème Rabbit RS : l'extension PHP rabbit_rs et le package rabbit-rs/laravel-queue, performants, at-least-once et capables de mutualiser publication et consommation sur plusieurs vhosts avec reconnexion automatique.
 
-**Architecture:** Un workspace Rust contient un noyau indépendant et une couche ext-php-rs. Un package Composer adapte cette API aux contrats Laravel Queue sans remplacer Illuminate\Queue\Worker. Les connexions et channels sont pilotés par des acteurs Tokio par processus PHP, tandis qu'un laboratoire RabbitMQ reproductible valide performances et scénarios de panne.
+**Architecture:** Un workspace Rust contient rabbit-rs-core et l'extension rabbit-rs-php construisant ext-rabbit_rs. Le package Composer rabbit-rs/laravel-queue adapte cette API aux contrats Laravel Queue sans remplacer Illuminate\Queue\Worker. Les connexions et channels sont pilotés par des acteurs Tokio par processus PHP, tandis qu'un laboratoire RabbitMQ reproductible valide performances et scénarios de panne.
 
-**Tech Stack:** Rust stable, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, Laravel 12/13, PHPUnit, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus, Toxiproxy, Criterion.
+**Tech Stack:** Rust stable, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, PIE 1.5+, Composer, Packagist, Laravel 12/13, PHPUnit, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus, Toxiproxy, Criterion.
 
 ---
 
@@ -24,9 +24,11 @@
 ## Arborescence cible
 
     Cargo.toml
+    composer.json
+    .gitattributes
     rust-toolchain.toml
     crates/
-      rabbitmq-core/
+      rabbit-rs-core/
         Cargo.toml
         src/
           lib.rs
@@ -41,17 +43,17 @@
           publisher/
           consumer/
         tests/
-      rabbitmq-php/
+      rabbit-rs-php/
         Cargo.toml
         src/
           lib.rs
           classes/
-        stubs/rabbitmq_native.stub.php
+        stubs/rabbit_rs.stub.php
         tests/phpt/
     packages/
-      laravel-rabbitmq/
+      laravel-queue/
         composer.json
-        config/rabbitmq.php
+        config/rabbit-rs.php
         src/
           RabbitMqServiceProvider.php
           Config/
@@ -74,12 +76,14 @@
 
 **Files:**
 - Create: Cargo.toml
+- Create: composer.json
+- Create: .gitattributes
 - Create: rust-toolchain.toml
 - Create: .gitignore
-- Create: crates/rabbitmq-core/Cargo.toml
-- Create: crates/rabbitmq-core/src/lib.rs
-- Create: crates/rabbitmq-php/Cargo.toml
-- Create: crates/rabbitmq-php/src/lib.rs
+- Create: crates/rabbit-rs-core/Cargo.toml
+- Create: crates/rabbit-rs-core/src/lib.rs
+- Create: crates/rabbit-rs-php/Cargo.toml
+- Create: crates/rabbit-rs-php/src/lib.rs
 - Create: scripts/check.sh
 
 **Step 1: Write the failing workspace smoke check**
@@ -91,6 +95,7 @@ Créer scripts/check.sh avec :
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo test --workspace --all-targets
+    composer validate --strict
 
 **Step 2: Run it to verify it fails**
 
@@ -100,7 +105,29 @@ Expected: FAIL parce que le workspace et les crates ne sont pas encore déclaré
 
 **Step 3: Add the minimal workspace**
 
-Déclarer resolver = "2", les deux members et les dépendances partagées. Épingler une toolchain Rust stable connue dans rust-toolchain.toml. Le crate rabbitmq-core doit compiler sans dépendance PHP. Le crate rabbitmq-php doit être un cdylib dépendant du core.
+Déclarer resolver = "2", les deux members et les dépendances partagées. Épingler une toolchain Rust stable connue dans rust-toolchain.toml. Le crate rabbit-rs-core doit compiler sans dépendance PHP. Le crate rabbit-rs-php doit être un cdylib dépendant du core.
+
+Le composer.json racine représente le package PIE, pas le package Laravel :
+
+    {
+        "name": "rabbit-rs/native",
+        "type": "php-ext",
+        "description": "High-performance RabbitMQ transport for PHP and Laravel, powered by Rust",
+        "license": "MIT",
+        "require": {
+            "php": "^8.4"
+        },
+        "php-ext": {
+            "extension-name": "rabbit_rs",
+            "priority": 80,
+            "support-zts": true,
+            "support-nts": true,
+            "os-families": ["linux"],
+            "download-url-method": ["pre-packaged-binary"]
+        }
+    }
+
+.gitattributes exclut des archives Composer les benchmarks, le lab et les documents non requis par PIE.
 
 **Step 4: Run the check**
 
@@ -110,16 +137,16 @@ Expected: PASS.
 
 **Step 5: Commit**
 
-    git add Cargo.toml rust-toolchain.toml .gitignore crates scripts/check.sh
+    git add Cargo.toml composer.json .gitattributes rust-toolchain.toml .gitignore crates scripts/check.sh
     git commit -m "build: bootstrap native RabbitMQ workspace"
 
 ### Task 2: Modéliser et valider la configuration native
 
 **Files:**
-- Create: crates/rabbitmq-core/src/config.rs
-- Create: crates/rabbitmq-core/src/error.rs
-- Modify: crates/rabbitmq-core/src/lib.rs
-- Test: crates/rabbitmq-core/src/config.rs
+- Create: crates/rabbit-rs-core/src/config.rs
+- Create: crates/rabbit-rs-core/src/error.rs
+- Modify: crates/rabbit-rs-core/src/lib.rs
+- Test: crates/rabbit-rs-core/src/config.rs
 
 **Step 1: Write failing tests**
 
@@ -157,7 +184,7 @@ Structure publique minimale :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core config::tests
+Run: cargo test -p rabbit-rs-core config::tests
 
 Expected: FAIL avec types ou fonctions absents.
 
@@ -167,22 +194,22 @@ Utiliser serde pour l'entrée, secrecy pour les secrets et une représentation c
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core config::tests
+Run: cargo test -p rabbit-rs-core config::tests
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add validated connection and worker configuration"
 
 ### Task 3: Implémenter le scheduler multi-queue déterministe
 
 **Files:**
-- Create: crates/rabbitmq-core/src/consumer/mod.rs
-- Create: crates/rabbitmq-core/src/consumer/scheduler.rs
-- Create: crates/rabbitmq-core/tests/scheduler_fairness.rs
-- Modify: crates/rabbitmq-core/src/lib.rs
+- Create: crates/rabbit-rs-core/src/consumer/mod.rs
+- Create: crates/rabbit-rs-core/src/consumer/scheduler.rs
+- Create: crates/rabbit-rs-core/tests/scheduler_fairness.rs
+- Modify: crates/rabbit-rs-core/src/lib.rs
 
 **Step 1: Write failing scheduler tests**
 
@@ -206,7 +233,7 @@ Interface :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test scheduler_fairness
+Run: cargo test -p rabbit-rs-core --test scheduler_fairness
 
 Expected: FAIL.
 
@@ -216,23 +243,23 @@ Séparer priority_class et weight. Ajouter un aging borné pour qu'une classe ba
 
 **Step 4: Verify distribution**
 
-Run: cargo test -p rabbitmq-core --test scheduler_fairness
+Run: cargo test -p rabbit-rs-core --test scheduler_fairness
 
 Expected: PASS avec erreur de distribution sous la tolérance définie dans le test.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add starvation-safe weighted scheduler"
 
 ### Task 4: Rendre le runtime sûr après fork
 
 **Files:**
-- Create: crates/rabbitmq-core/src/runtime.rs
-- Create: crates/rabbitmq-core/src/pool/mod.rs
-- Create: crates/rabbitmq-core/src/pool/key.rs
-- Modify: crates/rabbitmq-core/src/lib.rs
-- Test: crates/rabbitmq-core/src/runtime.rs
+- Create: crates/rabbit-rs-core/src/runtime.rs
+- Create: crates/rabbit-rs-core/src/pool/mod.rs
+- Create: crates/rabbit-rs-core/src/pool/key.rs
+- Modify: crates/rabbit-rs-core/src/lib.rs
+- Test: crates/rabbit-rs-core/src/runtime.rs
 
 **Step 1: Write failing lifecycle tests**
 
@@ -246,7 +273,7 @@ Injecter un PidProvider de test et vérifier :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core runtime::tests pool::tests
+Run: cargo test -p rabbit-rs-core runtime::tests pool::tests
 
 Expected: FAIL.
 
@@ -262,23 +289,23 @@ Le runtime ne doit être créé ni dans une statique globale initialisée au cha
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core runtime::tests pool::tests
+Run: cargo test -p rabbit-rs-core runtime::tests pool::tests
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add fork-safe per-process runtime registry"
 
 ### Task 5: Isoler Lapin derrière un transport testable
 
 **Files:**
-- Create: crates/rabbitmq-core/src/transport.rs
-- Create: crates/rabbitmq-core/src/transport/lapin.rs
-- Create: crates/rabbitmq-core/src/transport/mock.rs
-- Modify: crates/rabbitmq-core/Cargo.toml
-- Modify: crates/rabbitmq-core/src/lib.rs
+- Create: crates/rabbit-rs-core/src/transport.rs
+- Create: crates/rabbit-rs-core/src/transport/lapin.rs
+- Create: crates/rabbit-rs-core/src/transport/mock.rs
+- Modify: crates/rabbit-rs-core/Cargo.toml
+- Modify: crates/rabbit-rs-core/src/lib.rs
 
 **Step 1: Write a compile-failing contract test**
 
@@ -300,7 +327,7 @@ Les traits de channels doivent couvrir declare, passive verify, bind, publish, c
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core transport
+Run: cargo test -p rabbit-rs-core transport
 
 Expected: FAIL.
 
@@ -310,22 +337,22 @@ Commencer par le mock scriptable. Adapter ensuite Lapin sans exposer ses types h
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core transport
+Run: cargo test -p rabbit-rs-core transport
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): abstract AMQP transport behind testable traits"
 
 ### Task 6: Construire la machine de connexion et de recovery
 
 **Files:**
-- Create: crates/rabbitmq-core/src/recovery.rs
-- Create: crates/rabbitmq-core/src/pool/connection_actor.rs
-- Create: crates/rabbitmq-core/tests/recovery_state_machine.rs
-- Modify: crates/rabbitmq-core/src/pool/mod.rs
+- Create: crates/rabbit-rs-core/src/recovery.rs
+- Create: crates/rabbit-rs-core/src/pool/connection_actor.rs
+- Create: crates/rabbit-rs-core/tests/recovery_state_machine.rs
+- Modify: crates/rabbit-rs-core/src/pool/mod.rs
 
 **Step 1: Write failing state-machine tests**
 
@@ -341,7 +368,7 @@ Avec le temps Tokio suspendu, vérifier :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test recovery_state_machine
+Run: cargo test -p rabbit-rs-core --test recovery_state_machine
 
 Expected: FAIL.
 
@@ -351,22 +378,22 @@ Toutes les opérations passent par un canal mpsc borné. Les états et raisons s
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test recovery_state_machine
+Run: cargo test -p rabbit-rs-core --test recovery_state_machine
 
 Expected: PASS sans attente réelle.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add deterministic connection recovery actor"
 
 ### Task 7: Déclarer ou vérifier la topologie
 
 **Files:**
-- Create: crates/rabbitmq-core/src/topology/mod.rs
-- Create: crates/rabbitmq-core/src/topology/plan.rs
-- Create: crates/rabbitmq-core/src/topology/reconciler.rs
-- Create: crates/rabbitmq-core/tests/topology_recovery.rs
+- Create: crates/rabbit-rs-core/src/topology/mod.rs
+- Create: crates/rabbit-rs-core/src/topology/plan.rs
+- Create: crates/rabbit-rs-core/src/topology/reconciler.rs
+- Create: crates/rabbit-rs-core/tests/topology_recovery.rs
 
 **Step 1: Write failing topology tests**
 
@@ -385,7 +412,7 @@ Vérifier :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test topology_recovery
+Run: cargo test -p rabbit-rs-core --test topology_recovery
 
 Expected: FAIL.
 
@@ -395,23 +422,23 @@ Compiler la configuration en plan immuable avant toute I/O. Refuser les combinai
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test topology_recovery
+Run: cargo test -p rabbit-rs-core --test topology_recovery
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add declarative and externally managed topology modes"
 
 ### Task 8: Implémenter batching, confirms et mandatory returns
 
 **Files:**
-- Create: crates/rabbitmq-core/src/publisher/mod.rs
-- Create: crates/rabbitmq-core/src/publisher/batcher.rs
-- Create: crates/rabbitmq-core/src/publisher/confirms.rs
-- Create: crates/rabbitmq-core/src/publisher/actor.rs
-- Create: crates/rabbitmq-core/tests/publisher_safety.rs
+- Create: crates/rabbit-rs-core/src/publisher/mod.rs
+- Create: crates/rabbit-rs-core/src/publisher/batcher.rs
+- Create: crates/rabbit-rs-core/src/publisher/confirms.rs
+- Create: crates/rabbit-rs-core/src/publisher/actor.rs
+- Create: crates/rabbit-rs-core/tests/publisher_safety.rs
 
 **Step 1: Write failing publisher tests**
 
@@ -430,7 +457,7 @@ Tester :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test publisher_safety
+Run: cargo test -p rabbit-rs-core --test publisher_safety
 
 Expected: FAIL.
 
@@ -453,22 +480,22 @@ L'acteur possède le ledger de séquences. Il ne résout pas un ACK routé avant
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test publisher_safety
+Run: cargo test -p rabbit-rs-core --test publisher_safety
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add bounded batched publisher confirms"
 
 ### Task 9: Ajouter les délais plugin et TTL
 
 **Files:**
-- Create: crates/rabbitmq-core/src/topology/delay.rs
-- Create: crates/rabbitmq-core/src/publisher/delay.rs
-- Create: crates/rabbitmq-core/tests/delay_routing.rs
-- Modify: crates/rabbitmq-core/src/config.rs
+- Create: crates/rabbit-rs-core/src/topology/delay.rs
+- Create: crates/rabbit-rs-core/src/publisher/delay.rs
+- Create: crates/rabbit-rs-core/tests/delay_routing.rs
+- Modify: crates/rabbit-rs-core/src/config.rs
 
 **Step 1: Write failing delay tests**
 
@@ -485,7 +512,7 @@ Tester :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test delay_routing
+Run: cargo test -p rabbit-rs-core --test delay_routing
 
 Expected: FAIL.
 
@@ -500,22 +527,22 @@ La détection du plugin doit être bornée dans le temps et mise en cache par g�
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test delay_routing
+Run: cargo test -p rabbit-rs-core --test delay_routing
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add delayed exchange and TTL fallback"
 
 ### Task 10: Implémenter ConsumerSet et les jetons de delivery
 
 **Files:**
-- Create: crates/rabbitmq-core/src/consumer/set.rs
-- Create: crates/rabbitmq-core/src/consumer/delivery.rs
-- Create: crates/rabbitmq-core/src/consumer/actor.rs
-- Create: crates/rabbitmq-core/tests/consumer_semantics.rs
+- Create: crates/rabbit-rs-core/src/consumer/set.rs
+- Create: crates/rabbit-rs-core/src/consumer/delivery.rs
+- Create: crates/rabbit-rs-core/src/consumer/actor.rs
+- Create: crates/rabbit-rs-core/tests/consumer_semantics.rs
 
 **Step 1: Write failing consumer tests**
 
@@ -534,7 +561,7 @@ Tester :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test consumer_semantics
+Run: cargo test -p rabbit-rs-core --test consumer_semantics
 
 Expected: FAIL.
 
@@ -553,21 +580,21 @@ Le token contient connection key, génération, channel id et delivery tag. Ses 
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test consumer_semantics
+Run: cargo test -p rabbit-rs-core --test consumer_semantics
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): add multiplexed consumers and safe delivery tokens"
 
 ### Task 11: Ajouter les compteurs attempts et poison-message
 
 **Files:**
-- Create: crates/rabbitmq-core/src/consumer/attempts.rs
-- Create: crates/rabbitmq-core/tests/delivery_attempts.rs
-- Modify: crates/rabbitmq-core/src/consumer/delivery.rs
+- Create: crates/rabbit-rs-core/src/consumer/attempts.rs
+- Create: crates/rabbit-rs-core/tests/delivery_attempts.rs
+- Modify: crates/rabbit-rs-core/src/consumer/delivery.rs
 
 **Step 1: Write failing attempts tests**
 
@@ -582,7 +609,7 @@ Cas :
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test delivery_attempts
+Run: cargo test -p rabbit-rs-core --test delivery_attempts
 
 Expected: FAIL.
 
@@ -592,23 +619,23 @@ Centraliser toute interprétation des headers. Ne pas disperser les règles Rabb
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test delivery_attempts
+Run: cargo test -p rabbit-rs-core --test delivery_attempts
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): preserve Laravel-compatible delivery attempts"
 
 ### Task 12: Exposer un snapshot de métriques sans backend
 
 **Files:**
-- Create: crates/rabbitmq-core/src/metrics.rs
-- Create: crates/rabbitmq-core/tests/metrics_snapshot.rs
-- Modify: crates/rabbitmq-core/src/publisher/actor.rs
-- Modify: crates/rabbitmq-core/src/consumer/actor.rs
-- Modify: crates/rabbitmq-core/src/pool/connection_actor.rs
+- Create: crates/rabbit-rs-core/src/metrics.rs
+- Create: crates/rabbit-rs-core/tests/metrics_snapshot.rs
+- Modify: crates/rabbit-rs-core/src/publisher/actor.rs
+- Modify: crates/rabbit-rs-core/src/consumer/actor.rs
+- Modify: crates/rabbit-rs-core/src/pool/connection_actor.rs
 
 **Step 1: Write failing metric tests**
 
@@ -616,17 +643,17 @@ Vérifier que publish, confirm, return, delivery, ACK, reject, reconnect et back
 
 **Step 2: Verify failure**
 
-Run: cargo test -p rabbitmq-core --test metrics_snapshot
+Run: cargo test -p rabbit-rs-core --test metrics_snapshot
 
 Expected: FAIL.
 
 **Step 3: Implement atomics and histograms**
 
-Garder une API de snapshot sérialisable. Ne dépendre ni de Prometheus ni d'OpenTelemetry dans rabbitmq-core.
+Garder une API de snapshot sérialisable. Ne dépendre ni de Prometheus ni d'OpenTelemetry dans rabbit-rs-core.
 
 **Step 4: Verify**
 
-Run: cargo test -p rabbitmq-core --test metrics_snapshot
+Run: cargo test -p rabbit-rs-core --test metrics_snapshot
 
 Expected: PASS.
 
@@ -638,7 +665,7 @@ Expected: PASS.
 
 **Step 6: Commit**
 
-    git add crates/rabbitmq-core
+    git add crates/rabbit-rs-core
     git commit -m "feat(core): expose transport metrics snapshots"
 
 ## Milestone B — Extension PHP
@@ -646,25 +673,27 @@ Expected: PASS.
 ### Task 13: Définir l'API et les stubs PHP
 
 **Files:**
-- Create: crates/rabbitmq-php/src/classes/mod.rs
-- Create: crates/rabbitmq-php/src/classes/pool.rs
-- Create: crates/rabbitmq-php/src/classes/consumer.rs
-- Create: crates/rabbitmq-php/src/classes/delivery.rs
-- Create: crates/rabbitmq-php/src/classes/exception.rs
-- Create: crates/rabbitmq-php/stubs/rabbitmq_native.stub.php
-- Modify: crates/rabbitmq-php/src/lib.rs
+- Create: crates/rabbit-rs-php/src/classes/mod.rs
+- Create: crates/rabbit-rs-php/src/classes/pool.rs
+- Create: crates/rabbit-rs-php/src/classes/consumer.rs
+- Create: crates/rabbit-rs-php/src/classes/delivery.rs
+- Create: crates/rabbit-rs-php/src/classes/exception.rs
+- Create: crates/rabbit-rs-php/stubs/rabbit_rs.stub.php
+- Modify: crates/rabbit-rs-php/src/lib.rs
 - Create: scripts/test-extension.sh
 
 **Step 1: Write failing reflection tests**
 
 Créer PHPT vérifiant l'existence de :
 
-    RabbitMQ\Native\Pool
-    RabbitMQ\Native\Consumer
-    RabbitMQ\Native\Delivery
-    RabbitMQ\Native\Exception
-    RabbitMQ\Native\BackpressureException
-    RabbitMQ\Native\ConnectionException
+    RabbitRs\Native\Pool
+    RabbitRs\Native\Consumer
+    RabbitRs\Native\Delivery
+    RabbitRs\Native\Exception
+    RabbitRs\Native\BackpressureException
+    RabbitRs\Native\ConnectionException
+
+Vérifier aussi que extension_loaded('rabbit_rs') est vrai et que phpversion('rabbit_rs') correspond à la version Cargo et au tag de release.
 
 API minimale :
 
@@ -692,7 +721,7 @@ API minimale :
 
 **Step 2: Verify failure**
 
-Run: cargo build -p rabbitmq-php --release && ./scripts/test-extension.sh reflection
+Run: cargo build -p rabbit-rs-php --release && ./scripts/test-extension.sh reflection
 
 Expected: FAIL.
 
@@ -702,23 +731,23 @@ Chaque objet PHP contient seulement un handle Arc ou identifiant natif. Converti
 
 **Step 4: Verify**
 
-Run: cargo build -p rabbitmq-php --release && ./scripts/test-extension.sh reflection
+Run: cargo build -p rabbit-rs-php --release && ./scripts/test-extension.sh reflection
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-php scripts/test-extension.sh
+    git add crates/rabbit-rs-php scripts/test-extension.sh
     git commit -m "feat(extension): expose native pool publisher and consumer API"
 
 ### Task 14: Tester conversions, erreurs et transitions PHP
 
 **Files:**
-- Create: crates/rabbitmq-php/tests/phpt/config_validation.phpt
-- Create: crates/rabbitmq-php/tests/phpt/binary_payload.phpt
-- Create: crates/rabbitmq-php/tests/phpt/delivery_terminal_state.phpt
-- Create: crates/rabbitmq-php/tests/phpt/secrets.phpt
-- Create: crates/rabbitmq-php/tests/phpt/backpressure.phpt
+- Create: crates/rabbit-rs-php/tests/phpt/config_validation.phpt
+- Create: crates/rabbit-rs-php/tests/phpt/binary_payload.phpt
+- Create: crates/rabbit-rs-php/tests/phpt/delivery_terminal_state.phpt
+- Create: crates/rabbit-rs-php/tests/phpt/secrets.phpt
+- Create: crates/rabbit-rs-php/tests/phpt/backpressure.phpt
 
 **Step 1: Add failing PHPT cases**
 
@@ -742,18 +771,18 @@ Expected: PASS.
 
 **Step 5: Commit**
 
-    git add crates/rabbitmq-php
+    git add crates/rabbit-rs-php
     git commit -m "test(extension): harden PHP value conversion and handle states"
 
 ### Task 15: Certifier le cycle de vie CLI, fork et FPM
 
 **Files:**
-- Create: crates/rabbitmq-php/tests/phpt/pid_registry.phpt
-- Create: crates/rabbitmq-php/tests/phpt/fork_invalidation.phpt
-- Create: crates/rabbitmq-php/tests/fixtures/fpm/index.php
-- Create: crates/rabbitmq-php/tests/fixtures/fpm/php-fpm.conf
+- Create: crates/rabbit-rs-php/tests/phpt/pid_registry.phpt
+- Create: crates/rabbit-rs-php/tests/phpt/fork_invalidation.phpt
+- Create: crates/rabbit-rs-php/tests/fixtures/fpm/index.php
+- Create: crates/rabbit-rs-php/tests/fixtures/fpm/php-fpm.conf
 - Create: scripts/test-fpm.sh
-- Modify: crates/rabbitmq-php/src/classes/pool.rs
+- Modify: crates/rabbit-rs-php/src/classes/pool.rs
 
 **Step 1: Write failing process lifecycle tests**
 
@@ -789,7 +818,7 @@ Expected: PASS.
 
 **Step 6: Commit**
 
-    git add crates/rabbitmq-php scripts
+    git add crates/rabbit-rs-php scripts
     git commit -m "feat(extension): make native pools safe across PHP process lifecycles"
 
 ## Milestone C — Package Laravel
@@ -797,46 +826,63 @@ Expected: PASS.
 ### Task 16: Initialiser le package et sa configuration
 
 **Files:**
-- Create: packages/laravel-rabbitmq/composer.json
-- Create: packages/laravel-rabbitmq/phpunit.xml
-- Create: packages/laravel-rabbitmq/src/RabbitMqServiceProvider.php
-- Create: packages/laravel-rabbitmq/src/Config/ConfigNormalizer.php
-- Create: packages/laravel-rabbitmq/config/rabbitmq.php
-- Create: packages/laravel-rabbitmq/tests/TestCase.php
-- Create: packages/laravel-rabbitmq/tests/Unit/ConfigNormalizerTest.php
+- Create: packages/laravel-queue/composer.json
+- Create: packages/laravel-queue/phpunit.xml
+- Create: packages/laravel-queue/src/RabbitMqServiceProvider.php
+- Create: packages/laravel-queue/src/Config/ConfigNormalizer.php
+- Create: packages/laravel-queue/config/rabbit-rs.php
+- Create: packages/laravel-queue/tests/TestCase.php
+- Create: packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php
 
 **Step 1: Write failing package tests**
 
-Tester la publication de configuration, la validation des brokers/routes/workers, les defaults quorum/confirm/mandatory, l'absence de DLQ applicative par défaut, le masquage des secrets et l'erreur si ext-rabbitmq-native manque.
+Tester la publication de configuration, la validation des brokers/routes/workers, les defaults quorum/confirm/mandatory, l'absence de DLQ applicative par défaut, le masquage des secrets et l'erreur si ext-rabbit_rs manque.
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && composer install && vendor/bin/phpunit --filter ConfigNormalizerTest
+Run: cd packages/laravel-queue && composer install && vendor/bin/phpunit --filter ConfigNormalizerTest
 
 Expected: FAIL.
 
 **Step 3: Implement package skeleton**
 
-Utiliser illuminate/queue et Orchestra Testbench avec une matrice Composer Laravel 12/13. Le package Composer exige PHP ^8.4 et ext-rabbitmq-native.
+Utiliser le namespace RabbitRs\Laravel, illuminate/queue et Orchestra Testbench avec une matrice Composer Laravel 12/13. Le package porte exactement le nom rabbit-rs/laravel-queue et exige PHP ^8.4, ext-rabbit_rs avec la même version majeure, et illuminate/queue ^12.0 || ^13.0.
+
+Le composer.json du package contient au minimum :
+
+    {
+        "name": "rabbit-rs/laravel-queue",
+        "type": "library",
+        "require": {
+            "php": "^8.4",
+            "ext-rabbit_rs": "^1.0",
+            "illuminate/queue": "^12.0 || ^13.0"
+        },
+        "autoload": {
+            "psr-4": {
+                "RabbitRs\\Laravel\\": "src/"
+            }
+        }
+    }
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter ConfigNormalizerTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter ConfigNormalizerTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): bootstrap native RabbitMQ queue package"
 
 ### Task 17: Enregistrer le connecteur et le pool partagé
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/Connectors/RabbitMqConnector.php
-- Create: packages/laravel-rabbitmq/src/Support/NativePoolFactory.php
-- Create: packages/laravel-rabbitmq/tests/Unit/RabbitMqConnectorTest.php
-- Modify: packages/laravel-rabbitmq/src/RabbitMqServiceProvider.php
+- Create: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
+- Create: packages/laravel-queue/src/Support/NativePoolFactory.php
+- Create: packages/laravel-queue/tests/Unit/RabbitMqConnectorTest.php
+- Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 
 **Step 1: Write failing connector tests**
 
@@ -844,32 +890,32 @@ Vérifier Queue::connection retourne le driver, deux résolutions équivalentes 
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqConnectorTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqConnectorTest
 
 Expected: FAIL.
 
 **Step 3: Implement connector and factory**
 
-Enregistrer le nom rabbitmq-native. Le factory transmet une configuration normalisée immuable à RabbitMQ\Native\Pool.
+Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à RabbitRs\Native\Pool.
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqConnectorTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqConnectorTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): register native RabbitMQ queue connector"
 
 ### Task 18: Implémenter push, later et bulk
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/RabbitMqQueue.php
-- Create: packages/laravel-rabbitmq/src/Support/MessageMapper.php
-- Create: packages/laravel-rabbitmq/tests/Unit/RabbitMqQueuePublishTest.php
-- Modify: packages/laravel-rabbitmq/src/Connectors/RabbitMqConnector.php
+- Create: packages/laravel-queue/src/RabbitMqQueue.php
+- Create: packages/laravel-queue/src/Support/MessageMapper.php
+- Create: packages/laravel-queue/tests/Unit/RabbitMqQueuePublishTest.php
+- Modify: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
 
 **Step 1: Write failing Queue publish tests**
 
@@ -887,7 +933,7 @@ Tester :
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqQueuePublishTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqQueuePublishTest
 
 Expected: FAIL.
 
@@ -897,21 +943,21 @@ Expected: FAIL.
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqQueuePublishTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqQueuePublishTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): publish immediate delayed and bulk jobs"
 
 ### Task 19: Implémenter RabbitMqJob
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/Jobs/RabbitMqJob.php
-- Create: packages/laravel-rabbitmq/tests/Unit/RabbitMqJobTest.php
-- Modify: packages/laravel-rabbitmq/src/RabbitMqQueue.php
+- Create: packages/laravel-queue/src/Jobs/RabbitMqJob.php
+- Create: packages/laravel-queue/tests/Unit/RabbitMqJobTest.php
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
 
 **Step 1: Write failing job tests**
 
@@ -929,7 +975,7 @@ Tester :
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqJobTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqJobTest
 
 Expected: FAIL.
 
@@ -939,22 +985,22 @@ Expected: FAIL.
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqJobTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqJobTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): map native deliveries to Laravel jobs"
 
 ### Task 20: Brancher pop sur un profil multi-vhost
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/Support/WorkerProfileResolver.php
-- Create: packages/laravel-rabbitmq/tests/Feature/MultiVhostWorkerTest.php
-- Modify: packages/laravel-rabbitmq/src/RabbitMqQueue.php
-- Modify: packages/laravel-rabbitmq/config/rabbitmq.php
+- Create: packages/laravel-queue/src/Support/WorkerProfileResolver.php
+- Create: packages/laravel-queue/tests/Feature/MultiVhostWorkerTest.php
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
+- Modify: packages/laravel-queue/config/rabbit-rs.php
 
 **Step 1: Write failing feature test**
 
@@ -964,30 +1010,30 @@ Tester aussi un profil inconnu, une subscription désactivée et un timeout sans
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter MultiVhostWorkerTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter MultiVhostWorkerTest
 
 Expected: FAIL.
 
 **Step 3: Implement aggregate pop**
 
-La valeur queue de la connexion Laravel référence par défaut le nom du profil worker. Documenter que la sélection fine de plusieurs aliases par option --queue arrive avec rabbitmq:work ; ne pas simuler une boucle bloquante queue par queue.
+La valeur queue de la connexion Laravel référence par défaut le nom du profil worker. Documenter que la sélection fine de plusieurs aliases par option --queue arrive avec rabbit-rs:work ; ne pas simuler une boucle bloquante queue par queue.
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter MultiVhostWorkerTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter MultiVhostWorkerTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): consume multi-vhost worker profiles"
 
 ### Task 21: Implémenter size, clear et monitoring
 
 **Files:**
-- Create: packages/laravel-rabbitmq/tests/Unit/RabbitMqQueueAdminTest.php
-- Modify: packages/laravel-rabbitmq/src/RabbitMqQueue.php
+- Create: packages/laravel-queue/tests/Unit/RabbitMqQueueAdminTest.php
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
 
 **Step 1: Write failing admin tests**
 
@@ -995,7 +1041,7 @@ Vérifier size agrégé et par route, clear explicite, refus de clear sans permi
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqQueueAdminTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqQueueAdminTest
 
 Expected: FAIL.
 
@@ -1005,23 +1051,23 @@ Ne pas utiliser l'API HTTP management pour le chemin critique. Les commandes AMQ
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqQueueAdminTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqQueueAdminTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): add queue administration and monitoring"
 
 ### Task 22: Ajouter événements natifs et commande de diagnostic
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/Events/ConnectionStateChanged.php
-- Create: packages/laravel-rabbitmq/src/Events/BackpressureDetected.php
-- Create: packages/laravel-rabbitmq/src/Console/RabbitMqStatusCommand.php
-- Create: packages/laravel-rabbitmq/tests/Feature/RabbitMqStatusCommandTest.php
-- Modify: packages/laravel-rabbitmq/src/RabbitMqServiceProvider.php
+- Create: packages/laravel-queue/src/Events/ConnectionStateChanged.php
+- Create: packages/laravel-queue/src/Events/BackpressureDetected.php
+- Create: packages/laravel-queue/src/Console/RabbitMqStatusCommand.php
+- Create: packages/laravel-queue/tests/Feature/RabbitMqStatusCommandTest.php
+- Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 
 **Step 1: Write failing command tests**
 
@@ -1029,33 +1075,33 @@ Vérifier sortie humaine et JSON, absence de secrets, états par broker/vhost, b
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqStatusCommandTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqStatusCommandTest
 
 Expected: FAIL.
 
 **Step 3: Implement status adapter**
 
-La commande rabbitmq:status lit seulement Pool::stats. Elle ne doit ni reconnecter ni modifier la topologie sauf option explicite future.
+La commande rabbit-rs:status lit seulement Pool::stats. Elle ne doit ni reconnecter ni modifier la topologie sauf option explicite future.
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter RabbitMqStatusCommandTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter RabbitMqStatusCommandTest
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): expose native connection diagnostics"
 
 ### Task 23: Ajouter la commande multiprocessus progressive
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/Console/RabbitMqWorkCommand.php
-- Create: packages/laravel-rabbitmq/src/Console/WorkerSupervisor.php
-- Create: packages/laravel-rabbitmq/tests/Unit/WorkerSupervisorTest.php
-- Create: packages/laravel-rabbitmq/tests/Feature/RabbitMqWorkCommandTest.php
-- Modify: packages/laravel-rabbitmq/src/RabbitMqServiceProvider.php
+- Create: packages/laravel-queue/src/Console/RabbitMqWorkCommand.php
+- Create: packages/laravel-queue/src/Console/WorkerSupervisor.php
+- Create: packages/laravel-queue/tests/Unit/WorkerSupervisorTest.php
+- Create: packages/laravel-queue/tests/Feature/RabbitMqWorkCommandTest.php
+- Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 
 **Step 1: Write failing supervisor tests**
 
@@ -1063,7 +1109,7 @@ Tester construction de la commande enfant, workers = 1 et workers > 1, propagati
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter 'WorkerSupervisorTest|RabbitMqWorkCommandTest'
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter 'WorkerSupervisorTest|RabbitMqWorkCommandTest'
 
 Expected: FAIL.
 
@@ -1073,22 +1119,22 @@ Chaque enfant exécute queue:work avec une connexion/profil déterminé. Utilise
 
 **Step 4: Verify**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter 'WorkerSupervisorTest|RabbitMqWorkCommandTest'
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter 'WorkerSupervisorTest|RabbitMqWorkCommandTest'
 
 Expected: PASS.
 
 **Step 5: Commit**
 
-    git add packages/laravel-rabbitmq
+    git add packages/laravel-queue
     git commit -m "feat(laravel): supervise multiple standard queue workers"
 
 ### Task 24: Certifier Octane
 
 **Files:**
-- Create: packages/laravel-rabbitmq/src/Octane/OctaneLifecycle.php
-- Create: packages/laravel-rabbitmq/tests/Feature/OctaneLifecycleTest.php
+- Create: packages/laravel-queue/src/Octane/OctaneLifecycle.php
+- Create: packages/laravel-queue/tests/Feature/OctaneLifecycleTest.php
 - Create: scripts/test-octane.sh
-- Modify: packages/laravel-rabbitmq/src/RabbitMqServiceProvider.php
+- Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 
 **Step 1: Write failing lifecycle tests**
 
@@ -1103,7 +1149,7 @@ Vérifier :
 
 **Step 2: Verify failure**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit --filter OctaneLifecycleTest
+Run: cd packages/laravel-queue && vendor/bin/phpunit --filter OctaneLifecycleTest
 
 Expected: FAIL.
 
@@ -1113,7 +1159,7 @@ Détecter Octane de manière optionnelle. Ne pas rendre laravel/octane obligatoi
 
 **Step 4: Verify package tests**
 
-Run: cd packages/laravel-rabbitmq && vendor/bin/phpunit
+Run: cd packages/laravel-queue && vendor/bin/phpunit
 
 Expected: PASS.
 
@@ -1125,7 +1171,7 @@ Expected: PASS pour chaque runtime certifié.
 
 **Step 6: Commit**
 
-    git add packages/laravel-rabbitmq scripts/test-octane.sh
+    git add packages/laravel-queue scripts/test-octane.sh
     git commit -m "feat(laravel): support persistent Octane worker lifecycles"
 
 ## Milestone D — Cluster, intégration et chaos
@@ -1172,10 +1218,10 @@ Expected: PASS.
 ### Task 26: Écrire les tests d'intégration end-to-end
 
 **Files:**
-- Create: crates/rabbitmq-core/tests/integration/publish_consume.rs
-- Create: crates/rabbitmq-core/tests/integration/topology_modes.rs
-- Create: packages/laravel-rabbitmq/tests/Integration/QueueWorkerTest.php
-- Create: packages/laravel-rabbitmq/tests/Integration/DelayedJobTest.php
+- Create: crates/rabbit-rs-core/tests/integration/publish_consume.rs
+- Create: crates/rabbit-rs-core/tests/integration/topology_modes.rs
+- Create: packages/laravel-queue/tests/Integration/QueueWorkerTest.php
+- Create: packages/laravel-queue/tests/Integration/DelayedJobTest.php
 - Create: scripts/test-integration.sh
 
 **Step 1: Write failing scenarios**
@@ -1219,8 +1265,8 @@ Expected: PASS.
 
 **Files:**
 - Create: lab/rabbitmq/scenarios/
-- Create: crates/rabbitmq-core/tests/chaos/reconnect.rs
-- Create: packages/laravel-rabbitmq/tests/Integration/AtLeastOnceChaosTest.php
+- Create: crates/rabbit-rs-core/tests/chaos/reconnect.rs
+- Create: packages/laravel-queue/tests/Integration/AtLeastOnceChaosTest.php
 - Create: scripts/test-chaos.sh
 
 **Step 1: Write failing chaos assertions**
@@ -1278,7 +1324,7 @@ Les benchmarks doivent couvrir tailles 256 o, 1 Kio, 10 Kio, 100 Kio et 1 Mio, b
 
 **Step 2: Verify command**
 
-Run: cargo bench -p rabbitmq-native-bench --no-run
+Run: cargo bench -p rabbit-rs-native-bench --no-run
 
 Expected: FAIL avant le crate benchmark.
 
@@ -1288,7 +1334,7 @@ Séparer microbench sans broker et bench transport avec le lab. Enregistrer vers
 
 **Step 4: Verify**
 
-Run: cargo bench -p rabbitmq-native-bench --no-run
+Run: cargo bench -p rabbit-rs-native-bench --no-run
 
 Expected: PASS.
 
@@ -1316,7 +1362,7 @@ Chaque driver doit exposer setup, publish, consume, reset et metrics avec les m�
 
 Drivers :
 
-- rabbitmq-native ;
+- rabbit-rs ;
 - php-amqplib direct ;
 - vyuldashev/laravel-queue-rabbitmq comme driver Laravel RabbitMQ de référence ;
 - Redis Laravel ;
@@ -1349,8 +1395,8 @@ Expected: PASS et fichier JSON de résultats.
 - Create: benchmarks/baselines/reference-machine.json
 - Create: benchmarks/baselines/v1-budget.json
 - Create: docs/performance.md
-- Modify: packages/laravel-rabbitmq/config/rabbitmq.php
-- Modify: crates/rabbitmq-core/src/config.rs
+- Modify: packages/laravel-queue/config/rabbit-rs.php
+- Modify: crates/rabbit-rs-core/src/config.rs
 
 **Step 1: Capture the reference environment**
 
@@ -1383,7 +1429,72 @@ Expected: PASS.
 
 ## Milestone F — Distribution et documentation
 
-### Task 31: Ajouter les matrices CI
+### Task 31: Préparer les packages Rabbit RS et la matrice PIE
+
+**Files:**
+- Modify: composer.json
+- Modify: .gitattributes
+- Modify: packages/laravel-queue/composer.json
+- Create: release/pie-matrix.json
+- Create: scripts/validate-distribution.sh
+- Create: scripts/package-pie-binary.sh
+- Create: scripts/split-laravel-package.sh
+
+**Step 1: Write the failing distribution metadata check**
+
+Le script vérifie :
+
+- le package racine s'appelle rabbit-rs/native et son type est php-ext ;
+- extension-name vaut rabbit_rs ;
+- download-url-method contient seulement pre-packaged-binary ;
+- NTS et ZTS sont annoncés ;
+- Linux est la seule famille d'OS annoncée en V1 ;
+- le package Laravel s'appelle rabbit-rs/laravel-queue ;
+- son namespace est RabbitRs\Laravel ;
+- il exige ext-rabbit_rs avec la même version majeure ;
+- versions Cargo, extension PHP et tag de release sont cohérentes.
+
+**Step 2: Verify failure**
+
+Run: ./scripts/validate-distribution.sh
+
+Expected: FAIL avant le manifeste et les contrôles.
+
+**Step 3: Add the exact PIE matrix**
+
+release/pie-matrix.json contient exactement 16 combinaisons :
+
+    PHP: 8.4, 8.5
+    architecture: x86_64, arm64
+    libc: glibc, musl
+    thread safety: nts, zts
+
+Ne pas distribuer de build debug. Documenter la version minimale de glibc utilisée pour les artefacts glibc.
+
+**Step 4: Implement deterministic PIE packaging**
+
+scripts/package-pie-binary.sh reçoit version, PHP, architecture, libc, mode thread-safe et chemin du shared object. Il produit une archive ZIP conforme à PIE, par exemple :
+
+    php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip
+
+L'archive contient rabbit_rs.so et aucune bibliothèque dynamique non documentée. Le script produit aussi le SHA-256 et refuse un nom, une ABI ou une architecture incohérents.
+
+**Step 5: Implement the Laravel split dry-run**
+
+scripts/split-laravel-package.sh extrait packages/laravel-queue, conserve son composer.json à la racine du résultat et refuse de publier si sa version majeure n'est pas compatible avec ext-rabbit_rs.
+
+**Step 6: Verify**
+
+Run: ./scripts/validate-distribution.sh && ./scripts/package-pie-binary.sh --self-test && ./scripts/split-laravel-package.sh --dry-run
+
+Expected: PASS et matrice de 16 artefacts uniques.
+
+**Step 7: Commit**
+
+    git add composer.json .gitattributes packages/laravel-queue/composer.json release scripts
+    git commit -m "build: define Rabbit RS PIE and Packagist packages"
+
+### Task 32: Ajouter la CI et la publication synchronisée
 
 **Files:**
 - Create: .github/workflows/rust.yml
@@ -1391,36 +1502,71 @@ Expected: PASS.
 - Create: .github/workflows/integration.yml
 - Create: .github/workflows/octane.yml
 - Create: .github/workflows/bench-smoke.yml
+- Create: .github/workflows/split-laravel.yml
 - Create: .github/workflows/release.yml
+- Create: scripts/verify-release-assets.sh
 
-**Step 1: Write local matrix manifest**
+**Step 1: Write failing workflow and release checks**
 
-Créer une matrice couvrant PHP 8.4/8.5, Laravel 12/13, x86_64/ARM64, glibc/musl et NTS/ZTS lorsque le SAPI le permet.
+scripts/verify-release-assets.sh vérifie les 16 archives attendues, leurs SHA-256, SBOM, attestations, noms PIE et versions synchronisées. Il échoue si un artefact debug ou une plateforme non supportée est publiée.
 
-**Step 2: Validate workflow syntax**
+**Step 2: Validate before adding workflows**
 
-Run: actionlint
+Run: actionlint && ./scripts/verify-release-assets.sh --fixtures release/pie-matrix.json
 
-Expected: FAIL avant workflows, puis PASS après ajout.
+Expected: FAIL avant workflows et fixtures.
 
 **Step 3: Add build and test jobs**
 
-Séparer tests rapides, intégration cluster, Octane et chaos programmé. Mettre en cache Cargo et Composer sans mettre en cache l'extension construite entre ABI PHP différentes.
+Séparer tests Rust, PHPT, Laravel 12/13, intégration cluster, Octane et chaos programmé. Mettre en cache Cargo et Composer sans partager une extension construite entre deux ABI PHP.
 
-**Step 4: Add release artifacts**
+**Step 4: Build and smoke-test all PIE binaries**
 
-Produire extension, checksum, SBOM et provenance. Vérifier le chargement réel de chaque artefact avec php --ri rabbitmq_native.
+Pour chaque ligne de release/pie-matrix.json :
 
-**Step 5: Commit**
+1. construire rabbit_rs.so avec la bonne ABI ;
+2. inspecter architecture et dépendances dynamiques ;
+3. charger l'extension avec php --ri rabbit_rs ;
+4. exécuter un smoke test publication/consommation ;
+5. créer l'archive PIE, le SHA-256 et la SBOM ;
+6. produire une attestation GitHub.
 
-    git add .github
-    git commit -m "ci: test and package supported PHP RabbitMQ matrices"
+Les dépendances Rust, Lapin et rustls sont liées statiquement autant que possible.
 
-### Task 32: Documenter installation, configuration et exploitation
+**Step 5: Publish a draft native release**
+
+Créer une GitHub Release en brouillon et immuable après publication. Attacher les 16 archives et leurs preuves. Ne pas publier le brouillon si une combinaison manque.
+
+**Step 6: Split and tag the Laravel package**
+
+Le workflow split-laravel publie packages/laravel-queue dans le dépôt miroir rabbit-rs/laravel-queue, en lecture seule, puis pousse exactement le même tag. Déclencher les mises à jour Packagist de rabbit-rs/native et rabbit-rs/laravel-queue.
+
+**Step 7: Verify installation as a user**
+
+Dans des conteneurs propres représentatifs :
+
+    pie install rabbit-rs/native
+    composer require rabbit-rs/laravel-queue
+    php --ri rabbit_rs
+    php artisan rabbit-rs:status --json
+
+Expected: PIE sélectionne le bon binaire et Composer accepte la version de plateforme.
+
+**Step 8: Publish only after synchronized verification**
+
+Publier la GitHub Release uniquement après validation des artefacts, du dépôt miroir, des deux métadonnées Packagist et du test d'installation utilisateur.
+
+**Step 9: Commit**
+
+    git add .github scripts/verify-release-assets.sh
+    git commit -m "ci: publish synchronized Rabbit RS releases"
+
+### Task 33: Documenter installation, configuration et exploitation
 
 **Files:**
 - Create: README.md
 - Create: docs/installation.md
+- Create: docs/distribution.md
 - Create: docs/configuration.md
 - Create: docs/laravel.md
 - Create: docs/topology.md
@@ -1429,12 +1575,17 @@ Produire extension, checksum, SBOM et provenance. Vérifier le chargement réel 
 - Create: docs/octane.md
 - Create: docs/troubleshooting.md
 - Create: examples/laravel/
+- Create: scripts/test-docs.sh
 
 **Step 1: Write documentation acceptance checklist**
 
 Le lecteur doit pouvoir :
 
-- installer l'extension ;
+- installer l'extension avec pie install rabbit-rs/native ;
+- installer le bridge avec composer require rabbit-rs/laravel-queue ;
+- utiliser PIE dans un Dockerfile sans image Rabbit RS dédiée ;
+- compiler localement avec Cargo pour contribuer ;
+- comprendre pourquoi Composer ne modifie pas le système PHP ;
 - déclarer deux vhosts ;
 - publier et lancer queue:work ;
 - choisir declare/verify/external ;
@@ -1446,9 +1597,11 @@ Le lecteur doit pouvoir :
 - configurer Supervisor/Kubernetes ;
 - utiliser Octane sans retenir Request.
 
+Indiquer explicitement que PECL, les paquets Debian/RPM/APK, un plugin Composer installant des binaires et les images PHP complètes ne sont pas des canaux V1.
+
 **Step 2: Add copy-paste examples**
 
-Tous les exemples doivent être exécutés dans la CI documentation ou par scripts de smoke test.
+Tous les exemples sont exécutés en CI. Le README commence par les deux commandes d'installation et un exemple Laravel minimal.
 
 **Step 3: Verify links and examples**
 
@@ -1459,9 +1612,9 @@ Expected: PASS.
 **Step 4: Commit**
 
     git add README.md docs examples scripts/test-docs.sh
-    git commit -m "docs: document native RabbitMQ Laravel operations"
+    git commit -m "docs: document Rabbit RS installation and operations"
 
-### Task 33: Effectuer la vérification de release
+### Task 34: Effectuer la vérification de release
 
 **Files:**
 - Create: docs/release-checklist.md
@@ -1469,7 +1622,7 @@ Expected: PASS.
 
 **Step 1: Run all fast checks**
 
-Run: ./scripts/check.sh && ./scripts/test-extension.sh
+Run: ./scripts/check.sh && ./scripts/test-extension.sh && ./scripts/validate-distribution.sh
 
 Expected: PASS.
 
@@ -1491,26 +1644,41 @@ Run: benchmarks/laravel/scripts/run-matrix.sh --verify-budget benchmarks/baselin
 
 Expected: PASS.
 
-**Step 5: Verify artifacts**
+**Step 5: Verify all release assets**
 
-Charger chaque extension produite avec la bonne ABI PHP et exécuter le smoke test de publication/consommation.
+Run: ./scripts/verify-release-assets.sh --release-tag VERSION
 
-**Step 6: Record evidence**
+Expected: 16 archives valides, 16 checksums valides, SBOM et attestation présentes, aucun build debug.
 
-Ajouter versions, checksums, résultats, doublons observés et temps de recovery dans docs/release-checklist.md.
+**Step 6: Verify fresh user installation**
 
-**Step 7: Commit**
+Exécuter dans la matrice de conteneurs propres :
+
+    pie install rabbit-rs/native:VERSION
+    composer require rabbit-rs/laravel-queue:^MAJOR
+    php --ri rabbit_rs
+
+Expected: PASS sur les 16 combinaisons annoncées.
+
+**Step 7: Record evidence**
+
+Ajouter versions, checksums, résultats, doublons observés, temps de recovery, URLs Packagist et tag du dépôt miroir dans docs/release-checklist.md.
+
+**Step 8: Commit**
 
     git add CHANGELOG.md docs/release-checklist.md
-    git commit -m "chore: record native RabbitMQ release verification"
+    git commit -m "chore: record Rabbit RS release verification"
 
 ## Critères de fin
 
 - Tous les tests Rust, PHPT, PHPUnit et matrices Composer passent.
-- Les artefacts PHP 8.4/8.5 glibc/musl se chargent sur x86_64 et ARM64.
+- Les 16 artefacts PIE PHP 8.4/8.5, NTS/ZTS, glibc/musl et x86_64/ARM64 se chargent.
+- pie install rabbit-rs/native sélectionne et active le bon artefact.
+- composer require rabbit-rs/laravel-queue valide ext-rabbit_rs sans modifier le système.
+- Les tags et versions rabbit-rs/native, rabbit-rs/laravel-queue et ext-rabbit_rs sont synchronisés.
 - CLI, FPM, FrankenPHP, RoadRunner, Swoole et Open Swoole sont certifiés.
 - Un queue:work standard consomme un profil contenant plusieurs vhosts.
-- rabbitmq:work supervise plusieurs queue:work sans réimplémenter Worker.
+- rabbit-rs:work supervise plusieurs queue:work sans réimplémenter Worker.
 - Le lab chaos ne constate aucune perte silencieuse.
 - Les doublons des fenêtres ambiguës sont mesurés et documentés.
 - Les defaults de batch, prefetch et buffers proviennent des benchmarks.
