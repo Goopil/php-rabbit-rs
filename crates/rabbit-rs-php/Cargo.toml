@@ -1,0 +1,16 @@
+[package]
+name = "rabbit-rs-php"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rabbit-rs-core = { path = "../rabbit-rs-core" }
+
+[lints]
+workspace = true

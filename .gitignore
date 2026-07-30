@@ -1,3 +1,6 @@
 .idea
 .junie
 .worktrees/
+target/
+vendor/
+.phpunit.cache/

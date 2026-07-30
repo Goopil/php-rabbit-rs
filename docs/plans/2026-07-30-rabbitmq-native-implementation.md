@@ -76,10 +76,11 @@
 
 **Files:**
 - Create: Cargo.toml
+- Create: Cargo.lock
 - Create: composer.json
 - Create: .gitattributes
 - Create: rust-toolchain.toml
-- Create: .gitignore
+- Modify: .gitignore
 - Create: crates/rabbit-rs-core/Cargo.toml
 - Create: crates/rabbit-rs-core/src/lib.rs
 - Create: crates/rabbit-rs-php/Cargo.toml
@@ -137,7 +138,7 @@ Expected: PASS.
 
 **Step 5: Commit**
 
-    git add Cargo.toml composer.json .gitattributes rust-toolchain.toml .gitignore crates scripts/check.sh
+    git add Cargo.toml Cargo.lock composer.json .gitattributes rust-toolchain.toml .gitignore crates scripts/check.sh
     git commit -m "build: bootstrap native RabbitMQ workspace"
 
 ### Task 2: Modéliser et valider la configuration native

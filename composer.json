@@ -1,0 +1,18 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "rabbit-rs/native",
+    "type": "php-ext",
+    "description": "High-performance RabbitMQ transport for PHP and Laravel, powered by Rust",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4"
+    },
+    "php-ext": {
+        "extension-name": "rabbit_rs",
+        "priority": 80,
+        "support-zts": true,
+        "support-nts": true,
+        "os-families": ["linux"],
+        "download-url-method": ["pre-packaged-binary"]
+    }
+}

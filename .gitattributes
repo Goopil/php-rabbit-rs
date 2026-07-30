@@ -1,0 +1,8 @@
+/.github export-ignore
+/.idea export-ignore
+/.worktrees export-ignore
+/benchmarks export-ignore
+/docs export-ignore
+/lab export-ignore
+/packages export-ignore
+/scripts export-ignore
