@@ -60,6 +60,8 @@ impl QueueDefinition {
             kind: self.kind,
             dead_letter_exchange: None,
             dead_letter_routing_key: None,
+            message_ttl: None,
+            expires: None,
         })
     }
 }

@@ -329,6 +329,18 @@ async fn declare_queue(channel: &Channel, spec: &QueueSpec, passive: bool) -> Tr
             AMQPValue::LongString(routing_key.clone().into()),
         );
     }
+    if let Some(message_ttl) = spec.message_ttl {
+        arguments.insert(
+            "x-message-ttl".into(),
+            AMQPValue::LongUInt(duration_millis(message_ttl)),
+        );
+    }
+    if let Some(expires) = spec.expires {
+        arguments.insert(
+            "x-expires".into(),
+            AMQPValue::LongUInt(duration_millis(expires)),
+        );
+    }
 
     channel
         .queue_declare(
@@ -345,6 +357,10 @@ async fn declare_queue(channel: &Channel, spec: &QueueSpec, passive: bool) -> Tr
         .await
         .map(|_| ())
         .map_err(map_lapin_error)
+}
+
+fn duration_millis(duration: std::time::Duration) -> u32 {
+    u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
 }
 
 async fn bind_queue(channel: &Channel, spec: &BindingSpec) -> TransportResult<()> {

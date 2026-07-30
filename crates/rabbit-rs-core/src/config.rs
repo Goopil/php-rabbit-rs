@@ -169,6 +169,44 @@ pub enum TopologyMode {
     External,
 }
 
+/// Preferred delayed-delivery backend.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayMode {
+    Auto,
+    Plugin,
+    Ttl,
+}
+
+/// Bounded delayed-delivery configuration shared by topology and publishers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelayConfig {
+    pub mode: DelayMode,
+    pub buckets: Vec<Duration>,
+    pub max_buckets: usize,
+    pub queue_expiry_margin: Duration,
+    pub detection_timeout: Duration,
+}
+
+impl DelayConfig {
+    #[must_use]
+    pub const fn new(
+        mode: DelayMode,
+        buckets: Vec<Duration>,
+        max_buckets: usize,
+        queue_expiry_margin: Duration,
+        detection_timeout: Duration,
+    ) -> Self {
+        Self {
+            mode,
+            buckets,
+            max_buckets,
+            queue_expiry_margin,
+            detection_timeout,
+        }
+    }
+}
+
 impl FromStr for TopologyMode {
     type Err = ConfigError;
 

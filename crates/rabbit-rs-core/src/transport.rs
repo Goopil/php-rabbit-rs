@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -92,6 +92,8 @@ pub struct QueueSpec {
     pub kind: QueueKind,
     pub dead_letter_exchange: Option<String>,
     pub dead_letter_routing_key: Option<String>,
+    pub message_ttl: Option<Duration>,
+    pub expires: Option<Duration>,
 }
 
 impl QueueSpec {
@@ -105,6 +107,8 @@ impl QueueSpec {
             kind: QueueKind::Quorum,
             dead_letter_exchange: None,
             dead_letter_routing_key: None,
+            message_ttl: None,
+            expires: None,
         }
     }
 }

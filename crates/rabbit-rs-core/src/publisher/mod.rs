@@ -1,6 +1,7 @@
 pub mod actor;
 pub mod batcher;
 pub mod confirms;
+pub mod delay;
 
 use std::{error::Error, fmt, time::Duration};
 
