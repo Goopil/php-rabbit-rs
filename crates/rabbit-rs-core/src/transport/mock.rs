@@ -36,7 +36,7 @@ pub enum TransportOperation {
 struct MockState {
     operations: Vec<TransportOperation>,
     connect_results: VecDeque<TransportResult<()>>,
-    confirmations: VecDeque<TransportResult<PublishConfirmation>>,
+    confirmations: VecDeque<MockConfirmation>,
     deliveries: VecDeque<TransportResult<Delivery>>,
     operation_results: VecDeque<TransportResult<()>>,
 }
@@ -52,7 +52,15 @@ impl MockTransport {
     }
 
     pub fn push_confirmation(&self, result: TransportResult<PublishConfirmation>) {
-        self.state().confirmations.push_back(result);
+        self.state()
+            .confirmations
+            .push_back(MockConfirmation::Ready(result));
+    }
+
+    pub fn push_pending_confirmation(&self) {
+        self.state()
+            .confirmations
+            .push_back(MockConfirmation::Pending);
     }
 
     pub fn push_delivery(&self, delivery: TransportResult<Delivery>) {
@@ -199,24 +207,36 @@ impl PublisherChannel for MockPublisherChannel {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .confirmations
             .pop_front()
-            .unwrap_or(Ok(PublishConfirmation::NotRequested));
+            .unwrap_or(MockConfirmation::Ready(Ok(
+                PublishConfirmation::NotRequested,
+            )));
 
         Ok(Box::new(MockPublishReceipt {
-            result: Some(result),
+            confirmation: Some(result),
         }))
     }
 }
 
+enum MockConfirmation {
+    Ready(TransportResult<PublishConfirmation>),
+    Pending,
+}
+
 struct MockPublishReceipt {
-    result: Option<TransportResult<PublishConfirmation>>,
+    confirmation: Option<MockConfirmation>,
 }
 
 #[async_trait]
 impl PublishReceipt for MockPublishReceipt {
     async fn wait(mut self: Box<Self>) -> TransportResult<PublishConfirmation> {
-        self.result
+        match self
+            .confirmation
             .take()
-            .unwrap_or_else(|| Err(TransportError::closed("confirmation already consumed")))
+            .ok_or_else(|| TransportError::closed("confirmation already consumed"))?
+        {
+            MockConfirmation::Ready(result) => result,
+            MockConfirmation::Pending => std::future::pending().await,
+        }
     }
 }
 

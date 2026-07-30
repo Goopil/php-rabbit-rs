@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures_lite::StreamExt;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
@@ -247,7 +248,7 @@ impl DeliveryStream for LapinDeliveryStream {
                         exchange: delivery.exchange.to_string(),
                         routing_key: delivery.routing_key.to_string(),
                         redelivered: delivery.redelivered,
-                        payload: delivery.data,
+                        payload: Bytes::from(delivery.data),
                     })
                 },
             )
@@ -395,7 +396,7 @@ fn map_returned_message(message: lapin::message::BasicReturnMessage) -> Returned
         reply_text: reply_text.to_string(),
         exchange: delivery.exchange.to_string(),
         routing_key: delivery.routing_key.to_string(),
-        payload: delivery.data,
+        payload: Bytes::from(delivery.data),
     }
 }
 

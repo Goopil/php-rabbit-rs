@@ -6,6 +6,7 @@ pub mod config;
 pub mod consumer;
 pub mod error;
 pub mod pool;
+pub mod publisher;
 pub mod recovery;
 pub mod runtime;
 pub mod topology;

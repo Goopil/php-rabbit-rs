@@ -1,6 +1,7 @@
 use std::{error::Error, fmt};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 
 use crate::config::BrokerConfig;
 
@@ -156,7 +157,7 @@ impl Default for PublishProperties {
 pub struct PublishRequest {
     pub exchange: String,
     pub routing_key: String,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
     pub mandatory: bool,
     pub properties: PublishProperties,
 }
@@ -166,12 +167,12 @@ impl PublishRequest {
     pub fn new(
         exchange: impl Into<String>,
         routing_key: impl Into<String>,
-        payload: Vec<u8>,
+        payload: impl Into<Bytes>,
     ) -> Self {
         Self {
             exchange: exchange.into(),
             routing_key: routing_key.into(),
-            payload,
+            payload: payload.into(),
             mandatory: false,
             properties: PublishProperties::default(),
         }
@@ -190,7 +191,7 @@ pub struct ReturnedMessage {
     pub reply_text: String,
     pub exchange: String,
     pub routing_key: String,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,7 +225,7 @@ pub struct Delivery {
     pub exchange: String,
     pub routing_key: String,
     pub redelivered: bool,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 #[async_trait]
@@ -342,6 +343,8 @@ pub trait DeliveryStream: Send {
 mod tests {
     use std::time::Duration;
 
+    use bytes::Bytes;
+
     use super::{
         ConsumerRequest, Delivery, PublishConfirmation, PublishRequest, QueueSpec, Transport,
         TransportError, TransportErrorKind,
@@ -423,7 +426,7 @@ mod tests {
             exchange: "events".to_owned(),
             routing_key: "jobs".to_owned(),
             redelivered: false,
-            payload: b"job".to_vec(),
+            payload: Bytes::from_static(b"job"),
         }));
 
         let connection = transport.connect(&broker()).await.expect("connection");
