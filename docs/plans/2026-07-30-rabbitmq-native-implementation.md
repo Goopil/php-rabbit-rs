@@ -20,6 +20,8 @@
 - Préserver les changements utilisateur non liés.
 - Un commit logique après chaque tâche verte.
 - Ne pas figer les valeurs de batching ou de prefetch avant le jalon benchmark.
+- Conserver dans une capacité globale bornée les publications non envoyées ou ambiguës pendant une coupure, puis les rejouer automatiquement avec le même message_id et la deadline originale après recovery.
+- Ne pas présenter cette rétention mémoire comme durable : un crash du processus nécessite un outbox externe pour garantir le replay.
 
 ## Arborescence cible
 
@@ -453,7 +455,7 @@ Tester :
 - basic.return avant ACK ;
 - timeout ;
 - buffer plein retourne Backpressure ;
-- coupure avant confirm retourne Ambiguous ;
+- coupure avant confirm classe la séquence Ambiguous dans le ledger interne ;
 - message_id conservé lors d'une republication.
 
 **Step 2: Verify failure**
@@ -478,6 +480,8 @@ Expected: FAIL.
     }
 
 L'acteur possède le ledger de séquences. Il ne résout pas un ACK routé avant d'avoir traité le flux basic.return correspondant.
+
+À ce stade, Ambiguous est un état interne. La tâche 9 bis remplace sa résolution immédiate par une rétention bornée et un replay automatique après recovery.
 
 **Step 4: Verify**
 
@@ -536,6 +540,81 @@ Expected: PASS.
 
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add delayed exchange and TTL fallback"
+
+### Task 9 bis: Rejouer les publications après reconnexion
+
+**Files:**
+- Modify: crates/rabbit-rs-core/src/publisher/mod.rs
+- Modify: crates/rabbit-rs-core/src/publisher/actor.rs
+- Modify: crates/rabbit-rs-core/src/publisher/confirms.rs
+- Modify: crates/rabbit-rs-core/src/pool/connection_actor.rs
+- Create: crates/rabbit-rs-core/tests/publisher_recovery.rs
+
+**Step 1: Write failing publisher recovery tests**
+
+Vérifier :
+
+- une publication acceptée pendant Recovering reste suspendue et part après Ready ;
+- un message encore dans le batch au moment de la coupure est conservé ;
+- une publication envoyée sans confirm est classée Ambiguous, replacée dans le buffer et automatiquement republiée ;
+- la republication conserve exactement le message_id, la destination, les propriétés, le payload en Bytes et la deadline originale ;
+- le nouveau channel active publisher confirms avant tout replay ;
+- le replay ne commence qu'après la restauration de topologie pour la nouvelle génération ;
+- un confirm tardif provenant de l'ancienne génération est ignoré et l'attente n'est résolue qu'une fois ;
+- plusieurs coupures successives ne dupliquent pas une entrée dans le ledger de replay ;
+- ACK, NACK et basic.return restent terminaux après replay ;
+- l'expiration de la deadline pendant la coupure retourne Timeout sans publier après Ready ;
+- une erreur permanente de reconnexion termine toutes les attentes concernées sans boucle de retry ;
+- la capacité globale couvre commandes, batches, replay et confirms en vol ; lorsqu'elle est atteinte, try_publish retourne Backpressure même si l'acteur continue de drainer son canal mpsc ;
+- la fermeture explicite réveille toutes les attentes avec une erreur typée ;
+- aucun test ne promet un replay après crash du processus, le buffer étant volontairement mémoire-only.
+
+**Step 2: Verify failure**
+
+Run: cargo test -p rabbit-rs-core --test publisher_recovery
+
+Expected: FAIL parce que connection_lost résout actuellement les séquences Ambiguous et détruit le batch.
+
+**Step 3: Implement the suspended publisher lifecycle**
+
+Ajouter au publisher les phases Ready et Suspended. Le coordinateur de connexion transmet uniquement des événements bornés et ordonnés :
+
+    enum PublisherConnectionEvent {
+        Recovering { generation: u64 },
+        Ready {
+            generation: u64,
+            channel: Arc<dyn PublisherChannel>,
+            topology_restored: bool,
+        },
+        FailedPermanent { generation: u64, error: TransportError },
+    }
+
+Au passage vers Recovering, annuler les futures de confirm de l'ancienne génération, retirer leurs entrées du ledger actif et replacer les PublishRequest complets dans une deque de replay. Ne pas résoudre les waiters Ambiguous. Les payloads restent des Bytes afin que cette transition ne copie pas leur contenu.
+
+Le ledger doit conserver pour chaque publication la requête originale, son waiter, sa deadline absolue, sa génération d'envoi et un identifiant interne unique. Une entrée ne peut exister qu'une fois entre batch, replay et confirms en vol. Une nouvelle séquence AMQP est attribuée à chaque republication, sans modifier message_id.
+
+PublisherHandle acquiert par try_acquire_owned un permit d'un Semaphore dimensionné à la capacité globale avant d'accepter la commande. Le permit suit l'entrée jusqu'à son état terminal ; le simple drainage du mpsc ne libère donc pas de capacité pendant une coupure.
+
+Lors de Ready, rejeter les générations anciennes ou identiques, vérifier topology_restored, activer confirm_select sur le nouveau channel, puis rejouer d'abord la deque existante avant les nouvelles commandes. La deadline originale est vérifiée avant chaque tentative et utilisée pour le timeout de confirm. Une erreur recoverable replace l'entrée une seule fois en replay ; NACK, return, timeout, erreur permanente et fermeture sont terminaux.
+
+Le ConnectionActor reste seul responsable du backoff et de l'ouverture réseau. Il ne republie rien lui-même ; après la réconciliation de topologie, le coordinateur lui fournit le nouveau PublisherChannel et la génération au PublisherActor.
+
+**Step 4: Verify targeted behavior**
+
+Run: cargo test -p rabbit-rs-core --test publisher_recovery
+
+Expected: PASS sans attente réelle grâce au temps Tokio suspendu.
+
+**Step 5: Verify publisher regressions**
+
+Run: cargo test -p rabbit-rs-core --test publisher_safety --test publisher_recovery
+
+Expected: PASS. Adapter publisher_safety pour considérer Ambiguous comme un état interne rejoué, et non comme un résultat utilisateur immédiat.
+
+**Step 6: Commit**
+
+    git add crates/rabbit-rs-core docs/plans
+    git commit -m "feat(core): replay publishes after connection recovery"
 
 ### Task 10: Implémenter ConsumerSet et les jetons de delivery
 

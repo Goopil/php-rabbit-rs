@@ -107,7 +107,11 @@ Le publisher natif :
 
 Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. Plusieurs requêtes Octane concurrentes peuvent être regroupées par l'acteur. La méthode publishBatch transmet un tableau complet en une seule traversée FFI et constitue le chemin rapide pour Laravel bulk.
 
-Une coupure avant confirmation rend l'état ambigu. La politique at-least-once autorise une republication avec le même message_id. Cela peut créer un doublon, jamais une perte silencieuse. Les applications doivent rendre leurs jobs idempotents.
+Une coupure avant confirmation rend l'état ambigu. Par défaut, la politique at-least-once conserve en mémoire du processus les publications non envoyées et ambiguës, puis les republie automatiquement avec le même message_id lorsque la connexion, la topologie et un channel avec confirms sont de nouveau prêts. La deadline originale continue de s'appliquer pendant la coupure : elle n'est jamais réinitialisée par une reconnexion.
+
+Le publisher passe en état suspendu pendant la recovery mais continue d'accepter des commandes tant que sa capacité globale bornée n'est pas atteinte. Cette capacité couvre les commandes en attente, les batches et les confirms en vol afin qu'un acteur qui draine son canal pendant une longue coupure ne puisse pas accumuler une mémoire non bornée. Une fois la capacité atteinte, les nouvelles publications reçoivent Backpressure.
+
+Une publication jamais écrite peut être rejouée sans ambiguïté. Une publication écrite mais non confirmée est rejouée automatiquement pour éviter toute perte silencieuse ; cela peut créer un doublon et impose donc des jobs idempotents. ACK, NACK, basic.return, erreur permanente ou expiration de deadline sont terminaux et résolvent l'attente une seule fois. Cette garantie est locale au processus : un crash du processus PHP perd le buffer mémoire ; une garantie au-delà du crash nécessiterait un outbox persistant, hors périmètre de la V1.
 
 ## Consommation multi-vhost
 
@@ -170,7 +174,7 @@ La restauration suit un ordre déterministe :
 6. QoS ;
 7. consumers.
 
-Les publisher confirms en attente sont résolus selon leur état connu ou ambigu. Les messages consommés mais non acquittés sont redélivrés par RabbitMQ.
+Les publisher confirms interrompus sont classés comme ambigus sans résoudre immédiatement l'appel, puis replacés dans le buffer borné de replay. Après une nouvelle génération, la topologie et le mode confirm sont restaurés avant leur republication. Les messages consommés mais non acquittés sont redélivrés par RabbitMQ.
 
 ## Topologie
 
