@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/rabbit-rs-native
 
-**Prochaine étape :** Task 10 — Implémenter ConsumerSet et les jetons de delivery.
+**Prochaine étape :** Task 11 — Ajouter les compteurs attempts et poison-message.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -41,11 +41,11 @@
 - [x] Task 8 — Publisher borné, batching, confirms et mandatory returns (`90d3089`).
 - [x] Task 9 — Délais par plugin et fallback TTL (`bae220b`).
 - [x] Task 9 bis — Rétention bornée et replay publisher après reconnexion (`241f77d`).
-- [ ] Task 10 — ConsumerSet et jetons de delivery.
+- [x] Task 10 — ConsumerSet et jetons de delivery (`380a95d`).
 - [ ] Task 11 — Compteurs attempts et poison-message.
 - [ ] Task 12 — Snapshot de métriques et gate du Milestone A.
 
-Le dernier checkpoint post-commit exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 76 tests Rust et validation Composer. Le worktree est propre au commit `241f77d`.
+Le dernier checkpoint post-commit exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 85 tests Rust et validation Composer. Le worktree est propre au commit `380a95d`.
 
 ## Arborescence cible
 
