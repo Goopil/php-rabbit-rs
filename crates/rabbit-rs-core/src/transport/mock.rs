@@ -38,6 +38,7 @@ struct MockState {
     connect_results: VecDeque<TransportResult<()>>,
     confirmations: VecDeque<TransportResult<PublishConfirmation>>,
     deliveries: VecDeque<TransportResult<Delivery>>,
+    operation_results: VecDeque<TransportResult<()>>,
 }
 
 #[derive(Clone, Default)]
@@ -56,6 +57,10 @@ impl MockTransport {
 
     pub fn push_delivery(&self, delivery: TransportResult<Delivery>) {
         self.state().deliveries.push_back(delivery);
+    }
+
+    pub fn push_operation_result(&self, result: TransportResult<()>) {
+        self.state().operation_results.push_back(result);
     }
 
     #[must_use]
@@ -140,33 +145,37 @@ impl MockPublisherChannel {
             .operations
             .push(operation);
     }
+
+    fn record_topology(&self, operation: TransportOperation) -> TransportResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations.push(operation);
+        state.operation_results.pop_front().unwrap_or(Ok(()))
+    }
 }
 
 #[async_trait]
 impl TopologyChannel for MockPublisherChannel {
     async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record(TransportOperation::DeclareExchange(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::DeclareExchange(spec.clone()))
     }
 
     async fn verify_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record(TransportOperation::VerifyExchange(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::VerifyExchange(spec.clone()))
     }
 
     async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record(TransportOperation::DeclareQueue(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::DeclareQueue(spec.clone()))
     }
 
     async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record(TransportOperation::VerifyQueue(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::VerifyQueue(spec.clone()))
     }
 
     async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
-        self.record(TransportOperation::BindQueue(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::BindQueue(spec.clone()))
     }
 
     async fn close(&self) -> TransportResult<()> {
@@ -223,33 +232,37 @@ impl MockConsumerChannel {
             .operations
             .push(operation);
     }
+
+    fn record_topology(&self, operation: TransportOperation) -> TransportResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations.push(operation);
+        state.operation_results.pop_front().unwrap_or(Ok(()))
+    }
 }
 
 #[async_trait]
 impl TopologyChannel for MockConsumerChannel {
     async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record(TransportOperation::DeclareExchange(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::DeclareExchange(spec.clone()))
     }
 
     async fn verify_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record(TransportOperation::VerifyExchange(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::VerifyExchange(spec.clone()))
     }
 
     async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record(TransportOperation::DeclareQueue(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::DeclareQueue(spec.clone()))
     }
 
     async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record(TransportOperation::VerifyQueue(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::VerifyQueue(spec.clone()))
     }
 
     async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
-        self.record(TransportOperation::BindQueue(spec.clone()));
-        Ok(())
+        self.record_topology(TransportOperation::BindQueue(spec.clone()))
     }
 
     async fn close(&self) -> TransportResult<()> {

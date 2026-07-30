@@ -316,6 +316,18 @@ async fn declare_queue(channel: &Channel, spec: &QueueSpec, passive: bool) -> Tr
             AMQPValue::LongString("quorum".into()),
         );
     }
+    if let Some(exchange) = &spec.dead_letter_exchange {
+        arguments.insert(
+            "x-dead-letter-exchange".into(),
+            AMQPValue::LongString(exchange.clone().into()),
+        );
+    }
+    if let Some(routing_key) = &spec.dead_letter_routing_key {
+        arguments.insert(
+            "x-dead-letter-routing-key".into(),
+            AMQPValue::LongString(routing_key.clone().into()),
+        );
+    }
 
     channel
         .queue_declare(

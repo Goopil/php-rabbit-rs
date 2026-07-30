@@ -8,4 +8,5 @@ pub mod error;
 pub mod pool;
 pub mod recovery;
 pub mod runtime;
+pub mod topology;
 pub mod transport;

@@ -89,6 +89,8 @@ pub struct QueueSpec {
     pub exclusive: bool,
     pub auto_delete: bool,
     pub kind: QueueKind,
+    pub dead_letter_exchange: Option<String>,
+    pub dead_letter_routing_key: Option<String>,
 }
 
 impl QueueSpec {
@@ -100,6 +102,8 @@ impl QueueSpec {
             exclusive: false,
             auto_delete: false,
             kind: QueueKind::Quorum,
+            dead_letter_exchange: None,
+            dead_letter_routing_key: None,
         }
     }
 }
