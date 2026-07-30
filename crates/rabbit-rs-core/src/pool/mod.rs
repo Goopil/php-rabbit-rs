@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod connection_actor;
 pub mod key;
 
 pub use key::ConnectionKey;

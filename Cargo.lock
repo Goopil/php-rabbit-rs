@@ -1365,6 +1365,7 @@ name = "rabbit-rs-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "fastrand",
  "futures-lite",
  "lapin",
  "secrecy",
