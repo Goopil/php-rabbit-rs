@@ -25,6 +25,7 @@
 ### Task 1: Charger le module et enregistrer les exceptions stables
 
 **Files:**
+- Create: `.cargo/config.toml`
 - Modify: `composer.json`
 - Modify: `crates/rabbit-rs-php/Cargo.toml`
 - Modify: `crates/rabbit-rs-php/src/lib.rs`
@@ -34,7 +35,7 @@
 - Create: `scripts/test-extension.sh`
 
 **Interfaces:**
-- Consumes: `ext_php_rs::prelude::{ModuleBuilder, PhpResult}` and `env!("CARGO_PKG_VERSION")`.
+- Consumes: `ext_php_rs::prelude::{ModuleBuilder, PhpResult}`, `ext_php_rs::zend::ce::exception`, and `env!("CARGO_PKG_VERSION")`.
 - Produces: module `rabbit_rs`, `Goopil\RabbitRs\Exception`, `BackpressureException`, `ConnectionException`, and `unavailable<T>() -> PhpResult<T>` for Task 2.
 
 - [ ] **Step 1: Add the PHPT runner and failing module test**
@@ -59,7 +60,7 @@ Rabbit RS extension metadata and exception hierarchy
 <?php
 function expect_true(bool $condition, string $message): void {
     if (!$condition) {
-        throw new RuntimeException($message);
+        throw new Exception($message);
     }
 }
 
@@ -68,7 +69,8 @@ expect_true(
     phpversion('rabbit_rs') === getenv('RABBIT_RS_EXPECTED_VERSION'),
     'extension version does not match Cargo'
 );
-expect_true(is_subclass_of(Goopil\RabbitRs\Exception::class, RuntimeException::class), 'base exception');
+expect_true(is_subclass_of(Goopil\RabbitRs\Exception::class, Exception::class), 'base exception');
+expect_true(is_subclass_of(Goopil\RabbitRs\Exception::class, Throwable::class), 'base throwable');
 expect_true(is_subclass_of(Goopil\RabbitRs\BackpressureException::class, Goopil\RabbitRs\Exception::class), 'backpressure exception');
 expect_true(is_subclass_of(Goopil\RabbitRs\ConnectionException::class, Goopil\RabbitRs\Exception::class), 'connection exception');
 expect_true((new ReflectionClass(Goopil\RabbitRs\BackpressureException::class))->isFinal(), 'backpressure final');
@@ -92,6 +94,15 @@ Expected: FAIL because the current `cdylib` has no PHP `get_module` entry point 
 
 - [ ] **Step 3: Register ext-php-rs and the exception hierarchy**
 
+Create the root `.cargo/config.toml` required by ext-php-rs for dynamically
+loaded PHP extensions on Linux and macOS. PHP resolves the intentionally
+undefined Zend symbols when it loads the extension:
+
+```toml
+[target.'cfg(not(target_os = "windows"))']
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+```
+
 Pin the dependency:
 
 ```toml
@@ -102,12 +113,16 @@ rabbit-rs-core = { path = "../rabbit-rs-core" }
 
 Change the root Composer name to `goopil/rabbit-rs-native` without changing `extension-name`.
 
-In `exception.rs`, define a safe `runtime_exception_class() -> &'static ClassEntry` using `ClassEntry::try_find("RuntimeException")` and fail during module startup if PHP 8.4 does not expose it. Register:
+In `exception.rs`, use ext-php-rs's safe `ext_php_rs::zend::ce::exception`
+accessor during module startup. The Rabbit RS base exception extends
+`\Exception` and therefore implements `\Throwable` transitively. Do not
+declare `implements Throwable` directly because PHP forbids that on user
+classes. Register:
 
 ```rust
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Exception")]
-#[php(extends(ce = runtime_exception_class, stub = "\\RuntimeException"))]
+#[php(extends(ce = ce::exception, stub = "\\Exception"))]
 #[derive(Default)]
 pub struct RabbitRsException;
 
@@ -166,7 +181,7 @@ Expected: PASS with exactly `OK` from the PHPT test and Composer package name `g
 - [ ] **Step 5: Commit**
 
 ```bash
-rtk git add Cargo.lock composer.json crates/rabbit-rs-php scripts/test-extension.sh
+rtk git add .cargo/config.toml Cargo.lock composer.json crates/rabbit-rs-php scripts/test-extension.sh
 rtk git commit -m "feat(extension): register Goopil namespace and exceptions"
 ```
 
@@ -285,6 +300,7 @@ rtk git commit -m "feat(extension): expose native pool publisher and consumer AP
 - Naming spec coverage: package, namespace, extension name, PHP floor, version and exceptions are mapped to Tasks 1–2.
 - Task 13 product coverage: every planned class and method has a reflection assertion and stub declaration.
 - Safety coverage: no successful placeholder operation, no retained Zend values, no exposed Lapin type, and `unsafe_code` remains forbidden.
+- Exception consistency: `Goopil\RabbitRs\Exception` extends `\Exception`, is transitively `\Throwable`, and never implements `Throwable` directly.
 - Scope boundary: Tasks 14 and 15 are deliberately excluded; they will replace `unavailable()` with conversion/state and lifecycle behavior through separate TDD plans.
 - Type consistency: `Binary<u8>` maps payloads to PHP strings, `ZendHashTable` maps PHP arrays without premature owned conversion, and `i64` maps PHP integers.
 - Placeholder scan: no `TBD`, `TODO`, or unspecified implementation step remains.

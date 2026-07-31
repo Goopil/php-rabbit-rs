@@ -19,6 +19,10 @@ The extension classes are therefore `Goopil\RabbitRs\Pool`,
 `Goopil\RabbitRs\Consumer`, and `Goopil\RabbitRs\Delivery`. The stable
 exception hierarchy starts at `Goopil\RabbitRs\Exception`, with
 `BackpressureException` and `ConnectionException` as specialized children.
+The base Rabbit RS exception extends PHP's built-in `\Exception`, so it is
+also a `\Throwable` transitively. It must not declare `implements Throwable`
+directly because PHP reserves direct `Throwable` implementation for its
+built-in `Exception` and `Error` hierarchies.
 
 ## Milestone B Boundary
 
@@ -50,6 +54,7 @@ extension name loaded by PHP.
 ## Verification
 
 Reflection tests load the compiled extension into PHP 8.4 and verify class
-names, final modifiers, method signatures, exception inheritance, extension
-name, and version. Later PHPT tasks add value conversion, state transition,
-fork, CLI, and FPM behavior without changing this public naming contract.
+names, final modifiers, method signatures, inheritance from both `\Exception`
+and `\Throwable`, extension name, and version. Later PHPT tasks add value
+conversion, state transition, fork, CLI, and FPM behavior without changing
+this public naming contract.
