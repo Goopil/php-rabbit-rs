@@ -4,7 +4,12 @@
 
 mod classes;
 
-use classes::exception::{BackpressureException, ConnectionException, RabbitRsException};
+use classes::{
+    consumer::Consumer,
+    delivery::Delivery,
+    exception::{BackpressureException, ConnectionException, RabbitRsException},
+    pool::Pool,
+};
 use ext_php_rs::prelude::{ModuleBuilder, php_module};
 
 #[php_module]
@@ -15,4 +20,7 @@ pub fn module(module: ModuleBuilder) -> ModuleBuilder {
         .class::<RabbitRsException>()
         .class::<BackpressureException>()
         .class::<ConnectionException>()
+        .class::<Pool>()
+        .class::<Consumer>()
+        .class::<Delivery>()
 }

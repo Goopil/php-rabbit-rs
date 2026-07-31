@@ -25,11 +25,11 @@
 
 ## Avancement
 
-**Dernière mise à jour :** 30 juillet 2026
+**Dernière mise à jour :** 31 juillet 2026
 
 **Branche d'implémentation :** feature/rabbit-rs-native
 
-**Prochaine étape :** Task 13 — Définir l'API et les stubs PHP du Milestone B.
+**Prochaine étape :** Task 14 — Tester conversions, erreurs et transitions PHP.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -44,8 +44,11 @@
 - [x] Task 10 — ConsumerSet et jetons de delivery (`380a95d`).
 - [x] Task 11 — Compteurs attempts et poison-message (`eb35412`).
 - [x] Task 12 — Snapshot de métriques et gate du Milestone A (`21aedee`).
+- [x] Task 13 — Définir l'API et les stubs PHP du Milestone B.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
+
+Le checkpoint de la Task 13 vérifie 100 tests Rust et 2 tests PHPT, ainsi que le formatage Rust, Clippy sans warning, le lint du stub PHP et la validation Composer stricte.
 
 ## Arborescence cible
 
@@ -831,7 +834,9 @@ Expected: FAIL.
 
 **Step 3: Implement thin ext-php-rs classes**
 
-Chaque objet PHP contient seulement un handle Arc ou identifiant natif. Convertir les erreurs Rust en exceptions PHP stables. Ne pas exposer Lapin.
+À ce checkpoint, les trois classes opérationnelles sont volontairement sans état et toutes leurs opérations échouent avec l'exception de base stable. La Task 14 introduira les handles natifs validés. Ne pas exposer Lapin.
+
+`ext-php-rs` 0.15.15 conserve tels quels les identifiants de paramètres Rust dans les arguments nommés PHP. Les méthodes frontières gardent donc les noms contractuels PHP, y compris `timeoutMs` et `delayMs`, puis consomment explicitement leurs paramètres inutilisés avant l'initialisation des handles natifs.
 
 **Step 4: Verify**
 

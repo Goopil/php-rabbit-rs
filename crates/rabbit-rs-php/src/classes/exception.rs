@@ -24,7 +24,6 @@ pub struct BackpressureException;
 #[derive(Default)]
 pub struct ConnectionException;
 
-#[expect(dead_code, reason = "reserved for the Task 2 native handle stubs")]
 pub(crate) fn unavailable<T>(operation: &str) -> PhpResult<T> {
     Err(PhpException::from_class::<RabbitRsException>(format!(
         "{operation} is not available before native handle initialization"
