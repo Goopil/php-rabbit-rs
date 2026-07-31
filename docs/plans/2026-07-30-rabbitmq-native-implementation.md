@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Livrer l'écosystème Rabbit RS : l'extension PHP rabbit_rs et le package rabbit-rs/laravel-queue, performants, at-least-once et capables de mutualiser publication et consommation sur plusieurs vhosts avec reconnexion automatique.
+**Goal:** Livrer l'écosystème Rabbit RS : l'extension PHP rabbit_rs et le package goopil/rabbit-rs-laravel, performants, at-least-once et capables de mutualiser publication et consommation sur plusieurs vhosts avec reconnexion automatique.
 
-**Architecture:** Un workspace Rust contient rabbit-rs-core et l'extension rabbit-rs-php construisant ext-rabbit_rs. Le package Composer rabbit-rs/laravel-queue adapte cette API aux contrats Laravel Queue sans remplacer Illuminate\Queue\Worker. Les connexions et channels sont pilotés par des acteurs Tokio par processus PHP, tandis qu'un laboratoire RabbitMQ reproductible valide performances et scénarios de panne.
+**Architecture:** Un workspace Rust contient rabbit-rs-core et l'extension rabbit-rs-php construisant ext-rabbit_rs. Le package Composer goopil/rabbit-rs-laravel adapte cette API aux contrats Laravel Queue sans remplacer Illuminate\Queue\Worker. Les connexions et channels sont pilotés par des acteurs Tokio par processus PHP, tandis qu'un laboratoire RabbitMQ reproductible valide performances et scénarios de panne.
 
 **Tech Stack:** Rust stable, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, PIE 1.5+, Composer, Packagist, Laravel 12/13, PHPUnit, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus, Toxiproxy, Criterion.
 
@@ -137,7 +137,7 @@ Déclarer resolver = "2", les deux members et les dépendances partagées. Épin
 Le composer.json racine représente le package PIE, pas le package Laravel :
 
     {
-        "name": "rabbit-rs/native",
+        "name": "goopil/rabbit-rs-native",
         "type": "php-ext",
         "description": "High-performance RabbitMQ transport for PHP and Laravel, powered by Rust",
         "license": "MIT",
@@ -790,12 +790,12 @@ Expected: PASS.
 
 Créer PHPT vérifiant l'existence de :
 
-    RabbitRs\Native\Pool
-    RabbitRs\Native\Consumer
-    RabbitRs\Native\Delivery
-    RabbitRs\Native\Exception
-    RabbitRs\Native\BackpressureException
-    RabbitRs\Native\ConnectionException
+    Goopil\RabbitRs\Pool
+    Goopil\RabbitRs\Consumer
+    Goopil\RabbitRs\Delivery
+    Goopil\RabbitRs\Exception
+    Goopil\RabbitRs\BackpressureException
+    Goopil\RabbitRs\ConnectionException
 
 Vérifier aussi que extension_loaded('rabbit_rs') est vrai et que phpversion('rabbit_rs') correspond à la version Cargo et au tag de release.
 
@@ -950,12 +950,12 @@ Expected: FAIL.
 
 **Step 3: Implement package skeleton**
 
-Utiliser le namespace RabbitRs\Laravel, illuminate/queue et Orchestra Testbench avec une matrice Composer Laravel 12/13. Le package porte exactement le nom rabbit-rs/laravel-queue et exige PHP ^8.4, ext-rabbit_rs avec la même version majeure, et illuminate/queue ^12.0 || ^13.0.
+Utiliser le namespace Goopil\RabbitRs\Laravel, illuminate/queue et Orchestra Testbench avec une matrice Composer Laravel 12/13. Le package porte exactement le nom goopil/rabbit-rs-laravel et exige PHP ^8.4, ext-rabbit_rs avec la même version majeure, et illuminate/queue ^12.0 || ^13.0.
 
 Le composer.json du package contient au minimum :
 
     {
-        "name": "rabbit-rs/laravel-queue",
+        "name": "goopil/rabbit-rs-laravel",
         "type": "library",
         "require": {
             "php": "^8.4",
@@ -964,7 +964,7 @@ Le composer.json du package contient au minimum :
         },
         "autoload": {
             "psr-4": {
-                "RabbitRs\\Laravel\\": "src/"
+                "Goopil\\RabbitRs\\Laravel\\": "src/"
             }
         }
     }
@@ -1000,7 +1000,7 @@ Expected: FAIL.
 
 **Step 3: Implement connector and factory**
 
-Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à RabbitRs\Native\Pool.
+Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à Goopil\RabbitRs\Pool.
 
 **Step 4: Verify**
 
@@ -1548,13 +1548,13 @@ Expected: PASS.
 
 Le script vérifie :
 
-- le package racine s'appelle rabbit-rs/native et son type est php-ext ;
+- le package racine s'appelle goopil/rabbit-rs-native et son type est php-ext ;
 - extension-name vaut rabbit_rs ;
 - download-url-method contient seulement pre-packaged-binary ;
 - NTS et ZTS sont annoncés ;
 - Linux est la seule famille d'OS annoncée en V1 ;
-- le package Laravel s'appelle rabbit-rs/laravel-queue ;
-- son namespace est RabbitRs\Laravel ;
+- le package Laravel s'appelle goopil/rabbit-rs-laravel ;
+- son namespace est Goopil\RabbitRs\Laravel ;
 - il exige ext-rabbit_rs avec la même version majeure ;
 - versions Cargo, extension PHP et tag de release sont cohérentes.
 
@@ -1643,14 +1643,14 @@ Créer une GitHub Release en brouillon et immuable après publication. Attacher 
 
 **Step 6: Split and tag the Laravel package**
 
-Le workflow split-laravel publie packages/laravel-queue dans le dépôt miroir rabbit-rs/laravel-queue, en lecture seule, puis pousse exactement le même tag. Déclencher les mises à jour Packagist de rabbit-rs/native et rabbit-rs/laravel-queue.
+Le workflow split-laravel publie packages/laravel-queue dans le dépôt miroir goopil/rabbit-rs-laravel, en lecture seule, puis pousse exactement le même tag. Déclencher les mises à jour Packagist de goopil/rabbit-rs-native et goopil/rabbit-rs-laravel.
 
 **Step 7: Verify installation as a user**
 
 Dans des conteneurs propres représentatifs :
 
-    pie install rabbit-rs/native
-    composer require rabbit-rs/laravel-queue
+    pie install goopil/rabbit-rs-native
+    composer require goopil/rabbit-rs-laravel
     php --ri rabbit_rs
     php artisan rabbit-rs:status --json
 
@@ -1685,8 +1685,8 @@ Publier la GitHub Release uniquement après validation des artefacts, du dépôt
 
 Le lecteur doit pouvoir :
 
-- installer l'extension avec pie install rabbit-rs/native ;
-- installer le bridge avec composer require rabbit-rs/laravel-queue ;
+- installer l'extension avec pie install goopil/rabbit-rs-native ;
+- installer le bridge avec composer require goopil/rabbit-rs-laravel ;
 - utiliser PIE dans un Dockerfile sans image Rabbit RS dédiée ;
 - compiler localement avec Cargo pour contribuer ;
 - comprendre pourquoi Composer ne modifie pas le système PHP ;
@@ -1758,8 +1758,8 @@ Expected: 16 archives valides, 16 checksums valides, SBOM et attestation présen
 
 Exécuter dans la matrice de conteneurs propres :
 
-    pie install rabbit-rs/native:VERSION
-    composer require rabbit-rs/laravel-queue:^MAJOR
+    pie install goopil/rabbit-rs-native:VERSION
+    composer require goopil/rabbit-rs-laravel:^MAJOR
     php --ri rabbit_rs
 
 Expected: PASS sur les 16 combinaisons annoncées.
@@ -1777,9 +1777,9 @@ Ajouter versions, checksums, résultats, doublons observés, temps de recovery, 
 
 - Tous les tests Rust, PHPT, PHPUnit et matrices Composer passent.
 - Les 16 artefacts PIE PHP 8.4/8.5, NTS/ZTS, glibc/musl et x86_64/ARM64 se chargent.
-- pie install rabbit-rs/native sélectionne et active le bon artefact.
-- composer require rabbit-rs/laravel-queue valide ext-rabbit_rs sans modifier le système.
-- Les tags et versions rabbit-rs/native, rabbit-rs/laravel-queue et ext-rabbit_rs sont synchronisés.
+- pie install goopil/rabbit-rs-native sélectionne et active le bon artefact.
+- composer require goopil/rabbit-rs-laravel valide ext-rabbit_rs sans modifier le système.
+- Les tags et versions goopil/rabbit-rs-native, goopil/rabbit-rs-laravel et ext-rabbit_rs sont synchronisés.
 - CLI, FPM, FrankenPHP, RoadRunner, Swoole et Open Swoole sont certifiés.
 - Un queue:work standard consomme un profil contenant plusieurs vhosts.
 - rabbit-rs:work supervise plusieurs queue:work sans réimplémenter Worker.

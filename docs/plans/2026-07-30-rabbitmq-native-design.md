@@ -43,18 +43,18 @@ Le nom public de l'écosystème est Rabbit RS. Sa tagline est : High-performance
 Les noms techniques sont :
 
 - dépôt principal : rabbit-rs/rabbit-rs ;
-- package PIE de l'extension : rabbit-rs/native ;
+- package PIE de l'extension : goopil/rabbit-rs-native ;
 - nom interne de l'extension PHP : rabbit_rs ;
 - dépendance de plateforme Composer : ext-rabbit_rs ;
-- package Laravel : rabbit-rs/laravel-queue ;
-- namespace PHP natif : RabbitRs\Native ;
-- namespace du package Laravel : RabbitRs\Laravel ;
+- package Laravel : goopil/rabbit-rs-laravel ;
+- namespace PHP natif : Goopil\RabbitRs ;
+- namespace du package Laravel : Goopil\RabbitRs\Laravel ;
 - crates Rust : rabbit-rs-core et rabbit-rs-php ;
 - driver Laravel : rabbit-rs ;
 - commandes Artisan : rabbit-rs:work et rabbit-rs:status ;
 - fichier de configuration : rabbit-rs.php.
 
-L'extension et le package Laravel utilisent une version synchronisée. Une release 1.2.0 produit donc rabbit-rs/native 1.2.0 et rabbit-rs/laravel-queue 1.2.0. Le package Laravel exige une version compatible de ext-rabbit_rs.
+L'extension et le package Laravel utilisent une version synchronisée. Une release 1.2.0 produit donc goopil/rabbit-rs-native 1.2.0 et goopil/rabbit-rs-laravel 1.2.0. Le package Laravel exige une version compatible de ext-rabbit_rs.
 
 ### Architecture hybride Laravel
 
@@ -68,7 +68,7 @@ Une commande rabbit-rs:work sera ajoutée dans un second jalon. Elle pourra supe
 
 1. rabbit-rs-core : crate Rust indépendant de PHP, contenant configuration, runtime, pool, acteurs AMQP, topologie, publication, consommation, scheduling, reconnexion et métriques.
 2. rabbit-rs-php : extension ext-php-rs exposant une API PHP réduite et transportant uniquement des valeurs possédées entre PHP et Rust.
-3. rabbit-rs/laravel-queue : package Composer contenant connecteur, driver Queue, Job, configuration, commandes et intégration Octane.
+3. goopil/rabbit-rs-laravel : package Composer contenant connecteur, driver Queue, Job, configuration, commandes et intégration Octane.
 
 Lapin est le client AMQP initial. Il utilise Tokio, gère AMQP 0-9-1, les publisher confirms et la récupération automatique. Il reste caché derrière une abstraction de transport afin de permettre son remplacement après benchmark.
 
@@ -307,11 +307,11 @@ La distribution optimise la simplicité pour l'utilisateur et sépare clairement
 
 ### Extension native
 
-Le dépôt principal est enregistré sur Packagist comme package rabbit-rs/native de type php-ext. Son composer.json racine déclare extension-name = rabbit_rs, Linux uniquement, support NTS et ZTS, et download-url-method = pre-packaged-binary.
+Le dépôt principal est enregistré sur Packagist comme package goopil/rabbit-rs-native de type php-ext. Son composer.json racine déclare extension-name = rabbit_rs, Linux uniquement, support NTS et ZTS, et download-url-method = pre-packaged-binary.
 
 L'installation publique est :
 
-    pie install rabbit-rs/native
+    pie install goopil/rabbit-rs-native
 
 PIE remplace PECL comme canal principal. Il sélectionne le bon binaire selon la version PHP, l'architecture, la libc et le mode NTS/ZTS, installe le fichier partagé et active l'extension dans la bonne configuration PHP.
 
@@ -332,9 +332,9 @@ La compilation depuis les sources reste documentée pour les contributeurs avec 
 
 ### Package Laravel
 
-Le package packages/laravel-queue est publié sur Packagist sous le nom rabbit-rs/laravel-queue. Son installation est :
+Le package packages/laravel-queue est publié sur Packagist sous le nom goopil/rabbit-rs-laravel. Son installation est :
 
-    composer require rabbit-rs/laravel-queue
+    composer require goopil/rabbit-rs-laravel
 
 Il exige PHP ^8.4, Laravel 12 ou 13 et ext-rabbit_rs avec la même version majeure. Composer vérifie la présence de l'extension mais ne tente jamais d'installer ou d'activer un binaire système.
 
