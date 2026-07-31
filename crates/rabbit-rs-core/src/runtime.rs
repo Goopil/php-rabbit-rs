@@ -100,18 +100,23 @@ impl RuntimeRegistry {
         key: ConnectionKey,
     ) -> Result<Arc<ConnectionHandle>, RuntimeCreationError> {
         let current_pid = self.pid_provider.current_pid();
+
+        let stale_state = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pid_changed = state
+                .as_ref()
+                .is_some_and(|process| process.pid != current_pid);
+            if pid_changed { state.take() } else { None }
+        };
+        Self::close_state(stale_state);
+
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pid_changed = state
-            .as_ref()
-            .is_some_and(|process| process.pid != current_pid);
-
-        if pid_changed {
-            Self::close_state(state.take());
-        }
-
         if state.is_none() {
             let runtime = self
                 .runtime_factory
@@ -138,11 +143,14 @@ impl RuntimeRegistry {
 
     /// Closes all process-local handles. Repeated calls have no effect.
     pub fn close(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self::close_state(state.take());
+        let stale_state = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.take()
+        };
+        Self::close_state(stale_state);
     }
 
     fn close_state(state: Option<ProcessState>) {
@@ -296,6 +304,38 @@ mod tests {
             .expect("second configuration");
 
         assert!(!Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn pid_change_drops_old_runtime_outside_the_mutex() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SlowDropFactory(Arc<AtomicBool>);
+        impl RuntimeFactory for SlowDropFactory {
+            fn create(&self) -> std::io::Result<Runtime> {
+                let runtime = Builder::new_current_thread().enable_all().build()?;
+                self.0.store(true, Ordering::SeqCst);
+                Ok(runtime)
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let pid = Arc::new(MutablePid::new(100));
+        let registry = RuntimeRegistry::with_dependencies(
+            pid.clone(),
+            Arc::new(SlowDropFactory(dropped.clone())),
+        );
+        let key = ConnectionKey::from_bytes([1; 32]);
+        let _inherited = registry.acquire(key).expect("parent acquisition");
+
+        pid.set(101);
+        let child = registry.acquire(key).expect("child acquisition");
+
+        assert!(!child.is_closed());
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "old runtime was replaced after PID change"
+        );
     }
 
     #[test]

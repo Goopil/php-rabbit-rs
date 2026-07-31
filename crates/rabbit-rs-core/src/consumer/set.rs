@@ -130,7 +130,7 @@ impl ConsumerSet {
                 .channel
                 .consume(ConsumerRequest::new(
                     subscription.queue.clone(),
-                    format!("rabbit-rs.{:?}", subscription.id),
+                    format!("rabbit-rs.{}", subscription.id.as_str()),
                 ))
                 .await
                 .map_err(|error| {

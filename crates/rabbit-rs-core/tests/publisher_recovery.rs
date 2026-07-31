@@ -394,6 +394,41 @@ async fn permanent_recovery_failure_is_terminal() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn ready_with_same_generation_as_recovering_resumes() {
+    let transport = MockTransport::default();
+    let actor = actor(&transport, 8).await;
+    actor
+        .connection_event(PublisherConnectionEvent::Recovering { generation: 3 })
+        .await
+        .expect("publisher suspended");
+    let waiter = actor
+        .try_publish(request(
+            "same-gen",
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("accepted while suspended");
+    tokio::task::yield_now().await;
+    assert!(publish_operations(&transport).is_empty());
+
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 3,
+            channel: new_channel(&transport).await,
+            topology_restored: true,
+        })
+        .await
+        .expect("publisher resumed with same generation");
+
+    assert_eq!(
+        waiter.wait().await.expect("confirmed after recovery"),
+        PublishOutcome::Confirmed {
+            message_id: "same-gen".to_owned()
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn explicit_close_wakes_retained_waiters() {
     let transport = MockTransport::default();
     let actor = actor(&transport, 8).await;

@@ -11,6 +11,11 @@ impl SubscriptionId {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Scheduling parameters attached to one subscription.

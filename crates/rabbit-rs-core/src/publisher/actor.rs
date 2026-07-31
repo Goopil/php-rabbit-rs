@@ -405,7 +405,7 @@ async fn handle_connection_event(
                     "publisher topology is not restored",
                 ));
             }
-            if generation <= state.generation {
+            if generation < state.generation {
                 return Err(PublishError::new(
                     PublishErrorKind::Transport,
                     "publisher recovery generation is stale",

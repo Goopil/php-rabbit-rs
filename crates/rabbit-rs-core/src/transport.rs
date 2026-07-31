@@ -236,6 +236,8 @@ pub struct Delivery {
     pub redelivered: bool,
     pub headers: Headers,
     pub payload: Bytes,
+    pub message_id: Option<String>,
+    pub correlation_id: Option<String>,
 }
 
 #[async_trait]
@@ -438,6 +440,8 @@ mod tests {
             redelivered: false,
             headers: super::Headers::new(),
             payload: Bytes::from_static(b"job"),
+            message_id: None,
+            correlation_id: None,
         }));
 
         let connection = transport.connect(&broker()).await.expect("connection");

@@ -54,6 +54,7 @@ struct ActorState {
     subscriptions: HashMap<SubscriptionId, RuntimeSubscription>,
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
     source_errors: VecDeque<ConsumerError>,
+    max_source_errors: usize,
     scheduler: WeightedFairScheduler,
     waiting: VecDeque<oneshot::Sender<Result<Delivery, ConsumerError>>>,
     in_flight: usize,
@@ -93,6 +94,7 @@ impl ActorState {
             subscriptions: runtime,
             buffers,
             source_errors: VecDeque::new(),
+            max_source_errors: max_in_flight.max(64),
             scheduler,
             waiting: VecDeque::new(),
             in_flight: 0,
@@ -138,10 +140,12 @@ impl ActorState {
                 )));
                 continue;
             };
-            let message_id = MessageId::new(format!(
-                "{}:{}:{}",
-                runtime.generation, runtime.channel_id, delivery.delivery_tag
-            ));
+            let message_id = MessageId::new(delivery.message_id.clone().unwrap_or_else(|| {
+                format!(
+                    "{}:{}:{}",
+                    runtime.generation, runtime.channel_id, delivery.delivery_tag
+                )
+            }));
             let attempts = AttemptsResolver::default()
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
@@ -202,6 +206,9 @@ pub(crate) async fn run_actor(
                     state.dispatch();
                 }
                 Err(error) => {
+                    if state.source_errors.len() >= state.max_source_errors {
+                        state.source_errors.pop_front();
+                    }
                     state.source_errors.push_back(ConsumerError::new(
                         ConsumerErrorKind::Transport,
                         error.to_string(),

@@ -113,6 +113,76 @@ fn connection_key() -> ConnectionKey {
 }
 
 #[tokio::test]
+async fn broker_message_id_is_preserved_as_delivery_id() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(TransportDelivery {
+        delivery_tag: 42,
+        exchange: "jobs".to_owned(),
+        routing_key: "high".to_owned(),
+        redelivered: false,
+        headers: Headers::new(),
+        payload: Bytes::from_static(b"job"),
+        message_id: Some("uuid-stable-job-id".to_owned()),
+        correlation_id: Some("corr-1".to_owned()),
+    }));
+    let connection = transport.connect(&broker()).await.expect("connection");
+    let consumer_channel = connection.open_consumer().await.expect("consumer channel");
+    let subscription = Subscription::new(
+        "jobs",
+        connection_key(),
+        "jobs",
+        Arc::from(consumer_channel),
+    );
+    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+        .await
+        .expect("consumer set");
+    let delivery = consumer.next().await.expect("delivery");
+
+    assert_eq!(
+        delivery.id.as_str(),
+        "uuid-stable-job-id",
+        "delivery id must use the broker message_id, not a synthetic tag"
+    );
+}
+
+#[tokio::test]
+async fn missing_broker_message_id_falls_back_to_synthetic_id() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(TransportDelivery {
+        delivery_tag: 42,
+        exchange: "jobs".to_owned(),
+        routing_key: "high".to_owned(),
+        redelivered: false,
+        headers: Headers::new(),
+        payload: Bytes::from_static(b"job"),
+        message_id: None,
+        correlation_id: None,
+    }));
+    let connection = transport.connect(&broker()).await.expect("connection");
+    let consumer_channel = connection.open_consumer().await.expect("consumer channel");
+    let subscription = Subscription::new(
+        "jobs",
+        connection_key(),
+        "jobs",
+        Arc::from(consumer_channel),
+    );
+    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+        .await
+        .expect("consumer set");
+    let delivery = consumer.next().await.expect("delivery");
+
+    assert!(
+        !delivery.id.as_str().is_empty(),
+        "delivery id must have a fallback synthetic id"
+    );
+    assert!(
+        delivery.id.as_str().contains('1'),
+        "synthetic id should contain the generation: {}",
+        delivery.id.as_str()
+    );
+}
+
+#[tokio::test]
 async fn delayed_release_increments_the_application_attempt_header() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(TransportDelivery {
@@ -126,6 +196,8 @@ async fn delayed_release_increments_the_application_attempt_header() {
             ("x-delivery-count", "1"),
         ]),
         payload: Bytes::from_static(b"job"),
+        message_id: None,
+        correlation_id: None,
     }));
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let connection = transport.connect(&broker()).await.expect("connection");

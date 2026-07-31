@@ -8,7 +8,7 @@ use lapin::{
         BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
         QueueDeclareOptions,
     },
-    types::{AMQPValue, FieldTable},
+    types::{AMQPValue, FieldTable, ShortString},
 };
 use url::Url;
 
@@ -250,6 +250,16 @@ impl DeliveryStream for LapinDeliveryStream {
                         redelivered: delivery.redelivered,
                         headers: map_headers(delivery.properties.headers().as_ref()),
                         payload: Bytes::from(delivery.data),
+                        message_id: delivery
+                            .properties
+                            .message_id()
+                            .as_ref()
+                            .map(ShortString::to_string),
+                        correlation_id: delivery
+                            .properties
+                            .correlation_id()
+                            .as_ref()
+                            .map(ShortString::to_string),
                     })
                 },
             )
