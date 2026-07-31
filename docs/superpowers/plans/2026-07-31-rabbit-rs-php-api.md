@@ -242,20 +242,20 @@ pub fn stats(&self) -> PhpResult<ZBox<ZendHashTable>>;
 pub fn close(&self) -> PhpResult<()>;
 
 // Consumer
-pub fn next(&self, timeout_ms: i64) -> PhpResult<Option<Delivery>>;
+pub fn next(&self, timeoutMs: i64) -> PhpResult<Option<Delivery>>;
 pub fn close(&self) -> PhpResult<()>;
 
 // Delivery
 pub fn payload(&self) -> PhpResult<Binary<u8>>;
 pub fn metadata(&self) -> PhpResult<ZBox<ZendHashTable>>;
 pub fn ack(&self) -> PhpResult<()>;
-#[php(defaults(delay_ms = 0))]
-pub fn release(&self, delay_ms: i64) -> PhpResult<()>;
+#[php(defaults(delayMs = 0))]
+pub fn release(&self, delayMs: i64) -> PhpResult<()>;
 #[php(defaults(requeue = false))]
 pub fn reject(&self, requeue: bool) -> PhpResult<()>;
 ```
 
-Every method calls `unavailable()` with its fully qualified operation name. Prefix intentionally unused Rust parameters with `_`; do not retain any `ZendHashTable` reference.
+Every method calls `unavailable()` with its fully qualified operation name. Because `ext-php-rs` 0.15.15 preserves Rust parameter identifiers in PHP named arguments, keep the contractual identifiers, including camelCase names such as `timeoutMs` and `delayMs`, and consume unused values explicitly in the method body. Do not retain any `ZendHashTable` reference.
 
 Register exception classes before operational classes in `module()`.
 
