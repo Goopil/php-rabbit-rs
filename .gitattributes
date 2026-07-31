@@ -6,3 +6,4 @@
 /lab export-ignore
 /packages export-ignore
 /scripts export-ignore
+/target export-ignore
