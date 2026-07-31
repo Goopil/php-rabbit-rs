@@ -1,6 +1,6 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
-    "name": "rabbit-rs/native",
+    "name": "goopil/rabbit-rs-native",
     "type": "php-ext",
     "description": "High-performance RabbitMQ transport for PHP and Laravel, powered by Rust",
     "license": "MIT",

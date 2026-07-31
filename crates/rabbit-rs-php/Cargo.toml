@@ -10,6 +10,7 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+ext-php-rs = "=0.15.15"
 rabbit-rs-core = { path = "../rabbit-rs-core" }
 
 [lints]
