@@ -16,13 +16,35 @@ resolve_tool() {
     command -v "${candidate}"
 }
 
+major_minor_version() {
+    local tool_name="$1"
+    local version="$2"
+
+    if [[ ! "${version}" =~ ^([0-9]+)\.([0-9]+)(\.|$) ]]; then
+        echo "${tool_name} returned invalid version '${version}'; expected numeric major.minor" >&2
+        return 1
+    fi
+
+    printf '%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+}
+
 PHP_BIN_PATH="$(resolve_tool php "${PHP_BIN:-php}")"
 PHP_CONFIG_PATH="$(resolve_tool php-config "${PHP_CONFIG:-php-config}")"
 
 PHP_VERSION="$("${PHP_BIN_PATH}" -r 'echo PHP_VERSION;')"
 PHP_CONFIG_VERSION="$("${PHP_CONFIG_PATH}" --version)"
-if [[ "${PHP_VERSION}" != "${PHP_CONFIG_VERSION}" ]]; then
-    echo "php (${PHP_VERSION}) and php-config (${PHP_CONFIG_VERSION}) versions do not match" >&2
+PHP_MAJOR_MINOR="$(major_minor_version php "${PHP_VERSION}")"
+PHP_CONFIG_MAJOR_MINOR="$(major_minor_version php-config "${PHP_CONFIG_VERSION}")"
+
+PHP_MAJOR="${PHP_MAJOR_MINOR%%.*}"
+PHP_MINOR="${PHP_MAJOR_MINOR#*.}"
+if (( 10#${PHP_MAJOR} < 8 || (10#${PHP_MAJOR} == 8 && 10#${PHP_MINOR} < 4) )); then
+    echo "PHP 8.4 or newer is required; php reports ${PHP_VERSION}" >&2
+    exit 1
+fi
+
+if [[ "${PHP_MAJOR_MINOR}" != "${PHP_CONFIG_MAJOR_MINOR}" ]]; then
+    echo "php (${PHP_VERSION}) and php-config (${PHP_CONFIG_VERSION}) must use the same major.minor version" >&2
     exit 1
 fi
 
