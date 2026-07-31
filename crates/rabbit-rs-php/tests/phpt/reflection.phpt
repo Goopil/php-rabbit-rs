@@ -60,6 +60,16 @@ function expect_method(
     }
 }
 
+function expect_not_constructible(string $class): void {
+    try {
+        new $class();
+    } catch (Throwable) {
+        return;
+    }
+
+    throw new Exception("{$class} must reject direct construction");
+}
+
 foreach ([
     Goopil\RabbitRs\Pool::class,
     Goopil\RabbitRs\Consumer::class,
@@ -68,6 +78,9 @@ foreach ([
     $reflection = new ReflectionClass($class);
     expect_true($reflection->isFinal(), "{$class} must be final");
 }
+
+expect_not_constructible(Goopil\RabbitRs\Consumer::class);
+expect_not_constructible(Goopil\RabbitRs\Delivery::class);
 
 expect_method(Goopil\RabbitRs\Pool::class, '__construct', [
     ['name' => 'config', 'type' => 'array', 'optional' => false],
