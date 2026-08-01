@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 20 — Brancher pop sur un profil multi-vhost.
+**Prochaine étape :** Task 21 — Implémenter size, clear et monitoring.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -51,6 +51,7 @@
 - [x] Task 17 — Enregistrer le connecteur et le pool partagé.
 - [x] Task 18 — Implémenter push, later et bulk.
 - [x] Task 19 — Implémenter RabbitMqJob.
+- [x] Task 20 — Brancher pop sur un profil multi-vhost.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -147,6 +148,16 @@ Checkpoint après adaptation des deliveries en jobs Laravel du 1 août 2026 sur 
 - `rtk ./scripts/check.sh` : PASS ;
 - `RabbitMqJob` met en cache le payload, le `message_id` et `attempts`, acquitte ou libère la delivery une seule fois et abandonne le handle natif uniquement après une transition réussie ;
 - les tests couvrent la remise immédiate par `basic.reject(requeue=true)`, la republication différée en millisecondes, la remontée d'une erreur d'ACK et la séquence Laravel ACK, callback `failed`, puis événement `JobFailed` ; `pop` reste réservé à la Task 20.
+
+Checkpoint après branchement de la consommation multi-vhost Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 57 tests et 159 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 57 tests et 159 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- `RabbitMqQueue::pop()` résout la valeur Laravel `queue` comme un profil worker, réutilise son consumer natif agrégé et délègue en un appel `next()` la sélection pondérée entre brokers et vhosts ;
+- les subscriptions `enabled=false` sont exclues avant la création du pool, `block_for` est converti de secondes en millisecondes avec borne d'overflow, et l'alias natif de subscription restitue le vrai nom de queue au `RabbitMqJob` ;
+- les tests couvrent deux vhosts, trois subscriptions actives, un profil inconnu, une subscription désactivée, un timeout sans job et la traduction des erreurs natives ; la sélection fine de plusieurs aliases reste réservée à `rabbit-rs:work` et les opérations d'administration à la Task 21.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 

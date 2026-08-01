@@ -240,6 +240,9 @@ final class ConfigNormalizer
                 if (! is_array($subscription)) {
                     self::invalid($subscriptionPath, 'must be an array');
                 }
+                if (! self::boolean($subscription['enabled'] ?? true, $subscriptionPath.'.enabled')) {
+                    continue;
+                }
 
                 $broker = self::string(
                     $subscription['broker'] ?? null,
@@ -281,6 +284,9 @@ final class ConfigNormalizer
                         $subscriptionPath.'.starvation_after',
                     ),
                 ];
+            }
+            if ($normalizedSubscriptions === []) {
+                self::invalid($path.'.subscriptions', 'must contain at least one enabled subscription');
             }
 
             $normalized[] = [

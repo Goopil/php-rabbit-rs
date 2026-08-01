@@ -37,6 +37,7 @@ return [
             ],
             'subscriptions' => [
                 'default' => [
+                    'enabled' => true,
                     'broker' => 'default',
                     'queue' => env('RABBIT_RS_QUEUE', 'default'),
                     'weight' => 1,

@@ -105,6 +105,54 @@ namespace Goopil\RabbitRs {
             }
         }
 
+        final class Consumer
+        {
+            /** @var list<int> */
+            public array $timeouts = [];
+
+            /** @var list<Delivery> */
+            private array $deliveries = [];
+
+            private ?\Throwable $nextException = null;
+
+            private bool $closed = false;
+
+            public function push(Delivery $delivery): void
+            {
+                $this->deliveries[] = $delivery;
+            }
+
+            public function throwOnNext(\Throwable $exception): void
+            {
+                $this->nextException = $exception;
+            }
+
+            public function next(int $timeoutMs): ?Delivery
+            {
+                if ($this->closed) {
+                    throw new Exception('consumer is closed');
+                }
+                if ($timeoutMs < 0) {
+                    throw new Exception('timeoutMs must be a non-negative integer');
+                }
+
+                $this->timeouts[] = $timeoutMs;
+                if ($this->nextException !== null) {
+                    $exception = $this->nextException;
+                    $this->nextException = null;
+
+                    throw $exception;
+                }
+
+                return array_shift($this->deliveries);
+            }
+
+            public function close(): void
+            {
+                $this->closed = true;
+            }
+        }
+
         final class Pool
         {
             /** @var list<array<string, mixed>> */
@@ -113,7 +161,13 @@ namespace Goopil\RabbitRs {
             /** @var list<list<array<string, mixed>>> */
             public array $publishedBatches = [];
 
+            /** @var list<string> */
+            public array $consumerProfiles = [];
+
             private ?\Throwable $nextPublishException = null;
+
+            /** @var array<string, Consumer> */
+            private array $consumers = [];
 
             /**
              * @param array<string, mixed> $config
@@ -148,6 +202,23 @@ namespace Goopil\RabbitRs {
                 return array_column($messages, 'message_id');
             }
 
+            public function pushDelivery(string $profile, Delivery $delivery): void
+            {
+                $this->configuredConsumer($profile)->push($delivery);
+            }
+
+            public function consumer(string $profile): Consumer
+            {
+                $this->consumerProfiles[] = $profile;
+
+                return $this->configuredConsumer($profile);
+            }
+
+            public function consumerFor(string $profile): Consumer
+            {
+                return $this->configuredConsumer($profile);
+            }
+
             private function throwPendingException(): void
             {
                 if ($this->nextPublishException === null) {
@@ -158,6 +229,17 @@ namespace Goopil\RabbitRs {
                 $this->nextPublishException = null;
 
                 throw $exception;
+            }
+
+            private function configuredConsumer(string $profile): Consumer
+            {
+                foreach ($this->config['workers'] ?? [] as $worker) {
+                    if (($worker['name'] ?? null) === $profile) {
+                        return $this->consumers[$profile] ??= new Consumer();
+                    }
+                }
+
+                throw new Exception("workers.{$profile}: unknown worker profile");
             }
         }
     }

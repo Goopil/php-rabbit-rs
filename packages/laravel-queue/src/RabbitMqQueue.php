@@ -6,11 +6,13 @@ namespace Goopil\RabbitRs\Laravel;
 
 use Goopil\RabbitRs\BackpressureException;
 use Goopil\RabbitRs\ConnectionException;
+use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Exception as NativeException;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
+use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Queue\Queue as QueueContract;
 use Illuminate\Queue\Attributes\Delay;
@@ -20,6 +22,8 @@ use LogicException;
 
 final class RabbitMqQueue extends Queue implements QueueContract
 {
+    /** @var array<string, Consumer> */
+    private array $consumers = [];
     /**
      * @param array<string, array<string, mixed>> $routes
      */
@@ -29,6 +33,8 @@ final class RabbitMqQueue extends Queue implements QueueContract
         private readonly string $defaultQueue,
         bool $dispatchAfterCommit = false,
         private readonly MessageMapper $messages = new MessageMapper(),
+        private readonly WorkerProfileResolver $workerProfiles = new WorkerProfileResolver([]),
+        private readonly int $blockForMilliseconds = 0,
     ) {
         $this->dispatchAfterCommit = $dispatchAfterCommit;
     }
@@ -226,9 +232,26 @@ final class RabbitMqQueue extends Queue implements QueueContract
         return $job->delay ?? null;
     }
 
-    public function pop($queue = null)
+    public function pop($queue = null, $index = 0)
     {
-        throw self::operationsPending();
+        $profile = $this->workerProfiles->resolve($queue, $this->defaultQueue);
+        try {
+            $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);
+            $delivery = $consumer->next($this->blockForMilliseconds);
+        } catch (ConnectionException $exception) {
+            throw $exception;
+        } catch (NativeException $exception) {
+            throw QueueException::fromNative($exception);
+        }
+        if ($delivery === null) {
+            return null;
+        }
+        $metadata = $delivery->metadata();
+
+        return $this->marshalJob(
+            $delivery,
+            $this->workerProfiles->queue($profile, $metadata['subscription'] ?? null),
+        );
     }
 
     public function marshalJob(Delivery $delivery, $queue = null): RabbitMqJob
