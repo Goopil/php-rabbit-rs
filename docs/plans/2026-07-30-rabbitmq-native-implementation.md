@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** fix/strict-audit-stabilization
 
-**Prochaine étape :** Ajouter le profil RabbitMQ-chaos et la matrice plateformes du Milestone B, avant la Task 16.
+**Prochaine étape :** Task 16 — Initialiser le package et sa configuration.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -50,7 +50,7 @@
 
 ### Lot de stabilisation stricte du Milestone B
 
-Ce lot est exécuté dans le worktree dédié `.worktrees/strict-audit-stabilization` sur la branche `fix/strict-audit-stabilization`. Il traite les constats encore actifs des audits des 31 juillet et 1er août avant tout démarrage de la Task 16.
+Ce lot a été exécuté dans le worktree dédié `.worktrees/strict-audit-stabilization` sur la branche `fix/strict-audit-stabilization`. Les corrections déterministes issues des audits des 31 juillet et 1er août sont terminées ; les qualifications nécessitant un environnement de production représentatif sont reportées aux jalons dédiés et ne bloquent pas le démarrage de la Task 16.
 
 Périmètre initial des constats actifs :
 
@@ -62,16 +62,22 @@ Périmètre initial des constats actifs :
 - confidentialité de `ConnectionKey` dans les identifiants, statistiques, erreurs et sorties `Debug` ;
 - bornes PHP sur batches, payloads cumulés, headers, profondeur et timeouts, avec chemins d'erreur précis ;
 - headers AMQP typés et propriétés de delivery conservées jusqu'à l'API PHP ;
-- profils séparés pour PHPT/FPM, RabbitMQ-chaos, matrice plateformes et baseline de performance.
+- profils PHPT/FPM séparés, avec qualifications RabbitMQ-chaos, plateformes et performance reportées aux jalons dédiés.
 
-État du lot au 1 août 2026 :
+État du lot clôturé au 1 août 2026 :
 
 - [x] dispatch et cycle de vie des deliveries sécurisés, propriétés AMQP conservées et rollback partiel appliqué ;
 - [x] `ClientPool` atomique face à `close()` avec initialisations réseau hors des registres ;
 - [x] shutdown à budget global de 2 s, defaults core alignés et identités publiques expurgées ;
 - [x] bornes et types de la frontière PHP ;
-- [ ] laboratoire RabbitMQ-chaos et matrice plateformes ;
-- [ ] baseline de performance.
+- **Report non bloquant** — laboratoire RabbitMQ-chaos et matrice plateformes ;
+- **Report non bloquant** — baseline de performance.
+
+Qualifications différées et critères de reprise :
+
+- **RabbitMQ réel et chaos — Milestone D, Tasks 25–27 :** reprendre après le package Laravel du Milestone C, en créant d'abord le cluster, puis les tests d'intégration et enfin les scénarios de panne. La qualification at-least-once exige `missing = 0` et le comptage explicite des messages attendus, uniques, dupliqués et manquants ;
+- **Performance — Milestone E, Tasks 28–30 :** établir d'abord la baseline de microbenchmarks FFI, conversion et batch issue de l'audit, puis exécuter les comparaisons Laravel et calibrer les defaults et budgets. Aucun seuil ne doit être fixé avant mesure sur une machine de référence documentée ;
+- **Plateformes — Milestone F, Tasks 31–32 :** qualifier PHP 8.4/8.5, x86_64/ARM64, glibc/musl et NTS/ZTS avec la matrice PIE de 16 combinaisons, puis construire et smoke-tester chaque combinaison en CI.
 
 Constats déjà corrigés à verrouiller par non-régression :
 
@@ -1493,14 +1499,16 @@ Expected: PASS, missing = 0.
 **Files:**
 - Create: benchmarks/native/Cargo.toml
 - Create: benchmarks/native/benches/batching.rs
+- Create: benchmarks/native/benches/ffi_conversion.rs
 - Create: benchmarks/native/benches/scheduler.rs
 - Create: benchmarks/native/benches/transport.rs
+- Create: benchmarks/native/php/ffi_conversion.php
 - Create: benchmarks/native/README.md
 - Modify: Cargo.toml
 
 **Step 1: Add benchmark smoke tests**
 
-Les benchmarks doivent couvrir tailles 256 o, 1 Kio, 10 Kio, 100 Kio et 1 Mio, batch 1/16/64/256, confirms, coût scheduler et allocation.
+Les benchmarks doivent couvrir tailles 256 o, 1 Kio, 10 Kio, 100 Kio et 1 Mio, batch 1/16/64/256, confirms, coût scheduler et allocation. La baseline issue de l'audit mesure séparément le coût d'un appel à la frontière PHP/Rust, la conversion et la copie des payloads et headers, ainsi que la soumission des batches, sans broker lorsque celui-ci n'est pas nécessaire.
 
 **Step 2: Verify command**
 
@@ -1510,7 +1518,7 @@ Expected: FAIL avant le crate benchmark.
 
 **Step 3: Implement Criterion suites**
 
-Séparer microbench sans broker et bench transport avec le lab. Enregistrer version, CPU, noyau, RabbitMQ, payload et configuration dans chaque résultat.
+Séparer microbench sans broker et bench transport avec le lab. Le harness PHP exerce l'extension compilée et distingue le coût fixe de la frontière FFI du coût de conversion selon le volume et la taille du batch. Enregistrer version, CPU, noyau, PHP, mode NTS/ZTS, RabbitMQ, payload et configuration dans chaque résultat.
 
 **Step 4: Verify**
 
