@@ -6,8 +6,10 @@ namespace Goopil\RabbitRs\Laravel;
 
 use Goopil\RabbitRs\BackpressureException;
 use Goopil\RabbitRs\ConnectionException;
+use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Exception as NativeException;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
+use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Queue\Queue as QueueContract;
@@ -227,6 +229,16 @@ final class RabbitMqQueue extends Queue implements QueueContract
     public function pop($queue = null)
     {
         throw self::operationsPending();
+    }
+
+    public function marshalJob(Delivery $delivery, $queue = null): RabbitMqJob
+    {
+        return new RabbitMqJob(
+            $this->container,
+            $delivery,
+            $this->connectionName,
+            $this->queueName($queue),
+        );
     }
 
     /**

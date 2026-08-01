@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 19 — Implémenter RabbitMqJob.
+**Prochaine étape :** Task 20 — Brancher pop sur un profil multi-vhost.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -50,6 +50,7 @@
 - [x] Task 16 — Initialiser le package et sa configuration.
 - [x] Task 17 — Enregistrer le connecteur et le pool partagé.
 - [x] Task 18 — Implémenter push, later et bulk.
+- [x] Task 19 — Implémenter RabbitMqJob.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -137,6 +138,15 @@ Checkpoint après implémentation des publications Laravel du 1 août 2026 sur m
 - `rtk ./scripts/check.sh` : PASS ;
 - `push`, `pushRaw`, `later` et `bulk` transmettent des enveloppes natives à identifiant UUID stable, résolvent les routes et les placeholders de queue, préservent les payloads bruts et utilisent un seul appel natif par batch immédiat ou différé ;
 - la publication reste pilotée par `Illuminate\Queue\Queue` pour les payloads, événements et transactions, avec délais en millisecondes, erreurs natives génériques traduites en `QueueException` et backpressure/connexion conservées comme erreurs dédiées.
+
+Checkpoint après adaptation des deliveries en jobs Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 46 tests et 135 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 46 tests et 135 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- `RabbitMqJob` met en cache le payload, le `message_id` et `attempts`, acquitte ou libère la delivery une seule fois et abandonne le handle natif uniquement après une transition réussie ;
+- les tests couvrent la remise immédiate par `basic.reject(requeue=true)`, la republication différée en millisecondes, la remontée d'une erreur d'ACK et la séquence Laravel ACK, callback `failed`, puis événement `JobFailed` ; `pop` reste réservé à la Task 20.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 

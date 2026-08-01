@@ -14,6 +14,97 @@ namespace Goopil\RabbitRs {
 
         final class ConnectionException extends Exception {}
 
+        final class Delivery
+        {
+            public int $ackCalls = 0;
+
+            /** @var list<int> */
+            public array $releaseDelays = [];
+
+            /** @var list<bool> */
+            public array $rejectRequeues = [];
+
+            private bool $settled = false;
+
+            private ?\Throwable $nextAckException = null;
+
+            private ?\Closure $ackCallback = null;
+
+            /**
+             * @param array<string, mixed> $metadata
+             */
+            public function __construct(
+                private readonly string $body,
+                private array $metadata,
+            ) {}
+
+            public function payload(): string
+            {
+                return $this->body;
+            }
+
+            /**
+             * @return array<string, mixed>
+             */
+            public function metadata(): array
+            {
+                return $this->metadata;
+            }
+
+            public function onAck(\Closure $callback): void
+            {
+                $this->ackCallback = $callback;
+            }
+
+            public function throwOnNextAck(\Throwable $exception): void
+            {
+                $this->nextAckException = $exception;
+            }
+
+            public function ack(): void
+            {
+                $this->assertPending();
+                $this->ackCalls++;
+
+                if ($this->ackCallback !== null) {
+                    ($this->ackCallback)();
+                }
+
+                if ($this->nextAckException !== null) {
+                    $exception = $this->nextAckException;
+                    $this->nextAckException = null;
+
+                    throw $exception;
+                }
+
+                $this->settled = true;
+                $this->metadata['state'] = 'acked';
+            }
+
+            public function release(int $delayMs = 0): void
+            {
+                $this->assertPending();
+                $this->releaseDelays[] = $delayMs;
+                $this->settled = true;
+                $this->metadata['state'] = $delayMs === 0 ? 'rejected' : 'acked';
+            }
+
+            public function reject(bool $requeue = false): void
+            {
+                $this->assertPending();
+                $this->rejectRequeues[] = $requeue;
+                $this->settled = true;
+                $this->metadata['state'] = 'rejected';
+            }
+
+            private function assertPending(): void
+            {
+                if ($this->settled) {
+                    throw new Exception('delivery is already settled');
+                }
+            }
+        }
+
         final class Pool
         {
             /** @var list<array<string, mixed>> */
