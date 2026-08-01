@@ -2,17 +2,12 @@
 
 declare(strict_types=1);
 
-$hosts = array_values(array_filter(
-    array_map('trim', explode(',', (string) env('RABBIT_RS_HOSTS', '127.0.0.1:5672'))),
-    static fn (string $host): bool => $host !== '',
-));
-
 return [
     'topology_mode' => env('RABBIT_RS_TOPOLOGY_MODE', 'declare'),
 
     'brokers' => [
         'default' => [
-            'hosts' => $hosts,
+            'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
             'vhost' => env('RABBIT_RS_VHOST', '/'),
             'credentials' => [
                 'username' => env('RABBIT_RS_USERNAME', 'guest'),

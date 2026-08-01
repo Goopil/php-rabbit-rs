@@ -16,16 +16,19 @@ final class ConfigNormalizerTest extends TestCase
 {
     public function testPackagePublishesSafeDefaults(): void
     {
-        $config = require dirname(__DIR__, 2).'/config/rabbit-rs.php';
+        $publishedConfig = require dirname(__DIR__, 2).'/config/rabbit-rs.php';
 
-        self::assertSame('declare', $config['topology_mode']);
-        self::assertTrue($config['publisher']['confirms']);
-        self::assertTrue($config['publisher']['mandatory']);
-        self::assertSame('quorum', $config['topology']['queue']['type']);
-        self::assertTrue($config['topology']['queue']['durable']);
-        self::assertSame(20, $config['topology']['queue']['delivery_limit']);
-        self::assertNull($config['topology']['dead_letter']);
+        self::assertSame('127.0.0.1:5672', $publishedConfig['brokers']['default']['hosts']);
+        self::assertSame('declare', $publishedConfig['topology_mode']);
+        self::assertTrue($publishedConfig['publisher']['confirms']);
+        self::assertTrue($publishedConfig['publisher']['mandatory']);
+        self::assertSame('quorum', $publishedConfig['topology']['queue']['type']);
+        self::assertTrue($publishedConfig['topology']['queue']['durable']);
+        self::assertSame(20, $publishedConfig['topology']['queue']['delivery_limit']);
+        self::assertNull($publishedConfig['topology']['dead_letter']);
 
+        $config = $this->app['config']->get('rabbit-rs');
+        self::assertSame(['127.0.0.1:5672'], $config['brokers']['default']['hosts']);
         $normalized = ConfigNormalizer::normalize($config);
         self::assertSame('default', $normalized['routes']['default']['broker']);
         self::assertSame(16, $normalized['native']['workers'][0]['subscriptions'][0]['prefetch']);
