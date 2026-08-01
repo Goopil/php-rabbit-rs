@@ -119,6 +119,7 @@ impl Pool {
         stats.insert("closed", self.handle.is_closed())?;
         stats.insert("pid", i64::from(self.pid))?;
         stats.insert("key", self.handle.key().to_hex())?;
+        stats.insert("handle", self.handle.identifier())?;
         let metrics = self.client.metrics_snapshot();
         stats.insert("publishes_total", i64_from_counter(metrics.publishes_total))?;
         stats.insert(

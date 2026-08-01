@@ -2,7 +2,7 @@ use std::{
     fmt,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -15,9 +15,12 @@ pub mod key;
 
 pub use key::ConnectionKey;
 
+static NEXT_HANDLE_SERIAL: AtomicU64 = AtomicU64::new(1);
+
 /// Process-local handle representing one reusable connection pool.
 pub struct ConnectionHandle {
     key: ConnectionKey,
+    identifier: String,
     closed: AtomicBool,
     runtime: Handle,
     client: OnceLock<Arc<ClientPool>>,
@@ -28,6 +31,7 @@ impl fmt::Debug for ConnectionHandle {
         formatter
             .debug_struct("ConnectionHandle")
             .field("key", &self.key)
+            .field("identifier", &self.identifier)
             .field("closed", &self.is_closed())
             .field("client_initialized", &self.client.get().is_some())
             .finish_non_exhaustive()
@@ -36,8 +40,10 @@ impl fmt::Debug for ConnectionHandle {
 
 impl ConnectionHandle {
     pub(crate) fn new(key: ConnectionKey, runtime: Handle) -> Self {
+        let serial = NEXT_HANDLE_SERIAL.fetch_add(1, Ordering::Relaxed);
         Self {
             key,
+            identifier: format!("{}:{serial}:{}", std::process::id(), key.to_hex()),
             closed: AtomicBool::new(false),
             runtime,
             client: OnceLock::new(),
@@ -78,6 +84,12 @@ impl ConnectionHandle {
     pub const fn key(&self) -> ConnectionKey {
         self.key
     }
+
+    /// Returns the process-local identity of this handle instance.
+    #[must_use]
+    pub fn identifier(&self) -> &str {
+        &self.identifier
+    }
 }
 
 #[cfg(test)]
@@ -96,5 +108,23 @@ mod tests {
         assert!(handle.close());
         assert!(!handle.close());
         assert!(handle.is_closed());
+    }
+
+    #[test]
+    fn each_handle_has_a_distinct_process_local_identifier() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let key = ConnectionKey::from_bytes([7; 32]);
+        let first = ConnectionHandle::new(key, runtime.handle().clone());
+        let second = ConnectionHandle::new(key, runtime.handle().clone());
+
+        assert_ne!(first.identifier(), second.identifier());
+        assert!(
+            first
+                .identifier()
+                .starts_with(&format!("{}:", std::process::id()))
+        );
     }
 }

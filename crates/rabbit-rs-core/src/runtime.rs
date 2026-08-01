@@ -109,7 +109,7 @@ impl RuntimeRegistry {
             .is_some_and(|process| process.pid != current_pid);
 
         if pid_changed {
-            Self::close_state(state.take());
+            Self::invalidate_inherited_state(state.take());
         }
 
         if state.is_none() {
@@ -159,6 +159,17 @@ impl RuntimeRegistry {
                 }
                 handle.close();
             }
+        }
+    }
+
+    fn invalidate_inherited_state(state: Option<ProcessState>) {
+        if let Some(process) = state {
+            for handle in process.pools.values() {
+                handle.close();
+            }
+            // Tokio worker threads do not survive fork, so the inherited runtime
+            // must neither run shutdown futures nor wait for those vanished threads.
+            std::mem::forget(process.runtime);
         }
     }
 }
