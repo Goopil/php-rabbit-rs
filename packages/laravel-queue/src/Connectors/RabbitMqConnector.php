@@ -33,11 +33,16 @@ final class RabbitMqConnector implements ConnectorInterface
         if (! is_string($defaultQueue) || $defaultQueue === '') {
             throw new InvalidArgumentException('queue must be a non-empty string');
         }
+        $dispatchAfterCommit = $config['after_commit'] ?? false;
+        if (! is_bool($dispatchAfterCommit)) {
+            throw new InvalidArgumentException('after_commit must be a boolean');
+        }
 
         return new RabbitMqQueue(
             $this->pools->make($this->normalizedConfig['native']),
             $this->normalizedConfig['routes'],
             $defaultQueue,
+            $dispatchAfterCommit,
         );
     }
 }

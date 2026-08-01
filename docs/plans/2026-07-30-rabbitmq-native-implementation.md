@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 18 — Implémenter push, later et bulk.
+**Prochaine étape :** Task 19 — Implémenter RabbitMqJob.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -49,6 +49,7 @@
 - [x] Task 15 — Certifier le cycle de vie CLI, fork et FPM.
 - [x] Task 16 — Initialiser le package et sa configuration.
 - [x] Task 17 — Enregistrer le connecteur et le pool partagé.
+- [x] Task 18 — Implémenter push, later et bulk.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -128,6 +129,15 @@ Checkpoint après enregistrement du connecteur Laravel du 1 août 2026 sur macOS
 - le connecteur `rabbit-rs` partage un pool natif process-local par empreinte de configuration normalisée, invalide son cache après fork et ne conserve pas les valeurs liées à une requête ;
 - `RabbitMqQueue` est introduit comme squelette contractuel afin que `Queue::connection()` puisse appliquer immédiatement le conteneur et le nom de connexion ; ses opérations restent réservées à la Task 18.
 
+Checkpoint après implémentation des publications Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 38 tests et 100 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 38 tests et 100 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- `push`, `pushRaw`, `later` et `bulk` transmettent des enveloppes natives à identifiant UUID stable, résolvent les routes et les placeholders de queue, préservent les payloads bruts et utilisent un seul appel natif par batch immédiat ou différé ;
+- la publication reste pilotée par `Illuminate\Queue\Queue` pour les payloads, événements et transactions, avec délais en millisecondes, erreurs natives génériques traduites en `QueueException` et backpressure/connexion conservées comme erreurs dédiées.
+
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
 Le checkpoint de la Task 13 vérifie 100 tests Rust et 2 tests PHPT, ainsi que le formatage Rust, Clippy sans warning, le lint du stub PHP et la validation Composer stricte.
@@ -173,6 +183,7 @@ Le checkpoint de la Task 15 clôt le Milestone B avec 112 tests Rust, 9 tests PH
           RabbitMqServiceProvider.php
           Config/
           Connectors/
+          Exceptions/
           Jobs/
           Console/
           Support/
@@ -1119,8 +1130,12 @@ Expected: PASS.
 **Files:**
 - Modify: packages/laravel-queue/src/RabbitMqQueue.php
 - Create: packages/laravel-queue/src/Support/MessageMapper.php
+- Create: packages/laravel-queue/src/Exceptions/QueueException.php
 - Create: packages/laravel-queue/tests/Unit/RabbitMqQueuePublishTest.php
+- Create: packages/laravel-queue/tests/bootstrap.php
 - Modify: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
+- Modify: packages/laravel-queue/tests/Unit/RabbitMqConnectorTest.php
+- Modify: packages/laravel-queue/phpunit.xml
 
 **Step 1: Write failing Queue publish tests**
 
@@ -1144,7 +1159,7 @@ Expected: FAIL.
 
 **Step 3: Implement minimal publishing adapter**
 
-Étendre Illuminate\Queue\Queue et implémenter Illuminate\Contracts\Queue\Queue. Ne pas dupliquer createPayload.
+Étendre Illuminate\Queue\Queue et implémenter Illuminate\Contracts\Queue\Queue. Ne pas dupliquer createPayload. Résoudre la route nommée avec fallback `default`, réutiliser l'UUID du payload Laravel comme `message_id` et conserver les événements, délais et callbacks transactionnels de Laravel autour des appels natifs simples ou batchés.
 
 **Step 4: Verify**
 

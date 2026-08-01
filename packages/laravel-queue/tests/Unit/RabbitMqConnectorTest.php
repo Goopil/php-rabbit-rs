@@ -2,18 +2,6 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs {
-    if (! class_exists(Pool::class, false)) {
-        final class Pool
-        {
-            /**
-             * @param array<string, mixed> $config
-             */
-            public function __construct(public readonly array $config) {}
-        }
-    }
-}
-
 namespace Goopil\RabbitRs\Laravel\Tests\Unit {
     use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
     use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
