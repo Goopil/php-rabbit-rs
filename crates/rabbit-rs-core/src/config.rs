@@ -125,6 +125,11 @@ pub struct SubscriptionConfig {
     pub weight: u16,
     pub priority_class: i16,
     pub prefetch: u16,
+    #[serde(
+        default = "default_starvation_after",
+        deserialize_with = "deserialize_duration_seconds"
+    )]
+    pub starvation_after: Duration,
 }
 
 /// Scheduler algorithms supported by the stable configuration format.
@@ -139,25 +144,73 @@ pub enum SchedulerStrategy {
 #[serde(deny_unknown_fields)]
 pub struct SchedulerConfig {
     pub strategy: SchedulerStrategy,
+    pub max_in_flight: u16,
 }
 
 impl SchedulerConfig {
     #[must_use]
-    pub const fn weighted_fair() -> Self {
+    pub const fn weighted_fair(max_in_flight: u16) -> Self {
         Self {
             strategy: SchedulerStrategy::WeightedFair,
+            max_in_flight,
         }
     }
 }
 
 /// A set of subscriptions consumed by one Laravel worker profile.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerProfile {
     pub name: String,
     pub subscriptions: Vec<SubscriptionConfig>,
-    pub max_in_flight: u16,
     pub scheduler: SchedulerConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerProfileWire {
+    name: String,
+    subscriptions: Vec<SubscriptionConfig>,
+    scheduler: SchedulerConfigWire,
+    #[serde(default)]
+    max_in_flight: Option<u16>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SchedulerConfigWire {
+    strategy: SchedulerStrategy,
+    #[serde(default)]
+    max_in_flight: Option<u16>,
+}
+
+impl<'de> Deserialize<'de> for WorkerProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WorkerProfileWire::deserialize(deserializer)?;
+        if wire.max_in_flight.is_some() {
+            return Err(serde::de::Error::custom(format!(
+                "workers.{}.max_in_flight moved to workers.{}.scheduler.max_in_flight",
+                wire.name, wire.name
+            )));
+        }
+        let max_in_flight = wire.scheduler.max_in_flight.ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "workers.{}.scheduler.max_in_flight is required",
+                wire.name
+            ))
+        })?;
+
+        Ok(Self {
+            name: wire.name,
+            subscriptions: wire.subscriptions,
+            scheduler: SchedulerConfig {
+                strategy: wire.scheduler.strategy,
+                max_in_flight,
+            },
+        })
+    }
 }
 
 /// Controls whether Rabbit RS mutates or only observes broker topology.
@@ -299,9 +352,19 @@ impl Config {
                     ));
                 }
 
-                if worker.max_in_flight < subscription.prefetch {
+                if subscription.starvation_after.is_zero() {
                     return Err(ConfigError::new(
-                        format!("workers.{}.max_in_flight", worker.name),
+                        format!(
+                            "workers.{}.subscriptions.{}.starvation_after",
+                            worker.name, subscription.name
+                        ),
+                        "starvation_after must be greater than zero",
+                    ));
+                }
+
+                if worker.scheduler.max_in_flight < subscription.prefetch {
+                    return Err(ConfigError::new(
+                        format!("workers.{}.scheduler.max_in_flight", worker.name),
                         "max_in_flight must be at least every subscription prefetch",
                     ));
                 }
@@ -390,8 +453,8 @@ impl ConfigFingerprint {
         }
         for worker in &config.workers {
             hash_value(&mut digest, &worker.name);
-            digest.update(worker.max_in_flight.to_be_bytes());
             hash_value(&mut digest, scheduler_name(worker.scheduler.strategy));
+            digest.update(worker.scheduler.max_in_flight.to_be_bytes());
             for subscription in &worker.subscriptions {
                 hash_value(&mut digest, &subscription.name);
                 hash_value(&mut digest, &subscription.broker);
@@ -399,6 +462,7 @@ impl ConfigFingerprint {
                 digest.update(subscription.weight.to_be_bytes());
                 digest.update(subscription.priority_class.to_be_bytes());
                 digest.update(subscription.prefetch.to_be_bytes());
+                digest.update(subscription.starvation_after.as_secs().to_be_bytes());
             }
         }
 
@@ -432,9 +496,15 @@ where
     u64::deserialize(deserializer).map(Duration::from_secs)
 }
 
+fn default_starvation_after() -> Duration {
+    Duration::from_secs(30)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use serde_json::json;
 
     use super::{
         BrokerConfig, Config, Credentials, Endpoint, SchedulerConfig, SubscriptionConfig,
@@ -460,6 +530,7 @@ mod tests {
             weight: 1,
             priority_class: 0,
             prefetch,
+            starvation_after: Duration::from_secs(30),
         }
     }
 
@@ -467,8 +538,7 @@ mod tests {
         WorkerProfile {
             name: "main".to_owned(),
             subscriptions: vec![subscription(prefetch)],
-            max_in_flight,
-            scheduler: SchedulerConfig::weighted_fair(),
+            scheduler: SchedulerConfig::weighted_fair(max_in_flight),
         }
     }
 
@@ -504,7 +574,101 @@ mod tests {
 
         let error = candidate.validate().unwrap_err();
 
-        assert_eq!(error.path(), "workers.main.max_in_flight");
+        assert_eq!(error.path(), "workers.main.scheduler.max_in_flight");
+    }
+
+    #[test]
+    fn rejects_zero_starvation_after_with_the_subscription_path() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        let mut profile = worker(16, 64);
+        profile.subscriptions[0].starvation_after = Duration::ZERO;
+        candidate.workers = vec![profile];
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.starvation_after"
+        );
+    }
+
+    #[test]
+    fn accepts_scheduler_budget_at_the_canonical_path() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("scheduler.max_in_flight is canonical");
+
+        let validated = candidate
+            .validate()
+            .expect("canonical worker configuration");
+        let worker = validated.worker("main").expect("worker");
+        assert_eq!(worker.scheduler.max_in_flight, 64);
+        assert_eq!(
+            worker.subscriptions[0].starvation_after,
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn rejects_the_legacy_worker_budget_with_an_actionable_path() {
+        let error = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "max_in_flight": 64,
+                "scheduler": {
+                    "strategy": "weighted_fair"
+                }
+            }],
+            "topology_mode": "external"
+        }))
+        .expect_err("legacy worker-level max_in_flight must be rejected");
+
+        assert!(error.to_string().contains("workers.main.max_in_flight"));
+        assert!(
+            error
+                .to_string()
+                .contains("workers.main.scheduler.max_in_flight")
+        );
     }
 
     #[test]
@@ -558,12 +722,44 @@ mod tests {
     }
 
     #[test]
+    fn credentials_remain_part_of_the_internal_fingerprint() {
+        let first = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+        let mut second = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        second.brokers[0].credentials = Credentials::new("guest", "different-secret");
+        let second = second.validate().unwrap();
+
+        assert_ne!(first.fingerprint(), second.fingerprint());
+    }
+
+    #[test]
+    fn scheduler_budget_and_starvation_are_part_of_the_fingerprint() {
+        let mut base = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        base.workers = vec![worker(16, 64)];
+        let mut scheduler_changed = base.clone();
+        scheduler_changed.workers[0].scheduler.max_in_flight = 65;
+        let mut starvation_changed = base.clone();
+        starvation_changed.workers[0].subscriptions[0].starvation_after = Duration::from_secs(31);
+
+        let base = base.validate().unwrap();
+        let scheduler_changed = scheduler_changed.validate().unwrap();
+        let starvation_changed = starvation_changed.validate().unwrap();
+
+        assert_ne!(base.fingerprint(), scheduler_changed.fingerprint());
+        assert_ne!(base.fingerprint(), starvation_changed.fingerprint());
+    }
+
+    #[test]
     fn retains_validated_worker_profiles() {
         let validated = config(vec![Endpoint::new("rabbit.local", 5672)])
             .validate()
             .unwrap();
 
-        assert_eq!(validated.worker("main").unwrap().max_in_flight, 64);
+        assert_eq!(
+            validated.worker("main").unwrap().scheduler.max_in_flight,
+            64
+        );
     }
 
     #[test]

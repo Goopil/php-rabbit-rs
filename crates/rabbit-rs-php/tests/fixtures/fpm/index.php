@@ -21,7 +21,6 @@ usleep(20_000);
 header('Content-Type: application/json');
 echo json_encode([
     'pid' => getmypid(),
-    'key' => $first->stats()['key'],
     'first_handle' => $first->stats()['handle'],
     'second_handle' => $second->stats()['handle'],
 ], JSON_THROW_ON_ERROR);

@@ -45,6 +45,7 @@ impl PublisherActor {
             commands,
             capacity,
             metrics,
+            confirm_timeout: config.confirm_timeout,
         }
     }
 }
@@ -54,9 +55,15 @@ pub struct PublisherHandle {
     commands: mpsc::Sender<Command>,
     capacity: Arc<Semaphore>,
     metrics: Metrics,
+    confirm_timeout: Duration,
 }
 
 impl PublisherHandle {
+    #[must_use]
+    pub const fn confirm_timeout(&self) -> Duration {
+        self.confirm_timeout
+    }
+
     /// Enqueues a publish while retaining one global capacity permit until its terminal outcome.
     ///
     /// # Errors
@@ -405,7 +412,7 @@ async fn handle_connection_event(
                     "publisher topology is not restored",
                 ));
             }
-            if generation <= state.generation {
+            if generation < state.generation {
                 return Err(PublishError::new(
                     PublishErrorKind::Transport,
                     "publisher recovery generation is stale",

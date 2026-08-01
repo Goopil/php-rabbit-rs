@@ -22,10 +22,23 @@ final class Pool
     {
     }
 
+    /**
+     * @param array{broker: string, exchange: string, routing_key: string, payload: string, message_id: string, content_type?: string, correlation_id?: string, delay_ms?: int, timeout_ms?: int, headers?: array<string, bool|int|float|string|null>} $message
+     *
+     * Payload and all headers are limited to 1 MiB and 64 KiB per call respectively.
+     * Headers are flat, contain at most 128 entries, and timeout_ms is between 1 and 86,400,000.
+     */
     public function publish(array $message): string
     {
     }
 
+    /**
+     * @param list<array{broker: string, exchange: string, routing_key: string, payload: string, message_id: string, content_type?: string, correlation_id?: string, delay_ms?: int, timeout_ms?: int, headers?: array<string, bool|int|float|string|null>}> $messages
+     * @return list<string>
+     *
+     * A batch contains at most 256 messages and 1 MiB of cumulative payload.
+     * Header count and size limits are cumulative across the complete call.
+     */
     public function publishBatch(array $messages): array
     {
     }
@@ -34,6 +47,9 @@ final class Pool
     {
     }
 
+    /**
+     * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
+     */
     public function stats(): array
     {
     }
@@ -60,6 +76,11 @@ final class Delivery
     {
     }
 
+    /**
+     * @return array{message_id: string, correlation_id?: string, subscription: string, attempts: int, state: string, headers: array<string, bool|int|float|string|null>}
+     *
+     * Nested broker headers such as x-death are omitted from the flat PHP header model.
+     */
     public function metadata(): array
     {
     }

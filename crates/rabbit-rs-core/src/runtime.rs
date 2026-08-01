@@ -3,11 +3,15 @@ use std::{
     error::Error,
     fmt, io,
     sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
+use futures_util::future::join_all;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::pool::{ConnectionHandle, ConnectionKey};
+
+const DEFAULT_SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
 /// Supplies the current process identifier, and can be replaced in tests.
 pub trait PidProvider: Send + Sync {
@@ -55,6 +59,7 @@ struct ProcessState {
 pub struct RuntimeRegistry {
     pid_provider: Arc<dyn PidProvider>,
     runtime_factory: Arc<dyn RuntimeFactory>,
+    shutdown_budget: Duration,
     state: Mutex<Option<ProcessState>>,
 }
 
@@ -79,9 +84,22 @@ impl RuntimeRegistry {
         pid_provider: Arc<dyn PidProvider>,
         runtime_factory: Arc<dyn RuntimeFactory>,
     ) -> Self {
+        Self::with_dependencies_and_shutdown_budget(
+            pid_provider,
+            runtime_factory,
+            DEFAULT_SHUTDOWN_BUDGET,
+        )
+    }
+
+    fn with_dependencies_and_shutdown_budget(
+        pid_provider: Arc<dyn PidProvider>,
+        runtime_factory: Arc<dyn RuntimeFactory>,
+        shutdown_budget: Duration,
+    ) -> Self {
         Self {
             pid_provider,
             runtime_factory,
+            shutdown_budget,
             state: Mutex::new(None),
         }
     }
@@ -100,17 +118,23 @@ impl RuntimeRegistry {
         key: ConnectionKey,
     ) -> Result<Arc<ConnectionHandle>, RuntimeCreationError> {
         let current_pid = self.pid_provider.current_pid();
+        let inherited = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state
+                .as_ref()
+                .is_some_and(|process| process.pid != current_pid)
+                .then(|| state.take())
+                .flatten()
+        };
+        Self::invalidate_inherited_state(inherited);
+
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pid_changed = state
-            .as_ref()
-            .is_some_and(|process| process.pid != current_pid);
-
-        if pid_changed {
-            Self::invalidate_inherited_state(state.take());
-        }
 
         if state.is_none() {
             let runtime = self
@@ -132,7 +156,7 @@ impl RuntimeRegistry {
                     return Ok(handle.clone());
                 }
 
-                let handle = Arc::new(ConnectionHandle::new(key, process.runtime.handle().clone()));
+                let handle = Arc::new(ConnectionHandle::new(process.runtime.handle().clone()));
                 process.pools.insert(key, handle.clone());
                 Ok(handle)
             }
@@ -144,22 +168,45 @@ impl RuntimeRegistry {
 
     /// Closes all process-local handles. Repeated calls have no effect.
     pub fn close(&self) {
-        let mut state = self
+        let current_pid = self.pid_provider.current_pid();
+        let state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self::close_state(state.take());
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if state
+            .as_ref()
+            .is_some_and(|process| process.pid != current_pid)
+        {
+            Self::invalidate_inherited_state(state);
+        } else {
+            Self::close_state(state, self.shutdown_budget);
+        }
     }
 
-    fn close_state(state: Option<ProcessState>) {
-        if let Some(process) = state {
-            for handle in process.pools.values() {
-                if let Some(client) = handle.initialized_client() {
-                    let _ = process.runtime.block_on(client.close());
-                }
-                handle.close();
-            }
+    fn close_state(state: Option<ProcessState>, budget: Duration) {
+        let Some(process) = state else {
+            return;
+        };
+        let deadline = Instant::now() + budget;
+        for handle in process.pools.values() {
+            handle.close();
         }
+        let clients = process
+            .pools
+            .values()
+            .filter_map(|handle| handle.initialized_client())
+            .cloned()
+            .collect::<Vec<_>>();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if !clients.is_empty() && !remaining.is_zero() {
+            process.runtime.block_on(async move {
+                let closes = clients.iter().map(|client| client.close());
+                let _ = tokio::time::timeout(remaining, join_all(closes)).await;
+            });
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        process.runtime.shutdown_timeout(remaining);
     }
 
     fn invalidate_inherited_state(state: Option<ProcessState>) {
@@ -210,15 +257,26 @@ impl Error for RuntimeCreationError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU32, AtomicUsize, Ordering},
+    use std::{
+        future,
+        sync::{
+            Arc,
+            atomic::{AtomicU32, AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
     };
 
     use tokio::runtime::{Builder, Runtime};
 
     use super::{PidProvider, RuntimeFactory, RuntimeRegistry};
-    use crate::pool::ConnectionKey;
+    use crate::{
+        client::ClientPool,
+        config::{
+            BrokerConfig, Config, Credentials, Endpoint, TlsConfig, TopologyMode, ValidatedConfig,
+        },
+        pool::{ConnectionHandle, ConnectionKey},
+        transport::mock::{MockTransport, TransportOperation},
+    };
 
     struct MutablePid(AtomicU32);
 
@@ -264,6 +322,59 @@ mod tests {
         let registry = RuntimeRegistry::with_dependencies(pid.clone(), factory.clone());
 
         (registry, pid, factory)
+    }
+
+    fn registry_with_budget(
+        budget: Duration,
+    ) -> (
+        RuntimeRegistry,
+        Arc<MutablePid>,
+        Arc<CountingRuntimeFactory>,
+    ) {
+        let pid = Arc::new(MutablePid::new(100));
+        let factory = Arc::new(CountingRuntimeFactory::default());
+        let registry = RuntimeRegistry::with_dependencies_and_shutdown_budget(
+            pid.clone(),
+            factory.clone(),
+            budget,
+        );
+
+        (registry, pid, factory)
+    }
+
+    fn client_config(name: &str) -> ValidatedConfig {
+        Config {
+            brokers: vec![BrokerConfig {
+                name: name.to_owned(),
+                hosts: vec![Endpoint::new("rabbit.local", 5672)],
+                vhost: "/".to_owned(),
+                credentials: Credentials::new("guest", "secret"),
+                tls: TlsConfig::disabled(),
+                heartbeat: Duration::from_secs(30),
+            }],
+            workers: Vec::new(),
+            topology_mode: TopologyMode::External,
+        }
+        .validate()
+        .expect("valid client config")
+    }
+
+    fn install_connected_client(
+        registry: &RuntimeRegistry,
+        key: ConnectionKey,
+        broker: &str,
+        transport: Arc<MockTransport>,
+    ) -> Arc<ConnectionHandle> {
+        let handle = registry.acquire(key).expect("handle");
+        let client = Arc::new(ClientPool::new(Arc::new(client_config(broker)), transport));
+        handle
+            .install_client(client.clone())
+            .unwrap_or_else(|_| panic!("install client"));
+        handle
+            .runtime()
+            .block_on(client.initialize_connection_for_tests(broker))
+            .expect("publish initializes connection");
+        handle
     }
 
     #[test]
@@ -342,5 +453,138 @@ mod tests {
 
         assert!(!Arc::ptr_eq(&closed, &replacement));
         assert!(!replacement.is_closed());
+    }
+
+    #[test]
+    fn blocked_network_close_respects_the_shared_shutdown_budget() {
+        let budget = Duration::from_millis(25);
+        let (registry, _pid, _factory) = registry_with_budget(budget);
+        let transport = Arc::new(MockTransport::default());
+        let handle = install_connected_client(
+            &registry,
+            ConnectionKey::from_bytes([4; 32]),
+            "default",
+            transport.clone(),
+        );
+        let _gate = transport.push_close_connection_gate();
+
+        let started = Instant::now();
+        registry.close();
+
+        assert!(started.elapsed() <= Duration::from_millis(250));
+        assert!(handle.is_closed());
+        assert!(
+            transport
+                .operations()
+                .contains(&TransportOperation::CloseConnection)
+        );
+    }
+
+    #[test]
+    fn multiple_blocked_clients_share_one_shutdown_budget() {
+        let budget = Duration::from_millis(25);
+        let (registry, _pid, _factory) = registry_with_budget(budget);
+        let first_transport = Arc::new(MockTransport::default());
+        let second_transport = Arc::new(MockTransport::default());
+        let first = install_connected_client(
+            &registry,
+            ConnectionKey::from_bytes([5; 32]),
+            "first",
+            first_transport.clone(),
+        );
+        let second = install_connected_client(
+            &registry,
+            ConnectionKey::from_bytes([6; 32]),
+            "second",
+            second_transport.clone(),
+        );
+        let _first_gate = first_transport.push_close_connection_gate();
+        let _second_gate = second_transport.push_close_connection_gate();
+
+        let started = Instant::now();
+        registry.close();
+
+        assert!(started.elapsed() <= Duration::from_millis(250));
+        assert!(first.is_closed());
+        assert!(second.is_closed());
+        assert!(
+            first_transport
+                .operations()
+                .contains(&TransportOperation::CloseConnection)
+        );
+        assert!(
+            second_transport
+                .operations()
+                .contains(&TransportOperation::CloseConnection)
+        );
+    }
+
+    #[test]
+    fn active_runtime_tasks_do_not_block_shutdown_past_the_budget() {
+        let budget = Duration::from_millis(25);
+        let (registry, _pid, _factory) = registry_with_budget(budget);
+        let handle = registry
+            .acquire(ConnectionKey::from_bytes([7; 32]))
+            .expect("handle");
+        let _task = handle.runtime().spawn(future::pending::<()>());
+
+        let started = Instant::now();
+        registry.close();
+
+        assert!(started.elapsed() <= Duration::from_millis(250));
+        assert!(handle.is_closed());
+    }
+
+    #[test]
+    fn pid_invalidation_never_waits_for_client_network_close() {
+        let budget = Duration::from_millis(25);
+        let (registry, pid, factory) = registry_with_budget(budget);
+        let transport = Arc::new(MockTransport::default());
+        let inherited = install_connected_client(
+            &registry,
+            ConnectionKey::from_bytes([8; 32]),
+            "default",
+            transport.clone(),
+        );
+        let _gate = transport.push_close_connection_gate();
+
+        pid.set(101);
+        let started = Instant::now();
+        let child = registry
+            .acquire(ConnectionKey::from_bytes([8; 32]))
+            .expect("child handle");
+
+        assert!(started.elapsed() <= Duration::from_millis(10));
+        assert!(inherited.is_closed());
+        assert!(!child.is_closed());
+        assert_eq!(factory.creation_count(), 2);
+        assert!(
+            !transport
+                .operations()
+                .contains(&TransportOperation::CloseConnection)
+        );
+    }
+
+    #[test]
+    fn close_after_pid_change_never_touches_the_inherited_runtime() {
+        let (registry, pid, _) = registry_with_budget(Duration::from_millis(25));
+        let transport = Arc::new(MockTransport::default());
+        let handle = install_connected_client(
+            &registry,
+            ConnectionKey::from_bytes([12; 32]),
+            "inherited",
+            transport.clone(),
+        );
+        let _blocked_close = transport.push_close_connection_gate();
+        pid.set(101);
+
+        registry.close();
+
+        assert!(handle.is_closed());
+        assert!(
+            !transport
+                .operations()
+                .contains(&TransportOperation::CloseConnection)
+        );
     }
 }

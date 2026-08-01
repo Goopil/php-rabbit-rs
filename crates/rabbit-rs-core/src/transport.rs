@@ -9,8 +9,8 @@ pub mod lapin;
 pub mod mock;
 
 pub type TransportResult<T> = Result<T, TransportError>;
-pub type Headers = BTreeMap<String, Bytes>;
-pub type PublishHeaders = BTreeMap<String, HeaderValue>;
+pub type Headers = BTreeMap<String, HeaderValue>;
+pub type PublishHeaders = Headers;
 
 /// A PHP-compatible value that can be represented in an AMQP field table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -219,7 +219,7 @@ impl PublishRequest {
             exchange: exchange.into(),
             routing_key: routing_key.into(),
             payload: payload.into(),
-            mandatory: false,
+            mandatory: true,
             properties: PublishProperties::default(),
         }
     }
@@ -271,6 +271,8 @@ pub struct Delivery {
     pub exchange: String,
     pub routing_key: String,
     pub redelivered: bool,
+    pub message_id: Option<String>,
+    pub correlation_id: Option<String>,
     pub headers: Headers,
     pub payload: Bytes,
 }
@@ -411,6 +413,11 @@ mod tests {
         }
     }
 
+    #[test]
+    fn publish_requests_are_mandatory_by_default() {
+        assert!(PublishRequest::new("jobs", "default", b"payload".to_vec()).mandatory);
+    }
+
     #[tokio::test]
     async fn mock_transport_records_a_pipelined_publish() {
         let transport = MockTransport::default();
@@ -473,6 +480,8 @@ mod tests {
             exchange: "events".to_owned(),
             routing_key: "jobs".to_owned(),
             redelivered: false,
+            message_id: None,
+            correlation_id: None,
             headers: super::Headers::new(),
             payload: Bytes::from_static(b"job"),
         }));

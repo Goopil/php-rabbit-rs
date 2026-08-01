@@ -10,10 +10,8 @@ function message(string $messageId): array {
         'payload' => 'payload',
         'message_id' => $messageId,
         'headers' => [
-            'trace' => [
-                'sampled' => true,
-                'tags' => ['native', 1],
-            ],
+            'trace.sampled' => true,
+            'trace.source' => 'native',
         ],
         'timeout_ms' => 1,
     ];
@@ -28,12 +26,27 @@ $pool = Goopil\RabbitRs\testing_pool([
         'tls' => ['enabled' => false, 'server_name' => null],
         'heartbeat' => 30,
     ]],
-    'workers' => [],
+    'workers' => [[
+        'name' => 'main',
+        'subscriptions' => [[
+            'name' => 'default',
+            'broker' => 'default',
+            'queue' => 'jobs',
+            'weight' => 1,
+            'priority_class' => 0,
+            'prefetch' => 1,
+        ]],
+        'scheduler' => [
+            'strategy' => 'weighted_fair',
+            'max_in_flight' => 1,
+        ],
+    ]],
     'topology_mode' => 'external',
 ], [
     'publisher_capacity' => 1,
     'pending_confirmations' => 1,
 ]);
+$consumer = $pool->consumer('main');
 
 try {
     $pool->publishBatch([message('first'), message('second')]);
@@ -49,6 +62,14 @@ if ($pool->stats()['backpressure_total'] !== 1) {
 }
 
 $pool->close();
+try {
+    $consumer->next(1);
+    throw new Exception('pool close must terminate its active consumer');
+} catch (Goopil\RabbitRs\Exception $exception) {
+    if (!str_contains($exception->getMessage(), 'closed')) {
+        throw new Exception('consumer close must be explicit');
+    }
+}
 echo "OK\n";
 ?>
 --EXPECT--

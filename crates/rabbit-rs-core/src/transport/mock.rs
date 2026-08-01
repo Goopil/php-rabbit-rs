@@ -41,6 +41,11 @@ struct MockState {
     deliveries: VecDeque<TransportResult<Delivery>>,
     keep_delivery_stream_open: bool,
     operation_results: VecDeque<TransportResult<()>>,
+    consumer_results: VecDeque<TransportResult<()>>,
+    connect_gates: VecDeque<MockOperationGateWait>,
+    open_publisher_gates: VecDeque<MockOperationGateWait>,
+    open_consumer_gates: VecDeque<MockOperationGateWait>,
+    close_connection_gates: VecDeque<MockOperationGateWait>,
 }
 
 #[derive(Clone, Default)]
@@ -88,6 +93,38 @@ impl MockTransport {
         self.state().operation_results.push_back(result);
     }
 
+    pub fn push_consumer_result(&self, result: TransportResult<()>) {
+        self.state().consumer_results.push_back(result);
+    }
+
+    #[must_use]
+    pub fn push_connect_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().connect_gates.push_back(wait);
+        gate
+    }
+
+    #[must_use]
+    pub fn push_open_publisher_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().open_publisher_gates.push_back(wait);
+        gate
+    }
+
+    #[must_use]
+    pub fn push_open_consumer_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().open_consumer_gates.push_back(wait);
+        gate
+    }
+
+    #[must_use]
+    pub fn push_close_connection_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().close_connection_gates.push_back(wait);
+        gate
+    }
+
     #[must_use]
     pub fn operations(&self) -> Vec<TransportOperation> {
         self.state().operations.clone()
@@ -100,17 +137,80 @@ impl MockTransport {
     }
 }
 
+struct MockOperationGateWait {
+    entered: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
+
+#[derive(Clone)]
+pub struct MockOperationGate {
+    entered: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    release: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl MockOperationGate {
+    pub async fn wait_entered(&self) {
+        let Some(receiver) = self
+            .entered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let _ = receiver.await;
+    }
+
+    #[must_use]
+    pub fn release(&self) -> bool {
+        self.release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .is_some_and(|sender| sender.send(()).is_ok())
+    }
+}
+
+fn operation_gate() -> (MockOperationGateWait, MockOperationGate) {
+    let (entered_sender, entered_receiver) = oneshot::channel();
+    let (release_sender, release_receiver) = oneshot::channel();
+    (
+        MockOperationGateWait {
+            entered: entered_sender,
+            release: release_receiver,
+        },
+        MockOperationGate {
+            entered: Arc::new(Mutex::new(Some(entered_receiver))),
+            release: Arc::new(Mutex::new(Some(release_sender))),
+        },
+    )
+}
+
+async fn wait_for_gate(gate: Option<MockOperationGateWait>) {
+    if let Some(gate) = gate {
+        let _ = gate.entered.send(());
+        let _ = gate.release.await;
+    }
+}
+
 #[async_trait]
 impl Transport for MockTransport {
     async fn connect(
         &self,
         config: &BrokerConfig,
     ) -> TransportResult<Box<dyn TransportConnection>> {
-        let mut state = self.state();
-        state.operations.push(TransportOperation::Connect {
-            broker: config.name.clone(),
-        });
-        state.connect_results.pop_front().unwrap_or(Ok(()))?;
+        let (gate, result) = {
+            let mut state = self.state();
+            state.operations.push(TransportOperation::Connect {
+                broker: config.name.clone(),
+            });
+            (
+                state.connect_gates.pop_front(),
+                state.connect_results.pop_front().unwrap_or(Ok(())),
+            )
+        };
+        wait_for_gate(gate).await;
+        result?;
 
         Ok(Box::new(MockConnection {
             state: self.state.clone(),
@@ -133,27 +233,36 @@ impl MockConnection {
 #[async_trait]
 impl TransportConnection for MockConnection {
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
-        self.state()
-            .operations
-            .push(TransportOperation::OpenPublisher);
+        let gate = {
+            let mut state = self.state();
+            state.operations.push(TransportOperation::OpenPublisher);
+            state.open_publisher_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(Box::new(MockPublisherChannel {
             state: self.state.clone(),
         }))
     }
 
     async fn open_consumer(&self) -> TransportResult<Box<dyn ConsumerChannel>> {
-        self.state()
-            .operations
-            .push(TransportOperation::OpenConsumer);
+        let gate = {
+            let mut state = self.state();
+            state.operations.push(TransportOperation::OpenConsumer);
+            state.open_consumer_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(Box::new(MockConsumerChannel {
             state: self.state.clone(),
         }))
     }
 
     async fn close(&self) -> TransportResult<()> {
-        self.state()
-            .operations
-            .push(TransportOperation::CloseConnection);
+        let gate = {
+            let mut state = self.state();
+            state.operations.push(TransportOperation::CloseConnection);
+            state.close_connection_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(())
     }
 }
@@ -297,6 +406,15 @@ impl MockConsumerChannel {
         state.operations.push(operation);
         state.operation_results.pop_front().unwrap_or(Ok(()))
     }
+
+    fn record_consumer(&self, operation: TransportOperation) -> TransportResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations.push(operation);
+        state.consumer_results.pop_front().unwrap_or(Ok(()))
+    }
 }
 
 #[async_trait]
@@ -330,31 +448,28 @@ impl TopologyChannel for MockConsumerChannel {
 #[async_trait]
 impl ConsumerChannel for MockConsumerChannel {
     async fn set_qos(&self, prefetch: u16) -> TransportResult<()> {
-        self.record(TransportOperation::Qos { prefetch });
-        Ok(())
+        self.record_consumer(TransportOperation::Qos { prefetch })
     }
 
     async fn consume(&self, request: ConsumerRequest) -> TransportResult<Box<dyn DeliveryStream>> {
-        self.record(TransportOperation::Consume(request));
+        self.record_consumer(TransportOperation::Consume(request))?;
         Ok(Box::new(MockDeliveryStream {
             state: self.state.clone(),
         }))
     }
 
     async fn ack(&self, delivery_tag: u64, multiple: bool) -> TransportResult<()> {
-        self.record(TransportOperation::Ack {
+        self.record_consumer(TransportOperation::Ack {
             delivery_tag,
             multiple,
-        });
-        Ok(())
+        })
     }
 
     async fn reject(&self, delivery_tag: u64, requeue: bool) -> TransportResult<()> {
-        self.record(TransportOperation::Reject {
+        self.record_consumer(TransportOperation::Reject {
             delivery_tag,
             requeue,
-        });
-        Ok(())
+        })
     }
 }
 

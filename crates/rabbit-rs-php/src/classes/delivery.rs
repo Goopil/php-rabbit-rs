@@ -9,9 +9,10 @@ use ext_php_rs::{
     boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
-    types::ZendHashTable,
+    types::{ZendHashTable, Zval},
 };
 use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState};
+use rabbit_rs_core::transport::HeaderValue;
 use tokio::runtime::Handle;
 
 /// Native delivery and its acknowledgement token.
@@ -37,12 +38,15 @@ impl Delivery {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::metadata")?;
         let mut metadata = ZendHashTable::new();
         metadata.insert("message_id", self.inner.id.as_str())?;
+        if let Some(correlation_id) = &self.inner.correlation_id {
+            metadata.insert("correlation_id", correlation_id.as_str())?;
+        }
         metadata.insert("subscription", self.inner.subscription.as_str())?;
         metadata.insert("attempts", i64::from(self.inner.attempts))?;
         metadata.insert("state", state_name(self.inner.state()))?;
         let mut headers = ZendHashTable::new();
         for (key, value) in &self.inner.headers {
-            headers.insert(key.as_str(), Binary::new(value.to_vec()))?;
+            insert_header(&mut headers, key, value)?;
         }
         metadata.insert("headers", headers)?;
         Ok(metadata)
@@ -97,6 +101,18 @@ impl Delivery {
         }
         Ok(())
     }
+}
+
+fn insert_header(table: &mut ZendHashTable, key: &str, value: &HeaderValue) -> PhpResult<()> {
+    match value {
+        HeaderValue::Void => table.insert(key, Zval::null())?,
+        HeaderValue::Boolean(value) => table.insert(key, *value)?,
+        HeaderValue::Integer(value) => table.insert(key, *value)?,
+        HeaderValue::Double(value) => table.insert(key, value.get())?,
+        HeaderValue::Binary(value) => table.insert(key, Binary::new(value.to_vec()))?,
+        HeaderValue::Array(_) | HeaderValue::Table(_) => {}
+    }
+    Ok(())
 }
 
 fn consumer_php_exception(

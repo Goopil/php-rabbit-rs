@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -125,23 +125,30 @@ impl ConsumerSet {
         let mut streams = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
-            subscription
-                .channel
-                .set_qos(subscription.prefetch)
-                .await
-                .map_err(|error| {
-                    ConsumerError::new(super::ConsumerErrorKind::Transport, error.to_string())
-                })?;
-            let stream = subscription
+            if let Err(error) = subscription.channel.set_qos(subscription.prefetch).await {
+                close_subscription_channels(&subscriptions).await;
+                return Err(ConsumerError::new(
+                    super::ConsumerErrorKind::Transport,
+                    error.to_string(),
+                ));
+            }
+            let stream = match subscription
                 .channel
                 .consume(ConsumerRequest::new(
                     subscription.queue.clone(),
-                    format!("rabbit-rs.{:?}", subscription.id),
+                    format!("rabbit-rs.{}", subscription.id.as_str()),
                 ))
                 .await
-                .map_err(|error| {
-                    ConsumerError::new(super::ConsumerErrorKind::Transport, error.to_string())
-                })?;
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    close_subscription_channels(&subscriptions).await;
+                    return Err(ConsumerError::new(
+                        super::ConsumerErrorKind::Transport,
+                        error.to_string(),
+                    ));
+                }
+            };
             streams.push((subscription.id.clone(), stream));
         }
 
@@ -160,6 +167,7 @@ impl ConsumerSet {
             commands,
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
+            next_waiter_id: Arc::new(AtomicU64::new(1)),
         })
     }
 }
@@ -185,11 +193,34 @@ fn spawn_source(
     });
 }
 
+async fn close_subscription_channels(subscriptions: &[Subscription]) {
+    for subscription in subscriptions {
+        let _ = subscription.channel.close().await;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
+    next_waiter_id: Arc<AtomicU64>,
+}
+
+struct WaiterCancellation {
+    waiter_id: u64,
+    commands: mpsc::Sender<ConsumerCommand>,
+    armed: bool,
+}
+
+impl Drop for WaiterCancellation {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self
+                .commands
+                .try_send(ConsumerCommand::CancelWaiter(self.waiter_id));
+        }
+    }
 }
 
 impl ConsumerHandle {
@@ -204,12 +235,23 @@ impl ConsumerHandle {
     ///
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
+        let waiter_id = self.next_waiter_id.fetch_add(1, Ordering::Relaxed);
         let (completed, completion) = oneshot::channel();
         self.commands
-            .send(ConsumerCommand::Next(completed))
+            .send(ConsumerCommand::Next {
+                waiter_id,
+                completed,
+            })
             .await
             .map_err(|_| ConsumerError::closed())?;
-        completion.await.map_err(|_| ConsumerError::closed())?
+        let mut cancellation = WaiterCancellation {
+            waiter_id,
+            commands: self.commands.clone(),
+            armed: true,
+        };
+        let result = completion.await.map_err(|_| ConsumerError::closed())?;
+        cancellation.armed = false;
+        result
     }
 
     /// Records a new connection generation for one subscription.

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 use bytes::Bytes;
 use ext_php_rs::types::{ArrayKey, ZendHashTable, Zval};
@@ -10,8 +10,60 @@ use rabbit_rs_core::{
 use serde_json::{Map, Number, Value};
 use tokio::time::Instant;
 
-const MAX_DEPTH: usize = 64;
-const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
+const MAX_CONFIG_DEPTH: usize = 64;
+pub(crate) const MAX_BATCH_MESSAGES: usize = 256;
+pub(crate) const MAX_BATCH_PAYLOAD_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_HEADER_ENTRIES: usize = 128;
+pub(crate) const MAX_HEADER_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_TIMEOUT_MS: u64 = 86_400_000;
+
+#[derive(Default)]
+struct ConversionBudget {
+    payload_bytes: usize,
+    header_entries: usize,
+    header_bytes: usize,
+}
+
+impl ConversionBudget {
+    fn add_payload(&mut self, path: &str, bytes: usize) -> Result<(), String> {
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| format!("{path}: payload size overflow"))?;
+        if self.payload_bytes > MAX_BATCH_PAYLOAD_BYTES {
+            return Err(format!(
+                "{path}: cumulative payload exceeds the {MAX_BATCH_PAYLOAD_BYTES} byte limit"
+            ));
+        }
+        Ok(())
+    }
+
+    fn add_headers(&mut self, path: &str, entries: usize) -> Result<(), String> {
+        self.header_entries = self
+            .header_entries
+            .checked_add(entries)
+            .ok_or_else(|| format!("{path}: header count overflow"))?;
+        if self.header_entries > MAX_HEADER_ENTRIES {
+            return Err(format!(
+                "{path}: exceeds the {MAX_HEADER_ENTRIES} header entry limit"
+            ));
+        }
+        Ok(())
+    }
+
+    fn add_header_bytes(&mut self, path: &str, bytes: usize) -> Result<(), String> {
+        self.header_bytes = self
+            .header_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| format!("{path}: header size overflow"))?;
+        if self.header_bytes > MAX_HEADER_BYTES {
+            return Err(format!(
+                "{path}: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
+            ));
+        }
+        Ok(())
+    }
+}
 
 pub(crate) struct NativePublish {
     pub broker: String,
@@ -27,6 +79,14 @@ pub(crate) fn validated_config(table: &ZendHashTable) -> Result<ValidatedConfig,
 }
 
 pub(crate) fn publish(table: &ZendHashTable, path: &str) -> Result<NativePublish, String> {
+    publish_with_budget(table, path, &mut ConversionBudget::default())
+}
+
+fn publish_with_budget(
+    table: &ZendHashTable,
+    path: &str,
+    budget: &mut ConversionBudget,
+) -> Result<NativePublish, String> {
     reject_unknown_keys(
         table,
         path,
@@ -51,30 +111,33 @@ pub(crate) fn publish(table: &ZendHashTable, path: &str) -> Result<NativePublish
     if message_id.is_empty() {
         return Err(format!("{path}.message_id: must not be empty"));
     }
-    let payload = required_binary(table, "payload", path)?;
-    if payload.len() > MAX_PAYLOAD_BYTES {
-        return Err(format!(
-            "{path}.payload: exceeds the {MAX_PAYLOAD_BYTES} byte limit"
-        ));
-    }
+    let payload = required_payload(table, path, budget)?;
     let timeout_ms = optional_non_negative_integer(table, "timeout_ms", path)?.unwrap_or(30_000);
     if timeout_ms == 0 {
         return Err(format!("{path}.timeout_ms: must be greater than zero"));
     }
+    if timeout_ms > MAX_TIMEOUT_MS {
+        return Err(format!(
+            "{path}.timeout_ms: exceeds the {MAX_TIMEOUT_MS} millisecond limit"
+        ));
+    }
+    let deadline = Instant::now()
+        .checked_add(std::time::Duration::from_millis(timeout_ms))
+        .ok_or_else(|| format!("{path}.timeout_ms: deadline overflow"))?;
 
     let mut properties = MessageProperties::new(message_id);
     properties.content_type = optional_string(table, "content_type", path)?;
     properties.correlation_id = optional_string(table, "correlation_id", path)?;
     properties.delay_ms = optional_non_negative_integer(table, "delay_ms", path)?;
-    properties.headers = optional_headers(table, path)?;
+    properties.headers = optional_headers(table, path, budget)?;
 
     Ok(NativePublish {
         broker,
         request: PublishRequest::new(
             Destination::new(exchange, routing_key),
-            Bytes::from(payload),
+            payload,
             properties,
-            Instant::now() + std::time::Duration::from_millis(timeout_ms),
+            deadline,
         ),
     })
 }
@@ -83,17 +146,22 @@ pub(crate) fn publish_batch(table: &ZendHashTable) -> Result<Vec<NativePublish>,
     if !is_list(table) {
         return Err("messages: publishBatch expects a list".to_owned());
     }
-    table
-        .iter()
-        .enumerate()
-        .map(|(index, (_, value))| {
-            value
-                .dereference()
-                .array()
-                .ok_or_else(|| format!("messages.{index}: expected an array"))
-                .and_then(|message| publish(message, &format!("messages.{index}")))
-        })
-        .collect()
+    if table.len() > MAX_BATCH_MESSAGES {
+        return Err(format!(
+            "messages: exceeds the {MAX_BATCH_MESSAGES} message limit"
+        ));
+    }
+    let mut budget = ConversionBudget::default();
+    let mut publishes = Vec::with_capacity(table.len());
+    for (index, (_, value)) in table.iter().enumerate() {
+        let path = format!("messages[{index}]");
+        let message = value
+            .dereference()
+            .array()
+            .ok_or_else(|| format!("{path}: expected an array"))?;
+        publishes.push(publish_with_budget(message, &path, &mut budget)?);
+    }
+    Ok(publishes)
 }
 
 fn value(
@@ -102,7 +170,7 @@ fn value(
     depth: usize,
     active_arrays: &mut HashSet<usize>,
 ) -> Result<Value, String> {
-    if depth > MAX_DEPTH {
+    if depth > MAX_CONFIG_DEPTH {
         return Err(format!("{path}: maximum nesting depth exceeded"));
     }
 
@@ -225,11 +293,16 @@ fn optional_string(table: &ZendHashTable, key: &str, path: &str) -> Result<Optio
         .ok_or_else(|| format!("{path}.{key}: expected a valid UTF-8 string or null"))
 }
 
-fn required_binary(table: &ZendHashTable, key: &str, path: &str) -> Result<Vec<u8>, String> {
-    required(table, key, path)?
+fn required_payload(
+    table: &ZendHashTable,
+    path: &str,
+    budget: &mut ConversionBudget,
+) -> Result<Bytes, String> {
+    let value = required(table, "payload", path)?
         .zend_str()
-        .map(|value| value.as_bytes().to_vec())
-        .ok_or_else(|| format!("{path}.{key}: expected a binary PHP string"))
+        .ok_or_else(|| format!("{path}.payload: expected a binary PHP string"))?;
+    budget.add_payload(&format!("{path}.payload"), value.as_bytes().len())?;
+    Ok(Bytes::copy_from_slice(value.as_bytes()))
 }
 
 fn optional_non_negative_integer(
@@ -251,7 +324,11 @@ fn optional_non_negative_integer(
         .map_err(|_| format!("{path}.{key}: expected a non-negative integer"))
 }
 
-fn optional_headers(table: &ZendHashTable, path: &str) -> Result<PublishHeaders, String> {
+fn optional_headers(
+    table: &ZendHashTable,
+    path: &str,
+    budget: &mut ConversionBudget,
+) -> Result<PublishHeaders, String> {
     let Some(value) = table.get("headers").map(Zval::dereference) else {
         return Ok(PublishHeaders::new());
     };
@@ -261,18 +338,26 @@ fn optional_headers(table: &ZendHashTable, path: &str) -> Result<PublishHeaders,
     let headers = value
         .array()
         .ok_or_else(|| format!("{path}.headers: expected an associative array"))?;
+    budget.add_headers(&format!("{path}.headers"), headers.len())?;
     let mut output = PublishHeaders::new();
-    let mut active_arrays = HashSet::new();
-    active_arrays.insert(std::ptr::from_ref(headers).addr());
     for (key, value) in headers {
-        let key = string_key(key, &format!("{path}.headers"))?;
-        let value = header_value(
-            value,
-            &format!("{path}.headers.{key}"),
-            0,
-            &mut active_arrays,
-        )?;
-        output.insert(key, value);
+        let key = match key {
+            ArrayKey::Str(key) => Cow::Borrowed(key),
+            ArrayKey::String(key) => Cow::Owned(key),
+            ArrayKey::ZendString(key) => Cow::Borrowed(
+                key.as_str()
+                    .map_err(|_| format!("{path}.headers: key must be valid UTF-8"))?,
+            ),
+            ArrayKey::Long(key) => {
+                return Err(format!(
+                    "{path}.headers.{key}: integer keys are unsupported"
+                ));
+            }
+        };
+        budget.add_header_bytes(&format!("{path}.headers"), key.len())?;
+        let value_path = format!("{path}.headers.{key}");
+        let value = header_value(value, &value_path, budget)?;
+        output.insert(key.into_owned(), value);
     }
     Ok(output)
 }
@@ -280,84 +365,42 @@ fn optional_headers(table: &ZendHashTable, path: &str) -> Result<PublishHeaders,
 fn header_value(
     input: &Zval,
     path: &str,
-    depth: usize,
-    active_arrays: &mut HashSet<usize>,
+    budget: &mut ConversionBudget,
 ) -> Result<HeaderValue, String> {
-    if depth > MAX_DEPTH {
-        return Err(format!("{path}: maximum nesting depth exceeded"));
-    }
-
     let input = input.dereference();
     if input.is_null() {
         return Ok(HeaderValue::Void);
     }
     if let Some(value) = input.bool() {
+        budget.add_header_bytes(path, 1)?;
         return Ok(HeaderValue::Boolean(value));
     }
     if let Some(value) = input.long() {
+        budget.add_header_bytes(path, size_of::<i64>())?;
         return Ok(HeaderValue::Integer(value));
     }
     if let Some(value) = input.double() {
-        return HeaderFloat::new(value)
+        let value = HeaderFloat::new(value)
             .map(HeaderValue::Double)
-            .ok_or_else(|| format!("{path}: non-finite floating-point value is unsupported"));
+            .ok_or_else(|| format!("{path}: non-finite floating-point value is unsupported"))?;
+        budget.add_header_bytes(path, size_of::<f64>())?;
+        return Ok(value);
     }
     if let Some(value) = input.zend_str() {
+        budget.add_header_bytes(path, value.as_bytes().len())?;
         return Ok(HeaderValue::Binary(Bytes::copy_from_slice(
             value.as_bytes(),
         )));
     }
-    if let Some(array) = input.array() {
-        return header_array(array, path, depth, active_arrays);
+    if input.array().is_some() {
+        return Err(format!(
+            "{path}: nested arrays are unsupported; headers must be flat"
+        ));
     }
 
     Err(format!(
-        "{path}: expected null, bool, int, finite float, string, or array"
+        "{path}: expected null, bool, int, finite float, or string"
     ))
-}
-
-fn header_array(
-    input: &ZendHashTable,
-    path: &str,
-    depth: usize,
-    active_arrays: &mut HashSet<usize>,
-) -> Result<HeaderValue, String> {
-    let identity = std::ptr::from_ref(input).addr();
-    if !active_arrays.insert(identity) {
-        return Err(format!("{path}: recursive arrays are unsupported"));
-    }
-
-    let result = if is_list(input) {
-        input
-            .iter()
-            .enumerate()
-            .map(|(index, (_, value))| {
-                header_value(
-                    value,
-                    &format!("{path}.{index}"),
-                    depth.saturating_add(1),
-                    active_arrays,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(HeaderValue::Array)
-    } else {
-        let mut output = PublishHeaders::new();
-        for (key, value) in input {
-            let key = string_key(key, path)?;
-            let value = header_value(
-                value,
-                &format!("{path}.{key}"),
-                depth.saturating_add(1),
-                active_arrays,
-            )?;
-            output.insert(key, value);
-        }
-        Ok(HeaderValue::Table(output))
-    };
-
-    active_arrays.remove(&identity);
-    result
 }
 
 fn reject_unknown_keys(table: &ZendHashTable, path: &str, allowed: &[&str]) -> Result<(), String> {

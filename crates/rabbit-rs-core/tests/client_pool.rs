@@ -2,14 +2,14 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    client::ClientPool,
+    client::{ClientErrorKind, ClientPool},
     config::{
         BrokerConfig, Config, Credentials, Endpoint, SchedulerConfig, SubscriptionConfig,
         TlsConfig, TopologyMode, WorkerProfile,
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation,
+        Delivery as TransportDelivery, PublishConfirmation, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -51,14 +51,34 @@ fn consumer_config() -> rabbit_rs_core::config::ValidatedConfig {
                 weight: 1,
                 priority_class: 0,
                 prefetch: 8,
+                starvation_after: Duration::from_secs(30),
             }],
-            max_in_flight: 16,
-            scheduler: SchedulerConfig::weighted_fair(),
+            scheduler: SchedulerConfig::weighted_fair(16),
         }],
         topology_mode: TopologyMode::External,
     }
     .validate()
     .expect("valid consumer config")
+}
+
+fn two_broker_config() -> rabbit_rs_core::config::ValidatedConfig {
+    Config {
+        brokers: ["first", "second"]
+            .into_iter()
+            .map(|name| BrokerConfig {
+                name: name.to_owned(),
+                hosts: vec![Endpoint::new(format!("{name}.rabbit.local"), 5672)],
+                vhost: "/".to_owned(),
+                credentials: Credentials::new("guest", "secret"),
+                tls: TlsConfig::disabled(),
+                heartbeat: Duration::from_secs(30),
+            })
+            .collect(),
+        workers: Vec::new(),
+        topology_mode: TopologyMode::External,
+    }
+    .validate()
+    .expect("valid two-broker config")
 }
 
 fn request(message_id: &str) -> PublishRequest {
@@ -117,6 +137,21 @@ async fn reuses_one_connection_and_publisher_for_confirmed_messages() {
 
     pool.close().await.expect("close pool");
     assert!(pool.is_closed());
+}
+
+#[tokio::test]
+async fn confirmation_transport_failures_keep_the_transport_classification() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_confirmation(Err(TransportError::protocol("transport failed")));
+    let pool = ClientPool::new(Arc::new(config()), transport);
+
+    let error = pool
+        .publish("default", request("transport-error"))
+        .await
+        .expect_err("transport confirmation must fail");
+
+    assert_eq!(error.kind(), ClientErrorKind::Transport);
+    assert!(error.to_string().contains("transport failed"));
 }
 
 #[tokio::test]
@@ -182,6 +217,8 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
         exchange: "jobs".to_owned(),
         routing_key: "jobs".to_owned(),
         redelivered: false,
+        message_id: None,
+        correlation_id: None,
         headers: BTreeMap::default(),
         payload: Bytes::from_static(b"job-payload"),
     }));
@@ -228,6 +265,8 @@ async fn delivery_reject_forwards_the_requested_requeue_policy() {
         exchange: "jobs".to_owned(),
         routing_key: "jobs".to_owned(),
         redelivered: false,
+        message_id: None,
+        correlation_id: None,
         headers: BTreeMap::default(),
         payload: Bytes::from_static(b"job-payload"),
     }));
@@ -244,4 +283,270 @@ async fn delivery_reject_forwards_the_requested_requeue_policy() {
             requeue: false
         }
     )));
+}
+
+#[tokio::test]
+async fn close_while_connecting_closes_the_uncommitted_connection_once() {
+    let transport = Arc::new(MockTransport::default());
+    let gate = transport.push_connect_gate();
+    let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
+    let publishing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("default", request("message")).await }
+    });
+    gate.wait_entered().await;
+
+    let closing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.close().await }
+    });
+    while !pool.is_closed() {
+        tokio::task::yield_now().await;
+    }
+    assert!(gate.release());
+    closing.await.expect("close join").expect("close pool");
+
+    let error = publishing
+        .await
+        .expect("publish join")
+        .expect_err("connect loses commit");
+    assert_eq!(error.kind(), ClientErrorKind::Closed);
+    let operations = transport.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseConnection))
+            .count(),
+        1
+    );
+    assert!(
+        !operations
+            .iter()
+            .any(|operation| matches!(operation, TransportOperation::OpenPublisher))
+    );
+    let operation_count = operations.len();
+    assert_eq!(
+        pool.publish("default", request("after-close"))
+            .await
+            .expect_err("closed pool")
+            .kind(),
+        ClientErrorKind::Closed
+    );
+    assert_eq!(transport.operations().len(), operation_count);
+}
+
+#[tokio::test]
+async fn close_while_opening_publisher_closes_the_uncommitted_channel_once() {
+    let transport = Arc::new(MockTransport::default());
+    let gate = transport.push_open_publisher_gate();
+    let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
+    let publishing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("default", request("message")).await }
+    });
+    gate.wait_entered().await;
+
+    let closing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.close().await }
+    });
+    while !pool.is_closed() {
+        tokio::task::yield_now().await;
+    }
+    assert!(gate.release());
+    closing.await.expect("close join").expect("close pool");
+
+    let error = publishing
+        .await
+        .expect("publish join")
+        .expect_err("publisher loses commit");
+    assert_eq!(error.kind(), ClientErrorKind::Closed);
+    let operations = transport.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseChannel))
+            .count(),
+        1
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseConnection))
+            .count(),
+        1
+    );
+    let operation_count = operations.len();
+    assert_eq!(
+        pool.consumer("main").await.expect_err("closed pool").kind(),
+        ClientErrorKind::Closed
+    );
+    assert_eq!(transport.operations().len(), operation_count);
+}
+
+#[tokio::test]
+async fn close_while_opening_consumer_closes_the_uncommitted_channel_once() {
+    let transport = Arc::new(MockTransport::default());
+    let gate = transport.push_open_consumer_gate();
+    let pool = Arc::new(ClientPool::new(
+        Arc::new(consumer_config()),
+        transport.clone(),
+    ));
+    let consuming = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.consumer("main").await }
+    });
+    gate.wait_entered().await;
+
+    let closing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.close().await }
+    });
+    while !pool.is_closed() {
+        tokio::task::yield_now().await;
+    }
+    assert!(gate.release());
+    closing.await.expect("close join").expect("close pool");
+
+    let error = consuming
+        .await
+        .expect("consumer join")
+        .expect_err("consumer loses commit");
+    assert_eq!(error.kind(), ClientErrorKind::Closed);
+    let operations = transport.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseChannel))
+            .count(),
+        1
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseConnection))
+            .count(),
+        1
+    );
+    let operation_count = operations.len();
+    assert_eq!(
+        pool.consumer("main").await.expect_err("closed pool").kind(),
+        ClientErrorKind::Closed
+    );
+    assert_eq!(transport.operations().len(), operation_count);
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_during_pending_confirm_resolves_the_publish_once() {
+    let transport = Arc::new(MockTransport::default());
+    let confirmation = transport.push_controlled_confirmation();
+    let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
+    let publishing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("default", request("message")).await }
+    });
+    for _ in 0..100 {
+        if transport
+            .operations()
+            .iter()
+            .any(|operation| matches!(operation, TransportOperation::Publish(_)))
+        {
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+
+    pool.close().await.expect("close pool");
+
+    let error = publishing
+        .await
+        .expect("publish join")
+        .expect_err("pending confirm closes");
+    assert_eq!(error.kind(), ClientErrorKind::Closed);
+    assert!(!confirmation.resolve(Ok(PublishConfirmation::Ack(None))));
+    let operations = transport.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseChannel))
+            .count(),
+        1
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::CloseConnection))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn concurrent_same_broker_initialization_is_deduplicated() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let gate = transport.push_connect_gate();
+    let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
+    let first = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("default", request("first")).await }
+    });
+    let second = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("default", request("second")).await }
+    });
+    gate.wait_entered().await;
+    tokio::task::yield_now().await;
+    assert!(gate.release());
+
+    first.await.expect("first join").expect("first publish");
+    second.await.expect("second join").expect("second publish");
+
+    let operations = transport.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::Connect { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::OpenPublisher))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn independent_brokers_initialize_in_parallel() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let first_gate = transport.push_connect_gate();
+    let second_gate = transport.push_connect_gate();
+    let pool = Arc::new(ClientPool::new(
+        Arc::new(two_broker_config()),
+        transport.clone(),
+    ));
+    let first = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("first", request("first")).await }
+    });
+    let second = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("second", request("second")).await }
+    });
+    first_gate.wait_entered().await;
+    tokio::time::timeout(Duration::from_millis(10), second_gate.wait_entered())
+        .await
+        .expect("second broker enters while first remains blocked");
+    assert!(first_gate.release());
+    assert!(second_gate.release());
+
+    first.await.expect("first join").expect("first publish");
+    second.await.expect("second join").expect("second publish");
 }

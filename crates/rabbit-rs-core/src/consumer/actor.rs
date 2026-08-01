@@ -26,7 +26,11 @@ pub(crate) enum ConsumerCommand {
         subscription: SubscriptionId,
         result: TransportResult<TransportDelivery>,
     },
-    Next(oneshot::Sender<Result<Delivery, ConsumerError>>),
+    Next {
+        waiter_id: u64,
+        completed: oneshot::Sender<Result<Delivery, ConsumerError>>,
+    },
+    CancelWaiter(u64),
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
@@ -38,6 +42,11 @@ pub(crate) enum ConsumerCommand {
         completed: oneshot::Sender<Result<(), ConsumerError>>,
     },
     Close(oneshot::Sender<()>),
+}
+
+struct Waiter {
+    id: u64,
+    completed: oneshot::Sender<Result<Delivery, ConsumerError>>,
 }
 
 struct RuntimeSubscription {
@@ -55,7 +64,7 @@ struct ActorState {
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
-    waiting: VecDeque<oneshot::Sender<Result<Delivery, ConsumerError>>>,
+    waiting: VecDeque<Waiter>,
     in_flight: usize,
     max_in_flight: usize,
     commands: mpsc::Sender<ConsumerCommand>,
@@ -104,11 +113,20 @@ impl ActorState {
 
     fn dispatch(&mut self) {
         while self.in_flight < self.max_in_flight {
+            while self
+                .waiting
+                .front()
+                .is_some_and(|waiter| waiter.completed.is_closed())
+            {
+                self.waiting.pop_front();
+            }
             let Some(waiter) = self.waiting.pop_front() else {
                 return;
             };
             if let Some(error) = self.source_errors.pop_front() {
-                let _ = waiter.send(Err(error));
+                if let Err(Err(error)) = waiter.completed.send(Err(error)) {
+                    self.source_errors.push_front(error);
+                }
                 continue;
             }
             let Some(subscription) = self.scheduler.next(Instant::now()) else {
@@ -117,31 +135,30 @@ impl ActorState {
             };
             let Some(delivery) = self
                 .buffers
-                .get_mut(&subscription)
-                .and_then(VecDeque::pop_front)
+                .get(&subscription)
+                .and_then(VecDeque::front)
+                .cloned()
             else {
                 self.scheduler.mark_empty(&subscription);
                 self.waiting.push_front(waiter);
                 return;
             };
-            if self
-                .buffers
-                .get(&subscription)
-                .is_none_or(VecDeque::is_empty)
-            {
-                self.scheduler.mark_empty(&subscription);
-            }
             let Some(runtime) = self.subscriptions.get(&subscription) else {
-                let _ = waiter.send(Err(ConsumerError::new(
+                let _ = waiter.completed.send(Err(ConsumerError::new(
                     ConsumerErrorKind::InvalidSubscription,
                     "delivery references an unknown subscription",
                 )));
                 continue;
             };
-            let message_id = MessageId::new(format!(
-                "{}:{}:{}",
-                runtime.generation, runtime.channel_id, delivery.delivery_tag
-            ));
+            let message_id = delivery.message_id.as_ref().map_or_else(
+                || {
+                    MessageId::new(format!(
+                        "{}:{}:{}",
+                        runtime.generation, runtime.channel_id, delivery.delivery_tag
+                    ))
+                },
+                |message_id| MessageId::new(message_id.clone()),
+            );
             let attempts = AttemptsResolver::default()
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
@@ -154,6 +171,7 @@ impl ActorState {
                     delivery_tag: delivery.delivery_tag,
                 },
                 message_id.clone(),
+                delivery.correlation_id.clone(),
                 delivery.payload.clone(),
                 delivery.headers.clone(),
                 attempts,
@@ -161,17 +179,34 @@ impl ActorState {
             ));
             let item = Delivery::new(
                 message_id,
-                subscription,
+                delivery.correlation_id,
+                subscription.clone(),
                 delivery.payload,
                 delivery.headers,
                 attempts,
                 token,
             );
-            if waiter.send(Ok(item)).is_ok() {
-                self.metrics.record_delivery();
-                self.in_flight = self.in_flight.saturating_add(1);
+            if waiter.completed.send(Ok(item)).is_err() {
+                self.scheduler.mark_ready(&subscription);
+                continue;
             }
+            if let Some(buffer) = self.buffers.get_mut(&subscription) {
+                buffer.pop_front();
+                if buffer.is_empty() {
+                    self.scheduler.mark_empty(&subscription);
+                }
+            }
+            self.metrics.record_delivery();
+            self.in_flight = self.in_flight.saturating_add(1);
         }
+    }
+
+    fn record_source_error(&mut self, error: ConsumerError) {
+        if self.source_errors.len() >= self.max_in_flight.max(64) {
+            self.source_errors.pop_front();
+        }
+        self.source_errors.push_back(error);
+        self.dispatch();
     }
 
     fn release_budget(&mut self) {
@@ -202,16 +237,26 @@ pub(crate) async fn run_actor(
                     state.dispatch();
                 }
                 Err(error) => {
-                    state.source_errors.push_back(ConsumerError::new(
+                    state.record_source_error(ConsumerError::new(
                         ConsumerErrorKind::Transport,
                         error.to_string(),
                     ));
-                    state.dispatch();
                 }
             },
-            ConsumerCommand::Next(waiter) => {
-                state.waiting.push_back(waiter);
+            ConsumerCommand::Next {
+                waiter_id,
+                completed,
+            } => {
+                if !completed.is_closed() {
+                    state.waiting.push_back(Waiter {
+                        id: waiter_id,
+                        completed,
+                    });
+                }
                 state.dispatch();
+            }
+            ConsumerCommand::CancelWaiter(waiter_id) => {
+                state.waiting.retain(|waiter| waiter.id != waiter_id);
             }
             ConsumerCommand::Settle {
                 token,
@@ -262,9 +307,12 @@ pub(crate) async fn run_actor(
                 let _ = completed.send(result);
             }
             ConsumerCommand::Close(completed) => {
+                for runtime in state.subscriptions.values() {
+                    let _ = runtime.channel.close().await;
+                }
                 let error = ConsumerError::closed();
                 for waiter in state.waiting.drain(..) {
-                    let _ = waiter.send(Err(error.clone()));
+                    let _ = waiter.completed.send(Err(error.clone()));
                 }
                 let _ = completed.send(());
                 return;
@@ -358,12 +406,10 @@ async fn delayed_release(
     let route = DelayRouter::route(strategy, destination, delay_ms)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::Publish, error.to_string()))?;
     let mut properties = MessageProperties::new(token.message_id.as_str());
+    properties.correlation_id.clone_from(&token.correlation_id);
     properties.headers = AttemptsResolver::default()
         .delayed_headers(&token.headers, token.attempts)
-        .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?
-        .into_iter()
-        .map(|(name, value)| (name, value.into()))
-        .collect();
+        .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
     if route.queue.is_none() {
         properties.delay_ms = Some(route.delay_ms);
     }
@@ -371,7 +417,7 @@ async fn delayed_release(
         Destination::new(route.exchange, route.routing_key),
         token.payload.clone(),
         properties,
-        tokio::time::Instant::now() + Duration::from_secs(30),
+        tokio::time::Instant::now() + publisher.confirm_timeout(),
     );
     let outcome = publisher
         .try_publish(request)

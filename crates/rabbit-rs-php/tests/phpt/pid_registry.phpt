@@ -31,10 +31,9 @@ $secondStats = $second->stats();
 $differentStats = $different->stats();
 
 expect_true($firstStats['pid'] === getmypid(), 'registry PID');
-expect_true($firstStats['key'] === $secondStats['key'], 'equivalent configuration key');
 expect_true($firstStats['handle'] === $secondStats['handle'], 'equivalent pools must share a handle');
-expect_true($firstStats['key'] !== $differentStats['key'], 'different configuration key');
 expect_true($firstStats['handle'] !== $differentStats['handle'], 'different pools need distinct handles');
+expect_true(!array_key_exists('key', $firstStats), 'internal configuration key must stay private');
 
 $first->close();
 try {

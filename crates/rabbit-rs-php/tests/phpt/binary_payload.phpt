@@ -72,7 +72,7 @@ try {
     $pool->publish($invalidHeader);
     throw new Exception('recursive header must fail');
 } catch (Goopil\RabbitRs\Exception $exception) {
-    expect_true(str_contains($exception->getMessage(), 'recursive arrays'), 'recursive header error');
+    expect_true(str_contains($exception->getMessage(), 'headers must be flat'), 'recursive header error');
 }
 unset($invalidHeader, $recursive);
 
@@ -80,7 +80,7 @@ try {
     $pool->publishBatch(['not a message']);
     throw new Exception('invalid batch item must fail');
 } catch (Goopil\RabbitRs\Exception $exception) {
-    expect_true(str_contains($exception->getMessage(), 'messages.0'), 'batch item path');
+    expect_true(str_contains($exception->getMessage(), 'messages[0]'), 'batch item path');
 }
 
 $pool->close();

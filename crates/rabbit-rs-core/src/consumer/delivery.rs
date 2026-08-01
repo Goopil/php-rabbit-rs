@@ -44,6 +44,7 @@ const TRANSITIONING: u8 = 1;
 
 pub struct Delivery {
     pub id: MessageId,
+    pub correlation_id: Option<String>,
     pub subscription: SubscriptionId,
     pub payload: Bytes,
     pub headers: Headers,
@@ -56,6 +57,7 @@ impl fmt::Debug for Delivery {
         formatter
             .debug_struct("Delivery")
             .field("id", &self.id)
+            .field("correlation_id", &self.correlation_id)
             .field("subscription", &self.subscription)
             .field("payload_len", &self.payload.len())
             .field("headers", &self.headers)
@@ -68,6 +70,7 @@ impl fmt::Debug for Delivery {
 impl Delivery {
     pub(crate) fn new(
         id: MessageId,
+        correlation_id: Option<String>,
         subscription: SubscriptionId,
         payload: Bytes,
         headers: Headers,
@@ -76,6 +79,7 @@ impl Delivery {
     ) -> Self {
         Self {
             id,
+            correlation_id,
             subscription,
             payload,
             headers,
@@ -174,7 +178,12 @@ impl DeliveryToken {
                 self.inner.state.store(terminal as u8, Ordering::Release);
                 Ok(())
             }
-            Ok(Err(error)) if error.kind == ConsumerErrorKind::StaleGeneration => {
+            Ok(Err(error))
+                if matches!(
+                    error.kind,
+                    ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                ) =>
+            {
                 self.inner
                     .state
                     .store(DeliveryState::Lost as u8, Ordering::Release);
@@ -203,6 +212,7 @@ pub(crate) struct DeliveryTokenInner {
     pub channel_id: u16,
     pub delivery_tag: u64,
     pub message_id: MessageId,
+    pub correlation_id: Option<String>,
     pub payload: Bytes,
     pub headers: Headers,
     pub attempts: u32,
@@ -223,6 +233,7 @@ impl DeliveryTokenInner {
     pub(crate) fn pending(
         identity: DeliveryIdentity,
         message_id: MessageId,
+        correlation_id: Option<String>,
         payload: Bytes,
         headers: Headers,
         attempts: u32,
@@ -235,6 +246,7 @@ impl DeliveryTokenInner {
             channel_id: identity.channel_id,
             delivery_tag: identity.delivery_tag,
             message_id,
+            correlation_id,
             payload,
             headers,
             attempts,

@@ -181,6 +181,8 @@ fn transport_delivery(tag: u64) -> TransportDelivery {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
+        message_id: None,
+        correlation_id: None,
         headers: BTreeMap::new(),
         payload: Bytes::from_static(b"job"),
     }

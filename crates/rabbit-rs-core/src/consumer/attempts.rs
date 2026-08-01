@@ -1,15 +1,22 @@
 use std::{error::Error, fmt, num::NonZeroU32};
 
 use super::Headers;
+use crate::transport::HeaderValue;
 
 pub const APPLICATION_ATTEMPTS_HEADER: &str = "x-rabbit-rs-attempts";
 
 const ACQUIRED_COUNT_HEADER: &str = "x-acquired-count";
 const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AttemptsResolver {
     max_attempts: Option<NonZeroU32>,
+}
+
+impl Default for AttemptsResolver {
+    fn default() -> Self {
+        Self::new(NonZeroU32::new(20))
+    }
 }
 
 impl AttemptsResolver {
@@ -54,7 +61,7 @@ impl AttemptsResolver {
         next_headers.remove(DELIVERY_COUNT_HEADER);
         next_headers.insert(
             APPLICATION_ATTEMPTS_HEADER.to_owned(),
-            next_attempt.to_string().into(),
+            HeaderValue::Integer(i64::from(next_attempt)),
         );
         Ok(next_headers)
     }
@@ -76,7 +83,11 @@ impl AttemptsResolver {
 }
 
 fn header_count(headers: &Headers, name: &str) -> Option<u32> {
-    std::str::from_utf8(headers.get(name)?).ok()?.parse().ok()
+    match headers.get(name)? {
+        HeaderValue::Integer(value) => u32::try_from(*value).ok(),
+        HeaderValue::Binary(value) => std::str::from_utf8(value).ok()?.parse().ok(),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

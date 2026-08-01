@@ -2,14 +2,11 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex as StdMutex, MutexGuard},
     time::Duration,
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     config::ValidatedConfig,
@@ -27,16 +24,28 @@ const DEFAULT_MAX_MESSAGES: usize = 256;
 const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
 const DEFAULT_BUFFER_CAPACITY: usize = 8192;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PoolLifecycle {
+    Open { generation: u64 },
+    Closing,
+    Closed,
+}
+
+type Initializers = StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>;
+
 /// A process-local, lazily connected pool shared by the PHP boundary.
 pub struct ClientPool {
     config: Arc<ValidatedConfig>,
     transport: Arc<dyn Transport>,
     publisher_config: PublisherConfig,
-    connections: Mutex<HashMap<String, Arc<dyn TransportConnection>>>,
-    publishers: Mutex<HashMap<String, PublisherHandle>>,
-    consumers: Mutex<HashMap<String, ConsumerHandle>>,
+    lifecycle: StdMutex<PoolLifecycle>,
+    connections: StdMutex<HashMap<String, Arc<dyn TransportConnection>>>,
+    connection_initializers: Initializers,
+    publishers: StdMutex<HashMap<String, PublisherHandle>>,
+    publisher_initializers: Initializers,
+    consumers: StdMutex<HashMap<String, ConsumerHandle>>,
+    consumer_initializers: Initializers,
     metrics: Metrics,
-    closed: AtomicBool,
 }
 
 impl ClientPool {
@@ -73,11 +82,14 @@ impl ClientPool {
             config,
             transport,
             publisher_config,
-            connections: Mutex::new(HashMap::new()),
-            publishers: Mutex::new(HashMap::new()),
-            consumers: Mutex::new(HashMap::new()),
+            lifecycle: StdMutex::new(PoolLifecycle::Open { generation: 1 }),
+            connections: StdMutex::new(HashMap::new()),
+            connection_initializers: StdMutex::new(HashMap::new()),
+            publishers: StdMutex::new(HashMap::new()),
+            publisher_initializers: StdMutex::new(HashMap::new()),
+            consumers: StdMutex::new(HashMap::new()),
+            consumer_initializers: StdMutex::new(HashMap::new()),
             metrics: Metrics::default(),
-            closed: AtomicBool::new(false),
         }
     }
 
@@ -152,26 +164,39 @@ impl ClientPool {
     /// Returns a typed error for an unknown profile or broker, connection/channel
     /// failure, `QoS` failure, or consumer registration failure.
     pub async fn consumer(&self, profile: &str) -> Result<ConsumerHandle, ClientError> {
-        self.ensure_open()?;
-        let mut consumers = self.consumers.lock().await;
-        if let Some(consumer) = consumers.get(profile) {
-            return Ok(consumer.clone());
-        }
-
+        let generation = self.open_generation()?;
         let worker = self.config.worker(profile).cloned().ok_or_else(|| {
             ClientError::new(
                 ClientErrorKind::Configuration,
                 format!("workers.{profile}: unknown worker profile"),
             )
         })?;
+        if let Some(consumer) = self.ready(generation, &self.consumers, profile)? {
+            return Ok(consumer);
+        }
+        let initializer = initializer(&self.consumer_initializers, profile);
+        let _initializing = initializer.lock().await;
+        if let Some(consumer) = self.ready(generation, &self.consumers, profile)? {
+            return Ok(consumer);
+        }
+
         let key = ConnectionKey::from_config(&self.config);
         let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
         for (index, subscription) in worker.subscriptions.into_iter().enumerate() {
-            let connection = self.connection(&subscription.broker).await?;
-            let channel = connection
-                .open_consumer()
-                .await
-                .map_err(|error| ClientError::transport(&error))?;
+            let connection = match self.connection(&subscription.broker).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    close_subscription_channels(&subscriptions).await;
+                    return Err(error);
+                }
+            };
+            let channel = match connection.open_consumer().await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    close_subscription_channels(&subscriptions).await;
+                    return Err(ClientError::transport(&error));
+                }
+            };
             let channel_id = u16::try_from(index.saturating_add(1)).unwrap_or(u16::MAX);
             subscriptions.push(
                 Subscription::new(
@@ -185,20 +210,24 @@ impl ClientPool {
                 .policy(SubscriptionPolicy::new(
                     subscription.weight,
                     subscription.priority_class,
-                    Duration::from_secs(30),
+                    subscription.starvation_after,
                 )),
             );
         }
 
         let consumer = ConsumerSet::spawn_with_metrics(
             subscriptions,
-            usize::from(worker.max_in_flight),
+            usize::from(worker.scheduler.max_in_flight),
             self.metrics.clone(),
         )
         .await
         .map_err(|error| ClientError::consumer(&error))?;
-        consumers.insert(profile.to_owned(), consumer.clone());
-        Ok(consumer)
+        if self.commit(generation, &self.consumers, profile, consumer.clone()) {
+            Ok(consumer)
+        } else {
+            let _ = consumer.close().await;
+            Err(ClientError::closed())
+        }
     }
 
     /// Returns a lock-free metrics snapshot shared by all actors in this pool.
@@ -207,10 +236,18 @@ impl ClientPool {
         self.metrics.snapshot()
     }
 
+    #[cfg(test)]
+    pub(crate) async fn initialize_connection_for_tests(
+        &self,
+        broker: &str,
+    ) -> Result<(), ClientError> {
+        self.connection(broker).await.map(drop)
+    }
+
     /// Returns whether this pool has entered its terminal closed state.
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        !matches!(*lock(&self.lifecycle), PoolLifecycle::Open { .. })
     }
 
     /// Closes publisher actors and broker connections exactly once.
@@ -219,11 +256,15 @@ impl ClientPool {
     ///
     /// Returns the first actor or transport shutdown failure.
     pub async fn close(&self) -> Result<(), ClientError> {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+        {
+            let mut lifecycle = lock(&self.lifecycle);
+            match *lifecycle {
+                PoolLifecycle::Open { .. } => *lifecycle = PoolLifecycle::Closing,
+                PoolLifecycle::Closing | PoolLifecycle::Closed => return Ok(()),
+            }
         }
 
-        let consumers = std::mem::take(&mut *self.consumers.lock().await);
+        let consumers = std::mem::take(&mut *lock(&self.consumers));
         let mut first_error = None;
         for consumer in consumers.into_values() {
             if let Err(error) = consumer.close().await
@@ -233,16 +274,17 @@ impl ClientPool {
             }
         }
 
-        let publishers = std::mem::take(&mut *self.publishers.lock().await);
+        let publishers = std::mem::take(&mut *lock(&self.publishers));
         for publisher in publishers.into_values() {
             if let Err(error) = publisher.close().await
+                && error.kind() != PublishErrorKind::Closed
                 && first_error.is_none()
             {
                 first_error = Some(ClientError::publish(&error));
             }
         }
 
-        let connections = std::mem::take(&mut *self.connections.lock().await);
+        let connections = std::mem::take(&mut *lock(&self.connections));
         for connection in connections.into_values() {
             if let Err(error) = connection.close().await
                 && first_error.is_none()
@@ -251,13 +293,19 @@ impl ClientPool {
             }
         }
 
+        *lock(&self.lifecycle) = PoolLifecycle::Closed;
         first_error.map_or(Ok(()), Err)
     }
 
     async fn publisher(&self, broker: &str) -> Result<PublisherHandle, ClientError> {
-        let mut publishers = self.publishers.lock().await;
-        if let Some(publisher) = publishers.get(broker) {
-            return Ok(publisher.clone());
+        let generation = self.open_generation()?;
+        if let Some(publisher) = self.ready(generation, &self.publishers, broker)? {
+            return Ok(publisher);
+        }
+        let initializer = initializer(&self.publisher_initializers, broker);
+        let _initializing = initializer.lock().await;
+        if let Some(publisher) = self.ready(generation, &self.publishers, broker)? {
+            return Ok(publisher);
         }
 
         let connection = self.connection(broker).await?;
@@ -270,41 +318,110 @@ impl ClientPool {
             self.publisher_config,
             self.metrics.clone(),
         );
-        publishers.insert(broker.to_owned(), publisher.clone());
-        Ok(publisher)
+        if self.commit(generation, &self.publishers, broker, publisher.clone()) {
+            Ok(publisher)
+        } else {
+            let _ = publisher.close().await;
+            Err(ClientError::closed())
+        }
     }
 
     async fn connection(&self, broker: &str) -> Result<Arc<dyn TransportConnection>, ClientError> {
-        let mut connections = self.connections.lock().await;
-        if let Some(connection) = connections.get(broker) {
-            return Ok(connection.clone());
-        }
-
-        let broker_config = self.config.broker(broker).ok_or_else(|| {
+        let broker_config = self.config.broker(broker).cloned().ok_or_else(|| {
             ClientError::new(
                 ClientErrorKind::Configuration,
                 format!("brokers.{broker}: unknown broker"),
             )
         })?;
+        let generation = self.open_generation()?;
+        if let Some(connection) = self.ready(generation, &self.connections, broker)? {
+            return Ok(connection);
+        }
+        let initializer = initializer(&self.connection_initializers, broker);
+        let _initializing = initializer.lock().await;
+        if let Some(connection) = self.ready(generation, &self.connections, broker)? {
+            return Ok(connection);
+        }
         let connection: Arc<dyn TransportConnection> = Arc::from(
             self.transport
-                .connect(broker_config)
+                .connect(&broker_config)
                 .await
                 .map_err(|error| ClientError::transport(&error))?,
         );
-        connections.insert(broker.to_owned(), connection.clone());
-        Ok(connection)
+        if self.commit(generation, &self.connections, broker, connection.clone()) {
+            Ok(connection)
+        } else {
+            let _ = connection.close().await;
+            Err(ClientError::closed())
+        }
     }
 
     fn ensure_open(&self) -> Result<(), ClientError> {
-        if self.is_closed() {
-            Err(ClientError::new(
-                ClientErrorKind::Closed,
-                "native client pool is closed",
-            ))
-        } else {
-            Ok(())
+        self.open_generation().map(|_| ())
+    }
+
+    fn open_generation(&self) -> Result<u64, ClientError> {
+        match *lock(&self.lifecycle) {
+            PoolLifecycle::Open { generation } => Ok(generation),
+            PoolLifecycle::Closing | PoolLifecycle::Closed => Err(ClientError::closed()),
         }
+    }
+
+    fn ready<T: Clone>(
+        &self,
+        generation: u64,
+        registry: &StdMutex<HashMap<String, T>>,
+        key: &str,
+    ) -> Result<Option<T>, ClientError> {
+        let lifecycle = lock(&self.lifecycle);
+        if !matches!(
+            *lifecycle,
+            PoolLifecycle::Open {
+                generation: current
+            } if current == generation
+        ) {
+            return Err(ClientError::closed());
+        }
+        Ok(lock(registry).get(key).cloned())
+    }
+
+    fn commit<T>(
+        &self,
+        generation: u64,
+        registry: &StdMutex<HashMap<String, T>>,
+        key: &str,
+        resource: T,
+    ) -> bool {
+        let lifecycle = lock(&self.lifecycle);
+        if !matches!(
+            *lifecycle,
+            PoolLifecycle::Open {
+                generation: current
+            } if current == generation
+        ) {
+            return false;
+        }
+        lock(registry).insert(key.to_owned(), resource);
+        true
+    }
+}
+
+fn lock<T>(mutex: &StdMutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
+    lock(initializers)
+        .entry(key.to_owned())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+async fn close_subscription_channels(subscriptions: &[Subscription]) {
+    for subscription in subscriptions {
+        let _ = subscription.channel.close().await;
     }
 }
 
@@ -349,14 +466,18 @@ impl ClientError {
         }
     }
 
+    fn closed() -> Self {
+        Self::new(ClientErrorKind::Closed, "native client pool is closed")
+    }
+
     fn publish(error: &PublishError) -> Self {
         let kind = match error.kind() {
             PublishErrorKind::Backpressure => ClientErrorKind::Backpressure,
             PublishErrorKind::Closed => ClientErrorKind::Closed,
-            PublishErrorKind::Nack
-            | PublishErrorKind::Timeout
-            | PublishErrorKind::Unconfirmed
-            | PublishErrorKind::Transport => ClientErrorKind::Publish,
+            PublishErrorKind::Transport => ClientErrorKind::Transport,
+            PublishErrorKind::Nack | PublishErrorKind::Timeout | PublishErrorKind::Unconfirmed => {
+                ClientErrorKind::Publish
+            }
         };
         Self::new(kind, error.to_string())
     }

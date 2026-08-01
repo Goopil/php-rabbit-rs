@@ -248,6 +248,16 @@ impl DeliveryStream for LapinDeliveryStream {
                         exchange: delivery.exchange.to_string(),
                         routing_key: delivery.routing_key.to_string(),
                         redelivered: delivery.redelivered,
+                        message_id: delivery
+                            .properties
+                            .message_id()
+                            .as_ref()
+                            .map(ToString::to_string),
+                        correlation_id: delivery
+                            .properties
+                            .correlation_id()
+                            .as_ref()
+                            .map(ToString::to_string),
                         headers: map_headers(delivery.properties.headers().as_ref()),
                         payload: Bytes::from(delivery.data),
                     })
@@ -445,28 +455,40 @@ fn map_headers(headers: Option<&FieldTable>) -> super::Headers {
     })
 }
 
-fn map_header_value(value: &AMQPValue) -> Option<Bytes> {
-    let encoded = match value {
-        AMQPValue::Boolean(value) => value.to_string().into_bytes(),
-        AMQPValue::ShortShortInt(value) => value.to_string().into_bytes(),
-        AMQPValue::ShortShortUInt(value) => value.to_string().into_bytes(),
-        AMQPValue::ShortInt(value) => value.to_string().into_bytes(),
-        AMQPValue::ShortUInt(value) => value.to_string().into_bytes(),
-        AMQPValue::LongInt(value) => value.to_string().into_bytes(),
-        AMQPValue::LongUInt(value) => value.to_string().into_bytes(),
-        AMQPValue::LongLongInt(value) => value.to_string().into_bytes(),
-        AMQPValue::Float(value) => value.to_string().into_bytes(),
-        AMQPValue::Double(value) => value.to_string().into_bytes(),
-        AMQPValue::ShortString(value) => value.as_str().as_bytes().to_vec(),
-        AMQPValue::LongString(value) => value.as_bytes().to_vec(),
-        AMQPValue::Timestamp(value) => value.to_string().into_bytes(),
-        AMQPValue::ByteArray(value) => value.as_slice().to_vec(),
-        AMQPValue::DecimalValue(_)
-        | AMQPValue::FieldArray(_)
-        | AMQPValue::FieldTable(_)
-        | AMQPValue::Void => return None,
-    };
-    Some(Bytes::from(encoded))
+fn map_header_value(value: &AMQPValue) -> Option<HeaderValue> {
+    match value {
+        AMQPValue::Boolean(value) => Some(HeaderValue::Boolean(*value)),
+        AMQPValue::ShortShortInt(value) => Some(HeaderValue::Integer(i64::from(*value))),
+        AMQPValue::ShortShortUInt(value) => Some(HeaderValue::Integer(i64::from(*value))),
+        AMQPValue::ShortInt(value) => Some(HeaderValue::Integer(i64::from(*value))),
+        AMQPValue::ShortUInt(value) => Some(HeaderValue::Integer(i64::from(*value))),
+        AMQPValue::LongInt(value) => Some(HeaderValue::Integer(i64::from(*value))),
+        AMQPValue::LongUInt(value) => Some(HeaderValue::Integer(i64::from(*value))),
+        AMQPValue::LongLongInt(value) => Some(HeaderValue::Integer(*value)),
+        AMQPValue::Float(value) => {
+            super::HeaderFloat::new(f64::from(*value)).map(HeaderValue::Double)
+        }
+        AMQPValue::Double(value) => super::HeaderFloat::new(*value).map(HeaderValue::Double),
+        AMQPValue::ShortString(value) => Some(HeaderValue::Binary(Bytes::copy_from_slice(
+            value.as_str().as_bytes(),
+        ))),
+        AMQPValue::LongString(value) => Some(HeaderValue::Binary(Bytes::copy_from_slice(
+            value.as_bytes(),
+        ))),
+        AMQPValue::Timestamp(value) => i64::try_from(*value).ok().map(HeaderValue::Integer),
+        AMQPValue::FieldArray(values) => values
+            .as_slice()
+            .iter()
+            .map(map_header_value)
+            .collect::<Option<Vec<_>>>()
+            .map(HeaderValue::Array),
+        AMQPValue::FieldTable(values) => Some(HeaderValue::Table(map_headers(Some(values)))),
+        AMQPValue::ByteArray(value) => Some(HeaderValue::Binary(Bytes::copy_from_slice(
+            value.as_slice(),
+        ))),
+        AMQPValue::Void => Some(HeaderValue::Void),
+        AMQPValue::DecimalValue(_) => None,
+    }
 }
 
 fn map_returned_message(message: lapin::message::BasicReturnMessage) -> ReturnedMessage {
@@ -514,7 +536,7 @@ mod tests {
 
     use super::{connection_uri, map_headers, publish_properties};
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
-    use crate::transport::PublishRequest;
+    use crate::transport::{HeaderFloat, HeaderValue, PublishRequest};
 
     #[test]
     fn uri_percent_encodes_credentials_and_vhost_as_segments() {
@@ -536,30 +558,42 @@ mod tests {
     }
 
     #[test]
-    fn incoming_numeric_attempt_headers_are_normalized_as_bytes() {
+    fn incoming_headers_preserve_scalar_amqp_types() {
         let mut table = FieldTable::default();
         table.insert("x-acquired-count".into(), AMQPValue::LongLongInt(7));
-        table.insert("x-delivery-count".into(), AMQPValue::LongUInt(3));
+        table.insert("enabled".into(), AMQPValue::Boolean(true));
+        table.insert("ratio".into(), AMQPValue::Double(1.5));
+        table.insert(
+            "name".into(),
+            AMQPValue::LongString(b"worker".to_vec().into()),
+        );
+        table.insert("nothing".into(), AMQPValue::Void);
 
         let headers = map_headers(Some(&table));
 
         assert_eq!(
             headers.get("x-acquired-count"),
-            Some(&Bytes::from_static(b"7"))
+            Some(&HeaderValue::Integer(7))
+        );
+        assert_eq!(headers.get("enabled"), Some(&HeaderValue::Boolean(true)));
+        assert_eq!(
+            headers.get("ratio"),
+            Some(&HeaderValue::Double(HeaderFloat::new(1.5).unwrap()))
         );
         assert_eq!(
-            headers.get("x-delivery-count"),
-            Some(&Bytes::from_static(b"3"))
+            headers.get("name"),
+            Some(&HeaderValue::Binary(Bytes::from_static(b"worker")))
         );
+        assert_eq!(headers.get("nothing"), Some(&HeaderValue::Void));
     }
 
     #[test]
     fn outgoing_application_headers_are_merged_with_delay_header() {
         let mut request = PublishRequest::new("jobs.delayed", "high", b"job".to_vec());
-        request.properties.headers.insert(
-            "x-rabbit-rs-attempts".to_owned(),
-            Bytes::from_static(b"3").into(),
-        );
+        request
+            .properties
+            .headers
+            .insert("x-rabbit-rs-attempts".to_owned(), HeaderValue::Integer(3));
         request.properties.delay_ms = Some(5_000);
 
         let properties = publish_properties(&request);
@@ -567,11 +601,54 @@ mod tests {
 
         assert!(matches!(
             headers.inner().get("x-rabbit-rs-attempts"),
-            Some(AMQPValue::LongString(value)) if value.as_bytes() == b"3"
+            Some(AMQPValue::LongLongInt(3))
         ));
         assert_eq!(
             headers.inner().get("x-delay"),
             Some(&AMQPValue::LongLongInt(5_000))
         );
+    }
+
+    #[test]
+    fn outgoing_headers_preserve_scalar_amqp_types() {
+        let mut request = PublishRequest::new("jobs", "default", b"job".to_vec());
+        request
+            .properties
+            .headers
+            .insert("nothing".to_owned(), HeaderValue::Void);
+        request
+            .properties
+            .headers
+            .insert("enabled".to_owned(), HeaderValue::Boolean(true));
+        request
+            .properties
+            .headers
+            .insert("count".to_owned(), HeaderValue::Integer(42));
+        request.properties.headers.insert(
+            "ratio".to_owned(),
+            HeaderValue::Double(HeaderFloat::new(1.5).unwrap()),
+        );
+        request.properties.headers.insert(
+            "name".to_owned(),
+            HeaderValue::Binary(Bytes::from_static(b"worker")),
+        );
+
+        let properties = publish_properties(&request);
+        let headers = properties.headers().as_ref().expect("AMQP headers");
+
+        assert_eq!(headers.inner().get("nothing"), Some(&AMQPValue::Void));
+        assert_eq!(
+            headers.inner().get("enabled"),
+            Some(&AMQPValue::Boolean(true))
+        );
+        assert_eq!(
+            headers.inner().get("count"),
+            Some(&AMQPValue::LongLongInt(42))
+        );
+        assert_eq!(headers.inner().get("ratio"), Some(&AMQPValue::Double(1.5)));
+        assert!(matches!(
+            headers.inner().get("name"),
+            Some(AMQPValue::LongString(value)) if value.as_bytes() == b"worker"
+        ));
     }
 }

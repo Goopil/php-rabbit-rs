@@ -93,15 +93,16 @@ impl JitterSource for IdentityJitter {
     }
 }
 
-/// Production equal-jitter strategy, returning a delay between 50% and 100%.
+/// Production jitter strategy, returning a delay between 80% and 100%.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EqualJitter;
 
 impl JitterSource for EqualJitter {
     fn apply(&self, delay: Duration) -> Duration {
-        let half = delay / 2;
-        let random_nanos = fastrand::u64(0..=u64::try_from(half.as_nanos()).unwrap_or(u64::MAX));
-        half.saturating_add(Duration::from_nanos(random_nanos))
+        let minimum = delay * 4 / 5;
+        let spread = delay.saturating_sub(minimum);
+        let random_nanos = fastrand::u64(0..=u64::try_from(spread.as_nanos()).unwrap_or(u64::MAX));
+        minimum.saturating_add(Duration::from_nanos(random_nanos))
     }
 }
 
@@ -109,7 +110,7 @@ impl JitterSource for EqualJitter {
 mod tests {
     use std::time::Duration;
 
-    use super::RecoveryPolicy;
+    use super::{EqualJitter, JitterSource, RecoveryPolicy};
 
     #[test]
     fn delay_is_zero_before_any_failure() {
@@ -117,5 +118,18 @@ mod tests {
             RecoveryPolicy::default().delay_for_failure(0),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn equal_jitter_stays_between_eighty_and_one_hundred_percent() {
+        fastrand::seed(42);
+        let delay = Duration::from_secs(30);
+        let minimum = delay * 4 / 5;
+
+        for _ in 0..256 {
+            let jittered = EqualJitter.apply(delay);
+            assert!(jittered >= minimum, "{jittered:?} is below {minimum:?}");
+            assert!(jittered <= delay, "{jittered:?} exceeds {delay:?}");
+        }
     }
 }

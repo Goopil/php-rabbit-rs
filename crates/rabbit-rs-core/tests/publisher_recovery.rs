@@ -124,6 +124,36 @@ async fn publication_accepted_during_recovery_is_sent_after_ready() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn ready_with_the_same_generation_as_recovering_resumes_publication() {
+    let transport = MockTransport::default();
+    let actor = actor(&transport, 8).await;
+    suspend(&actor).await;
+    let waiter = actor
+        .try_publish(request(
+            "same-generation",
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("accepted while suspended");
+
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 1,
+            channel: new_channel(&transport).await,
+            topology_restored: true,
+        })
+        .await
+        .expect("same generation resumes the publisher");
+
+    assert_eq!(
+        waiter.wait().await.expect("confirmed after recovery"),
+        PublishOutcome::Confirmed {
+            message_id: "same-generation".to_owned()
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();

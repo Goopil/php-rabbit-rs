@@ -18,7 +18,12 @@ use rabbit_rs_core::{
 fn headers(values: &[(&str, &str)]) -> Headers {
     values
         .iter()
-        .map(|(name, value)| ((*name).to_owned(), Bytes::copy_from_slice(value.as_bytes())))
+        .map(|(name, value)| {
+            (
+                (*name).to_owned(),
+                HeaderValue::Binary(Bytes::copy_from_slice(value.as_bytes())),
+            )
+        })
         .collect()
 }
 
@@ -72,6 +77,23 @@ fn exceeding_the_configured_limit_is_a_typed_max_attempts_error() {
 }
 
 #[test]
+fn default_attempt_limit_is_inclusive_at_twenty() {
+    let resolver = AttemptsResolver::default();
+
+    assert_eq!(
+        resolver
+            .resolve(&headers(&[(APPLICATION_ATTEMPTS_HEADER, "20")]), false)
+            .expect("twentieth attempt is accepted"),
+        20
+    );
+    let error = resolver
+        .resolve(&headers(&[(APPLICATION_ATTEMPTS_HEADER, "21")]), false)
+        .expect_err("twenty-first attempt exceeds the default limit");
+    assert_eq!(error.kind(), AttemptsErrorKind::MaxAttempts);
+    assert_eq!(error.max_attempts(), Some(20));
+}
+
+#[test]
 fn classic_queue_without_counters_uses_the_documented_redelivery_fallback() {
     let resolver = AttemptsResolver::default();
 
@@ -120,6 +142,8 @@ async fn delayed_release_increments_the_application_attempt_header() {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
+        message_id: None,
+        correlation_id: None,
         headers: headers(&[
             (APPLICATION_ATTEMPTS_HEADER, "2"),
             ("trace-id", "trace-42"),
@@ -175,7 +199,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
             .properties
             .headers
             .get(APPLICATION_ATTEMPTS_HEADER),
-        Some(&HeaderValue::Binary(Bytes::from_static(b"3")))
+        Some(&HeaderValue::Integer(3))
     );
     assert_eq!(
         published_request.properties.headers.get("trace-id"),

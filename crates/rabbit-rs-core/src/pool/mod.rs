@@ -19,7 +19,6 @@ static NEXT_HANDLE_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// Process-local handle representing one reusable connection pool.
 pub struct ConnectionHandle {
-    key: ConnectionKey,
     identifier: String,
     closed: AtomicBool,
     runtime: Handle,
@@ -30,7 +29,6 @@ impl fmt::Debug for ConnectionHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ConnectionHandle")
-            .field("key", &self.key)
             .field("identifier", &self.identifier)
             .field("closed", &self.is_closed())
             .field("client_initialized", &self.client.get().is_some())
@@ -39,11 +37,10 @@ impl fmt::Debug for ConnectionHandle {
 }
 
 impl ConnectionHandle {
-    pub(crate) fn new(key: ConnectionKey, runtime: Handle) -> Self {
+    pub(crate) fn new(runtime: Handle) -> Self {
         let serial = NEXT_HANDLE_SERIAL.fetch_add(1, Ordering::Relaxed);
         Self {
-            key,
-            identifier: format!("{}:{serial}:{}", std::process::id(), key.to_hex()),
+            identifier: format!("{}:{serial}", std::process::id()),
             closed: AtomicBool::new(false),
             runtime,
             client: OnceLock::new(),
@@ -68,6 +65,11 @@ impl ConnectionHandle {
         self.client.get()
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_client(&self, client: Arc<ClientPool>) -> Result<(), Arc<ClientPool>> {
+        self.client.set(client)
+    }
+
     /// Marks this handle closed, returning whether this call changed its state.
     pub fn close(&self) -> bool {
         !self.closed.swap(true, Ordering::AcqRel)
@@ -79,12 +81,6 @@ impl ConnectionHandle {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// Returns the normalized configuration key owned by this handle.
-    #[must_use]
-    pub const fn key(&self) -> ConnectionKey {
-        self.key
-    }
-
     /// Returns the process-local identity of this handle instance.
     #[must_use]
     pub fn identifier(&self) -> &str {
@@ -94,7 +90,7 @@ impl ConnectionHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConnectionHandle, ConnectionKey};
+    use super::ConnectionHandle;
 
     #[test]
     fn closing_a_handle_is_idempotent() {
@@ -102,8 +98,7 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let handle =
-            ConnectionHandle::new(ConnectionKey::from_bytes([7; 32]), runtime.handle().clone());
+        let handle = ConnectionHandle::new(runtime.handle().clone());
 
         assert!(handle.close());
         assert!(!handle.close());
@@ -116,9 +111,8 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let key = ConnectionKey::from_bytes([7; 32]);
-        let first = ConnectionHandle::new(key, runtime.handle().clone());
-        let second = ConnectionHandle::new(key, runtime.handle().clone());
+        let first = ConnectionHandle::new(runtime.handle().clone());
+        let second = ConnectionHandle::new(runtime.handle().clone());
 
         assert_ne!(first.identifier(), second.identifier());
         assert!(
@@ -126,5 +120,7 @@ mod tests {
                 .identifier()
                 .starts_with(&format!("{}:", std::process::id()))
         );
+        assert!(!first.identifier().contains(&"07".repeat(32)));
+        assert!(!format!("{first:?}").contains(&"07".repeat(32)));
     }
 }
