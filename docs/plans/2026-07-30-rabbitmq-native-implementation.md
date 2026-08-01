@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 17 — Enregistrer le connecteur et le pool partagé.
+**Prochaine étape :** Task 18 — Implémenter push, later et bulk.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -48,6 +48,7 @@
 - [x] Task 14 — Tester conversions, erreurs et transitions PHP.
 - [x] Task 15 — Certifier le cycle de vie CLI, fork et FPM.
 - [x] Task 16 — Initialiser le package et sa configuration.
+- [x] Task 17 — Enregistrer le connecteur et le pool partagé.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -118,6 +119,14 @@ Checkpoint après initialisation du package Laravel du 1 août 2026 sur macOS AR
 - PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 12 tests et 34 assertions ;
 - `rtk ./scripts/check.sh` : PASS ;
 - la configuration publiée applique les defaults confirms/mandatory, quorum durable et absence de DLQ applicative, puis normalise brokers, routes et workers vers le format natif avec erreurs par chemin et sans fuite de secrets.
+
+Checkpoint après enregistrement du connecteur Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 24 tests et 53 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 24 tests et 53 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- le connecteur `rabbit-rs` partage un pool natif process-local par empreinte de configuration normalisée, invalide son cache après fork et ne conserve pas les valeurs liées à une requête ;
+- `RabbitMqQueue` est introduit comme squelette contractuel afin que `Queue::connection()` puisse appliquer immédiatement le conteneur et le nom de connexion ; ses opérations restent réservées à la Task 18.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
@@ -1076,6 +1085,7 @@ Expected: PASS.
 **Files:**
 - Create: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
 - Create: packages/laravel-queue/src/Support/NativePoolFactory.php
+- Create: packages/laravel-queue/src/RabbitMqQueue.php
 - Create: packages/laravel-queue/tests/Unit/RabbitMqConnectorTest.php
 - Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 
@@ -1091,7 +1101,7 @@ Expected: FAIL.
 
 **Step 3: Implement connector and factory**
 
-Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à Goopil\RabbitRs\Pool.
+Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à Goopil\RabbitRs\Pool. Créer le squelette contractuel de RabbitMqQueue afin que Laravel puisse appliquer setConnectionName et setContainer ; laisser ses opérations non implémentées jusqu'à la Task 18.
 
 **Step 4: Verify**
 
@@ -1107,7 +1117,7 @@ Expected: PASS.
 ### Task 18: Implémenter push, later et bulk
 
 **Files:**
-- Create: packages/laravel-queue/src/RabbitMqQueue.php
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
 - Create: packages/laravel-queue/src/Support/MessageMapper.php
 - Create: packages/laravel-queue/tests/Unit/RabbitMqQueuePublishTest.php
 - Modify: packages/laravel-queue/src/Connectors/RabbitMqConnector.php

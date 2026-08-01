@@ -9,9 +9,22 @@ use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
+use RuntimeException;
 
 final class RabbitMqServiceProviderTest extends TestCase
 {
+    public function testQueueResolutionReportsTheMissingNativeExtension(): void
+    {
+        $this->app['config']->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('ext-rabbit_rs');
+
+        $this->app['queue']->connection('rabbit-rs');
+    }
+
     public function testNormalizesCommaSeparatedHostsAfterConfigurationIsLoaded(): void
     {
         $this->app['config']->set(

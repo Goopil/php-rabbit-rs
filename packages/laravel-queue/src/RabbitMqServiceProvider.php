@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel;
 
+use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\ServiceProvider;
 use RuntimeException;
 
@@ -13,10 +16,13 @@ class RabbitMqServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(self::configPath(), 'rabbit-rs');
         $this->normalizeBrokerHosts();
+        $this->app->singleton(NativePoolFactory::class);
     }
 
     public function boot(): void
     {
+        $this->registerQueueConnector();
+
         $this->publishes([
             self::configPath() => config_path('rabbit-rs.php'),
         ], 'rabbit-rs-config');
@@ -25,15 +31,32 @@ class RabbitMqServiceProvider extends ServiceProvider
     public function assertNativeExtensionLoaded(): void
     {
         if (! $this->nativeExtensionLoaded()) {
-            throw new RuntimeException(
-                'The Rabbit RS Laravel driver requires ext-rabbit_rs ^1.0 to be loaded.',
-            );
+            self::throwMissingNativeExtension();
         }
     }
 
     protected function nativeExtensionLoaded(): bool
     {
         return extension_loaded('rabbit_rs');
+    }
+
+    private function registerQueueConnector(): void
+    {
+        $config = $this->app->make('config')->get('rabbit-rs');
+        $normalizedConfig = ConfigNormalizer::normalize(is_array($config) ? $config : []);
+        $pools = $this->app->make(NativePoolFactory::class);
+        $nativeExtensionLoaded = $this->nativeExtensionLoaded();
+
+        $this->app->make('queue')->extend(
+            'rabbit-rs',
+            static function () use ($nativeExtensionLoaded, $normalizedConfig, $pools): RabbitMqConnector {
+                if (! $nativeExtensionLoaded) {
+                    self::throwMissingNativeExtension();
+                }
+
+                return new RabbitMqConnector($pools, $normalizedConfig);
+            },
+        );
     }
 
     private function normalizeBrokerHosts(): void
@@ -64,6 +87,13 @@ class RabbitMqServiceProvider extends ServiceProvider
             array_map('trim', explode(',', $hosts)),
             static fn (string $host): bool => $host !== '',
         ));
+    }
+
+    private static function throwMissingNativeExtension(): never
+    {
+        throw new RuntimeException(
+            'The Rabbit RS Laravel driver requires ext-rabbit_rs ^1.0 to be loaded.',
+        );
     }
 
     private static function configPath(): string
