@@ -27,9 +27,9 @@
 
 **Dernière mise à jour :** 1 août 2026
 
-**Branche d'implémentation :** feature/rabbit-rs-native
+**Branche d'implémentation :** fix/strict-audit-stabilization
 
-**Prochaine étape :** Task 16 — Initialiser le package et sa configuration.
+**Prochaine étape :** Ajouter le profil RabbitMQ-chaos et la matrice plateformes du Milestone B, avant la Task 16.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -47,6 +47,62 @@
 - [x] Task 13 — Définir l'API et les stubs PHP du Milestone B.
 - [x] Task 14 — Tester conversions, erreurs et transitions PHP.
 - [x] Task 15 — Certifier le cycle de vie CLI, fork et FPM.
+
+### Lot de stabilisation stricte du Milestone B
+
+Ce lot est exécuté dans le worktree dédié `.worktrees/strict-audit-stabilization` sur la branche `fix/strict-audit-stabilization`. Il traite les constats encore actifs des audits des 31 juillet et 1er août avant tout démarrage de la Task 16.
+
+Périmètre initial des constats actifs :
+
+- dispatch transactionnel des deliveries face aux waiters expirés ou annulés ;
+- propagation de `message_id` et `correlation_id`, consumer tag canonique, rollback partiel de `ConsumerSet`, deadline de delayed release et état terminal après erreur de settlement ;
+- commit générationnel de `ClientPool` face à `close()` sans mutex tenu pendant les opérations réseau ;
+- budget global de 2 s pour la fermeture des clients, acteurs et runtime Tokio ;
+- alignement des configurations et defaults core : scheduler, famine, attempts, jitter et publication mandatory ;
+- confidentialité de `ConnectionKey` dans les identifiants, statistiques, erreurs et sorties `Debug` ;
+- bornes PHP sur batches, payloads cumulés, headers, profondeur et timeouts, avec chemins d'erreur précis ;
+- headers AMQP typés et propriétés de delivery conservées jusqu'à l'API PHP ;
+- profils séparés pour PHPT/FPM, RabbitMQ-chaos, matrice plateformes et baseline de performance.
+
+État du lot au 1 août 2026 :
+
+- [x] dispatch et cycle de vie des deliveries sécurisés, propriétés AMQP conservées et rollback partiel appliqué ;
+- [x] `ClientPool` atomique face à `close()` avec initialisations réseau hors des registres ;
+- [x] shutdown à budget global de 2 s, defaults core alignés et identités publiques expurgées ;
+- [x] bornes et types de la frontière PHP ;
+- [ ] laboratoire RabbitMQ-chaos et matrice plateformes ;
+- [ ] baseline de performance.
+
+Constats déjà corrigés à verrouiller par non-régression :
+
+- transition publisher `Recovering` vers `Ready` pour une même génération ;
+- historique `source_errors` borné ;
+- settlement `Reject` disponible ;
+- credentials Lapin construits sans concaténation d'URI exposable.
+
+Baseline initiale du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk ./scripts/check.sh` : PASS, 112 tests Rust et validation Composer stricte ;
+- `rtk cargo build -p rabbit-rs-php --release --features extension-tests` : PASS ;
+- `rtk ./scripts/test-extension.sh` : PASS, 9 PHPT sur 9 ;
+- `rtk ./scripts/test-fpm.sh` : PASS, laboratoire FPM à deux workers ;
+- la build de distribution sans `extension-tests` reste distincte de la build PHPT afin de ne pas exposer `testing_pool()` dans l'artefact publié.
+
+Checkpoint après sécurisation core du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk ./scripts/check.sh` : PASS, 141 tests Rust, Clippy sans warning et validation Composer stricte ;
+- `rtk ./scripts/test-extension.sh` : PASS, 9 PHPT sur 9 ;
+- `rtk ./scripts/test-fpm.sh` : PASS, laboratoire FPM à deux workers ;
+- les tests couvrent le budget de shutdown partagé, la fermeture post-fork sans réacquisition, les courses de fermeture, la reprise publisher de même génération, la borne `source_errors`, le scheduler canonique et sa migration legacy, les defaults attempts/jitter/mandatory et l'absence d'empreinte de credentials dans les identifiants publics.
+
+Checkpoint après bornage de la frontière PHP du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk ./scripts/check.sh` : PASS, 153 tests Rust dont 143 core, Clippy sans warning et validation Composer stricte ;
+- `rtk ./scripts/test-extension.sh` : PASS, 11 PHPT sur 11 ;
+- `rtk ./scripts/test-fpm.sh` : PASS, laboratoire FPM à deux workers ;
+- les batches sont bornés à 256 messages et 1 Mio de payload cumulé, les headers à 128 entrées et 64 Kio cumulés par appel, et `timeout_ms` à 24 h avec addition contrôlée ;
+- les types AMQP scalaires sont conservés, les headers PHP publiés restent plats et les structures broker imbriquées comme `x-death` sont omises des métadonnées sans masquer les scalaires ;
+- les PHPT couvrent ACK, retour mandatory, timeout de confirmation, erreur transport typée, backpressure, settlements, fermeture active et chemins d'erreur `messages[index]`.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
@@ -190,7 +246,8 @@ Ajouter des tests pour :
 
 - rejeter un broker sans hôte ;
 - rejeter prefetch = 0 ;
-- rejeter max_in_flight inférieur à un prefetch ;
+- rejeter `scheduler.max_in_flight` inférieur à un prefetch ;
+- rejeter une durée `starvation_after` nulle et appliquer 30 s par défaut ;
 - rejeter un mode de topologie inconnu ;
 - normaliser l'ordre des hôtes ;
 - masquer les secrets dans Debug ;
@@ -208,8 +265,16 @@ Structure publique minimale :
 
     pub struct WorkerProfile {
         pub subscriptions: Vec<SubscriptionConfig>,
-        pub max_in_flight: u16,
         pub scheduler: SchedulerConfig,
+    }
+
+    pub struct SchedulerConfig {
+        pub strategy: SchedulerStrategy,
+        pub max_in_flight: u16,
+    }
+
+    pub struct SubscriptionConfig {
+        pub starvation_after: Duration,
     }
 
     pub enum TopologyMode {
