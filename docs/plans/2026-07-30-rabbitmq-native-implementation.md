@@ -27,9 +27,9 @@
 
 **Dernière mise à jour :** 1 août 2026
 
-**Branche d'implémentation :** fix/strict-audit-stabilization
+**Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 16 — Initialiser le package et sa configuration.
+**Prochaine étape :** Task 17 — Enregistrer le connecteur et le pool partagé.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -47,6 +47,7 @@
 - [x] Task 13 — Définir l'API et les stubs PHP du Milestone B.
 - [x] Task 14 — Tester conversions, erreurs et transitions PHP.
 - [x] Task 15 — Certifier le cycle de vie CLI, fork et FPM.
+- [x] Task 16 — Initialiser le package et sa configuration.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -109,6 +110,14 @@ Checkpoint après bornage de la frontière PHP du 1 août 2026 sur macOS ARM64 a
 - les batches sont bornés à 256 messages et 1 Mio de payload cumulé, les headers à 128 entrées et 64 Kio cumulés par appel, et `timeout_ms` à 24 h avec addition contrôlée ;
 - les types AMQP scalaires sont conservés, les headers PHP publiés restent plats et les structures broker imbriquées comme `x-death` sont omises des métadonnées sans masquer les scalaires ;
 - les PHPT couvrent ACK, retour mandatory, timeout de confirmation, erreur transport typée, backpressure, settlements, fermeture active et chemins d'erreur `messages[index]`.
+
+Checkpoint après initialisation du package Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 12 tests et 34 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 12 tests et 34 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- la configuration publiée applique les defaults confirms/mandatory, quorum durable et absence de DLQ applicative, puis normalise brokers, routes et workers vers le format natif avec erreurs par chemin et sans fuite de secrets.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
