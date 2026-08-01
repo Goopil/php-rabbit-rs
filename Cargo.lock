@@ -1983,8 +1983,11 @@ dependencies = [
 name = "rabbit-rs-php"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "ext-php-rs",
  "rabbit-rs-core",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

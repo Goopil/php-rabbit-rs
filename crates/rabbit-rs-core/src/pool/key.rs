@@ -1,4 +1,5 @@
 use crate::config::ValidatedConfig;
+use std::fmt::Write;
 
 /// Stable identity of a normalized connection-pool configuration.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -9,6 +10,16 @@ impl ConnectionKey {
     #[must_use]
     pub fn from_config(config: &ValidatedConfig) -> Self {
         Self(config.fingerprint().into_bytes())
+    }
+
+    /// Returns the non-reversible pool identity as lowercase hexadecimal.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        let mut encoded = String::with_capacity(64);
+        for byte in self.0 {
+            write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        encoded
     }
 
     #[cfg(test)]
@@ -30,6 +41,14 @@ mod tests {
         assert_ne!(
             ConnectionKey::from_bytes([1; 32]),
             ConnectionKey::from_bytes([2; 32])
+        );
+    }
+
+    #[test]
+    fn connection_key_has_a_stable_hex_representation() {
+        assert_eq!(
+            ConnectionKey::from_bytes([0xab; 32]).to_hex(),
+            "ab".repeat(32)
         );
     }
 }

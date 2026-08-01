@@ -39,6 +39,7 @@ struct MockState {
     connect_results: VecDeque<TransportResult<()>>,
     confirmations: VecDeque<MockConfirmation>,
     deliveries: VecDeque<TransportResult<Delivery>>,
+    keep_delivery_stream_open: bool,
     operation_results: VecDeque<TransportResult<()>>,
 }
 
@@ -77,6 +78,10 @@ impl MockTransport {
 
     pub fn push_delivery(&self, delivery: TransportResult<Delivery>) {
         self.state().deliveries.push_back(delivery);
+    }
+
+    pub fn keep_delivery_stream_open(&self) {
+        self.state().keep_delivery_stream_open = true;
     }
 
     pub fn push_operation_result(&self, result: TransportResult<()>) {
@@ -360,10 +365,20 @@ struct MockDeliveryStream {
 #[async_trait]
 impl DeliveryStream for MockDeliveryStream {
     async fn next(&mut self) -> Option<TransportResult<Delivery>> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .deliveries
-            .pop_front()
+        let keep_open = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(delivery) = state.deliveries.pop_front() {
+                return Some(delivery);
+            }
+            state.keep_delivery_stream_open
+        };
+        if keep_open {
+            std::future::pending().await
+        } else {
+            None
+        }
     }
 }

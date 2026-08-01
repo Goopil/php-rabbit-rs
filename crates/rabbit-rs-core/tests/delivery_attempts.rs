@@ -10,7 +10,7 @@ use rabbit_rs_core::{
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, Transport,
+        Delivery as TransportDelivery, HeaderValue, PublishConfirmation, Transport,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -175,11 +175,11 @@ async fn delayed_release_increments_the_application_attempt_header() {
             .properties
             .headers
             .get(APPLICATION_ATTEMPTS_HEADER),
-        Some(&Bytes::from_static(b"3"))
+        Some(&HeaderValue::Binary(Bytes::from_static(b"3")))
     );
     assert_eq!(
         published_request.properties.headers.get("trace-id"),
-        Some(&Bytes::from_static(b"trace-42"))
+        Some(&HeaderValue::Binary(Bytes::from_static(b"trace-42")))
     );
     assert!(
         !published_request

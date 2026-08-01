@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -150,7 +156,11 @@ impl ConsumerSet {
             spawn_source(subscription, stream, commands.clone());
         }
 
-        Ok(ConsumerHandle { commands, metrics })
+        Ok(ConsumerHandle {
+            commands,
+            metrics,
+            closed: Arc::new(AtomicBool::new(false)),
+        })
     }
 }
 
@@ -179,6 +189,7 @@ fn spawn_source(
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
     metrics: Metrics,
+    closed: Arc<AtomicBool>,
 }
 
 impl ConsumerHandle {
@@ -227,8 +238,11 @@ impl ConsumerHandle {
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the actor already stopped.
+    /// Returns a typed error when the actor stops before processing the first close request.
     pub async fn close(&self) -> Result<(), ConsumerError> {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         let (completed, completion) = oneshot::channel();
         self.commands
             .send(ConsumerCommand::Close(completed))

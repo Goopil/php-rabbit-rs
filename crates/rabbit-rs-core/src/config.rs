@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr, time::Duration};
+use std::{collections::HashSet, fmt, str::FromStr, time::Duration};
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer};
@@ -239,6 +239,12 @@ impl Config {
     ///
     /// Returns [`ConfigError`] with the exact invalid configuration path.
     pub fn validate(mut self) -> Result<ValidatedConfig, ConfigError> {
+        if self.brokers.is_empty() {
+            return Err(ConfigError::new(
+                "brokers",
+                "at least one broker is required",
+            ));
+        }
         for broker in &mut self.brokers {
             if broker.hosts.is_empty() {
                 return Err(ConfigError::new(
@@ -251,9 +257,38 @@ impl Config {
         }
         self.brokers
             .sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        let broker_names: HashSet<_> = self
+            .brokers
+            .iter()
+            .map(|broker| broker.name.as_str())
+            .collect();
 
         for worker in &mut self.workers {
+            if worker.subscriptions.is_empty() {
+                return Err(ConfigError::new(
+                    format!("workers.{}.subscriptions", worker.name),
+                    "at least one subscription is required",
+                ));
+            }
             for subscription in &worker.subscriptions {
+                if !broker_names.contains(subscription.broker.as_str()) {
+                    return Err(ConfigError::new(
+                        format!(
+                            "workers.{}.subscriptions.{}.broker",
+                            worker.name, subscription.name
+                        ),
+                        "references an unknown broker",
+                    ));
+                }
+                if subscription.weight == 0 {
+                    return Err(ConfigError::new(
+                        format!(
+                            "workers.{}.subscriptions.{}.weight",
+                            worker.name, subscription.name
+                        ),
+                        "weight must be greater than zero",
+                    ));
+                }
                 if subscription.prefetch == 0 {
                     return Err(ConfigError::new(
                         format!(
@@ -538,5 +573,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(validated.topology_mode(), TopologyMode::Declare);
+    }
+
+    #[test]
+    fn rejects_zero_subscription_weight() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers[0].subscriptions[0].weight = 0;
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "workers.main.subscriptions.default.weight");
+    }
+
+    #[test]
+    fn rejects_subscription_with_unknown_broker() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers[0].subscriptions[0].broker = "missing".to_owned();
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "workers.main.subscriptions.default.broker");
+    }
+
+    #[test]
+    fn rejects_worker_without_subscriptions() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers[0].subscriptions.clear();
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "workers.main.subscriptions");
     }
 }

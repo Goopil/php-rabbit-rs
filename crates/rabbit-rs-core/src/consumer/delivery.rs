@@ -108,6 +108,16 @@ impl Delivery {
     pub async fn release(&self, delay: Duration) -> Result<(), ConsumerError> {
         self.token.settle(Settlement::Release(delay)).await
     }
+
+    /// Rejects this delivery exactly once with the requested requeue policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for stale generations, transport failures, a
+    /// closed consumer, or an already terminal token.
+    pub async fn reject(&self, requeue: bool) -> Result<(), ConsumerError> {
+        self.token.settle(Settlement::Reject(requeue)).await
+    }
 }
 
 #[derive(Clone)]
@@ -239,6 +249,7 @@ impl DeliveryTokenInner {
 pub(crate) enum Settlement {
     Ack,
     Release(Duration),
+    Reject(bool),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

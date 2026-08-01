@@ -3,6 +3,9 @@
 //! PHP extension boundary for Rabbit RS.
 
 mod classes;
+mod conversion;
+#[cfg(feature = "extension-tests")]
+mod testing;
 
 use classes::{
     consumer::Consumer,
@@ -14,7 +17,7 @@ use ext_php_rs::prelude::{ModuleBuilder, php_module};
 
 #[php_module]
 pub fn module(module: ModuleBuilder) -> ModuleBuilder {
-    module
+    let module = module
         .name("rabbit_rs")
         .version(env!("CARGO_PKG_VERSION"))
         .class::<RabbitRsException>()
@@ -22,5 +25,10 @@ pub fn module(module: ModuleBuilder) -> ModuleBuilder {
         .class::<ConnectionException>()
         .class::<Pool>()
         .class::<Consumer>()
-        .class::<Delivery>()
+        .class::<Delivery>();
+
+    #[cfg(feature = "extension-tests")]
+    let module = testing::register(module);
+
+    module
 }

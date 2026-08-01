@@ -10,6 +10,43 @@ pub mod mock;
 
 pub type TransportResult<T> = Result<T, TransportError>;
 pub type Headers = BTreeMap<String, Bytes>;
+pub type PublishHeaders = BTreeMap<String, HeaderValue>;
+
+/// A PHP-compatible value that can be represented in an AMQP field table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HeaderValue {
+    Void,
+    Boolean(bool),
+    Integer(i64),
+    Double(HeaderFloat),
+    Binary(Bytes),
+    Array(Vec<Self>),
+    Table(PublishHeaders),
+}
+
+/// A finite AMQP double stored with deterministic equality semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeaderFloat(u64);
+
+impl HeaderFloat {
+    /// Creates a value when the input is finite.
+    #[must_use]
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then(|| Self(value.to_bits()))
+    }
+
+    /// Returns the represented floating-point value.
+    #[must_use]
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+impl From<Bytes> for HeaderValue {
+    fn from(value: Bytes) -> Self {
+        Self::Binary(value)
+    }
+}
 
 /// Stability-oriented classification used by connection recovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,7 +182,7 @@ pub struct PublishProperties {
     pub correlation_id: Option<String>,
     pub message_id: Option<String>,
     pub delay_ms: Option<u64>,
-    pub headers: Headers,
+    pub headers: PublishHeaders,
     pub persistent: bool,
 }
 
@@ -156,7 +193,7 @@ impl Default for PublishProperties {
             correlation_id: None,
             message_id: None,
             delay_ms: None,
-            headers: Headers::new(),
+            headers: PublishHeaders::new(),
             persistent: true,
         }
     }

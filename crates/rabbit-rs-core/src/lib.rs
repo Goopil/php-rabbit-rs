@@ -2,6 +2,7 @@
 
 //! Runtime-independent `RabbitMQ` primitives for Rabbit RS.
 
+pub mod client;
 pub mod config;
 pub mod consumer;
 pub mod error;

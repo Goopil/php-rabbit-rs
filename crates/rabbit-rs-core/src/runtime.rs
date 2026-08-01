@@ -47,7 +47,7 @@ impl RuntimeFactory for TokioRuntimeFactory {
 
 struct ProcessState {
     pid: u32,
-    _runtime: Runtime,
+    runtime: Runtime,
     pools: HashMap<ConnectionKey, Arc<ConnectionHandle>>,
 }
 
@@ -119,17 +119,23 @@ impl RuntimeRegistry {
                 .map_err(RuntimeCreationError::new)?;
             *state = Some(ProcessState {
                 pid: current_pid,
-                _runtime: runtime,
+                runtime,
                 pools: HashMap::new(),
             });
         }
 
         match state.as_mut() {
-            Some(process) => Ok(process
-                .pools
-                .entry(key)
-                .or_insert_with(|| Arc::new(ConnectionHandle::new(key)))
-                .clone()),
+            Some(process) => {
+                if let Some(handle) = process.pools.get(&key)
+                    && !handle.is_closed()
+                {
+                    return Ok(handle.clone());
+                }
+
+                let handle = Arc::new(ConnectionHandle::new(key, process.runtime.handle().clone()));
+                process.pools.insert(key, handle.clone());
+                Ok(handle)
+            }
             None => Err(RuntimeCreationError::new(io::Error::other(
                 "runtime factory returned without initializing process state",
             ))),
@@ -148,6 +154,9 @@ impl RuntimeRegistry {
     fn close_state(state: Option<ProcessState>) {
         if let Some(process) = state {
             for handle in process.pools.values() {
+                if let Some(client) = handle.initialized_client() {
+                    let _ = process.runtime.block_on(client.close());
+                }
                 handle.close();
             }
         }
@@ -309,5 +318,18 @@ mod tests {
         registry.close();
 
         assert!(handle.is_closed());
+    }
+
+    #[test]
+    fn acquiring_a_closed_pool_replaces_its_handle() {
+        let (registry, _pid, _factory) = registry();
+        let key = ConnectionKey::from_bytes([3; 32]);
+        let closed = registry.acquire(key).expect("first acquisition");
+        closed.close();
+
+        let replacement = registry.acquire(key).expect("replacement acquisition");
+
+        assert!(!Arc::ptr_eq(&closed, &replacement));
+        assert!(!replacement.is_closed());
     }
 }

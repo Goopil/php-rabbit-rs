@@ -8,15 +8,15 @@ use lapin::{
         BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
         QueueDeclareOptions,
     },
-    types::{AMQPValue, FieldTable},
+    types::{AMQPValue, FieldArray, FieldTable},
 };
 use url::Url;
 
 use super::{
     BindingSpec, ConsumerChannel, ConsumerRequest, Delivery, DeliveryStream, ExchangeKind,
-    ExchangeSpec, PublishConfirmation, PublishReceipt, PublishRequest, PublisherChannel, QueueKind,
-    QueueSpec, ReturnedMessage, TopologyChannel, Transport, TransportConnection, TransportError,
-    TransportResult,
+    ExchangeSpec, HeaderValue, PublishConfirmation, PublishReceipt, PublishRequest,
+    PublisherChannel, QueueKind, QueueSpec, ReturnedMessage, TopologyChannel, Transport,
+    TransportConnection, TransportError, TransportResult,
 };
 use crate::config::{BrokerConfig, Endpoint};
 
@@ -400,10 +400,7 @@ fn publish_properties(request: &PublishRequest) -> BasicProperties {
     }
     let mut headers = FieldTable::default();
     for (name, value) in &request.properties.headers {
-        headers.insert(
-            name.clone().into(),
-            AMQPValue::LongString(value.to_vec().into()),
-        );
+        headers.insert(name.clone().into(), publish_header_value(value));
     }
     if let Some(delay_ms) = request.properties.delay_ms {
         headers.insert(
@@ -415,6 +412,26 @@ fn publish_properties(request: &PublishRequest) -> BasicProperties {
         properties = properties.with_headers(headers);
     }
     properties
+}
+
+fn publish_header_value(value: &HeaderValue) -> AMQPValue {
+    match value {
+        HeaderValue::Void => AMQPValue::Void,
+        HeaderValue::Boolean(value) => AMQPValue::Boolean(*value),
+        HeaderValue::Integer(value) => AMQPValue::LongLongInt(*value),
+        HeaderValue::Double(value) => AMQPValue::Double(value.get()),
+        HeaderValue::Binary(value) => AMQPValue::LongString(value.to_vec().into()),
+        HeaderValue::Array(values) => AMQPValue::FieldArray(FieldArray::from(
+            values.iter().map(publish_header_value).collect::<Vec<_>>(),
+        )),
+        HeaderValue::Table(values) => {
+            let mut table = FieldTable::default();
+            for (name, value) in values {
+                table.insert(name.clone().into(), publish_header_value(value));
+            }
+            AMQPValue::FieldTable(table)
+        }
+    }
 }
 
 fn map_headers(headers: Option<&FieldTable>) -> super::Headers {
@@ -539,10 +556,10 @@ mod tests {
     #[test]
     fn outgoing_application_headers_are_merged_with_delay_header() {
         let mut request = PublishRequest::new("jobs.delayed", "high", b"job".to_vec());
-        request
-            .properties
-            .headers
-            .insert("x-rabbit-rs-attempts".to_owned(), Bytes::from_static(b"3"));
+        request.properties.headers.insert(
+            "x-rabbit-rs-attempts".to_owned(),
+            Bytes::from_static(b"3").into(),
+        );
         request.properties.delay_ms = Some(5_000);
 
         let properties = publish_properties(&request);

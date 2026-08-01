@@ -25,11 +25,11 @@
 
 ## Avancement
 
-**Dernière mise à jour :** 31 juillet 2026
+**Dernière mise à jour :** 1 août 2026
 
 **Branche d'implémentation :** feature/rabbit-rs-native
 
-**Prochaine étape :** Task 14 — Tester conversions, erreurs et transitions PHP.
+**Prochaine étape :** Task 15 — Certifier le cycle de vie CLI, fork et FPM.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -45,10 +45,13 @@
 - [x] Task 11 — Compteurs attempts et poison-message (`eb35412`).
 - [x] Task 12 — Snapshot de métriques et gate du Milestone A (`21aedee`).
 - [x] Task 13 — Définir l'API et les stubs PHP du Milestone B.
+- [x] Task 14 — Tester conversions, erreurs et transitions PHP.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
 Le checkpoint de la Task 13 vérifie 100 tests Rust et 2 tests PHPT, ainsi que le formatage Rust, Clippy sans warning, le lint du stub PHP et la validation Composer stricte.
+
+Le checkpoint de la Task 14 vérifie 111 tests Rust et 7 tests PHPT, ainsi que le formatage Rust, Clippy sans warning et la validation Composer stricte. Les scénarios PHPT déterministes utilisent une feature Cargo de test et n'exposent aucune fixture dans le binaire distribué.
 
 ## Arborescence cible
 

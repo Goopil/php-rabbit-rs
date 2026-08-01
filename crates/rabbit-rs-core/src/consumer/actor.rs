@@ -318,6 +318,14 @@ async fn settle(
             delayed_release(runtime, token, delay).await?;
             Ok(DeliveryState::Acked)
         }
+        Settlement::Reject(requeue) => {
+            runtime
+                .channel
+                .reject(token.delivery_tag, requeue)
+                .await
+                .map_err(|error| transport_error(&error))?;
+            Ok(DeliveryState::Rejected)
+        }
     }
 }
 
@@ -352,7 +360,10 @@ async fn delayed_release(
     let mut properties = MessageProperties::new(token.message_id.as_str());
     properties.headers = AttemptsResolver::default()
         .delayed_headers(&token.headers, token.attempts)
-        .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
+        .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?
+        .into_iter()
+        .map(|(name, value)| (name, value.into()))
+        .collect();
     if route.queue.is_none() {
         properties.delay_ms = Some(route.delay_ms);
     }

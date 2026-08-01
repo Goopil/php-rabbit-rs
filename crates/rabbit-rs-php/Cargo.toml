@@ -9,9 +9,15 @@ repository.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+extension-tests = ["rabbit-rs-core/test-support"]
+
 [dependencies]
+bytes = "1.10"
 ext-php-rs = "=0.15.15"
 rabbit-rs-core = { path = "../rabbit-rs-core" }
+serde_json = "1.0"
+tokio = { version = "1.47", features = ["time"] }
 
 [lints]
 workspace = true
