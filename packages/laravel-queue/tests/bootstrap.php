@@ -164,7 +164,20 @@ namespace Goopil\RabbitRs {
             /** @var list<string> */
             public array $consumerProfiles = [];
 
+            /** @var list<array{broker: string, queue: string}> */
+            public array $sizeCalls = [];
+
+            /** @var list<array{broker: string, queue: string}> */
+            public array $clearCalls = [];
+
+            /** @var array<string, int> */
+            public array $sizeResults = [];
+
             private ?\Throwable $nextPublishException = null;
+
+            private ?\Throwable $nextSizeException = null;
+
+            private ?\Throwable $nextClearException = null;
 
             /** @var array<string, Consumer> */
             private array $consumers = [];
@@ -177,6 +190,16 @@ namespace Goopil\RabbitRs {
             public function throwOnNextPublish(\Throwable $exception): void
             {
                 $this->nextPublishException = $exception;
+            }
+
+            public function throwOnNextSize(\Throwable $exception): void
+            {
+                $this->nextSizeException = $exception;
+            }
+
+            public function throwOnNextClear(\Throwable $exception): void
+            {
+                $this->nextClearException = $exception;
             }
 
             /**
@@ -217,6 +240,34 @@ namespace Goopil\RabbitRs {
             public function consumerFor(string $profile): Consumer
             {
                 return $this->configuredConsumer($profile);
+            }
+
+            public function size(string $broker, string $queue): int
+            {
+                $this->sizeCalls[] = ['broker' => $broker, 'queue' => $queue];
+
+                if ($this->nextSizeException !== null) {
+                    $exception = $this->nextSizeException;
+                    $this->nextSizeException = null;
+
+                    throw $exception;
+                }
+
+                $key = "{$broker}:{$queue}";
+
+                return $this->sizeResults[$key] ?? 0;
+            }
+
+            public function clear(string $broker, string $queue): void
+            {
+                $this->clearCalls[] = ['broker' => $broker, 'queue' => $queue];
+
+                if ($this->nextClearException !== null) {
+                    $exception = $this->nextClearException;
+                    $this->nextClearException = null;
+
+                    throw $exception;
+                }
             }
 
             private function throwPendingException(): void

@@ -550,3 +550,61 @@ async fn independent_brokers_initialize_in_parallel() {
     first.await.expect("first join").expect("first publish");
     second.await.expect("second join").expect("second publish");
 }
+
+#[tokio::test]
+async fn queue_size_returns_message_count_from_the_broker() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_queue_size(Ok(42));
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    let size = pool
+        .queue_size("default", "orders")
+        .await
+        .expect("queue size");
+
+    assert_eq!(size, 42);
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::QueueSize { queue, .. } if queue == "orders"
+    )));
+}
+
+#[tokio::test]
+async fn queue_size_propagates_broker_error() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_queue_size(Err(TransportError::protocol("queue missing")));
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    let error = pool
+        .queue_size("default", "missing")
+        .await
+        .expect_err("should fail");
+
+    assert_eq!(error.kind(), ClientErrorKind::Transport);
+}
+
+#[tokio::test]
+async fn purge_queue_clears_messages_from_the_broker() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    pool.purge_queue("default", "orders").await.expect("purge");
+
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::PurgeQueue { queue } if queue == "orders"
+    )));
+}
+
+#[tokio::test]
+async fn queue_size_on_unknown_broker_returns_configuration_error() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    let error = pool
+        .queue_size("unknown", "orders")
+        .await
+        .expect_err("should fail");
+
+    assert_eq!(error.kind(), ClientErrorKind::Configuration);
+}

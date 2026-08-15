@@ -18,7 +18,6 @@ use Illuminate\Contracts\Queue\Queue as QueueContract;
 use Illuminate\Queue\Attributes\Delay;
 use Illuminate\Queue\Queue;
 use InvalidArgumentException;
-use LogicException;
 
 final class RabbitMqQueue extends Queue implements QueueContract
 {
@@ -41,27 +40,50 @@ final class RabbitMqQueue extends Queue implements QueueContract
 
     public function size($queue = null)
     {
-        throw self::operationsPending();
+        $queueName = $this->queueName($queue);
+        $route = $this->route($queueName);
+
+        try {
+            return $this->pool->size($route['broker'], $queueName);
+        } catch (BackpressureException | ConnectionException $exception) {
+            throw $exception;
+        } catch (NativeException $exception) {
+            throw QueueException::fromNative($exception);
+        }
     }
 
     public function pendingSize($queue = null)
     {
-        throw self::operationsPending();
+        return $this->size($queue);
     }
 
     public function delayedSize($queue = null)
     {
-        throw self::operationsPending();
+        return 0;
     }
 
     public function reservedSize($queue = null)
     {
-        throw self::operationsPending();
+        return 0;
     }
 
     public function creationTimeOfOldestPendingJob($queue = null)
     {
-        throw self::operationsPending();
+        return null;
+    }
+
+    public function clear($queue = null): void
+    {
+        $queueName = $this->queueName($queue);
+        $route = $this->route($queueName);
+
+        try {
+            $this->pool->clear($route['broker'], $queueName);
+        } catch (BackpressureException | ConnectionException $exception) {
+            throw $exception;
+        } catch (NativeException $exception) {
+            throw QueueException::fromNative($exception);
+        }
     }
 
     public function push($job, $data = '', $queue = null)
@@ -327,10 +349,5 @@ final class RabbitMqQueue extends Queue implements QueueContract
         }
 
         return $seconds * 1000;
-    }
-
-    private static function operationsPending(): LogicException
-    {
-        return new LogicException('Rabbit MQ queue operation is not implemented yet.');
     }
 }

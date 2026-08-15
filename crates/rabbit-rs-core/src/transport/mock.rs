@@ -23,6 +23,8 @@ pub enum TransportOperation {
     DeclareQueue(QueueSpec),
     VerifyQueue(QueueSpec),
     BindQueue(BindingSpec),
+    QueueSize { queue: String, result: u32 },
+    PurgeQueue { queue: String },
     EnableConfirms,
     Publish(PublishRequest),
     Qos { prefetch: u16 },
@@ -42,6 +44,7 @@ struct MockState {
     keep_delivery_stream_open: bool,
     operation_results: VecDeque<TransportResult<()>>,
     consumer_results: VecDeque<TransportResult<()>>,
+    queue_sizes: VecDeque<TransportResult<u32>>,
     connect_gates: VecDeque<MockOperationGateWait>,
     open_publisher_gates: VecDeque<MockOperationGateWait>,
     open_consumer_gates: VecDeque<MockOperationGateWait>,
@@ -95,6 +98,10 @@ impl MockTransport {
 
     pub fn push_consumer_result(&self, result: TransportResult<()>) {
         self.state().consumer_results.push_back(result);
+    }
+
+    pub fn push_queue_size(&self, result: TransportResult<u32>) {
+        self.state().queue_sizes.push_back(result);
     }
 
     #[must_use]
@@ -312,6 +319,24 @@ impl TopologyChannel for MockPublisherChannel {
         self.record_topology(TransportOperation::BindQueue(spec.clone()))
     }
 
+    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations.push(TransportOperation::QueueSize {
+            queue: queue.to_owned(),
+            result: 0,
+        });
+        state.queue_sizes.pop_front().unwrap_or(Ok(0))
+    }
+
+    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
+        self.record_topology(TransportOperation::PurgeQueue {
+            queue: queue.to_owned(),
+        })
+    }
+
     async fn close(&self) -> TransportResult<()> {
         self.record(TransportOperation::CloseChannel);
         Ok(())
@@ -437,6 +462,24 @@ impl TopologyChannel for MockConsumerChannel {
 
     async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
         self.record_topology(TransportOperation::BindQueue(spec.clone()))
+    }
+
+    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations.push(TransportOperation::QueueSize {
+            queue: queue.to_owned(),
+            result: 0,
+        });
+        state.queue_sizes.pop_front().unwrap_or(Ok(0))
+    }
+
+    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
+        self.record_topology(TransportOperation::PurgeQueue {
+            queue: queue.to_owned(),
+        })
     }
 
     async fn close(&self) -> TransportResult<()> {
