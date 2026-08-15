@@ -6,7 +6,7 @@ use lapin::{
     options::{
         BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, BasicQosOptions,
         BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
-        QueueDeclareOptions,
+        QueueDeclareOptions, QueuePurgeOptions,
     },
     types::{AMQPValue, FieldArray, FieldTable},
 };
@@ -101,6 +101,18 @@ impl TopologyChannel for LapinPublisherChannel {
         bind_queue(&self.inner, spec).await
     }
 
+    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
+        queue_size(&self.inner, queue).await
+    }
+
+    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
+        self.inner
+            .queue_purge(queue.to_owned().into(), QueuePurgeOptions::default())
+            .await
+            .map(|_| ())
+            .map_err(map_lapin_error)
+    }
+
     async fn close(&self) -> TransportResult<()> {
         close_channel(&self.inner).await
     }
@@ -181,6 +193,18 @@ impl TopologyChannel for LapinConsumerChannel {
 
     async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
         bind_queue(&self.inner, spec).await
+    }
+
+    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
+        queue_size(&self.inner, queue).await
+    }
+
+    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
+        self.inner
+            .queue_purge(queue.to_owned().into(), QueuePurgeOptions::default())
+            .await
+            .map(|_| ())
+            .map_err(map_lapin_error)
     }
 
     async fn close(&self) -> TransportResult<()> {
@@ -367,6 +391,24 @@ async fn declare_queue(channel: &Channel, spec: &QueueSpec, passive: bool) -> Tr
         )
         .await
         .map(|_| ())
+        .map_err(map_lapin_error)
+}
+
+async fn queue_size(channel: &Channel, queue: &str) -> TransportResult<u32> {
+    channel
+        .queue_declare(
+            queue.to_owned().into(),
+            QueueDeclareOptions {
+                passive: true,
+                durable: false,
+                exclusive: false,
+                auto_delete: false,
+                nowait: false,
+            },
+            FieldTable::default(),
+        )
+        .await
+        .map(|queue| queue.message_count())
         .map_err(map_lapin_error)
 }
 

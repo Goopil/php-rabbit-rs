@@ -25,11 +25,11 @@
 
 ## Avancement
 
-**Dernière mise à jour :** 1 août 2026
+**Dernière mise à jour :** 15 août 2026
 
-**Branche d'implémentation :** fix/strict-audit-stabilization
+**Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 16 — Initialiser le package et sa configuration.
+**Prochaine étape :** Milestone D — Task 25 — Créer le cluster RabbitMQ de test.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -47,6 +47,15 @@
 - [x] Task 13 — Définir l'API et les stubs PHP du Milestone B.
 - [x] Task 14 — Tester conversions, erreurs et transitions PHP.
 - [x] Task 15 — Certifier le cycle de vie CLI, fork et FPM.
+- [x] Task 16 — Initialiser le package et sa configuration.
+- [x] Task 17 — Enregistrer le connecteur et le pool partagé.
+- [x] Task 18 — Implémenter push, later et bulk.
+- [x] Task 19 — Implémenter RabbitMqJob.
+- [x] Task 20 — Brancher pop sur un profil multi-vhost.
+- [x] Task 21 — Implémenter size, clear et monitoring (`d8bafcf`).
+- [x] Task 22 — Ajouter événements natifs et commande de diagnostic (`950819b`).
+- [x] Task 23 — Ajouter la commande multiprocessus progressive (`de8d8bf`).
+- [x] Task 24 — Certifier Octane (`4f04b63`).
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -110,6 +119,59 @@ Checkpoint après bornage de la frontière PHP du 1 août 2026 sur macOS ARM64 a
 - les types AMQP scalaires sont conservés, les headers PHP publiés restent plats et les structures broker imbriquées comme `x-death` sont omises des métadonnées sans masquer les scalaires ;
 - les PHPT couvrent ACK, retour mandatory, timeout de confirmation, erreur transport typée, backpressure, settlements, fermeture active et chemins d'erreur `messages[index]`.
 
+Checkpoint après initialisation du package Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 12 tests et 34 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 12 tests et 34 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- la configuration publiée applique les defaults confirms/mandatory, quorum durable et absence de DLQ applicative, puis normalise brokers, routes et workers vers le format natif avec erreurs par chemin et sans fuite de secrets.
+
+Checkpoint après enregistrement du connecteur Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 24 tests et 53 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 24 tests et 53 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- le connecteur `rabbit-rs` partage un pool natif process-local par empreinte de configuration normalisée, invalide son cache après fork et ne conserve pas les valeurs liées à une requête ;
+- `RabbitMqQueue` est introduit comme squelette contractuel afin que `Queue::connection()` puisse appliquer immédiatement le conteneur et le nom de connexion ; ses opérations restent réservées à la Task 18.
+
+Checkpoint après implémentation des publications Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 38 tests et 100 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 38 tests et 100 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- `push`, `pushRaw`, `later` et `bulk` transmettent des enveloppes natives à identifiant UUID stable, résolvent les routes et les placeholders de queue, préservent les payloads bruts et utilisent un seul appel natif par batch immédiat ou différé ;
+- la publication reste pilotée par `Illuminate\Queue\Queue` pour les payloads, événements et transactions, avec délais en millisecondes, erreurs natives génériques traduites en `QueueException` et backpressure/connexion conservées comme erreurs dédiées.
+
+Checkpoint après adaptation des deliveries en jobs Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 46 tests et 135 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 46 tests et 135 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- `RabbitMqJob` met en cache le payload, le `message_id` et `attempts`, acquitte ou libère la delivery une seule fois et abandonne le handle natif uniquement après une transition réussie ;
+- les tests couvrent la remise immédiate par `basic.reject(requeue=true)`, la republication différée en millisecondes, la remontée d'une erreur d'ACK et la séquence Laravel ACK, callback `failed`, puis événement `JobFailed` ; `pop` reste réservé à la Task 20.
+
+Checkpoint après branchement de la consommation multi-vhost Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
+- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 57 tests et 159 assertions ;
+- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 57 tests et 159 assertions ;
+- `rtk ./scripts/check.sh` : PASS ;
+- `RabbitMqQueue::pop()` résout la valeur Laravel `queue` comme un profil worker, réutilise son consumer natif agrégé et délègue en un appel `next()` la sélection pondérée entre brokers et vhosts ;
+- les subscriptions `enabled=false` sont exclues avant la création du pool, `block_for` est converti de secondes en millisecondes avec borne d'overflow, et l'alias natif de subscription restitue le vrai nom de queue au `RabbitMqJob` ;
+- les tests couvrent deux vhosts, trois subscriptions actives, un profil inconnu, une subscription désactivée, un timeout sans job et la traduction des erreurs natives ; la sélection fine de plusieurs aliases reste réservée à `rabbit-rs:work` et les opérations d'administration à la Task 21.
+
+Checkpoint après administration et monitoring du 15 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk cargo fmt --all -- --check` : PASS ; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` : PASS ; `rtk cargo test --workspace --all-targets` : PASS, 153 tests Rust ;
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ; PHPUnit (sans ext-rabbit_rs) : PASS, 65 tests et 172 assertions ;
+- `queue_size` et `purge_queue` ajoutés au trait `TopologyChannel` avec implémentations Lapin (passive declare / queue_purge) et Mock ; `ClientPool::queue_size` et `ClientPool::purge_queue` exposent les opérations au niveau client ;
+- `Pool::size()` et `Pool::clear()` ajoutés à l'extension native PHP et au stub ;
+- `RabbitMqQueue::size()` et `RabbitMqQueue::clear()` résolvent la route configurée et délèguent au pool natif ; `pendingSize` délègue à `size`, `delayedSize` et `reservedSize` retournent 0, `creationTimeOfOldestPendingJob` retourne null (AMQP ne distingue pas ces états) ;
+- les tests couvrent size par route et par défaut, clear par route et par défaut, size à zéro, échec native traduit en QueueException, et refus sans route configurée.
+
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
 Le checkpoint de la Task 13 vérifie 100 tests Rust et 2 tests PHPT, ainsi que le formatage Rust, Clippy sans warning, le lint du stub PHP et la validation Composer stricte.
@@ -155,6 +217,7 @@ Le checkpoint de la Task 15 clôt le Milestone B avec 112 tests Rust, 9 tests PH
           RabbitMqServiceProvider.php
           Config/
           Connectors/
+          Exceptions/
           Jobs/
           Console/
           Support/
@@ -1067,6 +1130,7 @@ Expected: PASS.
 **Files:**
 - Create: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
 - Create: packages/laravel-queue/src/Support/NativePoolFactory.php
+- Create: packages/laravel-queue/src/RabbitMqQueue.php
 - Create: packages/laravel-queue/tests/Unit/RabbitMqConnectorTest.php
 - Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 
@@ -1082,7 +1146,7 @@ Expected: FAIL.
 
 **Step 3: Implement connector and factory**
 
-Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à Goopil\RabbitRs\Pool.
+Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à Goopil\RabbitRs\Pool. Créer le squelette contractuel de RabbitMqQueue afin que Laravel puisse appliquer setConnectionName et setContainer ; laisser ses opérations non implémentées jusqu'à la Task 18.
 
 **Step 4: Verify**
 
@@ -1098,10 +1162,14 @@ Expected: PASS.
 ### Task 18: Implémenter push, later et bulk
 
 **Files:**
-- Create: packages/laravel-queue/src/RabbitMqQueue.php
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
 - Create: packages/laravel-queue/src/Support/MessageMapper.php
+- Create: packages/laravel-queue/src/Exceptions/QueueException.php
 - Create: packages/laravel-queue/tests/Unit/RabbitMqQueuePublishTest.php
+- Create: packages/laravel-queue/tests/bootstrap.php
 - Modify: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
+- Modify: packages/laravel-queue/tests/Unit/RabbitMqConnectorTest.php
+- Modify: packages/laravel-queue/phpunit.xml
 
 **Step 1: Write failing Queue publish tests**
 
@@ -1125,7 +1193,7 @@ Expected: FAIL.
 
 **Step 3: Implement minimal publishing adapter**
 
-Étendre Illuminate\Queue\Queue et implémenter Illuminate\Contracts\Queue\Queue. Ne pas dupliquer createPayload.
+Étendre Illuminate\Queue\Queue et implémenter Illuminate\Contracts\Queue\Queue. Ne pas dupliquer createPayload. Résoudre la route nommée avec fallback `default`, réutiliser l'UUID du payload Laravel comme `message_id` et conserver les événements, délais et callbacks transactionnels de Laravel autour des appels natifs simples ou batchés.
 
 **Step 4: Verify**
 

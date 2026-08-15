@@ -137,6 +137,32 @@ impl Pool {
         Ok(stats)
     }
 
+    /// Returns the number of pending messages in a queue on the given broker.
+    pub fn size(&self, broker: &str, queue: &str) -> PhpResult<i64> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::size")?;
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.queue_size(broker, queue))
+        {
+            Ok(count) => Ok(i64::from(count)),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Purges all messages from a queue on the given broker.
+    pub fn clear(&self, broker: &str, queue: &str) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::clear")?;
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.purge_queue(broker, queue))
+        {
+            Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
+    }
+
     /// Closes this pool handle.
     pub fn close(&self) -> PhpResult<()> {
         if self.pid != std::process::id() {

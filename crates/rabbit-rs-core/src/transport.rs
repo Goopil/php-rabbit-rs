@@ -331,6 +331,22 @@ pub trait TopologyChannel: Send + Sync {
     /// Returns an error when the queue binding cannot be declared.
     async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()>;
 
+    /// Returns the number of pending messages in the queue.
+    ///
+    /// Uses a passive `queue.declare` so the queue is not created if absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue does not exist or the broker rejects the request.
+    async fn queue_size(&self, queue: &str) -> TransportResult<u32>;
+
+    /// Removes all messages from the queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue does not exist or the broker rejects the purge.
+    async fn purge_queue(&self, queue: &str) -> TransportResult<()>;
+
     /// # Errors
     ///
     /// Returns an error when graceful channel shutdown fails.

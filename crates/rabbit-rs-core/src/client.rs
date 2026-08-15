@@ -236,6 +236,44 @@ impl ClientPool {
         self.metrics.snapshot()
     }
 
+    /// Returns the number of pending messages in a queue on the given broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn queue_size(&self, broker: &str, queue: &str) -> Result<u32, ClientError> {
+        self.ensure_open()?;
+        let connection = self.connection(broker).await?;
+        let channel = connection
+            .open_publisher()
+            .await
+            .map_err(|error| ClientError::transport(&error))?;
+        channel
+            .queue_size(queue)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Purges all messages from a queue on the given broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn purge_queue(&self, broker: &str, queue: &str) -> Result<(), ClientError> {
+        self.ensure_open()?;
+        let connection = self.connection(broker).await?;
+        let channel = connection
+            .open_publisher()
+            .await
+            .map_err(|error| ClientError::transport(&error))?;
+        channel
+            .purge_queue(queue)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
     #[cfg(test)]
     pub(crate) async fn initialize_connection_for_tests(
         &self,

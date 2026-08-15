@@ -54,6 +54,14 @@ final class Pool
     {
     }
 
+    public function size(string $broker, string $queue): int
+    {
+    }
+
+    public function clear(string $broker, string $queue): void
+    {
+    }
+
     public function close(): void
     {
     }
