@@ -36,6 +36,16 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
   - `rtk composer validate --strict`
 - Before claiming completion, run the complete gate: `rtk ./scripts/check.sh`.
 
+## PHP Extension Tooling
+
+- `cargo php install` and `cargo php stubs` fail at the workspace root because the root `Cargo.toml` is a workspace manifest, not a package manifest. `cargo-php` (v0.1.11) does not resolve workspace members automatically.
+- Use the wrapper scripts instead:
+  - `./scripts/install.sh [--release] [--yes]` — builds and installs the extension into the current PHP.
+  - `./scripts/stubs.sh [--stdout] [-o <path>]` — generates PHP stubs from the compiled extension.
+- Both scripts pass `--manifest crates/rabbit-rs-php/Cargo.toml` to `cargo-php` under the hood.
+- `cargo php stubs` requires the PHP embed SAPI to introspect the extension. Homebrew PHP (`php@8.4`) does not include embed by default, so `./scripts/stubs.sh` may abort with SIGABRT (exit 134) on macOS. The authoritative stub is `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, maintained manually and validated by `php -l` and PHPT reflection tests.
+- To regenerate stubs via `cargo php stubs`, build PHP with `--enable-embed` or use a Docker image that ships the embed SAPI.
+
 ## Rust Conventions
 
 - Unsafe Rust is forbidden. Do not weaken `#![forbid(unsafe_code)]` or the workspace lint configuration.
