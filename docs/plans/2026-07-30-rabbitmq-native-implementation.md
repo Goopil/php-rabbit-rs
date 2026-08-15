@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 23 — Ajouter la commande multiprocessus progressive.
+**Prochaine étape :** Task 24 — Certifier Octane.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -54,6 +54,7 @@
 - [x] Task 20 — Brancher pop sur un profil multi-vhost.
 - [x] Task 21 — Implémenter size, clear et monitoring (`d8bafcf`).
 - [x] Task 22 — Ajouter événements natifs et commande de diagnostic (`950819b`).
+- [x] Task 23 — Ajouter la commande multiprocessus progressive (`de8d8bf`).
 
 ### Lot de stabilisation stricte du Milestone B
 
