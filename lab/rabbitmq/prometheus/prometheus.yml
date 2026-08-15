@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "rabbitmq"
+    static_configs:
+      - targets:
+          - "rabbitmq-1:15692"
+          - "rabbitmq-2:15692"
+          - "rabbitmq-3:15692"
+        labels:
+          cluster: "rabbit_rs_lab"
+  - job_name: "toxiproxy"
+    static_configs:
+      - targets:
+          - "toxiproxy:8474"
+        labels:
+          cluster: "rabbit_rs_lab"

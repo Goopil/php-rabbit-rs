@@ -1,0 +1,56 @@
+{
+  "vhosts": [
+    { "name": "/orders-eu" },
+    { "name": "/billing" },
+    { "name": "/" }
+  ],
+  "users": [
+    {
+      "name": "rabbit_rs",
+      "password": "rabbit_rs_lab",
+      "tags": ["management"]
+    },
+    {
+      "name": "admin",
+      "password": "admin_lab",
+      "tags": ["administrator"]
+    }
+  ],
+  "permissions": [
+    {
+      "user": "rabbit_rs",
+      "vhost": "/orders-eu",
+      "configure": "^amq\\.",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "rabbit_rs",
+      "vhost": "/billing",
+      "configure": "^amq\\.",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "admin",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "admin",
+      "vhost": "/orders-eu",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
+      "user": "admin",
+      "vhost": "/billing",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ]
+}

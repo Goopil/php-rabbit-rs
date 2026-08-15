@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Milestone D — Task 25 — Créer le cluster RabbitMQ de test.
+**Prochaine étape :** Milestone D — Task 26 — Écrire les tests d'intégration end-to-end.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -56,6 +56,7 @@
 - [x] Task 22 — Ajouter événements natifs et commande de diagnostic (`950819b`).
 - [x] Task 23 — Ajouter la commande multiprocessus progressive (`de8d8bf`).
 - [x] Task 24 — Certifier Octane (`4f04b63`).
+- [x] Task 25 — Créer le cluster RabbitMQ de test.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -171,6 +172,16 @@ Checkpoint après administration et monitoring du 15 août 2026 sur macOS ARM64 
 - `Pool::size()` et `Pool::clear()` ajoutés à l'extension native PHP et au stub ;
 - `RabbitMqQueue::size()` et `RabbitMqQueue::clear()` résolvent la route configurée et délèguent au pool natif ; `pendingSize` délègue à `size`, `delayedSize` et `reservedSize` retournent 0, `creationTimeOfOldestPendingJob` retourne null (AMQP ne distingue pas ces états) ;
 - les tests couvrent size par route et par défaut, clear par route et par défaut, size à zéro, échec native traduit en QueueException, et refus sans route configurée.
+
+Checkpoint après le cluster RabbitMQ de test du 15 août 2026 sur macOS ARM64 (Colima/Docker) :
+
+- `rtk ./scripts/check.sh` : PASS, 153 tests Rust et validation Composer ;
+- cluster 3 nœuds RabbitMQ 4.2.9 (Alpine) avec peer discovery `rabbit_peer_discovery_classic_config`, Erlang cookie partagé, `cluster_partition_handling = pause_minority` et quorum queues opérationnelles ;
+- plugin `rabbitmq_delayed_message_exchange` v4.2.0 (SHA-256 vérifié) pour le profil `with-plugin` ; profil `without-plugin` sans plugin pour tester le fallback TTL ;
+- 2 vhosts (`/orders-eu`, `/billing`), utilisateur limité `rabbit_rs` (management) et admin `admin` (administrator) avec permissions restreintes ;
+- Toxiproxy 2.12.0 intercepte les AMQP ports 5672–5674 pour l'injection de fautes ; Prometheus v3.5.0 scrape les 3 nœuds ;
+- `./scripts/lab-up.sh` démarre le lab, `./scripts/lab-ready.sh` vérifie readiness (cluster, vhosts, quorum, permissions, Prometheus, Toxiproxy, plugin), `./scripts/lab-down.sh` arrête proprement ;
+- toutes les images sont épinglées par digest SHA-256.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
