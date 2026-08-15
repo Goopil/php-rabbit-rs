@@ -25,11 +25,11 @@
 
 ## Avancement
 
-**Dernière mise à jour :** 1 août 2026
+**Dernière mise à jour :** 15 août 2026
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 21 — Implémenter size, clear et monitoring.
+**Prochaine étape :** Task 22 — Ajouter événements natifs et commande de diagnostic.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -52,6 +52,7 @@
 - [x] Task 18 — Implémenter push, later et bulk.
 - [x] Task 19 — Implémenter RabbitMqJob.
 - [x] Task 20 — Brancher pop sur un profil multi-vhost.
+- [x] Task 21 — Implémenter size, clear et monitoring (`d8bafcf`).
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -158,6 +159,15 @@ Checkpoint après branchement de la consommation multi-vhost Laravel du 1 août 
 - `RabbitMqQueue::pop()` résout la valeur Laravel `queue` comme un profil worker, réutilise son consumer natif agrégé et délègue en un appel `next()` la sélection pondérée entre brokers et vhosts ;
 - les subscriptions `enabled=false` sont exclues avant la création du pool, `block_for` est converti de secondes en millisecondes avec borne d'overflow, et l'alias natif de subscription restitue le vrai nom de queue au `RabbitMqJob` ;
 - les tests couvrent deux vhosts, trois subscriptions actives, un profil inconnu, une subscription désactivée, un timeout sans job et la traduction des erreurs natives ; la sélection fine de plusieurs aliases reste réservée à `rabbit-rs:work` et les opérations d'administration à la Task 21.
+
+Checkpoint après administration et monitoring du 15 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+
+- `rtk cargo fmt --all -- --check` : PASS ; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` : PASS ; `rtk cargo test --workspace --all-targets` : PASS, 153 tests Rust ;
+- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ; PHPUnit (sans ext-rabbit_rs) : PASS, 65 tests et 172 assertions ;
+- `queue_size` et `purge_queue` ajoutés au trait `TopologyChannel` avec implémentations Lapin (passive declare / queue_purge) et Mock ; `ClientPool::queue_size` et `ClientPool::purge_queue` exposent les opérations au niveau client ;
+- `Pool::size()` et `Pool::clear()` ajoutés à l'extension native PHP et au stub ;
+- `RabbitMqQueue::size()` et `RabbitMqQueue::clear()` résolvent la route configurée et délèguent au pool natif ; `pendingSize` délègue à `size`, `delayedSize` et `reservedSize` retournent 0, `creationTimeOfOldestPendingJob` retourne null (AMQP ne distingue pas ces états) ;
+- les tests couvrent size par route et par défaut, clear par route et par défaut, size à zéro, échec native traduit en QueueException, et refus sans route configurée.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
