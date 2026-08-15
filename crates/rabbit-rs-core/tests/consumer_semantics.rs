@@ -578,6 +578,94 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
 }
 
 #[tokio::test]
+async fn consumer_tag_uses_subscription_name_without_debug_wrapper() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"job")));
+    let _consumer = ConsumerSet::spawn(
+        vec![
+            subscription(
+                &transport,
+                "orders_high",
+                connection_key("orders_high", "/"),
+                4,
+                0,
+            )
+            .await,
+        ],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    let consume_ops: Vec<_> = transport
+        .operations()
+        .into_iter()
+        .filter(|op| matches!(op, TransportOperation::Consume(_)))
+        .collect();
+    assert!(!consume_ops.is_empty(), "consume was registered");
+
+    if let TransportOperation::Consume(request) = &consume_ops[0] {
+        assert!(
+            request.consumer_tag.contains("orders_high"),
+            "tag should contain the subscription name: {}",
+            request.consumer_tag
+        );
+        assert!(
+            !request.consumer_tag.contains("SubscriptionId"),
+            "tag must not contain the Debug wrapper: {}",
+            request.consumer_tag
+        );
+        assert!(
+            !request.consumer_tag.contains('"'),
+            "tag must not contain quotes from Debug: {}",
+            request.consumer_tag
+        );
+    }
+}
+
+#[tokio::test]
+async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
+    let transport = MockTransport::default();
+    for _ in 0..200 {
+        transport.push_delivery(Err(rabbit_rs_core::transport::TransportError::connection(
+            "flapping",
+        )));
+    }
+    transport.push_delivery(Ok(delivery(1, b"job")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        64,
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    let mut got_errors = 0;
+    let mut got_delivery = false;
+    for _ in 0..300 {
+        match consumer.next().await {
+            Ok(item) => {
+                item.ack().await.expect("ACK");
+                got_delivery = true;
+                break;
+            }
+            Err(error) => {
+                assert_eq!(error.kind(), ConsumerErrorKind::Transport);
+                got_errors += 1;
+            }
+        }
+    }
+    assert!(
+        got_delivery,
+        "good delivery must surface after bounded errors"
+    );
+    assert!(
+        got_errors <= 64,
+        "source errors must be bounded by max_in_flight, got {got_errors}"
+    );
+}
+
+#[tokio::test]
 async fn close_wakes_pending_next_with_a_typed_error() {
     let transport = MockTransport::default();
     let consumer = ConsumerSet::spawn(

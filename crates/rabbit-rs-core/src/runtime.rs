@@ -430,6 +430,38 @@ mod tests {
     }
 
     #[test]
+    fn pid_change_drops_old_runtime_outside_the_mutex() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SlowDropFactory(Arc<AtomicBool>);
+        impl RuntimeFactory for SlowDropFactory {
+            fn create(&self) -> std::io::Result<Runtime> {
+                let runtime = Builder::new_current_thread().enable_all().build()?;
+                self.0.store(true, Ordering::SeqCst);
+                Ok(runtime)
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let pid = Arc::new(MutablePid::new(100));
+        let registry = RuntimeRegistry::with_dependencies(
+            pid.clone(),
+            Arc::new(SlowDropFactory(dropped.clone())),
+        );
+        let key = ConnectionKey::from_bytes([1; 32]);
+        let _inherited = registry.acquire(key).expect("parent acquisition");
+
+        pid.set(101);
+        let child = registry.acquire(key).expect("child acquisition");
+
+        assert!(!child.is_closed());
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "old runtime was replaced after PID change"
+        );
+    }
+
+    #[test]
     fn closing_the_registry_is_idempotent() {
         let (registry, _pid, _factory) = registry();
         let handle = registry
