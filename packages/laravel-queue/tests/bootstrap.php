@@ -173,6 +173,9 @@ namespace Goopil\RabbitRs {
             /** @var array<string, int> */
             public array $sizeResults = [];
 
+            /** @var array<string, mixed>|null */
+            public ?array $statsResult = null;
+
             private ?\Throwable $nextPublishException = null;
 
             private ?\Throwable $nextSizeException = null;
@@ -268,6 +271,23 @@ namespace Goopil\RabbitRs {
 
                     throw $exception;
                 }
+            }
+
+            /**
+             * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
+             */
+            public function stats(): array
+            {
+                return $this->statsResult ?? [
+                    'closed' => false,
+                    'pid' => 12345,
+                    'handle' => 'conn:019f8f1a',
+                    'publishes_total' => 100,
+                    'confirmations_total' => 98,
+                    'returns_total' => 2,
+                    'backpressure_total' => 0,
+                    'reconnects_total' => 1,
+                ];
             }
 
             private function throwPendingException(): void

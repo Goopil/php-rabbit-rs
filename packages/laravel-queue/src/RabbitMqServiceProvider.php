@@ -6,6 +6,7 @@ namespace Goopil\RabbitRs\Laravel;
 
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\ServiceProvider;
 use RuntimeException;
@@ -17,11 +18,15 @@ class RabbitMqServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(self::configPath(), 'rabbit-rs');
         $this->normalizeBrokerHosts();
         $this->app->singleton(NativePoolFactory::class);
+        $this->app->singleton('rabbit-rs.config', fn (): array => ConfigNormalizer::normalize(
+            is_array($this->app->make('config')->get('rabbit-rs')) ? $this->app->make('config')->get('rabbit-rs') : [],
+        ));
     }
 
     public function boot(): void
     {
         $this->registerQueueConnector();
+        $this->commands([RabbitMqStatusCommand::class]);
 
         $this->publishes([
             self::configPath() => config_path('rabbit-rs.php'),
