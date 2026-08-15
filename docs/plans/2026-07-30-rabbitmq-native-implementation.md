@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Task 22 — Ajouter événements natifs et commande de diagnostic.
+**Prochaine étape :** Task 23 — Ajouter la commande multiprocessus progressive.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -53,6 +53,7 @@
 - [x] Task 19 — Implémenter RabbitMqJob.
 - [x] Task 20 — Brancher pop sur un profil multi-vhost.
 - [x] Task 21 — Implémenter size, clear et monitoring (`d8bafcf`).
+- [x] Task 22 — Ajouter événements natifs et commande de diagnostic (`950819b`).
 
 ### Lot de stabilisation stricte du Milestone B
 
