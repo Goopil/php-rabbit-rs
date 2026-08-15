@@ -8,6 +8,7 @@ use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
+use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\ServiceProvider;
 use RuntimeException;
@@ -28,6 +29,7 @@ class RabbitMqServiceProvider extends ServiceProvider
     {
         $this->registerQueueConnector();
         $this->commands([RabbitMqStatusCommand::class, RabbitMqWorkCommand::class]);
+        $this->registerOctaneLifecycle();
 
         $this->publishes([
             self::configPath() => config_path('rabbit-rs.php'),
@@ -105,5 +107,17 @@ class RabbitMqServiceProvider extends ServiceProvider
     private static function configPath(): string
     {
         return dirname(__DIR__).'/config/rabbit-rs.php';
+    }
+
+    private function registerOctaneLifecycle(): void
+    {
+        if (! class_exists(\Laravel\Octane\Octane::class)) {
+            return;
+        }
+
+        $app = $this->app;
+        $lifecycle = new OctaneLifecycle($app);
+
+        $app->terminating(static fn () => $lifecycle->flush());
     }
 }

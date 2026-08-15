@@ -52,6 +52,15 @@ final class NativePoolFactory
         return $this->pools[$fingerprint] ??= ($this->createPool)($nativeConfig);
     }
 
+    /**
+     * Clears all cached pools so the next make() creates fresh instances.
+     */
+    public function flush(): void
+    {
+        $this->pools = [];
+        $this->processId = ($this->resolveProcessId)();
+    }
+
     private function resetAfterFork(): void
     {
         $processId = ($this->resolveProcessId)();
