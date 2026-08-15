@@ -7,7 +7,7 @@ namespace Goopil\RabbitRs\Laravel\Tests\Integration;
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
-use Goopil\RabbitRs\Laravel\Queue\RabbitMqQueue;
+use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 
@@ -21,6 +21,7 @@ final class QueueWorkerTest extends IntegrationTestCase
     {
         parent::setUp();
         $this->queueName = $this->uniqueQueue();
+        $this->declareQueue($this->queueName);
 
         $config = $this->liveConfig($this->queueName);
         $normalized = ConfigNormalizer::normalize($config);
@@ -30,7 +31,7 @@ final class QueueWorkerTest extends IntegrationTestCase
 
         $connector = new RabbitMqConnector($factory, $normalized);
         $this->queue = $connector->connect([
-            'queue' => $this->queueName,
+            'queue' => 'default',
             'block_for' => 3,
         ]);
         $this->queue->setContainer($this->app);
@@ -42,6 +43,7 @@ final class QueueWorkerTest extends IntegrationTestCase
         if (isset($this->pool) && ! $this->pool->stats()['closed']) {
             $this->pool->close();
         }
+        $this->deleteQueue($this->queueName);
         parent::tearDown();
     }
 
@@ -49,9 +51,9 @@ final class QueueWorkerTest extends IntegrationTestCase
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->push('stdClass', ['message' => 'hello-integration']);
+        $this->queue->push('stdClass', ['message' => 'hello-integration'], $this->queueName);
 
-        $job = $this->queue->pop($this->queueName);
+        $job = $this->queue->pop();
         self::assertNotNull($job);
         self::assertInstanceOf(RabbitMqJob::class, $job);
         self::assertNotEmpty($job->getJobId());
@@ -61,7 +63,7 @@ final class QueueWorkerTest extends IntegrationTestCase
         self::assertSame(['message' => 'hello-integration'], $body['data']);
 
         $job->delete();
-        self::assertNull($this->queue->pop($this->queueName));
+        self::assertNull($this->queue->pop());
     }
 
     public function test_push_raw_preserves_payload(): void
@@ -71,7 +73,7 @@ final class QueueWorkerTest extends IntegrationTestCase
         $payload = '{"custom":"raw-payload","uuid":"test-raw-1"}';
         $this->queue->pushRaw($payload, $this->queueName);
 
-        $job = $this->queue->pop($this->queueName);
+        $job = $this->queue->pop();
         self::assertNotNull($job);
         self::assertSame($payload, $job->getRawBody());
 
@@ -91,28 +93,28 @@ final class QueueWorkerTest extends IntegrationTestCase
 
         $consumed = 0;
         for ($i = 0; $i < 5; $i++) {
-            $job = $this->queue->pop($this->queueName);
+            $job = $this->queue->pop();
             self::assertNotNull($job, "expected job {$i}");
             $consumed++;
             $job->delete();
         }
         self::assertSame(5, $consumed);
 
-        self::assertNull($this->queue->pop($this->queueName));
+        self::assertNull($this->queue->pop());
     }
 
     public function test_release_requeues_the_job(): void
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->push('stdClass', ['attempt' => 'release-test']);
+        $this->queue->push('stdClass', ['attempt' => 'release-test'], $this->queueName);
 
-        $job = $this->queue->pop($this->queueName);
+        $job = $this->queue->pop();
         self::assertNotNull($job);
 
         $job->release(0);
 
-        $requeued = $this->queue->pop($this->queueName);
+        $requeued = $this->queue->pop();
         self::assertNotNull($requeued);
         $requeued->delete();
     }
@@ -127,8 +129,8 @@ final class QueueWorkerTest extends IntegrationTestCase
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->push('stdClass', ['size' => 'test']);
-        $this->queue->push('stdClass', ['size' => 'test2']);
+        $this->queue->push('stdClass', ['size' => 'test'], $this->queueName);
+        $this->queue->push('stdClass', ['size' => 'test2'], $this->queueName);
 
         self::assertGreaterThanOrEqual(2, $this->queue->size($this->queueName));
 

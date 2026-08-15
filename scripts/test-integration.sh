@@ -37,13 +37,31 @@ cargo test -p rabbit-rs-core --features integration --test publish_consume -- --
 cargo test -p rabbit-rs-core --features integration --test topology_modes -- --test-threads=1
 
 echo ""
-echo "=== Running Laravel integration tests ==="
+echo "=== Building and installing ext-rabbit_rs ==="
 PHP_BIN="${PHP_BIN:-php}"
-if command -v "${PHP_BIN}" >/dev/null 2>&1 && [[ -f packages/laravel-queue/vendor/bin/phpunit ]]; then
-    cd "${PROJECT_ROOT}/packages/laravel-queue"
-    "${PHP_BIN}" vendor/bin/phpunit --testsuite="Rabbit RS Integration" --testdox
+if ! command -v "${PHP_BIN}" >/dev/null 2>&1; then
+    echo "SKIP: php not found, cannot run Laravel integration tests"
 else
-    echo "SKIP: phpunit not available or dependencies not installed"
+    ./scripts/install.sh --release --yes
+
+    echo ""
+    echo "=== Verifying extension is loaded ==="
+    if ! "${PHP_BIN}" -m 2>/dev/null | grep -q rabbit_rs; then
+        echo "ERROR: ext-rabbit_rs is not loaded after install" >&2
+        echo "  PHP SAPI: $(${PHP_BIN} -r 'echo php_sapi_name();' 2>/dev/null)"
+        echo "  PHP version: $(${PHP_BIN} -r 'echo phpversion();' 2>/dev/null)"
+        exit 1
+    fi
+    echo "ext-rabbit_rs is loaded."
+
+    echo ""
+    echo "=== Installing Laravel package dependencies ==="
+    cd "${PROJECT_ROOT}/packages/laravel-queue"
+    composer install --quiet --ignore-platform-reqs
+
+    echo ""
+    echo "=== Running Laravel integration tests ==="
+    "${PHP_BIN}" vendor/bin/phpunit --testsuite="Rabbit RS Integration" --testdox
 fi
 
 echo ""

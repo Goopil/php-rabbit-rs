@@ -158,7 +158,7 @@ final class RabbitMqQueue extends Queue implements QueueContract
      * @param list<mixed> $jobs
      * @return array{list<mixed>, list<mixed>}
      */
-    private function partitionJobsByAfterCommit(array $jobs): array
+    protected function partitionJobsByAfterCommit(array $jobs): array
     {
         if (! $this->container->bound('db.transactions')) {
             return [[], $jobs];

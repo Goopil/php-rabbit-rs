@@ -23,7 +23,7 @@ abstract class IntegrationTestCase extends PackageTestCase
             'topology_mode' => 'declare',
             'brokers' => [
                 'default' => [
-                    'hosts' => '127.0.0.1:5672',
+                    'hosts' => ['127.0.0.1:5672'],
                     'vhost' => '/orders-eu',
                     'credentials' => [
                         'username' => 'rabbit_rs',
@@ -77,5 +77,41 @@ abstract class IntegrationTestCase extends PackageTestCase
     protected function uniqueQueue(string $prefix = 'rabbit-rs-it'): string
     {
         return $prefix.'-'.uniqid('', true);
+    }
+
+    /**
+     * Declare a quorum queue via the RabbitMQ management API before tests.
+     */
+    protected function declareQueue(string $queueName): void
+    {
+        $url = 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName);
+        $payload = json_encode([
+            'durable' => true,
+            'arguments' => ['x-queue-type' => 'quorum'],
+        ]);
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    /**
+     * Delete a queue via the RabbitMQ management API after tests.
+     */
+    protected function deleteQueue(string $queueName): void
+    {
+        $url = 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName);
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
+        curl_exec($ch);
+        curl_close($ch);
     }
 }
