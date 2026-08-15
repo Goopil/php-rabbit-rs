@@ -8,7 +8,11 @@
          failOnWarning="true">
     <testsuites>
         <testsuite name="Rabbit RS Laravel">
-            <directory>tests</directory>
+            <directory>tests/Unit</directory>
+            <directory>tests/Feature</directory>
+        </testsuite>
+        <testsuite name="Rabbit RS Integration">
+            <directory>tests/Integration</directory>
         </testsuite>
     </testsuites>
     <php>

@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Milestone D — Task 26 — Écrire les tests d'intégration end-to-end.
+**Prochaine étape :** Milestone D — Task 27 — Écrire les scénarios de panne.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -57,6 +57,7 @@
 - [x] Task 23 — Ajouter la commande multiprocessus progressive (`de8d8bf`).
 - [x] Task 24 — Certifier Octane (`4f04b63`).
 - [x] Task 25 — Créer le cluster RabbitMQ de test.
+- [x] Task 26 — Écrire les tests d'intégration end-to-end.
 
 ### Lot de stabilisation stricte du Milestone B
 
@@ -182,6 +183,16 @@ Checkpoint après le cluster RabbitMQ de test du 15 août 2026 sur macOS ARM64 (
 - Toxiproxy 2.12.0 intercepte les AMQP ports 5672–5674 pour l'injection de fautes ; Prometheus v3.5.0 scrape les 3 nœuds ;
 - `./scripts/lab-up.sh` démarre le lab, `./scripts/lab-ready.sh` vérifie readiness (cluster, vhosts, quorum, permissions, Prometheus, Toxiproxy, plugin), `./scripts/lab-down.sh` arrête proprement ;
 - toutes les images sont épinglées par digest SHA-256.
+
+Checkpoint après les tests d'intégration end-to-end du 15 août 2026 sur macOS ARM64 (Colima/Docker) :
+
+- `rtk cargo fmt --all -- --check` : PASS ; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` : PASS ; `rtk cargo test --workspace --all-targets` : PASS, 153 tests Rust ;
+- 8 tests d'intégration Rust via `cargo test -p rabbit-rs-core --features integration` : publish_confirm_then_consume_and_ack, release_zero_requeues_and_redispatches, two_vhosts_in_one_consumer_set, bulk_publish_then_consume_all, declare_quorum_queue_succeeds, declare_classic_queue_succeeds, verify_passive_does_not_create, external_mode_emits_no_commands ;
+- tests d'intégration Laravel (QueueWorkerTest, DelayedJobTest) créés dans `tests/Integration/` avec testsuite dédiée ; skip automatique si ext-rabbit_rs n'est pas chargée ;
+- `scripts/test-integration.sh` démarre le lab, attend readiness, exécute les tests Rust et Laravel, puis arrête le lab ;
+- feature Cargo `integration` protège les tests Rust nécessitant un broker réel ; les tests déclarent les queues via `TopologyReconciler` avant publication ;
+- permissions `rabbit_rs` mises à jour pour permettre la déclaration de queues de test (`^(amq\.|rabbit-rs-it-)`) ;
+- phpunit.xml séparé en testsuites "Rabbit RS Laravel" et "Rabbit RS Integration" pour isoler les tests nécessitant un broker.
 
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 

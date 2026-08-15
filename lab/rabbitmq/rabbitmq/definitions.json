@@ -20,14 +20,14 @@
     {
       "user": "rabbit_rs",
       "vhost": "/orders-eu",
-      "configure": "^amq\\.",
+      "configure": "^(amq\\.|rabbit-rs-it-)",
       "write": ".*",
       "read": ".*"
     },
     {
       "user": "rabbit_rs",
       "vhost": "/billing",
-      "configure": "^amq\\.",
+      "configure": "^(amq\\.|rabbit-rs-it-)",
       "write": ".*",
       "read": ".*"
     },

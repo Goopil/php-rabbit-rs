@@ -1,17 +1,20 @@
-{
-  "rabbitmq-1-toxiproxy": {
+[
+  {
+    "name": "rabbitmq-1-toxiproxy",
     "listen": "0.0.0.0:5672",
     "upstream": "rabbitmq-1:5672",
     "enabled": true
   },
-  "rabbitmq-2-toxiproxy": {
+  {
+    "name": "rabbitmq-2-toxiproxy",
     "listen": "0.0.0.0:5673",
     "upstream": "rabbitmq-2:5672",
     "enabled": true
   },
-  "rabbitmq-3-toxiproxy": {
+  {
+    "name": "rabbitmq-3-toxiproxy",
     "listen": "0.0.0.0:5674",
     "upstream": "rabbitmq-3:5672",
     "enabled": true
   }
-}
+]
