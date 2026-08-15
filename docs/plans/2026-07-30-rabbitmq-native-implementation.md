@@ -25,11 +25,11 @@
 
 ## Avancement
 
-**Dernière mise à jour :** 15 août 2026
+**Dernière mise à jour :** 16 août 2026
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Milestone D — Task 27 — Écrire les scénarios de panne.
+**Prochaine étape :** Milestone E — Task 28 — Créer bench-native.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -58,6 +58,7 @@
 - [x] Task 24 — Certifier Octane (`4f04b63`).
 - [x] Task 25 — Créer le cluster RabbitMQ de test.
 - [x] Task 26 — Écrire les tests d'intégration end-to-end.
+- [x] Task 27 — Écrire les scénarios de panne (chaos/fault injection).
 
 ### Lot de stabilisation stricte du Milestone B
 
