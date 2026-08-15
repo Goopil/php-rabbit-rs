@@ -194,6 +194,15 @@ Checkpoint après les tests d'intégration end-to-end du 15 août 2026 sur macOS
 - permissions `rabbit_rs` mises à jour pour permettre la déclaration de queues de test (`^(amq\.|rabbit-rs-it-)`) ;
 - phpunit.xml séparé en testsuites "Rabbit RS Laravel" et "Rabbit RS Integration" pour isoler les tests nécessitant un broker.
 
+Checkpoint après correction des tests d'intégration Laravel du 16 août 2026 sur macOS ARM64 (Colima/Docker) :
+
+- les tests `push()`, `later()` et `bulk()` passaient `null` comme queue, résolu en `"default"` par le connecteur, causant NO_ROUTE (AMQP 312) car aucune queue nommée `"default"` n'existait ; correction : passer le nom de queue unique explicitement ;
+- `partitionJobsByAfterCommit` corrigé de `private` à `protected` pour la compatibilité Laravel 13 ;
+- helpers `declareQueue()`/`deleteQueue()` ajoutés à `IntegrationTestCase` via l'API de management RabbitMQ ;
+- `test_later_publishes_and_consumes_after_delay` marqué skipped car le `DelayRouter` n'est pas encore branché dans le chemin de publication (uniquement dans `release()` du consumer) ;
+- `scripts/test-integration.sh` enrichi : build/install de ext-rabbit_rs, vérification du chargement, installe des dépendances composer ;
+- résultat : 8 tests Rust + 7 tests Laravel (1 skipped) PASS, quality gate `./scripts/check.sh` PASS.
+
 Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
 
 Le checkpoint de la Task 13 vérifie 100 tests Rust et 2 tests PHPT, ainsi que le formatage Rust, Clippy sans warning, le lint du stub PHP et la validation Composer stricte.
