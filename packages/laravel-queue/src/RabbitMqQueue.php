@@ -256,7 +256,16 @@ final class RabbitMqQueue extends Queue implements QueueContract
 
     public function pop($queue = null, $index = 0)
     {
-        $profile = $this->workerProfiles->resolve($queue, $this->defaultQueue);
+        if ($queue === null) {
+            $profile = $this->workerProfiles->profileForQueue($this->defaultQueue)
+                ?? $this->defaultQueue;
+        } else {
+            $queueName = $this->queueName($queue);
+            $profile = $this->workerProfiles->profileForQueue($queueName);
+            if ($profile === null) {
+                throw new InvalidArgumentException("No worker profile subscribes to queue '{$queueName}'");
+            }
+        }
         try {
             $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);
             $delivery = $consumer->next($this->blockForMilliseconds);

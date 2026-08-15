@@ -31,7 +31,7 @@ final class QueueWorkerTest extends IntegrationTestCase
 
         $connector = new RabbitMqConnector($factory, $normalized);
         $this->queue = $connector->connect([
-            'queue' => 'default',
+            'queue' => $this->queueName,
             'block_for' => 3,
         ]);
         $this->queue->setContainer($this->app);
@@ -51,7 +51,7 @@ final class QueueWorkerTest extends IntegrationTestCase
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->push('stdClass', ['message' => 'hello-integration'], $this->queueName);
+        $this->queue->push('stdClass', ['message' => 'hello-integration']);
 
         $job = $this->queue->pop();
         self::assertNotNull($job);
@@ -107,7 +107,7 @@ final class QueueWorkerTest extends IntegrationTestCase
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->push('stdClass', ['attempt' => 'release-test'], $this->queueName);
+        $this->queue->push('stdClass', ['attempt' => 'release-test']);
 
         $job = $this->queue->pop();
         self::assertNotNull($job);
@@ -129,8 +129,8 @@ final class QueueWorkerTest extends IntegrationTestCase
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->push('stdClass', ['size' => 'test'], $this->queueName);
-        $this->queue->push('stdClass', ['size' => 'test2'], $this->queueName);
+        $this->queue->push('stdClass', ['size' => 'test']);
+        $this->queue->push('stdClass', ['size' => 'test2']);
 
         self::assertGreaterThanOrEqual(2, $this->queue->size($this->queueName));
 

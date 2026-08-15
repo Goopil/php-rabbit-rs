@@ -25,7 +25,7 @@ final class MultiVhostWorkerTest extends TestCase
         $pool->pushDelivery('main', $this->delivery('orders_low', 4));
         $pool->pushDelivery('main', $this->delivery('billing', 6));
 
-        $jobs = [$queue->pop('main'), $queue->pop(), $queue->pop()];
+        $jobs = [$queue->pop(), $queue->pop(), $queue->pop()];
 
         self::assertSame([
             'billing_us' => '/billing-us',
@@ -77,7 +77,7 @@ final class MultiVhostWorkerTest extends TestCase
             $queue->pop('missing');
             self::fail('An unknown worker profile was accepted.');
         } catch (InvalidArgumentException $exception) {
-            self::assertStringContainsString('workers.missing', $exception->getMessage());
+            self::assertStringContainsString('missing', $exception->getMessage());
         }
 
         self::assertSame([], $pool->consumerProfiles);

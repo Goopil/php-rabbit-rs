@@ -41,6 +41,17 @@ final class WorkerProfileResolver
         return $profile;
     }
 
+    public function profileForQueue(string $queue): ?string
+    {
+        foreach ($this->profiles as $profile => $subscriptions) {
+            if (in_array($queue, $subscriptions, true)) {
+                return $profile;
+            }
+        }
+
+        return null;
+    }
+
     public function queue(string $profile, mixed $subscription): string
     {
         if (! is_string($subscription) || $subscription === '') {

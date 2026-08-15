@@ -30,7 +30,7 @@ final class DelayedJobTest extends IntegrationTestCase
 
         $connector = new RabbitMqConnector($factory, $normalized);
         $this->queue = $connector->connect([
-            'queue' => 'default',
+            'queue' => $this->queueName,
             'block_for' => 10,
         ]);
         $this->queue->setContainer($this->app);
@@ -62,7 +62,7 @@ final class DelayedJobTest extends IntegrationTestCase
     {
         $this->queue->clear($this->queueName);
 
-        $this->queue->later(0, 'stdClass', ['immediate' => 'job'], $this->queueName);
+        $this->queue->later(0, 'stdClass', ['immediate' => 'job']);
 
         $job = $this->queue->pop();
         self::assertNotNull($job);
