@@ -40,7 +40,7 @@ final class PublishBenchmark extends Command
 
             return Command::FAILURE;
         }
-        if ($mode !== 'cli' && PHP_SAPI !== 'cli') {
+        if ($mode !== 'cli' && PHP_SAPI === 'cli') {
             $output->writeln("<error>Mode '{$mode}' must be invoked via the corresponding runtime (artisan under cli, a web endpoint for fpm, or the Octane worker for octane).</error>");
 
             return Command::FAILURE;

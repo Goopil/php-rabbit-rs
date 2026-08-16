@@ -133,7 +133,8 @@ the expected metrics shape.
 | `BENCH_REDIS_HOST`       | 127.0.0.1     | Redis host               |
 | `BENCH_DB_CONNECTION`    | sqlite        | Database driver          |
 | `BENCH_DB_DATABASE`      | tmp/bench.sqlite | Database path         |
-| `BENCH_MODE`             | cli           | cli, fpm, octane         || `BENCH_SMOKE_COUNT`      | 50            | Messages in smoke mode   |
+| `BENCH_MODE`             | cli           | cli, fpm, octane         |
+| `BENCH_SMOKE_COUNT`      | 50            | Messages in smoke mode   |
 | `BENCH_FULL_COUNT`       | 5000          | Messages in full mode    |
 
 ## Integration with Milestone E
