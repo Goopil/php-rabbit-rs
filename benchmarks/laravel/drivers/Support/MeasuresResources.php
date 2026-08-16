@@ -7,6 +7,7 @@ namespace Drivers\Support;
 trait MeasuresResources
 {
     private array $latencies = [];
+    private float $startedAt = 0.0;
 
     protected function recordLatency(float $ms): void
     {
@@ -16,6 +17,16 @@ trait MeasuresResources
     protected function resetLatencies(): void
     {
         $this->latencies = [];
+    }
+
+    protected function startTimer(): void
+    {
+        $this->startedAt = microtime(true);
+    }
+
+    protected function elapsedSeconds(): float
+    {
+        return $this->startedAt > 0.0 ? max(microtime(true) - $this->startedAt, 0.0) : 0.0;
     }
 
     protected function percentile(float $percentile): float
@@ -48,7 +59,7 @@ trait MeasuresResources
         return 0;
     }
 
-    protected function cpuPercent(): float
+    protected function cpuSeconds(): float
     {
         $usage = getrusage();
         if ($usage === false) {
@@ -58,7 +69,7 @@ trait MeasuresResources
         $utime = ($usage['ru_utime.tv_sec'] ?? 0) + ($usage['ru_utime.tv_usec'] ?? 0) / 1_000_000;
         $stime = ($usage['ru_stime.tv_sec'] ?? 0) + ($usage['ru_stime.tv_usec'] ?? 0) / 1_000_000;
 
-        return ($utime + $stime) * 100;
+        return round($utime + $stime, 4);
     }
 
     /**
@@ -67,7 +78,7 @@ trait MeasuresResources
      *     p50: float,
      *     p95: float,
      *     p99: float,
-     *     cpu_percent: float,
+     *     cpu_seconds: float,
      *     rss_kb: int,
      *     connections: int,
      *     channels: int,
@@ -90,7 +101,7 @@ trait MeasuresResources
             'p50' => round($this->percentile(50), 3),
             'p95' => round($this->percentile(95), 3),
             'p99' => round($this->percentile(99), 3),
-            'cpu_percent' => round($this->cpuPercent(), 2),
+            'cpu_seconds' => $this->cpuSeconds(),
             'rss_kb' => $this->rssKb(),
             'connections' => $connections,
             'channels' => $channels,

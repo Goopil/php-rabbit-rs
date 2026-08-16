@@ -23,7 +23,8 @@ final class ConsumeBenchmark extends Command
             ->addOption('driver', 'd', InputOption::VALUE_REQUIRED, 'Driver name', 'rabbit-rs')
             ->addOption('count', 'c', InputOption::VALUE_REQUIRED, 'Message count', '100')
             ->addOption('payload-size', 'p', InputOption::VALUE_REQUIRED, 'Payload size in bytes', '1024')
-            ->addOption('batch-size', 'b', InputOption::VALUE_REQUIRED, 'Batch size', '1');
+            ->addOption('batch-size', 'b', InputOption::VALUE_REQUIRED, 'Batch size', '1')
+            ->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Execution mode: cli, fpm, octane', 'cli');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -32,6 +33,18 @@ final class ConsumeBenchmark extends Command
         $count = (int) $input->getOption('count');
         $payloadSize = (int) $input->getOption('payload-size');
         $batchSize = (int) $input->getOption('batch-size');
+        $mode = (string) $input->getOption('mode');
+
+        if (! in_array($mode, ['cli', 'fpm', 'octane'], true)) {
+            $output->writeln("<error>Unsupported mode: {$mode}. Allowed: cli, fpm, octane</error>");
+
+            return Command::FAILURE;
+        }
+        if ($mode !== 'cli' && PHP_SAPI !== 'cli') {
+            $output->writeln("<error>Mode '{$mode}' must be invoked via the corresponding runtime (artisan under cli, a web endpoint for fpm, or the Octane worker for octane).</error>");
+
+            return Command::FAILURE;
+        }
 
         $config = $this->loadConfig();
         $driver = $this->makeDriver($driverName, $config);
@@ -51,6 +64,7 @@ final class ConsumeBenchmark extends Command
         $metrics = $driver->metrics();
         $metrics['driver'] = $driverName;
         $metrics['action'] = 'consume';
+        $metrics['mode'] = $mode;
         $metrics['count'] = $count;
         $metrics['payload_size'] = $payloadSize;
         $metrics['batch_size'] = $batchSize;

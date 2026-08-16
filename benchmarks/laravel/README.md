@@ -55,7 +55,7 @@ Each run captures:
 
 - **throughput** (msg/s)
 - **p50 / p95 / p99** latency (ms)
-- **cpu_percent** — cumulative CPU time
+- **cpu_seconds** — cumulative CPU time
 - **rss_kb** — resident set size
 - **connections** — active connections
 - **channels** — AMQP channels (RabbitMQ drivers only)
@@ -67,8 +67,19 @@ is recorded alongside every result set.
 
 ## Modes
 
-The harness supports CLI, FPM, and Octane execution modes via the
-`BENCH_MODE` environment variable. The default is `cli`.
+The harness supports `cli`, `fpm`, and `octane` execution modes via the
+`--mode` option on the artisan commands, or the `BENCH_MODE` environment
+variable. The default is `cli`.
+
+- **cli** — run via `php artisan publish|consume` (default; the matrix script uses this).
+- **fpm** — invoke the benchmark through a web endpoint under PHP-FPM. The
+  artisan command rejects `--mode=fpm` unless it is actually running under a
+  web SAPI; for real FPM runs, wire a route to the command's logic.
+- **octane** — run under a Laravel Octane worker. Start the Octane server and
+  route the publish/consume logic through it; the command rejects
+  `--mode=octane` unless invoked under the corresponding runtime.
+
+Passing an unsupported mode aborts the run with a non-zero exit code.
 
 ## Running
 
@@ -97,10 +108,10 @@ unavailable brokers are skipped gracefully.
 
 ```bash
 # Publish
-php artisan publish --driver=database --count=100 --payload-size=1024 --batch-size=16
+php artisan publish --driver=database --count=100 --payload-size=1024 --batch-size=16 --mode=cli
 
 # Consume
-php artisan consume --driver=database --count=100 --payload-size=1024 --batch-size=16
+php artisan consume --driver=database --count=100 --payload-size=1024 --batch-size=16 --mode=cli
 ```
 
 ### Contract tests
@@ -122,8 +133,7 @@ the expected metrics shape.
 | `BENCH_REDIS_HOST`       | 127.0.0.1     | Redis host               |
 | `BENCH_DB_CONNECTION`    | sqlite        | Database driver          |
 | `BENCH_DB_DATABASE`      | tmp/bench.sqlite | Database path         |
-| `BENCH_MODE`             | cli           | cli, fpm, octane         |
-| `BENCH_SMOKE_COUNT`      | 50            | Messages in smoke mode   |
+| `BENCH_MODE`             | cli           | cli, fpm, octane         || `BENCH_SMOKE_COUNT`      | 50            | Messages in smoke mode   |
 | `BENCH_FULL_COUNT`       | 5000          | Messages in full mode    |
 
 ## Integration with Milestone E

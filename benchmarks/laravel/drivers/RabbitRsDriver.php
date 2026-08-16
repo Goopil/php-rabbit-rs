@@ -78,9 +78,9 @@ final class RabbitRsDriver implements BenchmarkDriver
         $this->consumed = 0;
         $this->seenIds = [];
         $this->duplicates = 0;
+        $this->startTimer();
 
         while ($this->consumed < $count) {
-            $start = microtime(true);
             try {
                 $delivery = $this->consumer->next(1000);
             } catch (NativeException) {
@@ -89,7 +89,6 @@ final class RabbitRsDriver implements BenchmarkDriver
             if ($delivery === null) {
                 break;
             }
-            $this->latencies[] = (microtime(true) - $start) * 1000;
             $this->processDelivery($delivery);
             $this->consumed++;
         }
@@ -142,7 +141,7 @@ final class RabbitRsDriver implements BenchmarkDriver
 
         return $this->buildMetrics(
             messageCount: $this->consumed,
-            elapsedSeconds: 1.0,
+            elapsedSeconds: $this->elapsedSeconds(),
             connections: (int) ($stats['connections'] ?? 0),
             channels: (int) ($stats['channels'] ?? 0),
             duplicates: $this->duplicates,

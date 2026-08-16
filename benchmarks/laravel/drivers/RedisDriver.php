@@ -60,9 +60,9 @@ final class RedisDriver implements BenchmarkDriver
         $this->consumed = 0;
         $this->seenIds = [];
         $this->duplicates = 0;
+        $this->startTimer();
 
         while ($this->consumed < $count) {
-            $start = microtime(true);
             try {
                 $message = $this->redis->lpop($queue);
             } catch (\Throwable) {
@@ -71,7 +71,14 @@ final class RedisDriver implements BenchmarkDriver
             if ($message === null) {
                 break;
             }
-            $this->latencies[] = (microtime(true) - $start) * 1000;
+            $payload = json_decode((string) $message, true);
+            $msgId = $payload['id'] ?? null;
+            if ($msgId !== null) {
+                if (isset($this->seenIds[$msgId])) {
+                    $this->duplicates++;
+                }
+                $this->seenIds[$msgId] = true;
+            }
             $this->consumed++;
         }
 
@@ -97,7 +104,7 @@ final class RedisDriver implements BenchmarkDriver
     {
         return $this->buildMetrics(
             messageCount: $this->consumed,
-            elapsedSeconds: 1.0,
+            elapsedSeconds: $this->elapsedSeconds(),
             connections: $this->redis !== null ? 1 : 0,
             channels: 0,
             duplicates: $this->duplicates,

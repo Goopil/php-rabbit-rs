@@ -11,6 +11,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 SMOKE=false
 FULL=false
 VERIFY_BUDGET=""
+MODE="${BENCH_MODE:-cli}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -22,13 +23,17 @@ while [[ $# -gt 0 ]]; do
             FULL=true
             shift
             ;;
+        --mode)
+            MODE="$2"
+            shift 2
+            ;;
         --verify-budget)
             VERIFY_BUDGET="$2"
             shift 2
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--smoke|--full] [--verify-budget <file>]"
+            echo "Usage: $0 [--smoke|--full] [--mode <cli|fpm|octane>] [--verify-budget <file>]"
             exit 1
             ;;
     esac
@@ -80,7 +85,8 @@ for driver in "${DRIVERS[@]}"; do
                 --driver="$driver" \
                 --count="$MSG_COUNT" \
                 --payload-size="$payload" \
-                --batch-size="$batch" > "$PUBLISH_FILE" 2>&1 || true
+                --batch-size="$batch" \
+                --mode="$MODE" > "$PUBLISH_FILE" 2>&1 || true
 
             if [[ ! -s "$PUBLISH_FILE" ]]; then
                 echo '{}' > "$PUBLISH_FILE"
@@ -90,7 +96,8 @@ for driver in "${DRIVERS[@]}"; do
                 --driver="$driver" \
                 --count="$MSG_COUNT" \
                 --payload-size="$payload" \
-                --batch-size="$batch" > "$CONSUME_FILE" 2>&1 || true
+                --batch-size="$batch" \
+                --mode="$MODE" > "$CONSUME_FILE" 2>&1 || true
 
             if [[ ! -s "$CONSUME_FILE" ]]; then
                 echo '{}' > "$CONSUME_FILE"

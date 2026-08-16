@@ -61,6 +61,7 @@ final class PhpAmqplibDriver implements BenchmarkDriver
                 [
                     'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
                     'message_id' => $this->uuid(),
+                    'timestamp' => (int) (microtime(true) * 1000),
                 ],
             );
             try {
@@ -79,10 +80,12 @@ final class PhpAmqplibDriver implements BenchmarkDriver
         $this->consumed = 0;
         $this->seenIds = [];
         $this->duplicates = 0;
+        $this->startTimer();
 
         $callback = function ($message): void {
-            $start = microtime(true);
-            $this->latencies[] = (microtime(true) - $start) * 1000;
+            $recv = microtime(true);
+            $enqueued = $message->has('timestamp') ? (float) $message->get('timestamp') / 1000.0 : $recv;
+            $this->latencies[] = max(0.0, ($recv - $enqueued) * 1000);
             $msgId = $message->get('message_id');
             if ($msgId !== null) {
                 if (isset($this->seenIds[$msgId])) {
@@ -125,7 +128,7 @@ final class PhpAmqplibDriver implements BenchmarkDriver
     {
         return $this->buildMetrics(
             messageCount: $this->consumed,
-            elapsedSeconds: 1.0,
+            elapsedSeconds: $this->elapsedSeconds(),
             connections: $this->connection !== null ? 1 : 0,
             channels: $this->channel !== null ? 1 : 0,
             duplicates: $this->duplicates,

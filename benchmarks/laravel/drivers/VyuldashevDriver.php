@@ -30,10 +30,13 @@ final class VyuldashevDriver implements BenchmarkDriver
     {
         try {
             $container = Container::getInstance() ?? new Container();
+            if (! $container->bound('config')) {
+                $container->instance('config', new \Illuminate\Config\Repository());
+            }
             $events = new \Illuminate\Events\Dispatcher($container);
             $queueManager = new QueueManager($events);
-            $queueManager->addConnector('rabbitmq', function () {
-                return new RabbitMQConnector();
+            $queueManager->addConnector('rabbitmq', function () use ($events) {
+                return new RabbitMQConnector($events);
             });
 
             $dsn = parse_url($this->config['connection'] ?? 'amqp://guest:guest@127.0.0.1:5672/');
@@ -41,11 +44,15 @@ final class VyuldashevDriver implements BenchmarkDriver
                 'driver' => 'rabbitmq',
                 'queue' => $this->config['queue'] ?? 'bench.vyuldashev',
                 'connection' => 'default',
-                'host' => $dsn['host'] ?? '127.0.0.1',
-                'port' => $dsn['port'] ?? 5672,
-                'user' => $dsn['user'] ?? 'guest',
-                'password' => $dsn['pass'] ?? 'guest',
-                'vhost' => $dsn['path'] ? ltrim($dsn['path'], '/') : '/',
+                'hosts' => [
+                    [
+                        'host' => $dsn['host'] ?? '127.0.0.1',
+                        'port' => $dsn['port'] ?? 5672,
+                        'vhost' => isset($dsn['path']) ? ltrim($dsn['path'], '/') : '/',
+                        'user' => $dsn['user'] ?? 'guest',
+                        'password' => $dsn['pass'] ?? 'guest',
+                    ],
+                ],
                 'options' => [
                     'exchange' => 'bench.vyuldashev',
                     'exchange_type' => 'direct',
@@ -58,6 +65,9 @@ final class VyuldashevDriver implements BenchmarkDriver
                     'queue_arguments' => [],
                 ],
             ];
+
+            $container['config']->set('queue.connections.rabbitmq', $config);
+            $container['config']->set('queue.default', 'rabbitmq');
 
             $this->queue = $queueManager->connection('rabbitmq');
             $this->queue->setContainer($container);
@@ -89,9 +99,9 @@ final class VyuldashevDriver implements BenchmarkDriver
         $this->consumed = 0;
         $this->seenIds = [];
         $this->duplicates = 0;
+        $this->startTimer();
 
         while ($this->consumed < $count) {
-            $start = microtime(true);
             try {
                 $job = $this->queue->pop($queue);
             } catch (\Throwable) {
@@ -100,7 +110,6 @@ final class VyuldashevDriver implements BenchmarkDriver
             if ($job === null) {
                 break;
             }
-            $this->latencies[] = (microtime(true) - $start) * 1000;
             $payload = json_decode($job->getRawBody(), true);
             $msgId = $payload['id'] ?? null;
             if ($msgId !== null) {
@@ -132,7 +141,7 @@ final class VyuldashevDriver implements BenchmarkDriver
     {
         return $this->buildMetrics(
             messageCount: $this->consumed,
-            elapsedSeconds: 1.0,
+            elapsedSeconds: $this->elapsedSeconds(),
             connections: $this->queue !== null ? 1 : 0,
             channels: $this->queue !== null ? 1 : 0,
             duplicates: $this->duplicates,

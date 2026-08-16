@@ -14,6 +14,8 @@ final class DatabaseDriver implements BenchmarkDriver
     private ?PDO $pdo = null;
     private array $config;
     private int $consumed = 0;
+    private array $seenIds = [];
+    private int $duplicates = 0;
     private int $losses = 0;
     private string $table = 'bench_jobs';
 
@@ -74,10 +76,12 @@ final class DatabaseDriver implements BenchmarkDriver
             return;
         }
         $this->consumed = 0;
+        $this->seenIds = [];
+        $this->duplicates = 0;
         $now = time();
+        $this->startTimer();
 
         while ($this->consumed < $count) {
-            $start = microtime(true);
             try {
                 $stmt = $this->pdo->prepare("SELECT id, payload FROM {$this->table} WHERE available_at <= ? ORDER BY id LIMIT 1");
                 $stmt->execute([$now]);
@@ -88,7 +92,14 @@ final class DatabaseDriver implements BenchmarkDriver
             if ($row === false) {
                 break;
             }
-            $this->latencies[] = (microtime(true) - $start) * 1000;
+            $payload = json_decode((string) $row['payload'], true);
+            $msgId = $payload['id'] ?? null;
+            if ($msgId !== null) {
+                if (isset($this->seenIds[$msgId])) {
+                    $this->duplicates++;
+                }
+                $this->seenIds[$msgId] = true;
+            }
             try {
                 $this->pdo->prepare("DELETE FROM {$this->table} WHERE id = ?")->execute([$row['id']]);
             } catch (\Throwable) {
@@ -108,7 +119,9 @@ final class DatabaseDriver implements BenchmarkDriver
             }
         }
         $this->consumed = 0;
+        $this->duplicates = 0;
         $this->losses = 0;
+        $this->seenIds = [];
         $this->resetLatencies();
     }
 
@@ -116,10 +129,10 @@ final class DatabaseDriver implements BenchmarkDriver
     {
         return $this->buildMetrics(
             messageCount: $this->consumed,
-            elapsedSeconds: 1.0,
+            elapsedSeconds: $this->elapsedSeconds(),
             connections: $this->pdo !== null ? 1 : 0,
             channels: 0,
-            duplicates: 0,
+            duplicates: $this->duplicates,
             losses: $this->losses,
         );
     }

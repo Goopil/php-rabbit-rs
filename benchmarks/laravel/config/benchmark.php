@@ -52,7 +52,6 @@ return [
         'full' => (int) env('BENCH_FULL_COUNT', 5000),
     ],
 
-    'modes' => ['cli', 'fpm', 'octane'],
     'mode' => env('BENCH_MODE', 'cli'),
 
     'rabbit-rs-config' => [

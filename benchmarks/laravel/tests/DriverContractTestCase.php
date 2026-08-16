@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests;
 
 use Drivers\BenchmarkDriver;
+use Drivers\DatabaseDriver;
 use PHPUnit\Framework\TestCase;
 
 abstract class DriverContractTestCase extends TestCase
@@ -59,7 +60,7 @@ abstract class DriverContractTestCase extends TestCase
             $this->assertIsArray($metrics, "Driver '{$name}' metrics must be an array");
             $requiredKeys = [
                 'throughput', 'p50', 'p95', 'p99',
-                'cpu_percent', 'rss_kb', 'connections', 'channels',
+                'cpu_seconds', 'rss_kb', 'connections', 'channels',
                 'duplicates', 'losses',
             ];
             foreach ($requiredKeys as $key) {
@@ -70,5 +71,37 @@ abstract class DriverContractTestCase extends TestCase
                 );
             }
         }
+    }
+
+    public function testDatabaseDriverEndToEndRoundTrip(): void
+    {
+        $driver = new DatabaseDriver([
+            'connection' => 'sqlite',
+            'database' => ':memory:',
+        ]);
+
+        $driver->setup();
+        $driver->reset();
+
+        $messages = [];
+        for ($i = 0; $i < 5; $i++) {
+            $messages[] = json_encode([
+                'id' => 'msg-' . $i,
+                'seq' => $i,
+                'payload' => 'x',
+            ]);
+        }
+        $driver->publish($messages);
+        $driver->consume(5);
+
+        $metrics = $driver->metrics();
+        $this->assertSame(0, $metrics['duplicates'], 'database driver should report no duplicates');
+        $this->assertSame(0, $metrics['losses'], 'database driver should report zero losses');
+        $this->assertGreaterThan(0, $metrics['throughput'], 'throughput should be positive after consuming messages');
+
+        $driver->reset();
+        $metricsAfterReset = $driver->metrics();
+        $this->assertSame(0, $metricsAfterReset['losses'], 'reset should clear losses');
+        $this->assertSame(0, $metricsAfterReset['duplicates'], 'reset should clear duplicates');
     }
 }

@@ -20,7 +20,7 @@ interface BenchmarkDriver
      *     p50: float,
      *     p95: float,
      *     p99: float,
-     *     cpu_percent: float,
+     *     cpu_seconds: float,
      *     rss_kb: int,
      *     connections: int,
      *     channels: int,
