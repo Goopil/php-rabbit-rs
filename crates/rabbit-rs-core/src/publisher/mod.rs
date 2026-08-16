@@ -107,6 +107,8 @@ pub struct PublisherConfig {
     pub flush_interval: Duration,
     pub buffer_capacity: usize,
     pub confirm_timeout: Duration,
+    pub confirms: bool,
+    pub mandatory: bool,
 }
 
 impl PublisherConfig {
@@ -124,6 +126,29 @@ impl PublisherConfig {
             flush_interval,
             buffer_capacity,
             confirm_timeout,
+            confirms: true,
+            mandatory: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_flags(
+        max_messages: usize,
+        max_bytes: usize,
+        flush_interval: Duration,
+        buffer_capacity: usize,
+        confirm_timeout: Duration,
+        confirms: bool,
+        mandatory: bool,
+    ) -> Self {
+        Self {
+            max_messages,
+            max_bytes,
+            flush_interval,
+            buffer_capacity,
+            confirm_timeout,
+            confirms,
+            mandatory,
         }
     }
 }

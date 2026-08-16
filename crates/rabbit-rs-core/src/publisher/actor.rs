@@ -370,7 +370,8 @@ async fn run_actor(
     delay_strategy: Option<DelayStrategy>,
 ) {
     let mut state = ActorState::new(initial_channel, config, metrics, delay_strategy);
-    if let Some(channel) = &state.channel
+    if state.config.confirms
+        && let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
     {
         let error = transport_publish_error(&error);
@@ -479,10 +480,12 @@ async fn handle_connection_event(
                     "publisher recovery generation is stale",
                 ));
             }
-            channel
-                .enable_confirms()
-                .await
-                .map_err(|error| transport_publish_error(&error))?;
+            if state.config.confirms {
+                channel
+                    .enable_confirms()
+                    .await
+                    .map_err(|error| transport_publish_error(&error))?;
+            }
             state.generation = generation;
             state.channel = Some(channel);
             state.phase = Phase::Ready;
@@ -550,7 +553,11 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             .request
             .deadline
             .min(time::Instant::now() + state.config.confirm_timeout);
-        let request = into_transport_request(&retained.request, state.delay_strategy.as_ref());
+        let request = into_transport_request(
+            &retained.request,
+            state.delay_strategy.as_ref(),
+            state.config.mandatory,
+        );
 
         match channel.publish(request).await {
             Ok(receipt) => {
@@ -583,6 +590,7 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
 fn into_transport_request(
     request: &PublishRequest,
     delay_strategy: Option<&DelayStrategy>,
+    mandatory: bool,
 ) -> TransportRequest {
     let delay_ms = request.properties.delay_ms.unwrap_or(0);
 
@@ -607,7 +615,7 @@ fn into_transport_request(
             exchange: route.exchange,
             routing_key: route.routing_key,
             payload: request.payload.clone(),
-            mandatory: true,
+            mandatory,
             properties,
         };
     }
@@ -616,7 +624,7 @@ fn into_transport_request(
         exchange: request.destination.exchange.clone(),
         routing_key: request.destination.routing_key.clone(),
         payload: request.payload.clone(),
-        mandatory: true,
+        mandatory,
         properties: TransportProperties {
             content_type: request.properties.content_type.clone(),
             correlation_id: request.properties.correlation_id.clone(),

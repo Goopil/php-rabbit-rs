@@ -17,7 +17,7 @@ final class RabbitMqConnector implements ConnectorInterface
      * @param array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
-     *     publisher: array<string, bool>,
+     *     publisher: array{confirms: bool, mandatory: bool, confirm_timeout: int},
      *     topology: array<string, mixed>
      * } $normalizedConfig
      */
@@ -58,6 +58,7 @@ final class RabbitMqConnector implements ConnectorInterface
             $dispatchAfterCommit,
             workerProfiles: $this->workerProfiles,
             blockForMilliseconds: ($blockFor ?? 0) * 1000,
+            publisherConfig: $this->normalizedConfig['publisher'],
         );
     }
 }

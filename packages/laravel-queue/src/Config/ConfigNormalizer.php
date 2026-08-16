@@ -15,7 +15,7 @@ final class ConfigNormalizer
      * @return array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
-     *     publisher: array<string, bool>,
+     *     publisher: array{confirms: bool, mandatory: bool, confirm_timeout: int},
      *     topology: array<string, mixed>
      * }
      */
@@ -25,6 +25,7 @@ final class ConfigNormalizer
         $brokers = self::brokers($config['brokers'] ?? null);
         $brokerNames = array_fill_keys(array_column($brokers, 'name'), true);
         $topology = self::topology($config['topology'] ?? []);
+        $publisher = self::publisher($config['publisher'] ?? []);
 
         return [
             'native' => [
@@ -34,9 +35,10 @@ final class ConfigNormalizer
                 'delay' => self::delay($config['delay'] ?? []),
                 'dead_letter' => $topology['dead_letter'],
                 'delivery_limit' => $topology['queue']['delivery_limit'],
+                'publisher' => $publisher,
             ],
             'routes' => self::routes($config['routes'] ?? [], $brokerNames),
-            'publisher' => self::publisher($config['publisher'] ?? []),
+            'publisher' => $publisher,
             'topology' => $topology,
         ];
     }
@@ -346,7 +348,7 @@ final class ConfigNormalizer
     }
 
     /**
-     * @return array{confirms: bool, mandatory: bool}
+     * @return array{confirms: bool, mandatory: bool, confirm_timeout: int}
      */
     private static function publisher(mixed $publisher): array
     {
@@ -357,6 +359,10 @@ final class ConfigNormalizer
         return [
             'confirms' => self::boolean($publisher['confirms'] ?? true, 'publisher.confirms'),
             'mandatory' => self::boolean($publisher['mandatory'] ?? true, 'publisher.mandatory'),
+            'confirm_timeout' => self::positiveInt(
+                $publisher['confirm_timeout'] ?? 30000,
+                'publisher.confirm_timeout',
+            ),
         ];
     }
 

@@ -59,6 +59,7 @@ return [
     'publisher' => [
         'confirms' => true,
         'mandatory' => true,
+        'confirm_timeout' => (int) env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),
     ],
 
     'delay' => [

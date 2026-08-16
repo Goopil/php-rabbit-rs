@@ -4,8 +4,8 @@ use bytes::Bytes;
 use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, SchedulerConfig, SubscriptionConfig,
-        TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
+        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
@@ -30,6 +30,7 @@ fn config() -> rabbit_rs_core::config::ValidatedConfig {
         delay: rabbit_rs_core::config::DelayConfig::default(),
         dead_letter: None,
         delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
     }
     .validate()
     .expect("valid config")
@@ -62,6 +63,7 @@ fn consumer_config() -> rabbit_rs_core::config::ValidatedConfig {
         delay: rabbit_rs_core::config::DelayConfig::default(),
         dead_letter: None,
         delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
     }
     .validate()
     .expect("valid consumer config")
@@ -85,6 +87,7 @@ fn two_broker_config() -> rabbit_rs_core::config::ValidatedConfig {
         delay: rabbit_rs_core::config::DelayConfig::default(),
         dead_letter: None,
         delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
     }
     .validate()
     .expect("valid two-broker config")

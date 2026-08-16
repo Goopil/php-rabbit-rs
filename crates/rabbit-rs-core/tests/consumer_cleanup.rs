@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::{BrokerConfig, Config, Credentials, Endpoint, TlsConfig, TopologyMode},
+    config::{
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
+        TopologyMode,
+    },
     consumer::{ConsumerErrorKind, ConsumerSet, Subscription, SubscriptionPolicy},
     pool::ConnectionKey,
     transport::{
@@ -30,6 +33,7 @@ fn connection_key(name: &str, vhost: &str) -> ConnectionKey {
         delay: rabbit_rs_core::config::DelayConfig::default(),
         dead_letter: None,
         delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
     }
     .validate()
     .expect("valid config");

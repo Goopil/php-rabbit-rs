@@ -2,7 +2,10 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::{BrokerConfig, Config, Credentials, Endpoint, TlsConfig, TopologyMode},
+    config::{
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
+        TopologyMode,
+    },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
         Subscription,
@@ -132,6 +135,7 @@ fn connection_key() -> ConnectionKey {
             delay: rabbit_rs_core::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
         }
         .validate()
         .expect("valid config"),

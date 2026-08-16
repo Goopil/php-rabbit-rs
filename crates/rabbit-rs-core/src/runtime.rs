@@ -357,6 +357,7 @@ mod tests {
             delay: crate::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
+            publisher: crate::config::PublisherConfigSection::default(),
         }
         .validate()
         .expect("valid client config")

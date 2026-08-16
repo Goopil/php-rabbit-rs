@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, SchedulerConfig, SubscriptionConfig,
-        TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
+        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     pool::recovery_coordinator::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
@@ -51,6 +51,7 @@ fn config() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
             delay: rabbit_rs_core::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
         }
         .validate()
         .expect("valid config"),

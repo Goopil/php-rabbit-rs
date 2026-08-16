@@ -25,19 +25,25 @@ final class RabbitMqQueue extends Queue implements QueueContract
 {
     /** @var array<string, Consumer> */
     private array $consumers = [];
+
+    private MessageMapper $messages;
+
     /**
      * @param array<string, array<string, mixed>> $routes
+     * @param array{confirm_timeout?: int} $publisherConfig
      */
     public function __construct(
         private readonly Pool $pool,
         private readonly array $routes,
         private readonly string $defaultQueue,
         bool $dispatchAfterCommit = false,
-        private readonly MessageMapper $messages = new MessageMapper(),
+        ?MessageMapper $messages = null,
         private readonly WorkerProfileResolver $workerProfiles = new WorkerProfileResolver([]),
         private readonly int $blockForMilliseconds = 0,
+        array $publisherConfig = [],
     ) {
         $this->dispatchAfterCommit = $dispatchAfterCommit;
+        $this->messages = $messages ?? new MessageMapper($publisherConfig);
         $this->registerDefaultCallbacks();
     }
 

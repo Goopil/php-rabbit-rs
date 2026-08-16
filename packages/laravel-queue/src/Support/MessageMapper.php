@@ -10,6 +10,13 @@ use InvalidArgumentException;
 final class MessageMapper
 {
     /**
+     * @param array{confirm_timeout?: int} $publisherConfig
+     */
+    public function __construct(private readonly array $publisherConfig = [])
+    {
+    }
+
+    /**
      * @param array{broker: string, exchange: string, routing_key: string} $route
      * @param array<string, mixed> $options
      * @return array<string, mixed>
@@ -29,10 +36,16 @@ final class MessageMapper
             'message_id' => $this->messageId($payload, $options['message_id'] ?? null),
         ];
 
-        foreach (['content_type', 'correlation_id', 'headers', 'timeout_ms'] as $option) {
+        foreach (['content_type', 'correlation_id', 'headers'] as $option) {
             if (array_key_exists($option, $options)) {
                 $message[$option] = $options[$option];
             }
+        }
+
+        if (array_key_exists('timeout_ms', $options)) {
+            $message['timeout_ms'] = $options['timeout_ms'];
+        } elseif (isset($this->publisherConfig['confirm_timeout'])) {
+            $message['timeout_ms'] = $this->publisherConfig['confirm_timeout'];
         }
 
         if ($delayMilliseconds !== null) {

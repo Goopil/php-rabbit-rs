@@ -390,6 +390,38 @@ pub struct DeadLetterConfig {
     pub routing_key: Option<String>,
 }
 
+/// Publisher configuration section controlling confirms, mandatory routing,
+/// and confirmation timeout.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct PublisherConfigSection {
+    pub confirms: bool,
+    pub mandatory: bool,
+    #[serde(deserialize_with = "deserialize_duration_millis")]
+    pub confirm_timeout: Duration,
+}
+
+impl PublisherConfigSection {
+    #[must_use]
+    pub const fn new(confirms: bool, mandatory: bool, confirm_timeout: Duration) -> Self {
+        Self {
+            confirms,
+            mandatory,
+            confirm_timeout,
+        }
+    }
+}
+
+impl Default for PublisherConfigSection {
+    fn default() -> Self {
+        Self {
+            confirms: true,
+            mandatory: true,
+            confirm_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
 /// Unvalidated user configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -403,6 +435,8 @@ pub struct Config {
     pub dead_letter: Option<DeadLetterConfig>,
     #[serde(default)]
     pub delivery_limit: Option<u32>,
+    #[serde(default)]
+    pub publisher: PublisherConfigSection,
 }
 
 impl Config {
@@ -508,6 +542,7 @@ impl Config {
             delay: self.delay,
             dead_letter: self.dead_letter,
             delivery_limit: self.delivery_limit,
+            publisher: self.publisher,
             fingerprint,
         })
     }
@@ -554,6 +589,7 @@ pub struct ValidatedConfig {
     delay: DelayConfig,
     dead_letter: Option<DeadLetterConfig>,
     delivery_limit: Option<u32>,
+    publisher: PublisherConfigSection,
     fingerprint: ConfigFingerprint,
 }
 
@@ -601,6 +637,11 @@ impl ValidatedConfig {
     }
 
     #[must_use]
+    pub const fn publisher(&self) -> PublisherConfigSection {
+        self.publisher
+    }
+
+    #[must_use]
     pub const fn fingerprint(&self) -> &ConfigFingerprint {
         &self.fingerprint
     }
@@ -620,54 +661,7 @@ impl ConfigFingerprint {
 
         hash_value(&mut digest, topology_mode_name(config.topology_mode));
         for broker in &config.brokers {
-            hash_value(&mut digest, &broker.name);
-            hash_value(&mut digest, &broker.vhost);
-            hash_value(&mut digest, &broker.credentials.username);
-            hash_value(&mut digest, broker.credentials.password.expose_secret());
-            hash_value(
-                &mut digest,
-                if broker.tls.enabled { "tls" } else { "plain" },
-            );
-            hash_value(
-                &mut digest,
-                broker.tls.server_name.as_deref().unwrap_or_default(),
-            );
-            hash_value(
-                &mut digest,
-                broker
-                    .tls
-                    .ca_cert
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .as_deref()
-                    .unwrap_or_default(),
-            );
-            hash_value(
-                &mut digest,
-                broker
-                    .tls
-                    .client_cert
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .as_deref()
-                    .unwrap_or_default(),
-            );
-            hash_value(
-                &mut digest,
-                broker
-                    .tls
-                    .client_key
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .as_deref()
-                    .unwrap_or_default(),
-            );
-            hash_value(&mut digest, tls_verify_name(broker.tls.verify));
-            digest.update(broker.heartbeat.as_secs().to_be_bytes());
-            for endpoint in &broker.hosts {
-                hash_value(&mut digest, &endpoint.host);
-                digest.update(endpoint.port.to_be_bytes());
-            }
+            hash_broker(&mut digest, broker);
         }
         for worker in &config.workers {
             hash_value(&mut digest, &worker.name);
@@ -706,8 +700,79 @@ impl ConfigFingerprint {
             hash_value(&mut digest, "no_delivery_limit");
         }
 
+        hash_publisher(&mut digest, &config.publisher);
+
         Self(digest.finalize().into())
     }
+}
+
+fn hash_broker(digest: &mut Sha256, broker: &BrokerConfig) {
+    hash_value(digest, &broker.name);
+    hash_value(digest, &broker.vhost);
+    hash_value(digest, &broker.credentials.username);
+    hash_value(digest, broker.credentials.password.expose_secret());
+    hash_value(digest, if broker.tls.enabled { "tls" } else { "plain" });
+    hash_value(
+        digest,
+        broker.tls.server_name.as_deref().unwrap_or_default(),
+    );
+    hash_value(
+        digest,
+        broker
+            .tls
+            .ca_cert
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    hash_value(
+        digest,
+        broker
+            .tls
+            .client_cert
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    hash_value(
+        digest,
+        broker
+            .tls
+            .client_key
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    hash_value(digest, tls_verify_name(broker.tls.verify));
+    digest.update(broker.heartbeat.as_secs().to_be_bytes());
+    for endpoint in &broker.hosts {
+        hash_value(digest, &endpoint.host);
+        digest.update(endpoint.port.to_be_bytes());
+    }
+}
+
+fn hash_publisher(digest: &mut Sha256, publisher: &PublisherConfigSection) {
+    hash_value(digest, "publisher");
+    hash_value(
+        digest,
+        if publisher.confirms {
+            "confirms"
+        } else {
+            "no_confirms"
+        },
+    );
+    hash_value(
+        digest,
+        if publisher.mandatory {
+            "mandatory"
+        } else {
+            "no_mandatory"
+        },
+    );
+    digest.update(publisher.confirm_timeout.as_millis().to_be_bytes());
 }
 
 fn hash_value(digest: &mut Sha256, value: &str) {
@@ -751,6 +816,13 @@ where
     u64::deserialize(deserializer).map(Duration::from_secs)
 }
 
+fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    u64::deserialize(deserializer).map(Duration::from_millis)
+}
+
 fn deserialize_duration_seconds_vec<'de, D>(deserializer: D) -> Result<Vec<Duration>, D::Error>
 where
     D: Deserializer<'de>,
@@ -770,8 +842,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, SchedulerConfig,
-        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
+        SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     };
 
     fn broker(hosts: Vec<Endpoint>) -> BrokerConfig {
@@ -813,6 +885,7 @@ mod tests {
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
         }
     }
 
@@ -1065,5 +1138,108 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions");
+    }
+
+    #[test]
+    fn publisher_section_defaults_to_safe_values() {
+        let validated = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+
+        let publisher = validated.publisher();
+        assert!(publisher.confirms);
+        assert!(publisher.mandatory);
+        assert_eq!(publisher.confirm_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn deserializes_publisher_section_from_milliseconds() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external",
+            "publisher": {
+                "confirms": false,
+                "mandatory": false,
+                "confirm_timeout": 5000
+            }
+        }))
+        .expect("publisher section deserializes");
+
+        let validated = candidate.validate().expect("valid config");
+        let publisher = validated.publisher();
+        assert!(!publisher.confirms);
+        assert!(!publisher.mandatory);
+        assert_eq!(publisher.confirm_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn publisher_section_omitted_uses_defaults() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("config without publisher section");
+
+        let validated = candidate.validate().expect("valid config");
+        let publisher = validated.publisher();
+        assert!(publisher.confirms);
+        assert!(publisher.mandatory);
+        assert_eq!(publisher.confirm_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn publisher_section_is_part_of_the_fingerprint() {
+        let base = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+        let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        changed.publisher.confirms = false;
+        let changed = changed.validate().unwrap();
+
+        assert_ne!(base.fingerprint(), changed.fingerprint());
     }
 }

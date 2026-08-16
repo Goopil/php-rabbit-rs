@@ -22,6 +22,7 @@ final class ConfigNormalizerTest extends TestCase
         self::assertSame('declare', $publishedConfig['topology_mode']);
         self::assertTrue($publishedConfig['publisher']['confirms']);
         self::assertTrue($publishedConfig['publisher']['mandatory']);
+        self::assertSame(30000, $publishedConfig['publisher']['confirm_timeout']);
         self::assertSame('quorum', $publishedConfig['topology']['queue']['type']);
         self::assertTrue($publishedConfig['topology']['queue']['durable']);
         self::assertSame(20, $publishedConfig['topology']['queue']['delivery_limit']);
@@ -96,11 +97,60 @@ final class ConfigNormalizerTest extends TestCase
             ],
             'dead_letter' => null,
             'delivery_limit' => 20,
+            'publisher' => [
+                'confirms' => true,
+                'mandatory' => true,
+                'confirm_timeout' => 30000,
+            ],
         ], $normalized['native']);
         self::assertSame('default', $normalized['routes']['orders']['broker']);
         self::assertTrue($normalized['publisher']['confirms']);
         self::assertTrue($normalized['publisher']['mandatory']);
+        self::assertSame(30000, $normalized['publisher']['confirm_timeout']);
         self::assertNull($normalized['topology']['dead_letter']);
+    }
+
+    public function testPublisherSectionIsPropagatedToNativeConfig(): void
+    {
+        $config = $this->validConfig();
+        $config['publisher'] = [
+            'confirms' => false,
+            'mandatory' => false,
+            'confirm_timeout' => 5000,
+        ];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertSame([
+            'confirms' => false,
+            'mandatory' => false,
+            'confirm_timeout' => 5000,
+        ], $normalized['native']['publisher']);
+        self::assertFalse($normalized['publisher']['confirms']);
+        self::assertFalse($normalized['publisher']['mandatory']);
+        self::assertSame(5000, $normalized['publisher']['confirm_timeout']);
+    }
+
+    public function testPublisherConfirmTimeoutDefaultsToThirtySeconds(): void
+    {
+        $config = $this->validConfig();
+        unset($config['publisher']['confirm_timeout']);
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertSame(30000, $normalized['native']['publisher']['confirm_timeout']);
+        self::assertSame(30000, $normalized['publisher']['confirm_timeout']);
+    }
+
+    public function testRejectsNonPositivePublisherConfirmTimeout(): void
+    {
+        $config = $this->validConfig();
+        $config['publisher']['confirm_timeout'] = 0;
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('publisher.confirm_timeout');
+
+        ConfigNormalizer::normalize($config);
     }
 
     public function testNormalizesBracketedIpv6Endpoint(): void

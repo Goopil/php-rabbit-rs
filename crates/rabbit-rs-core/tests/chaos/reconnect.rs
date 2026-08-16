@@ -26,8 +26,8 @@ use bytes::Bytes;
 use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, SchedulerConfig, SubscriptionConfig,
-        TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
+        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     topology::{QueueDefinition, TopologyDefinition, TopologyPlan, TopologyReconciler},
@@ -92,6 +92,7 @@ fn config_for_queue(
             delay: rabbit_rs_core::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
         }
         .validate()
         .expect("valid config"),

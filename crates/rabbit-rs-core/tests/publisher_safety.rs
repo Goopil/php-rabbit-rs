@@ -281,3 +281,186 @@ fn republication_preserves_the_message_id() {
     assert_eq!(retry.properties.message_id, "stable-id");
     assert_eq!(retry.payload, original.payload);
 }
+
+#[tokio::test(start_paused = true)]
+async fn skips_enable_confirms_when_configured_off() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_flags(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        false,
+        true,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    assert!(
+        !operations
+            .iter()
+            .any(|op| matches!(op, TransportOperation::EnableConfirms)),
+        "enable_confirms must not be called when confirms=false"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn calls_enable_confirms_when_configured_on() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_flags(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        true,
+        true,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    assert!(
+        operations
+            .iter()
+            .any(|op| matches!(op, TransportOperation::EnableConfirms)),
+        "enable_confirms must be called when confirms=true"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn publishes_with_mandatory_false_when_configured_off() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_flags(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        true,
+        false,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    let publish = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::Publish(_)))
+        .expect("a publish operation");
+    let TransportOperation::Publish(req) = publish else {
+        panic!("expected a Publish operation");
+    };
+    assert!(
+        !req.mandatory,
+        "publish must have mandatory=false when config.mandatory=false"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn publishes_with_mandatory_true_when_configured_on() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_flags(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        true,
+        true,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    let publish = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::Publish(_)))
+        .expect("a publish operation");
+    let TransportOperation::Publish(req) = publish else {
+        panic!("expected a Publish operation");
+    };
+    assert!(
+        req.mandatory,
+        "publish must have mandatory=true when config.mandatory=true"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn confirm_timeout_from_config_is_applied() {
+    let transport = MockTransport::default();
+    transport.push_pending_confirmation();
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_flags(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        true,
+        true,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("slow", b"job")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+
+    tokio::time::advance(Duration::from_secs(5)).await;
+
+    assert_eq!(
+        waiter.wait().await.expect_err("timeout").kind(),
+        PublishErrorKind::Timeout
+    );
+}

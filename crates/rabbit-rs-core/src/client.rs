@@ -62,7 +62,8 @@ impl ClientPool {
     /// Creates a pool with an injectable transport.
     #[must_use]
     pub fn new(config: Arc<ValidatedConfig>, transport: Arc<dyn Transport>) -> Self {
-        Self::with_publisher_config(config, transport, publisher_config())
+        let pc = publisher_config(&config);
+        Self::with_publisher_config(config, transport, pc)
     }
 
     /// Creates a pool with an injectable transport and publisher limits for extension tests.
@@ -615,13 +616,16 @@ fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
         .clone()
 }
 
-fn publisher_config() -> PublisherConfig {
-    PublisherConfig::new(
+fn publisher_config(config: &ValidatedConfig) -> PublisherConfig {
+    let publisher = config.publisher();
+    PublisherConfig::with_flags(
         DEFAULT_MAX_MESSAGES,
         DEFAULT_MAX_BYTES,
         Duration::from_millis(1),
         DEFAULT_BUFFER_CAPACITY,
-        Duration::from_secs(30),
+        publisher.confirm_timeout,
+        publisher.confirms,
+        publisher.mandatory,
     )
 }
 

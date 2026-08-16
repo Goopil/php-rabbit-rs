@@ -3,8 +3,8 @@ use std::time::Duration;
 use rabbit_rs_core::{
     config::{
         BrokerConfig, Config, Credentials, DeadLetterConfig, DelayConfig, Endpoint,
-        SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, ValidatedConfig,
-        WorkerProfile,
+        PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode,
+        ValidatedConfig, WorkerProfile,
     },
     topology::{
         DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan, TopologyReconciler,
@@ -50,6 +50,7 @@ fn base_config(queue: &str) -> Config {
         delay: DelayConfig::default(),
         dead_letter: None,
         delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
     }
 }
 
