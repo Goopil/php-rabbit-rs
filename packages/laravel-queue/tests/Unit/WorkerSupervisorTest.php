@@ -129,4 +129,26 @@ final class WorkerSupervisorTest extends TestCase
     {
         self::assertSame(130, WorkerSupervisor::EXIT_SIGNAL);
     }
+
+    public function testBackoffSecondsExponentiallyIncreasesAndCapsAt60(): void
+    {
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 1,
+            maxRestarts: 10,
+            baseBackoffSeconds: 1,
+        );
+
+        // 2^0 = 1, 2^1 = 2, 2^2 = 4, 2^3 = 8, 2^4 = 16, 2^5 = 32, 2^6 = 64 → capped at 60
+        self::assertSame(1, $supervisor->backoffSeconds(0));
+        self::assertSame(2, $supervisor->backoffSeconds(1));
+        self::assertSame(4, $supervisor->backoffSeconds(2));
+        self::assertSame(8, $supervisor->backoffSeconds(3));
+        self::assertSame(16, $supervisor->backoffSeconds(4));
+        self::assertSame(32, $supervisor->backoffSeconds(5));
+        self::assertSame(60, $supervisor->backoffSeconds(6));
+        self::assertSame(60, $supervisor->backoffSeconds(7));
+        self::assertSame(60, $supervisor->backoffSeconds(100));
+    }
 }

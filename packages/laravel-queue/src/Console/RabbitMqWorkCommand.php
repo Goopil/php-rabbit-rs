@@ -13,7 +13,8 @@ final class RabbitMqWorkCommand extends Command
         {--queue=default : The queue/profile name}
         {--workers=1 : Number of child workers}
         {--max-restarts=3 : Maximum restarts per worker}
-        {--backoff=1 : Base backoff in seconds}';
+        {--backoff=1 : Base backoff in seconds}
+        {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
     protected $description = 'Supervise multiple Rabbit RS queue workers with automatic restart';
 

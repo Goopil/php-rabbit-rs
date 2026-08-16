@@ -29,11 +29,30 @@ final class RabbitMqWorkCommandExtension
 
     /**
      * Create an extension instance from the current environment.
+     *
+     * The worker index is read from the `RABBIT_RS_WORKER` environment variable
+     * (set by the supervisor when spawning child processes).  When the env var
+     * is absent, the extension is inactive.
      */
     public static function fromEnvironment(): self
     {
         $value = getenv(WorkerSupervisor::workerEnv());
         if ($value === false || $value === '') {
+            return new self(null);
+        }
+
+        return new self((int) $value);
+    }
+
+    /**
+     * Create an extension instance from a CLI option value.
+     *
+     * Used when the command is invoked directly with `--rabbit-rs-worker={i}`
+     * rather than through the supervisor's env-var mechanism.
+     */
+    public static function fromOption(?string $value): self
+    {
+        if ($value === null || $value === '') {
             return new self(null);
         }
 
