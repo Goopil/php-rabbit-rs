@@ -614,7 +614,7 @@ async fn publisher_utilization_reports_capacity_and_in_flight() {
         .expect("publish");
 
     let (in_flight, capacity) = pool.publisher_utilization();
-    assert_eq!(capacity, 8192);
+    assert_eq!(capacity, 1024);
     assert_eq!(in_flight, 0);
 }
 
@@ -638,7 +638,7 @@ async fn publisher_utilization_reports_in_flight_when_confirmations_pending() {
     assert_eq!(pool.metrics_snapshot().publishes_total, 1);
 
     let (in_flight, capacity) = pool.publisher_utilization();
-    assert_eq!(capacity, 8192);
+    assert_eq!(capacity, 1024);
     assert_eq!(in_flight, 1);
 
     let _ = publishing.await;

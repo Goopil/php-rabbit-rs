@@ -132,7 +132,7 @@ impl Scenario {
             ],
         )?;
         let publisher_capacity =
-            optional_usize(table, "publisher_capacity", "scenario")?.unwrap_or(8192);
+            optional_usize(table, "publisher_capacity", "scenario")?.unwrap_or(1024);
         if publisher_capacity == 0 {
             return Err("scenario.publisher_capacity: must be greater than zero".to_owned());
         }

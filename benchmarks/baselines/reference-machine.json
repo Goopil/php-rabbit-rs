@@ -1,0 +1,23 @@
+{
+  "machine": {
+    "os": "macOS",
+    "arch": "arm64",
+    "kernel": "Darwin 24.6.0",
+    "model": "Apple Silicon (ARM64)"
+  },
+  "php": {
+    "version": "8.4.21",
+    "sapi": "cli",
+    "nts": true
+  },
+  "rust": {
+    "version": "1.96.0",
+    "edition": "2024"
+  },
+  "broker": {
+    "available": false,
+    "note": "No RabbitMQ broker available; native benchmarks use MockTransport, Laravel lab runs in smoke mode (database only)."
+  },
+  "date": "2026-08-16",
+  "source": "benchmarks/BASELINE.md"
+}

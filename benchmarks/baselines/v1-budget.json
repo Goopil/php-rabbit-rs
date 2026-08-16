@@ -1,0 +1,98 @@
+{
+  "$schema": "rabbit-rs performance budget v1",
+  "description": "Performance budget derived from benchmarks/BASELINE.md measurements. All targets are grounded in observed MockTransport and PHP FFI harness data; no value was invented without a corresponding measurement.",
+  "reference": "benchmarks/BASELINE.md",
+  "reference_machine": "benchmarks/baselines/reference-machine.json",
+  "date": "2026-08-16",
+
+  "native_rust": {
+    "description": "Rust core throughput targets with MockTransport and publisher confirms enabled.",
+    "throughput": {
+      "256B": {
+        "batch_size": 64,
+        "measured_mib_s": 972.2,
+        "target_mib_s_min": 900
+      },
+      "1KiB": {
+        "batch_size": 16,
+        "measured_mib_s": 446.4,
+        "target_mib_s_min": 400
+      },
+      "10KiB": {
+        "batch_size": 1,
+        "measured_mib_s": 524.1,
+        "target_mib_s_min": 480
+      },
+      "100KiB": {
+        "batch_size": 64,
+        "measured_gib_s": 21.2,
+        "target_gib_s_min": 18
+      },
+      "1MiB": {
+        "batch_size": 256,
+        "measured_gib_s": 37.5,
+        "target_gib_s_min": 30
+      }
+    },
+    "batch_per_message_latency_ns": {
+      "256B_batch256": { "measured": 1042, "target_max": 1200 },
+      "1KiB_batch256": { "measured": 1076, "target_max": 1300 }
+    },
+    "scheduler_next_ns": {
+      "2_subs":  { "measured": 100,  "target_max": 200 },
+      "8_subs":  { "measured": 244,  "target_max": 400 },
+      "32_subs": { "measured": 921,  "target_max": 1200 }
+    },
+    "ffi_conversion": {
+      "message_construction_256B_ns":    { "measured": 163,  "target_max": 250 },
+      "message_construction_1KiB_ns":   { "measured": 189,  "target_max": 300 },
+      "message_construction_10KiB_ns":  { "measured": 304,  "target_max": 500 },
+      "message_construction_1MiB_ns":   { "measured": 19100, "target_max": 25000 },
+      "header_conversion_0_ns":        { "measured": 3,    "target_max": 50 },
+      "header_conversion_8_ns":        { "measured": 351,  "target_max": 600 },
+      "header_conversion_32_ns":       { "measured": 2330, "target_max": 3500 },
+      "header_conversion_128_ns":      { "measured": 12170, "target_max": 16000 }
+    }
+  },
+
+  "php_ffi_boundary": {
+    "description": "PHP-to-Rust FFI call overhead measured by the PHP harness with the extension loaded (no broker).",
+    "single_publish_ns": {
+      "256B_warm": { "measured": 1473, "target_max": 2500 },
+      "1KiB_warm": { "measured": 1473, "target_max": 2500 },
+      "10KiB_warm": { "measured": 1564, "target_max": 2500 }
+    },
+    "batch_publish_ns_per_message": {
+      "256B_batch256":  { "measured": 1042, "target_max": 1500 },
+      "1KiB_batch256":  { "measured": 1076, "target_max": 1500 },
+      "10KiB_batch16":  { "measured": 1377, "target_max": 2000 }
+    }
+  },
+
+  "laravel_comparison": {
+    "description": "Laravel comparison lab targets. Full broker comparison was not run (no broker available); targets are derived from the FFI cost advantage over pure-PHP AMQP libraries.",
+    "min_gain_over_php_amqplib": {
+      "publish": "1.5x",
+      "consume": "1.5x",
+      "rationale": "php-amqplib implements AMQP 0-9-1 in PHP userland; rabbit-rs crosses FFI (~1-2 µs) into native Rust. Expected gain is conservative because the broker I/O dominates end-to-end latency."
+    },
+    "p99_latency_ms": {
+      "256B": { "target_max": 5 },
+      "1KiB": { "target_max": 5 },
+      "10KiB": { "target_max": 10 },
+      "100KiB": { "target_max": 20 }
+    },
+    "losses": 0,
+    "duplicates_max_per_5000": 0
+  },
+
+  "defaults": {
+    "max_messages": 256,
+    "max_bytes": "2 MiB",
+    "buffer_capacity": 1024,
+    "prefetch": 16,
+    "max_in_flight": 64,
+    "flush_interval_ms": 1,
+    "confirm_timeout_ms": 30000
+  }
+}

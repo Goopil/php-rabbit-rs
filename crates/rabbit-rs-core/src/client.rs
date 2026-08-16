@@ -23,8 +23,8 @@ use crate::{
 };
 
 const DEFAULT_MAX_MESSAGES: usize = 256;
-const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
-const DEFAULT_BUFFER_CAPACITY: usize = 8192;
+const DEFAULT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const DEFAULT_BUFFER_CAPACITY: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PoolLifecycle {

@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** main
 
-**Prochaine étape :** Milestone E — Task 39.
+**Prochaine étape :** Milestone F — Distribution et documentation.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -70,6 +70,8 @@
 - [x] Task 36 — Câbler le lifecycle Octane complet (`e20a69b`).
 - [x] Task 37 — Câbler le WorkCommand et tester le supervisor end-to-end (`9c0e036`, `356b71b`, `7a68c6f`).
 - [x] Task 38 — Créer bench-native (`ae9c668`, `7f13f98`).
+- [x] Task 39 — Créer l'application bench-laravel (`3fb9fc4`, `8d56ee8`, `e43cb68`).
+- [x] Task 40 — Calibrer les defaults et figer les budgets.
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
