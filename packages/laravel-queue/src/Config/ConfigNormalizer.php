@@ -145,7 +145,7 @@ final class ConfigNormalizer
     }
 
     /**
-     * @return array{enabled: bool, server_name: ?string}
+     * @return array{enabled: bool, server_name: ?string, ca_cert: ?string, client_cert: ?string, client_key: ?string, verify: string}
      */
     private static function tls(mixed $tls, string $path): array
     {
@@ -163,7 +163,34 @@ final class ConfigNormalizer
             self::invalid($path.'.server_name', 'must be null or a non-empty string');
         }
 
-        return ['enabled' => $enabled, 'server_name' => $serverName];
+        $caCert = $tls['ca_cert'] ?? null;
+        if ($caCert !== null && ! is_string($caCert)) {
+            self::invalid($path.'.ca_cert', 'must be null or a string');
+        }
+
+        $clientCert = $tls['client_cert'] ?? null;
+        if ($clientCert !== null && ! is_string($clientCert)) {
+            self::invalid($path.'.client_cert', 'must be null or a string');
+        }
+
+        $clientKey = $tls['client_key'] ?? null;
+        if ($clientKey !== null && ! is_string($clientKey)) {
+            self::invalid($path.'.client_key', 'must be null or a string');
+        }
+
+        $verify = $tls['verify'] ?? 'peer';
+        if (! is_string($verify) || ! in_array($verify, ['peer', 'none'], true)) {
+            self::invalid($path.'.verify', 'must be peer or none');
+        }
+
+        return [
+            'enabled' => $enabled,
+            'server_name' => $serverName,
+            'ca_cert' => $caCert,
+            'client_cert' => $clientCert,
+            'client_key' => $clientKey,
+            'verify' => $verify,
+        ];
     }
 
     /**

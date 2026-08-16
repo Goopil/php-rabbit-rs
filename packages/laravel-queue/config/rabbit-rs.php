@@ -16,6 +16,10 @@ return [
             'tls' => [
                 'enabled' => (bool) env('RABBIT_RS_TLS', false),
                 'server_name' => env('RABBIT_RS_TLS_SERVER_NAME'),
+                'ca_cert' => env('RABBIT_RS_TLS_CA_CERT'),
+                'client_cert' => env('RABBIT_RS_TLS_CLIENT_CERT'),
+                'client_key' => env('RABBIT_RS_TLS_CLIENT_KEY'),
+                'verify' => env('RABBIT_RS_TLS_VERIFY', 'peer'),
             ],
             'heartbeat' => (int) env('RABBIT_RS_HEARTBEAT', 30),
         ],

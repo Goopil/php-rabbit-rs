@@ -8,6 +8,7 @@ use lapin::{
         BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
         QueueDeclareOptions, QueuePurgeOptions,
     },
+    tcp::OwnedTLSConfig,
     types::{AMQPValue, FieldArray, FieldTable},
 };
 use url::Url;
@@ -32,11 +33,24 @@ impl Transport for LapinTransport {
     ) -> TransportResult<Box<dyn TransportConnection>> {
         let properties = ConnectionProperties::default()
             .with_connection_name(format!("rabbit-rs:{}", config.name).into());
+        let tls_config = build_tls_config(config);
         let mut last_error = None;
 
         for endpoint in config.hosts() {
             let uri = connection_uri(config, endpoint)?;
-            match Connection::connect(uri.as_str(), properties.clone()).await {
+            let result = if config.tls.is_enabled() {
+                Connection::connect_with_config(
+                    uri.as_str(),
+                    properties.clone(),
+                    tls_config.clone(),
+                    lapin::runtime::default_runtime()
+                        .map_err(|error| TransportError::connection(error.to_string()))?,
+                )
+                .await
+            } else {
+                Connection::connect(uri.as_str(), properties.clone()).await
+            };
+            match result {
                 Ok(connection) => return Ok(Box::new(LapinConnection { inner: connection })),
                 Err(error) => last_error = Some(map_lapin_error(error)),
             }
@@ -291,7 +305,37 @@ impl DeliveryStream for LapinDeliveryStream {
     }
 }
 
-fn connection_uri(config: &BrokerConfig, endpoint: &Endpoint) -> TransportResult<Url> {
+fn build_tls_config(config: &BrokerConfig) -> OwnedTLSConfig {
+    let tls = &config.tls;
+    let identity = build_tls_identity(tls);
+    let cert_chain = tls
+        .ca_cert()
+        .and_then(|path| std::fs::read_to_string(path).ok());
+
+    OwnedTLSConfig {
+        identity,
+        cert_chain,
+    }
+}
+
+fn build_tls_identity(tls: &crate::config::TlsConfig) -> Option<lapin::tcp::OwnedIdentity> {
+    let cert_path = tls.client_cert()?;
+    let key_path = tls.client_key()?;
+
+    let pem = std::fs::read(cert_path).ok()?;
+    let key = std::fs::read(key_path).ok()?;
+
+    Some(lapin::tcp::OwnedIdentity::PKCS8 { pem, key })
+}
+
+/// Builds the AMQP URI for the given broker endpoint.
+///
+/// The scheme is `amqps` when TLS is enabled, `amqp` otherwise.
+///
+/// # Errors
+///
+/// Returns a [`TransportError`] when the URI cannot be constructed (invalid host, port, username, password, or vhost).
+pub fn connection_uri(config: &BrokerConfig, endpoint: &Endpoint) -> TransportResult<Url> {
     let scheme = if config.tls.is_enabled() {
         "amqps"
     } else {

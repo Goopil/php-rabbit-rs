@@ -60,7 +60,14 @@ final class ConfigNormalizerTest extends TestCase
                     'username' => 'guest',
                     'password' => 'native-password-must-stay-secret',
                 ],
-                'tls' => ['enabled' => false, 'server_name' => null],
+                    'tls' => [
+                        'enabled' => false,
+                        'server_name' => null,
+                        'ca_cert' => null,
+                        'client_cert' => null,
+                        'client_key' => null,
+                        'verify' => 'peer',
+                    ],
                 'heartbeat' => 30,
             ]],
             'workers' => [[
@@ -282,6 +289,54 @@ final class ConfigNormalizerTest extends TestCase
         $provider->assertNativeExtensionLoaded();
     }
 
+    public function testNormalizesTlsClientAndCaCertConfig(): void
+    {
+        $config = $this->validConfig();
+        $config['brokers']['default']['tls'] = [
+            'enabled' => true,
+            'server_name' => 'broker.internal',
+            'ca_cert' => '/etc/ssl/certs/ca.pem',
+            'client_cert' => '/etc/ssl/client/cert.pem',
+            'client_key' => '/etc/ssl/client/key.pem',
+            'verify' => 'peer',
+        ];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertSame([
+            'enabled' => true,
+            'server_name' => 'broker.internal',
+            'ca_cert' => '/etc/ssl/certs/ca.pem',
+            'client_cert' => '/etc/ssl/client/cert.pem',
+            'client_key' => '/etc/ssl/client/key.pem',
+            'verify' => 'peer',
+        ], $normalized['native']['brokers'][0]['tls']);
+    }
+
+    public function testTlsDefaultsToPeerVerify(): void
+    {
+        $config = $this->validConfig();
+        $config['brokers']['default']['tls'] = ['enabled' => true];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertSame('peer', $normalized['native']['brokers'][0]['tls']['verify']);
+    }
+
+    public function testRejectsInvalidTlsVerifyMode(): void
+    {
+        $config = $this->validConfig();
+        $config['brokers']['default']['tls'] = [
+            'enabled' => true,
+            'verify' => 'custom',
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('brokers.default.tls.verify');
+
+        ConfigNormalizer::normalize($config);
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -297,7 +352,14 @@ final class ConfigNormalizerTest extends TestCase
                         'username' => 'guest',
                         'password' => 'native-password-must-stay-secret',
                     ],
-                    'tls' => ['enabled' => false, 'server_name' => null],
+                'tls' => [
+                    'enabled' => false,
+                    'server_name' => null,
+                    'ca_cert' => null,
+                    'client_cert' => null,
+                    'client_key' => null,
+                    'verify' => 'peer',
+                ],
                     'heartbeat' => 30,
                 ],
             ],

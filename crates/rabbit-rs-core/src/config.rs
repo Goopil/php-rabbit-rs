@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt, str::FromStr, time::Duration};
+use std::{collections::HashSet, fmt, path::PathBuf, str::FromStr, time::Duration};
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer};
@@ -72,12 +72,27 @@ impl fmt::Debug for Credentials {
     }
 }
 
+/// TLS verification mode controlling certificate validation.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsVerify {
+    /// Verify the server certificate chain against the configured CA.
+    #[default]
+    Peer,
+    /// Skip certificate verification (insecure — use only in development).
+    None,
+}
+
 /// TLS parameters that are safe to retain in normalized configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct TlsConfig {
     enabled: bool,
     server_name: Option<String>,
+    ca_cert: Option<PathBuf>,
+    client_cert: Option<PathBuf>,
+    client_key: Option<PathBuf>,
+    verify: TlsVerify,
 }
 
 impl TlsConfig {
@@ -86,12 +101,65 @@ impl TlsConfig {
         Self {
             enabled: false,
             server_name: None,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            verify: TlsVerify::Peer,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled() -> Self {
+        Self {
+            enabled: true,
+            server_name: None,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            verify: TlsVerify::Peer,
         }
     }
 
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    #[must_use]
+    pub fn server_name(&self) -> Option<&str> {
+        self.server_name.as_deref()
+    }
+
+    #[must_use]
+    pub fn ca_cert(&self) -> Option<&PathBuf> {
+        self.ca_cert.as_ref()
+    }
+
+    #[must_use]
+    pub fn client_cert(&self) -> Option<&PathBuf> {
+        self.client_cert.as_ref()
+    }
+
+    #[must_use]
+    pub fn client_key(&self) -> Option<&PathBuf> {
+        self.client_key.as_ref()
+    }
+
+    #[must_use]
+    pub const fn verify(&self) -> TlsVerify {
+        self.verify
+    }
+
+    #[must_use]
+    pub fn with_server_name(mut self, server_name: &str) -> Self {
+        self.server_name = Some(server_name.to_owned());
+        self
+    }
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self::disabled()
     }
 }
 
@@ -112,6 +180,21 @@ impl BrokerConfig {
     #[must_use]
     pub fn hosts(&self) -> &[Endpoint] {
         &self.hosts
+    }
+
+    /// Returns the SNI server name to use for TLS connections.
+    ///
+    /// Falls back to the first broker host when `tls.server_name` is not set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the broker has no hosts. Validation guarantees at least one host.
+    #[must_use]
+    pub fn effective_server_name(&self) -> &str {
+        self.tls
+            .server_name
+            .as_deref()
+            .unwrap_or_else(|| self.hosts.first().expect("at least one host").host())
     }
 }
 
@@ -549,6 +632,37 @@ impl ConfigFingerprint {
                 &mut digest,
                 broker.tls.server_name.as_deref().unwrap_or_default(),
             );
+            hash_value(
+                &mut digest,
+                broker
+                    .tls
+                    .ca_cert
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+            hash_value(
+                &mut digest,
+                broker
+                    .tls
+                    .client_cert
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+            hash_value(
+                &mut digest,
+                broker
+                    .tls
+                    .client_key
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .as_deref()
+                    .unwrap_or_default(),
+            );
+            hash_value(&mut digest, tls_verify_name(broker.tls.verify));
             digest.update(broker.heartbeat.as_secs().to_be_bytes());
             for endpoint in &broker.hosts {
                 hash_value(&mut digest, &endpoint.host);
@@ -620,6 +734,13 @@ const fn delay_mode_name(mode: DelayMode) -> &'static str {
         DelayMode::Auto => "auto",
         DelayMode::Plugin => "plugin",
         DelayMode::Ttl => "ttl",
+    }
+}
+
+const fn tls_verify_name(verify: TlsVerify) -> &'static str {
+    match verify {
+        TlsVerify::Peer => "peer",
+        TlsVerify::None => "none",
     }
 }
 
