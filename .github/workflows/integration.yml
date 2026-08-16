@@ -37,7 +37,7 @@ jobs:
           coverage: none
 
       - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
       - name: Start RabbitMQ lab
         run: ./scripts/lab-up.sh with-plugin
@@ -59,8 +59,19 @@ jobs:
         run: |
           cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
 
-      - name: Build extension (release)
-        run: cargo build --release --manifest crates/rabbit-rs-php/Cargo.toml
+      - name: Build extension in Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            php:8.4-cli \
+            sh -c '
+              set -e
+              apt-get update && apt-get install -y curl gcc make libclang-dev
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              . "$HOME/.cargo/env"
+              cargo build --release --manifest crates/rabbit-rs-php/Cargo.toml
+            '
 
       - name: Verify extension is loaded
         run: |
@@ -112,7 +123,7 @@ jobs:
           coverage: none
 
       - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
       - name: Run chaos tests
         run: ./scripts/test-chaos.sh
