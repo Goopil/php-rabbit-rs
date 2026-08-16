@@ -11,13 +11,11 @@
 //! (e.g. TCP reset after the broker received a message but before the
 //! publisher confirm reached the client).
 //!
-//! # Current recovery status
+//! # Automatic recovery
 //!
-//! The `ClientPool` does not yet wire `ConnectionActor` to `PublisherActor`
-//! for automatic recovery. These tests therefore close and recreate pools
-//! after faults to verify that **the broker** preserves messages. Once
-//! automatic recovery is implemented, these tests will pass without the
-//! manual pool recreation step.
+//! The `ClientPool` now wires `ConnectionActor` to `PublisherActor` via the
+//! `RecoveryCoordinator`. These tests create one `ClientPool`, inject faults,
+//! and verify that the pool heals automatically without manual recreation.
 #![cfg(feature = "integration")]
 
 mod toxiproxy;
@@ -316,17 +314,16 @@ async fn chaos_tcp_reset_before_confirm() {
     let broker = broker_via_proxy("primary", 5672);
     let config = config_for_queue(queue, &broker);
 
+    // Use one pool for the entire test — it will heal automatically.
+    let pool = ClientPool::production(config.clone());
+
     // Publish a message successfully before the fault.
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-reset-1", queue, b"payload-1"),
-        )
-        .await
-        .expect("publish before fault");
-        let _ = pool.close().await;
-    }
+    pool.publish(
+        "primary",
+        publish_request("chaos-reset-1", queue, b"payload-1"),
+    )
+    .await
+    .expect("publish before fault");
 
     let toxi = ToxiproxyClient::new(TOXIPROXY_URL.to_owned());
 
@@ -344,37 +341,29 @@ async fn chaos_tcp_reset_before_confirm() {
     .await
     .expect("add toxic");
 
-    // Attempt to publish during the fault — may fail.
-    {
-        let pool = ClientPool::production(config.clone());
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            pool.publish(
-                "primary",
-                publish_request("chaos-reset-2", queue, b"payload-2"),
-            ),
-        )
-        .await;
-        let _ = pool.close().await;
-    }
+    // Attempt to publish during the fault — the pool will replay automatically.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        pool.publish(
+            "primary",
+            publish_request("chaos-reset-2", queue, b"payload-2"),
+        ),
+    )
+    .await;
 
-    // Remove the toxic.
+    // Remove the toxic to heal the connection.
     toxi.remove_toxic(PROXY_1, "reset-before-confirm")
         .await
         .expect("remove toxic");
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // After the fault, publish the second message again (it may not have been delivered).
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-reset-2", queue, b"payload-2"),
-        )
-        .await
-        .expect("publish after recovery");
-        let _ = pool.close().await;
-    }
+    // After the fault, publish the second message again — the pool has healed.
+    pool.publish(
+        "primary",
+        publish_request("chaos-reset-2", queue, b"payload-2"),
+    )
+    .await
+    .expect("publish after recovery");
 
     // Consume all messages and verify at-least-once.
     let received = consume_all(config, 2, Duration::from_secs(15)).await;
@@ -385,6 +374,7 @@ async fn chaos_tcp_reset_before_confirm() {
     }
     audit.assert_at_least_once("tcp-reset-before-confirm");
 
+    let _ = pool.close().await;
     delete_queue_mgmt(queue).await;
 }
 
@@ -402,21 +392,17 @@ async fn chaos_tcp_reset_after_confirm_before_ack() {
     let config = config_for_queue(queue, &broker);
     let toxi = ToxiproxyClient::new(TOXIPROXY_URL.to_owned());
 
-    // Publish and confirm a message.
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-ack-1", queue, b"payload-ack-1"),
-        )
-        .await
-        .expect("publish before reset");
-        let _ = pool.close().await;
-    }
+    // Use one pool for publishing.
+    let pool = ClientPool::production(config.clone());
+    pool.publish(
+        "primary",
+        publish_request("chaos-ack-1", queue, b"payload-ack-1"),
+    )
+    .await
+    .expect("publish before reset");
 
     // Consume the message but do NOT ACK it.
-    let consumer_pool = ClientPool::production(config.clone());
-    let consumer = consumer_pool.consumer("main").await.expect("consumer");
+    let consumer = pool.consumer("main").await.expect("consumer");
     let delivery = tokio::time::timeout(Duration::from_secs(10), consumer.next())
         .await
         .expect("timeout for delivery")
@@ -440,15 +426,12 @@ async fn chaos_tcp_reset_after_confirm_before_ack() {
     // Wait for the partition to take effect.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Do NOT ACK and do NOT close the pool cleanly.
-    // Just drop the consumer_pool — the connections will be dropped
-    // without sending a close frame.
+    // Do NOT ACK and close the pool — the connection will be dropped
+    // without sending a close frame for the consumer channel.
+    drop(delivery);
     drop(consumer);
-    drop(consumer_pool);
 
     // Wait for the broker to detect the connection loss via heartbeat timeout.
-    // With a 3-second heartbeat, the broker should detect the loss within
-    // ~6 seconds (2 missed heartbeats). We wait 10 seconds to be safe.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     // Remove the toxic to heal the partition.
@@ -456,6 +439,8 @@ async fn chaos_tcp_reset_after_confirm_before_ack() {
         .await
         .expect("remove toxic");
     tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let _ = pool.close().await;
 
     // The unacked message must be redelivered to a new consumer.
     let received = consume_all(config, 1, Duration::from_secs(20)).await;
@@ -554,17 +539,16 @@ async fn chaos_node_restart() {
     let broker = broker_via_proxy("primary", 5672);
     let config = config_for_queue(queue, &broker);
 
+    // Use one pool for the entire test — it will heal automatically after restart.
+    let pool = ClientPool::production(config.clone());
+
     // Publish a message before the restart.
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-restart-1", queue, b"payload-restart-1"),
-        )
-        .await
-        .expect("publish before restart");
-        let _ = pool.close().await;
-    }
+    pool.publish(
+        "primary",
+        publish_request("chaos-restart-1", queue, b"payload-restart-1"),
+    )
+    .await
+    .expect("publish before restart");
 
     // Restart rabbitmq-1.
     stop_rabbitmq_node("rabbit@rabbitmq-1").await;
@@ -572,14 +556,15 @@ async fn chaos_node_restart() {
     start_rabbitmq_node("rabbit@rabbitmq-1").await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // Publish another message after the restart.
-    publish_with_retry(
-        config.clone(),
+    // Publish another message after the restart — the pool has healed.
+    pool.publish(
         "primary",
         publish_request("chaos-restart-2", queue, b"payload-restart-2"),
-        Duration::from_secs(15),
     )
-    .await;
+    .await
+    .expect("publish after restart");
+
+    let _ = pool.close().await;
 
     // Consume both messages.
     let received = consume_all(config, 2, Duration::from_secs(15)).await;
@@ -607,21 +592,19 @@ async fn chaos_consumer_partition() {
     let config = config_for_queue(queue, &broker);
     let toxi = ToxiproxyClient::new(TOXIPROXY_URL.to_owned());
 
+    // Use one pool for the entire test.
+    let pool = ClientPool::production(config.clone());
+
     // Publish a message.
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-partition-1", queue, b"payload-partition-1"),
-        )
-        .await
-        .expect("publish before partition");
-        let _ = pool.close().await;
-    }
+    pool.publish(
+        "primary",
+        publish_request("chaos-partition-1", queue, b"payload-partition-1"),
+    )
+    .await
+    .expect("publish before partition");
 
     // Consume the message but do NOT ACK it.
-    let consumer_pool = ClientPool::production(config.clone());
-    let consumer = consumer_pool.consumer("main").await.expect("consumer");
+    let consumer = pool.consumer("main").await.expect("consumer");
     let delivery = tokio::time::timeout(Duration::from_secs(10), consumer.next())
         .await
         .expect("timeout for delivery")
@@ -644,10 +627,9 @@ async fn chaos_consumer_partition() {
     // Wait for the partition to take effect.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Do NOT ACK and do NOT close cleanly — just drop.
+    // Do NOT ACK — just drop the delivery and consumer.
     drop(delivery);
     drop(consumer);
-    drop(consumer_pool);
 
     // Wait in the partitioned state.
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -659,6 +641,8 @@ async fn chaos_consumer_partition() {
 
     // Wait for the broker to detect the connection loss and redeliver.
     tokio::time::sleep(Duration::from_secs(10)).await;
+
+    let _ = pool.close().await;
 
     // The unacked message must be redelivered.
     let received = consume_all(config, 1, Duration::from_secs(20)).await;
@@ -685,38 +669,34 @@ async fn chaos_channel_closed_topology_error() {
     let broker = broker_via_proxy("primary", 5672);
     let config = config_for_queue(queue, &broker);
 
+    // Use one pool for the entire test.
+    let pool = ClientPool::production(config.clone());
+
     // Publish and consume a message successfully first.
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-topo-1", queue, b"payload-topo-1"),
-        )
-        .await
-        .expect("publish first");
-        let received = consume_n(&pool, 1, Duration::from_secs(5)).await;
-        assert_eq!(received, vec!["chaos-topo-1".to_owned()]);
-        let _ = pool.close().await;
-    }
+    pool.publish(
+        "primary",
+        publish_request("chaos-topo-1", queue, b"payload-topo-1"),
+    )
+    .await
+    .expect("publish first");
+    let received = consume_n(&pool, 1, Duration::from_secs(5)).await;
+    assert_eq!(received, vec!["chaos-topo-1".to_owned()]);
 
-    // Simulate a channel error by creating a new pool (fresh connection).
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-topo-2", queue, b"payload-topo-2"),
-        )
-        .await
-        .expect("publish after channel recreation");
-        let received = consume_n(&pool, 1, Duration::from_secs(10)).await;
+    // Publish another message — the pool reuses the same connection.
+    pool.publish(
+        "primary",
+        publish_request("chaos-topo-2", queue, b"payload-topo-2"),
+    )
+    .await
+    .expect("publish after channel recreation");
+    let received = consume_n(&pool, 1, Duration::from_secs(10)).await;
 
-        let mut audit = DeliveryAudit::new(["chaos-topo-2"].map(String::from));
-        for id in &received {
-            audit.record(id);
-        }
-        audit.assert_at_least_once("channel-closed-topology-error");
-        let _ = pool.close().await;
+    let mut audit = DeliveryAudit::new(["chaos-topo-2"].map(String::from));
+    for id in &received {
+        audit.record(id);
     }
+    audit.assert_at_least_once("channel-closed-topology-error");
+    let _ = pool.close().await;
 
     delete_queue_mgmt(queue).await;
 }
@@ -845,35 +825,32 @@ async fn chaos_worker_sigterm_with_unacked() {
     let broker = broker_via_proxy("primary", 5672);
     let config = config_for_queue(queue, &broker);
 
+    // Use one pool for the entire test.
+    let pool = ClientPool::production(config.clone());
+
     // Publish a message.
-    {
-        let pool = ClientPool::production(config.clone());
-        pool.publish(
-            "primary",
-            publish_request("chaos-sigterm-1", queue, b"payload-sigterm-1"),
-        )
-        .await
-        .expect("publish before sigterm");
-        let _ = pool.close().await;
-    }
+    pool.publish(
+        "primary",
+        publish_request("chaos-sigterm-1", queue, b"payload-sigterm-1"),
+    )
+    .await
+    .expect("publish before sigterm");
 
     // Consume the message but do NOT ACK — simulating a worker that
     // received a SIGTERM while processing.
-    {
-        let pool = ClientPool::production(config.clone());
-        let consumer = pool.consumer("main").await.expect("consumer");
-        let delivery = tokio::time::timeout(Duration::from_secs(10), consumer.next())
-            .await
-            .expect("timeout for delivery")
-            .expect("delivery");
-        assert_eq!(delivery.id.as_str(), "chaos-sigterm-1");
+    let consumer = pool.consumer("main").await.expect("consumer");
+    let delivery = tokio::time::timeout(Duration::from_secs(10), consumer.next())
+        .await
+        .expect("timeout for delivery")
+        .expect("delivery");
+    assert_eq!(delivery.id.as_str(), "chaos-sigterm-1");
 
-        // Simulate SIGTERM: close the pool without ACKing the delivery.
-        // The pool.close() sends a channel.close which causes the broker
-        // to requeue unacked messages.
-        drop(delivery);
-        let _ = pool.close().await;
-    }
+    // Simulate SIGTERM: close the pool without ACKing the delivery.
+    // The pool.close() sends a channel.close which causes the broker
+    // to requeue unacked messages.
+    drop(delivery);
+    drop(consumer);
+    let _ = pool.close().await;
 
     // Wait for the broker to requeue the unacked message.
     tokio::time::sleep(Duration::from_secs(3)).await;

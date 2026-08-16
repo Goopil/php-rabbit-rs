@@ -6,7 +6,9 @@ use crate::{
     config::BrokerConfig,
     metrics::{Metrics, MetricsSnapshot},
     recovery::{Clock, ConnectionState, EqualJitter, JitterSource, RecoveryPolicy, TokioClock},
-    transport::{Transport, TransportConnection, TransportError},
+    transport::{
+        ConsumerChannel, PublisherChannel, Transport, TransportConnection, TransportError,
+    },
 };
 
 const COMMAND_CAPACITY: usize = 32;
@@ -134,6 +136,36 @@ impl ConnectionActorHandle {
         self.send(Command::ConnectionLost(error)).await
     }
 
+    /// Opens a publisher channel on the active connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConnectionActorClosed`] if the actor stopped or
+    /// [`TransportError`] if the channel cannot be opened.
+    pub async fn open_publisher(&self) -> Result<Box<dyn PublisherChannel>, ConnectionActorClosed> {
+        let (completed, completion) = oneshot::channel();
+        self.send(Command::OpenPublisher(completed)).await?;
+        completion
+            .await
+            .map_err(|_| ConnectionActorClosed)?
+            .map_err(|_| ConnectionActorClosed)
+    }
+
+    /// Opens a consumer channel on the active connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConnectionActorClosed`] if the actor stopped or
+    /// [`TransportError`] if the channel cannot be opened.
+    pub async fn open_consumer(&self) -> Result<Box<dyn ConsumerChannel>, ConnectionActorClosed> {
+        let (completed, completion) = oneshot::channel();
+        self.send(Command::OpenConsumer(completed)).await?;
+        completion
+            .await
+            .map_err(|_| ConnectionActorClosed)?
+            .map_err(|_| ConnectionActorClosed)
+    }
+
     /// Interrupts any active backoff and waits for graceful actor shutdown.
     ///
     /// # Errors
@@ -168,6 +200,8 @@ impl Error for ConnectionActorClosed {}
 enum Command {
     Start,
     ConnectionLost(TransportError),
+    OpenPublisher(oneshot::Sender<Result<Box<dyn PublisherChannel>, TransportError>>),
+    OpenConsumer(oneshot::Sender<Result<Box<dyn ConsumerChannel>, TransportError>>),
     Close(oneshot::Sender<()>),
 }
 
@@ -235,6 +269,14 @@ async fn handle_disconnected(
             previous_failures: 0,
         }),
         Some(Command::ConnectionLost(_)) => Some(Phase::Disconnected),
+        Some(Command::OpenPublisher(completed)) => {
+            let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+            Some(Phase::Disconnected)
+        }
+        Some(Command::OpenConsumer(completed)) => {
+            let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+            Some(Phase::Disconnected)
+        }
         Some(Command::Close(completed)) => {
             shutdown(&context.states, connection, completed).await;
             None
@@ -270,6 +312,12 @@ async fn handle_connecting(
                 None => {
                     close_connection(connection).await;
                     return None;
+                }
+                Some(Command::OpenPublisher(completed)) => {
+                    let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+                }
+                Some(Command::OpenConsumer(completed)) => {
+                    let _ = completed.send(Err(TransportError::closed("connection is not ready")));
                 }
                 Some(Command::Start | Command::ConnectionLost(_)) => {}
             }
@@ -312,6 +360,22 @@ async fn handle_ready(
                 publish_permanent_failure(&context.states, &error);
                 Some(Phase::FailedPermanent)
             }
+        }
+        Some(Command::OpenPublisher(completed)) => {
+            let result = match connection.as_deref() {
+                Some(conn) => conn.open_publisher().await,
+                None => Err(TransportError::closed("connection is not ready")),
+            };
+            let _ = completed.send(result);
+            Some(Phase::Ready)
+        }
+        Some(Command::OpenConsumer(completed)) => {
+            let result = match connection.as_deref() {
+                Some(conn) => conn.open_consumer().await,
+                None => Err(TransportError::closed("connection is not ready")),
+            };
+            let _ = completed.send(result);
+            Some(Phase::Ready)
         }
         Some(Command::Start) => Some(Phase::Ready),
         Some(Command::Close(completed)) => {
@@ -356,6 +420,12 @@ async fn handle_recovering(
                     publish_permanent_failure(&context.states, &new_error);
                     return Some(Phase::FailedPermanent);
                 }
+                Some(Command::OpenPublisher(completed)) => {
+                    let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+                }
+                Some(Command::OpenConsumer(completed)) => {
+                    let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+                }
                 Some(Command::Start | Command::ConnectionLost(_)) => {}
                 None => {
                     close_connection(connection).await;
@@ -375,6 +445,14 @@ async fn handle_permanent_failure(
             previous_failures: 0,
         }),
         Some(Command::ConnectionLost(_)) => Some(Phase::FailedPermanent),
+        Some(Command::OpenPublisher(completed)) => {
+            let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+            Some(Phase::FailedPermanent)
+        }
+        Some(Command::OpenConsumer(completed)) => {
+            let _ = completed.send(Err(TransportError::closed("connection is not ready")));
+            Some(Phase::FailedPermanent)
+        }
         Some(Command::Close(completed)) => {
             shutdown(&context.states, connection, completed).await;
             None

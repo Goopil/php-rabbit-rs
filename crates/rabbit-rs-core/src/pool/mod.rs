@@ -12,8 +12,12 @@ use crate::{client::ClientPool, config::ValidatedConfig};
 
 pub mod connection_actor;
 pub mod key;
+pub mod recovery_coordinator;
 
 pub use key::ConnectionKey;
+pub use recovery_coordinator::{
+    CoordinatorError, RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
+};
 
 static NEXT_HANDLE_SERIAL: AtomicU64 = AtomicU64::new(1);
 

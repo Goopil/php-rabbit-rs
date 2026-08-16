@@ -408,6 +408,18 @@ impl ValidatedConfig {
         self.workers.iter().find(|worker| worker.name == name)
     }
 
+    /// Returns all broker configurations in canonical order.
+    #[must_use]
+    pub fn brokers(&self) -> &[BrokerConfig] {
+        &self.brokers
+    }
+
+    /// Returns all worker profiles in canonical order.
+    #[must_use]
+    pub fn worker_profiles(&self) -> &[WorkerProfile] {
+        &self.workers
+    }
+
     #[must_use]
     pub const fn topology_mode(&self) -> TopologyMode {
         self.topology_mode

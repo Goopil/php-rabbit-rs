@@ -9,14 +9,15 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    config::ValidatedConfig,
-    consumer::{ConsumerError, ConsumerHandle, ConsumerSet, Subscription, SubscriptionPolicy},
+    config::{TopologyMode, ValidatedConfig},
+    consumer::{ConsumerError, ConsumerHandle},
     metrics::{Metrics, MetricsSnapshot},
-    pool::ConnectionKey,
+    pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
-        PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublisherActor,
-        PublisherConfig, PublisherHandle,
+        PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublisherConfig,
+        PublisherHandle,
     },
+    topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{Transport, TransportConnection, TransportError, lapin::LapinTransport},
 };
 
@@ -41,6 +42,8 @@ pub struct ClientPool {
     lifecycle: StdMutex<PoolLifecycle>,
     connections: StdMutex<HashMap<String, Arc<dyn TransportConnection>>>,
     connection_initializers: Initializers,
+    coordinators: StdMutex<HashMap<String, RecoveryCoordinatorHandle>>,
+    coordinator_initializers: Initializers,
     publishers: StdMutex<HashMap<String, PublisherHandle>>,
     publisher_initializers: Initializers,
     consumers: StdMutex<HashMap<String, ConsumerHandle>>,
@@ -85,6 +88,8 @@ impl ClientPool {
             lifecycle: StdMutex::new(PoolLifecycle::Open { generation: 1 }),
             connections: StdMutex::new(HashMap::new()),
             connection_initializers: StdMutex::new(HashMap::new()),
+            coordinators: StdMutex::new(HashMap::new()),
+            coordinator_initializers: StdMutex::new(HashMap::new()),
             publishers: StdMutex::new(HashMap::new()),
             publisher_initializers: StdMutex::new(HashMap::new()),
             consumers: StdMutex::new(HashMap::new()),
@@ -180,48 +185,50 @@ impl ClientPool {
             return Ok(consumer);
         }
 
-        let key = ConnectionKey::from_config(&self.config);
-        let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
-        for (index, subscription) in worker.subscriptions.into_iter().enumerate() {
-            let connection = match self.connection(&subscription.broker).await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    close_subscription_channels(&subscriptions).await;
-                    return Err(error);
-                }
-            };
-            let channel = match connection.open_consumer().await {
-                Ok(channel) => channel,
-                Err(error) => {
-                    close_subscription_channels(&subscriptions).await;
-                    return Err(ClientError::transport(&error));
-                }
-            };
-            let channel_id = u16::try_from(index.saturating_add(1)).unwrap_or(u16::MAX);
-            subscriptions.push(
-                Subscription::new(
-                    subscription.name,
-                    key,
-                    subscription.queue,
-                    Arc::from(channel),
-                )
-                .prefetch(subscription.prefetch)
-                .channel_id(channel_id)
-                .policy(SubscriptionPolicy::new(
-                    subscription.weight,
-                    subscription.priority_class,
-                    subscription.starvation_after,
-                )),
-            );
+        // Ensure the coordinator for the first subscription's broker is started.
+        if let Some(first_sub) = worker.subscriptions.first() {
+            let _ = self.coordinator(&first_sub.broker).await?;
         }
 
-        let consumer = ConsumerSet::spawn_with_metrics(
-            subscriptions,
-            usize::from(worker.scheduler.max_in_flight),
-            self.metrics.clone(),
-        )
-        .await
-        .map_err(|error| ClientError::consumer(&error))?;
+        // The coordinator creates consumers internally on recovery. Wait for the
+        // consumer to become available from the coordinator.
+        let coordinator = self.coordinator(&worker.subscriptions[0].broker).await?;
+        let consumer = loop {
+            if self.is_closed() {
+                return Err(ClientError::closed());
+            }
+            if let Ok(consumer) = coordinator.consumer(profile).await {
+                break consumer;
+            }
+            coordinator
+                .wait_for_state(|state| {
+                    matches!(
+                        state,
+                        crate::recovery::ConnectionState::Ready { .. }
+                            | crate::recovery::ConnectionState::FailedPermanent { .. }
+                            | crate::recovery::ConnectionState::Closed
+                    )
+                })
+                .await;
+            if self.is_closed() {
+                return Err(ClientError::closed());
+            }
+            if matches!(
+                coordinator.state(),
+                crate::recovery::ConnectionState::FailedPermanent { .. }
+            ) {
+                return Err(ClientError::transport(&TransportError::connection(
+                    "broker connection failed permanently",
+                )));
+            }
+            if matches!(
+                coordinator.state(),
+                crate::recovery::ConnectionState::Closed
+            ) {
+                return Err(ClientError::closed());
+            }
+        };
+
         if self.commit(generation, &self.consumers, profile, consumer.clone()) {
             Ok(consumer)
         } else {
@@ -312,6 +319,18 @@ impl ClientPool {
             }
         }
 
+        let coordinators = std::mem::take(&mut *lock(&self.coordinators));
+        for coordinator in coordinators.into_values() {
+            if let Err(error) = coordinator.close().await
+                && first_error.is_none()
+            {
+                first_error = Some(ClientError::new(
+                    ClientErrorKind::Transport,
+                    error.to_string(),
+                ));
+            }
+        }
+
         let publishers = std::mem::take(&mut *lock(&self.publishers));
         for publisher in publishers.into_values() {
             if let Err(error) = publisher.close().await
@@ -346,22 +365,104 @@ impl ClientPool {
             return Ok(publisher);
         }
 
-        let connection = self.connection(broker).await?;
-        let channel = connection
-            .open_publisher()
-            .await
-            .map_err(|error| ClientError::transport(&error))?;
-        let publisher = PublisherActor::spawn_with_metrics(
-            Arc::from(channel),
-            self.publisher_config,
-            self.metrics.clone(),
-        );
+        let coordinator = self.coordinator(broker).await?;
+        let publisher = loop {
+            if self.is_closed() {
+                return Err(ClientError::closed());
+            }
+            if let Ok(publisher) = coordinator.publisher().await {
+                break publisher;
+            }
+            coordinator
+                .wait_for_state(|state| {
+                    matches!(
+                        state,
+                        crate::recovery::ConnectionState::Ready { .. }
+                            | crate::recovery::ConnectionState::FailedPermanent { .. }
+                            | crate::recovery::ConnectionState::Closed
+                    )
+                })
+                .await;
+            if self.is_closed() {
+                return Err(ClientError::closed());
+            }
+            if matches!(
+                coordinator.state(),
+                crate::recovery::ConnectionState::FailedPermanent { .. }
+            ) {
+                return Err(ClientError::transport(&TransportError::connection(
+                    "broker connection failed permanently",
+                )));
+            }
+            if matches!(
+                coordinator.state(),
+                crate::recovery::ConnectionState::Closed
+            ) {
+                return Err(ClientError::closed());
+            }
+        };
         if self.commit(generation, &self.publishers, broker, publisher.clone()) {
             Ok(publisher)
         } else {
             let _ = publisher.close().await;
             Err(ClientError::closed())
         }
+    }
+
+    async fn coordinator(&self, broker: &str) -> Result<RecoveryCoordinatorHandle, ClientError> {
+        let broker_config = self.config.broker(broker).cloned().ok_or_else(|| {
+            ClientError::new(
+                ClientErrorKind::Configuration,
+                format!("brokers.{broker}: unknown broker"),
+            )
+        })?;
+        let generation = self.open_generation()?;
+        if let Some(coordinator) = self.ready(generation, &self.coordinators, broker)? {
+            return Ok(coordinator);
+        }
+        let initializer = initializer(&self.coordinator_initializers, broker);
+        let _initializing = initializer.lock().await;
+        if let Some(coordinator) = self.ready(generation, &self.coordinators, broker)? {
+            return Ok(coordinator);
+        }
+
+        let topology_plan = self.build_topology_plan();
+        let coordinator_config = RecoveryCoordinatorConfig {
+            broker: broker_config,
+            policy: crate::recovery::RecoveryPolicy::default(),
+            topology_plan,
+            publisher_config: self.publisher_config,
+            config: self.config.clone(),
+            metrics: self.metrics.clone(),
+        };
+        let coordinator = RecoveryCoordinator::spawn(&self.transport, coordinator_config);
+        if self.commit(generation, &self.coordinators, broker, coordinator.clone()) {
+            Ok(coordinator)
+        } else {
+            let _ = coordinator.close().await;
+            Err(ClientError::closed())
+        }
+    }
+
+    fn build_topology_plan(&self) -> TopologyPlan {
+        let queues: Vec<_> = self
+            .config
+            .worker_profiles()
+            .iter()
+            .flat_map(|worker| &worker.subscriptions)
+            .map(|sub| QueueDefinition::new(&sub.queue))
+            .collect();
+        TopologyPlan::compile(
+            self.config.topology_mode(),
+            TopologyDefinition::new(vec![], queues, vec![]),
+        )
+        .unwrap_or_else(|_error| {
+            TopologyPlan::compile(
+                TopologyMode::External,
+                TopologyDefinition::new(vec![], vec![], vec![]),
+            )
+            .expect("external mode always compiles")
+        })
     }
 
     async fn connection(&self, broker: &str) -> Result<Arc<dyn TransportConnection>, ClientError> {
@@ -455,12 +556,6 @@ fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
         .entry(key.to_owned())
         .or_insert_with(|| Arc::new(AsyncMutex::new(())))
         .clone()
-}
-
-async fn close_subscription_channels(subscriptions: &[Subscription]) {
-    for subscription in subscriptions {
-        let _ = subscription.channel.close().await;
-    }
 }
 
 fn publisher_config() -> PublisherConfig {
