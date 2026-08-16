@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Tests\Feature;
 
+use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
+use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Goopil\RabbitRs\Pool;
+use Illuminate\Container\Container;
 
 final class OctaneLifecycleTest extends TestCase
 {
@@ -96,6 +100,100 @@ final class OctaneLifecycleTest extends TestCase
         $pool2 = $factory2->make($config);
 
         self::assertNotSame($pool1, $pool2, 'Each worker must have its own pool instance');
+    }
+
+    public function testFlushClosesConsumersOnCurrentQueue(): void
+    {
+        [$queue, $pool] = $this->resolveQueueWithConsumer();
+        $consumer = $pool->consumerFor('default');
+
+        $lifecycle = new OctaneLifecycle($this->app);
+        $lifecycle->flush();
+
+        self::assertSame(1, $consumer->closeCalls, 'flush() must close cached consumers');
+    }
+
+    public function testReloadClosesConsumersOnCurrentQueue(): void
+    {
+        [$queue, $pool] = $this->resolveQueueWithConsumer();
+        $consumer = $pool->consumerFor('default');
+
+        $lifecycle = new OctaneLifecycle($this->app);
+        $lifecycle->reload();
+
+        self::assertSame(1, $consumer->closeCalls, 'reload() must close cached consumers');
+    }
+
+    public function testStopClosesConsumersOnCurrentQueue(): void
+    {
+        [$queue, $pool] = $this->resolveQueueWithConsumer();
+        $consumer = $pool->consumerFor('default');
+
+        $lifecycle = new OctaneLifecycle($this->app);
+        $lifecycle->stop();
+
+        self::assertSame(1, $consumer->closeCalls, 'stop() must close cached consumers');
+    }
+
+    public function testFlushWithoutQueueManagerDoesNotThrow(): void
+    {
+        $container = new Container();
+        $lifecycle = new OctaneLifecycle($container);
+
+        // Should not throw even though 'queue' is not bound.
+        $lifecycle->flush();
+
+        self::assertTrue(true);
+    }
+
+    /**
+     * @return array{RabbitMqQueue, Pool}
+     */
+    private function resolveQueueWithConsumer(): array
+    {
+        $workers = [
+            [
+                'name' => 'default',
+                'subscriptions' => [
+                    ['name' => 'orders', 'queue' => 'orders-eu'],
+                ],
+            ],
+        ];
+        $routes = [
+            'default' => [
+                'broker' => 'default-broker',
+                'exchange' => '',
+                'routing_key' => '{queue}',
+            ],
+        ];
+
+        $pool = new Pool(['workers' => $workers]);
+        $resolver = new WorkerProfileResolver($workers);
+        $queue = new RabbitMqQueue(
+            $pool,
+            $routes,
+            'default',
+            workerProfiles: $resolver,
+            blockForMilliseconds: 0,
+        );
+        $queue->setContainer($this->app);
+        $queue->setConnectionName('rabbit-rs');
+
+        // Register the connection config so the manager knows about it.
+        $this->app['config']->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+        ]);
+
+        // Register the resolved connection so the manager returns our queue.
+        $manager = $this->app->make('queue');
+        $reflection = new \ReflectionClass($manager);
+        $connectionsProperty = $reflection->getProperty('connections');
+        $connectionsProperty->setValue($manager, ['rabbit-rs' => $queue]);
+
+        // Trigger consumer creation by calling pop().
+        $queue->pop('orders-eu');
+
+        return [$queue, $pool];
     }
 
     /**

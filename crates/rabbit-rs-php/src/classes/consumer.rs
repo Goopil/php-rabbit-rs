@@ -68,6 +68,22 @@ impl Consumer {
             )
         })
     }
+
+    /// Closes the consumer handle when PHP garbage-collects the object.
+    ///
+    /// This is a best-effort safety net that prevents AMQP channel leaks in
+    /// long-lived processes (Octane, daemons) when `close()` is never called
+    /// explicitly. The underlying `ConsumerHandle::Drop` also sends `Close` to
+    /// the actor so channels are closed even if PHP never calls `close()`.
+    pub fn __destruct(&self) {
+        if self.pid != std::process::id() {
+            return;
+        }
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self.runtime.block_on(self.handle.close());
+    }
 }
 
 impl Consumer {

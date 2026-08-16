@@ -285,6 +285,30 @@ final class RabbitMqQueue extends Queue implements QueueContract
         );
     }
 
+    /**
+     * Closes all cached consumers and clears the cache.
+     *
+     * This prevents AMQP channel leaks in long-lived processes (Octane,
+     * daemons) where consumers would otherwise accumulate across requests
+     * or worker lifecycles without ever being closed.
+     */
+    public function closeConsumers(): void
+    {
+        foreach ($this->consumers as $consumer) {
+            try {
+                $consumer->close();
+            } catch (NativeException) {
+                // Best-effort: a closed or stale consumer is already cleaned up.
+            }
+        }
+        $this->consumers = [];
+    }
+
+    public function __destruct()
+    {
+        $this->closeConsumers();
+    }
+
     public function marshalJob(Delivery $delivery, $queue = null): RabbitMqJob
     {
         return new RabbitMqJob(

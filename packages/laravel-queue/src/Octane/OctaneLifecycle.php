@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Octane;
 
+use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Container\Container;
 
@@ -14,12 +15,13 @@ final class OctaneLifecycle
     ) {}
 
     /**
-     * Called after each request in Octane. The NativePoolFactory does not
-     * retain request data, so this is a no-op for request-scoped state.
+     * Called after each request in Octane. Closes cached consumers on all
+     * resolved RabbitMqQueue connections to prevent AMQP channel leaks across
+     * requests.
      */
     public function flush(): void
     {
-        // NativePoolFactory does not retain request-scoped state.
+        $this->closeConsumersOnResolvedQueues();
     }
 
     /**
@@ -28,6 +30,7 @@ final class OctaneLifecycle
      */
     public function reload(): void
     {
+        $this->closeConsumersOnResolvedQueues();
         $this->flushPoolFactory();
     }
 
@@ -36,6 +39,7 @@ final class OctaneLifecycle
      */
     public function stop(): void
     {
+        $this->closeConsumersOnResolvedQueues();
         $this->flushPoolFactory();
     }
 
@@ -43,6 +47,36 @@ final class OctaneLifecycle
     {
         if ($this->container->bound(NativePoolFactory::class)) {
             $this->container->make(NativePoolFactory::class)->flush();
+        }
+    }
+
+    private function closeConsumersOnResolvedQueues(): void
+    {
+        if (! $this->container->bound('queue')) {
+            return;
+        }
+
+        $config = $this->container->make('config');
+        $connections = $config->get('queue.connections', []);
+        if (! is_array($connections)) {
+            return;
+        }
+
+        $manager = $this->container->make('queue');
+
+        foreach ($connections as $name => $connection) {
+            if (! is_array($connection) || ($connection['driver'] ?? null) !== 'rabbit-rs') {
+                continue;
+            }
+
+            if (! $manager->connected($name)) {
+                continue;
+            }
+
+            $queue = $manager->connection($name);
+            if ($queue instanceof RabbitMqQueue) {
+                $queue->closeConsumers();
+            }
         }
     }
 }

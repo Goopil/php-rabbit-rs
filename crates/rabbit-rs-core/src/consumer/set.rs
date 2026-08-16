@@ -206,6 +206,16 @@ pub struct ConsumerHandle {
     next_waiter_id: Arc<AtomicU64>,
 }
 
+impl Drop for ConsumerHandle {
+    fn drop(&mut self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (sender, _) = oneshot::channel();
+        let _ = self.commands.try_send(ConsumerCommand::Close(sender));
+    }
+}
+
 struct WaiterCancellation {
     waiter_id: u64,
     commands: mpsc::Sender<ConsumerCommand>,

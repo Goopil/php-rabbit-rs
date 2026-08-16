@@ -110,6 +110,8 @@ namespace Goopil\RabbitRs {
             /** @var list<int> */
             public array $timeouts = [];
 
+            public int $closeCalls = 0;
+
             /** @var list<Delivery> */
             private array $deliveries = [];
 
@@ -149,6 +151,7 @@ namespace Goopil\RabbitRs {
 
             public function close(): void
             {
+                $this->closeCalls++;
                 $this->closed = true;
             }
         }
@@ -306,7 +309,11 @@ namespace Goopil\RabbitRs {
             {
                 foreach ($this->config['workers'] ?? [] as $worker) {
                     if (($worker['name'] ?? null) === $profile) {
-                        return $this->consumers[$profile] ??= new Consumer();
+                        if (! isset($this->consumers[$profile]) || $this->consumers[$profile]->closeCalls > 0) {
+                            $this->consumers[$profile] = new Consumer();
+                        }
+
+                        return $this->consumers[$profile];
                     }
                 }
 

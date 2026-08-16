@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** main
 
-**Prochaine étape :** Milestone D2 — Task 32 — Câbler le nettoyage des consumers et éviter les fuites de channels.
+**Prochaine étape :** Milestone D2 — Task 33 — Dispatcher les events Laravel depuis l'extension native.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -63,6 +63,7 @@
 - [x] Task 29 — Implémenter le delay routing côté éditeur (`e844375`, `89bff5f`).
 - [x] Task 30 — Câbler la DLQ et les arguments de queue génériques (`7d62e0c`).
 - [x] Task 31 — Câbler le TLS end-to-end (`e6881d3`).
+- [x] Task 32 — Câbler le nettoyage des consumers et éviter les fuites de channels.
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
@@ -364,6 +365,18 @@ Checkpoint après TLS end-to-end du 16 août 2026 :
 - `ConfigNormalizer` valide et mappe ces champs vers la config native.
 - 10 tests Rust dans `tls.rs`, 3 nouveaux tests `ConfigNormalizerTest`.
 - `./scripts/check.sh` : PASS, 187 tests Rust + 104 tests PHP, Clippy clean, Fmt clean.
+
+Checkpoint après consumer cleanup du 16 août 2026 :
+
+- `ConsumerHandle::Drop` implémenté dans `consumer/set.rs` : envoie `ConsumerCommand::Close` via `try_send` (best-effort, non-bloquant) quand le dernier clone est droppé, empêchant les fuites de channels AMQP en process long (Octane, daemons) même si `close()` n'est jamais appelé explicitement.
+- `Consumer::__destruct()` ajouté à l'extension PHP : appelle `close()` si pas déjà fermé, guard anti-fork.
+- `RabbitMqQueue::closeConsumers()` et `__destruct()` ajoutés : ferment tous les consumers cachés et vident le cache, empêchant l'accumulation de channels entre requêtes Octane.
+- `OctaneLifecycle::flush()`, `reload()` et `stop()` appellent `closeConsumersOnResolvedQueues()` qui itère les connections `rabbit-rs` résolues du `QueueManager` et ferme les consumers de chaque `RabbitMqQueue`.
+- Le mock `Consumer` PHP track `closeCalls` et le mock `Pool` crée un nouveau consumer quand le précédent est fermé.
+- 6 tests Rust dans `consumer_cleanup.rs` (drop ferme les channels, multiple subscriptions, pas de double-close, idempotent across clones, next après drop retourne une erreur typée, in-flight delivery).
+- 6 tests PHP dans `RabbitMqQueueCleanupTest` (closeConsumers ferme tous, clears le cache, idempotent, safe sans consumers, __destruct, pop crée un nouveau consumer).
+- 4 nouveaux tests PHP dans `OctaneLifecycleTest` (flush/reload/stop ferment les consumers, flush sans queue manager).
+- `./scripts/check.sh` : PASS, 193 tests Rust + 114 tests PHP, Clippy clean, Fmt clean.
 
 ### Task 32: Câbler le nettoyage des consumers et éviter les fuites de channels
 
