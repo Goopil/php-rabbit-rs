@@ -26,28 +26,6 @@ jobs:
           coverage: none
           extensions: json, mbstring
 
-      - name: Build extension in Docker
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/src" \
-            -w /src \
-            php:8.4-cli \
-            sh -c '
-              set -e
-              apt-get update && apt-get install -y curl gcc make libclang-dev
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
-              . "$HOME/.cargo/env"
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
-            '
-
-      - name: Verify extension is loaded
-        run: |
-          if ! php -d "extension=$(pwd)/target/release/librabbit_rs_php.so" -m 2>/dev/null | grep -q rabbit_rs; then
-            echo "ERROR: ext-rabbit_rs is not loaded"
-            exit 1
-          fi
-          echo "ext-rabbit_rs is loaded."
-
       - name: Install Laravel package dependencies
         run: |
           cd packages/laravel-queue

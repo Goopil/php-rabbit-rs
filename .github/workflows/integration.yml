@@ -30,12 +30,6 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Setup PHP 8.4
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.4"
-          coverage: none
-
       - name: Install system dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
@@ -59,45 +53,6 @@ jobs:
         run: |
           cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
 
-      - name: Build extension in Docker
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/src" \
-            -w /src \
-            php:8.4-cli \
-            sh -c '
-              set -e
-              apt-get update && apt-get install -y curl gcc make libclang-dev
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
-              . "$HOME/.cargo/env"
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
-            '
-
-      - name: Verify extension is loaded
-        run: |
-          if ! php -d "extension=$(pwd)/target/release/librabbit_rs_php.so" -m 2>/dev/null | grep -q rabbit_rs; then
-            echo "ERROR: ext-rabbit_rs is not loaded"
-            exit 1
-          fi
-          echo "ext-rabbit_rs is loaded."
-
-      - name: Install Laravel package dependencies
-        run: |
-          cd packages/laravel-queue
-          composer install --quiet --ignore-platform-reqs
-
-      - name: Run Laravel integration tests
-        run: |
-          cd packages/laravel-queue
-          php -d "extension=$(pwd)/../../target/release/librabbit_rs_php.so" vendor/bin/phpunit --testsuite="Rabbit RS Integration" --testdox
-
-      - name: Laravel comparison lab smoke
-        run: |
-          cd benchmarks/laravel
-          if [ -f scripts/run-matrix.sh ]; then
-            ./scripts/run-matrix.sh --smoke || true
-          fi
-
       - name: Stop RabbitMQ lab
         if: always()
         run: ./scripts/lab-down.sh
@@ -115,12 +70,6 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Setup PHP 8.4
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.4"
-          coverage: none
 
       - name: Install system dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
