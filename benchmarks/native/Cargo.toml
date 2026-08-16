@@ -1,0 +1,39 @@
+[package]
+name = "rabbit-rs-native-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rabbit-rs-core = { path = "../../crates/rabbit-rs-core" }
+
+[dev-dependencies]
+bytes = "1.10"
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "batching"
+path = "benches/batching.rs"
+harness = false
+
+[[bench]]
+name = "ffi_conversion"
+path = "benches/ffi_conversion.rs"
+harness = false
+
+[[bench]]
+name = "scheduler"
+path = "benches/scheduler.rs"
+harness = false
+
+[[bench]]
+name = "transport"
+path = "benches/transport.rs"
+harness = false
+
+[lints]
+workspace = true
