@@ -285,6 +285,354 @@ Expected: PASS.
     git add crates packages
     git commit -m "feat(core): wire DLQ config and generic queue arguments"
 
+### Task 31: Câbler le TLS end-to-end
+
+**Files:**
+- Modify: crates/rabbit-rs-core/src/transport.rs
+- Modify: crates/rabbit-rs-core/src/transport/lapin.rs
+- Modify: crates/rabbit-rs-core/src/config.rs
+- Modify: packages/laravel-queue/config/rabbit-rs.php
+- Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
+- Create: crates/rabbit-rs-core/tests/tls.rs
+
+**Contexte :**
+
+`TlsConfig` existe avec `enabled` et `server_name`, mais `server_name` n'est jamais lu par le transport. Le scheme `amqps` est posé via l'URI, mais aucune configuration de connecteur TLS (SNI, CA certs, cert client, mode de vérification) n'est passée à Lapin. Aucun test TLS n'existe.
+
+**Step 1: Write failing TLS tests**
+
+Scénarios :
+
+1. `tls.enabled = true` + `server_name = "rabbit.example.com"` → l'URI utilise `amqps://` et `server_name` est passé à Lapin pour SNI.
+2. `tls.enabled = false` → l'URI utilise `amqp://`.
+3. `tls.enabled = true` sans `server_name` → utilise le premier host comme SNI.
+4. Config avec `ca_cert`, `client_cert`, `client_key` → passés au connecteur TLS.
+
+**Step 2: Verify failure**
+
+Run: cargo test -p rabbit-rs-core --test tls
+
+Expected: FAIL.
+
+**Step 3: Implement TLS connector configuration**
+
+- Étendre `TlsConfig` : ajouter `ca_cert: Option<PathBuf>`, `client_cert: Option<PathBuf>`, `client_key: Option<PathBuf>`, `verify: Option<TlsVerify>` (default `Peer`).
+- Mettre à jour `lapin.rs` : utiliser `ConnectionProperties::with_ssl` ou construire un `tls::Connector` rustls avec SNI (`server_name`), CA, cert client.
+- Utiliser `server_name` pour SNI quand fourni, sinon le premier host.
+- Garder le scheme `amqps` dans l'URI quand `enabled`.
+
+**Step 4: Expose TLS settings in Laravel config**
+
+- Ajouter `ca_cert`, `client_cert`, `client_key`, `verify` à `config/rabbit-rs.php` sous `brokers.default.tls`.
+- `ConfigNormalizer` doit mapper ces champs vers la config native.
+
+**Step 5: Verify**
+
+Run: cargo test -p rabbit-rs-core --test tls
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit --testsuite "Rabbit RS Laravel"
+
+Expected: PASS.
+
+**Step 6: Commit**
+
+    git add crates packages
+    git commit -m "feat(core): wire TLS connector configuration end-to-end"
+
+### Task 32: Câbler le nettoyage des consumers et éviter les fuites de channels
+
+**Files:**
+- Modify: crates/rabbit-rs-core/src/consumer/set.rs
+- Modify: crates/rabbit-rs-php/src/classes/consumer.rs
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
+- Modify: packages/laravel-queue/src/Octane/OctaneLifecycle.php
+- Create: crates/rabbit-rs-core/tests/consumer_cleanup.rs
+
+**Contexte :**
+
+`RabbitMqQueue` cache les `Consumer` dans `$this->consumers` mais n'appelle jamais `close()`. Pas de `__destruct`. `ConsumerHandle` n'a pas de `Drop` qui envoie `Close`. En process long (Octane, daemons), les channels AMQP fuient.
+
+**Step 1: Write failing consumer cleanup tests**
+
+Scénarios :
+
+1. `RabbitMqQueue::__destruct()` → appelle `$consumer->close()` pour chaque consumer caché → les channels sont fermés.
+2. `ConsumerHandle::Drop` → envoie `Close` au actor (best-effort) → les channels sont fermés même si PHP ne appelle pas `close()`.
+3. `OctaneLifecycle::flush()` → ferme les consumers de la queue courante (pas seulement le pool factory).
+4. Après `close()`, `pop()` retourne `null` ou lève une erreur typée (pas de panic).
+
+**Step 2: Verify failure**
+
+Run: cargo test -p rabbit-rs-core --test consumer_cleanup
+
+Expected: FAIL.
+
+**Step 3: Implement Rust-side Drop safety net**
+
+- Implémenter `Drop` pour `ConsumerHandle` : envoie `ConsumerCommand::Close` (best-effort, non-bloquant via `try_send`).
+- Assurer que le `Close` handler dans l'actor ferme les channels même si reçu via Drop.
+
+**Step 4: Implement PHP-side cleanup**
+
+- `Consumer` PHP : ajouter `__destruct()` qui appelle `close()` si pas déjà fermé.
+- `RabbitMqQueue` : ajouter `closeConsumers()` qui ferme tous les consumers cachés, et `__destruct()` qui l'appelle.
+- `OctaneLifecycle::flush()` : appeler `closeConsumers()` sur la queue courante (si disponible).
+
+**Step 5: Verify**
+
+Run: cargo test -p rabbit-rs-core --test consumer_cleanup
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit --testsuite "Rabbit RS Laravel"
+
+Expected: PASS.
+
+**Step 6: Commit**
+
+    git add crates packages
+    git commit -m "fix(core): wire consumer cleanup and prevent channel leaks"
+
+### Task 33: Dispatcher les events Laravel depuis l'extension native
+
+**Files:**
+- Modify: crates/rabbit-rs-php/src/classes/pool.rs
+- Modify: crates/rabbit-rs-php/src/lib.rs
+- Create: crates/rabbit-rs-php/src/callbacks.rs
+- Modify: crates/rabbit-rs-core/src/metrics.rs
+- Modify: crates/rabbit-rs-core/src/pool/connection_actor.rs
+- Modify: packages/laravel-queue/src/RabbitMqQueue.php
+- Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
+- Modify: packages/laravel-queue/src/Events/ConnectionStateChanged.php
+- Modify: packages/laravel-queue/src/Events/BackpressureDetected.php
+- Create: packages/laravel-queue/tests/Feature/NativeEventDispatchTest.php
+
+**Contexte :**
+
+`ConnectionStateChanged` et `BackpressureDetected` sont définis mais jamais dispatchés. Il n'existe pas de mécanisme FFI pour signaler les changements d'état de Rust vers PHP. Les events sont du dead code.
+
+**Step 1: Write failing event dispatch tests**
+
+Scénarios :
+
+1. Une connection est perdue → l'event `ConnectionStateChanged` est dispatché avec `state = "recovering"`.
+2. La connection est rétablie → l'event `ConnectionStateChanged` est dispatché avec `state = "ready"` et `generation` incrémenté.
+3. Le publisher atteint la capacité → l'event `BackpressureDetected` est dispatché avec `inFlight` et `capacity`.
+4. Les events sont dispatchés via le système d'events Laravel (Event::dispatch).
+
+**Step 2: Verify failure**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/NativeEventDispatchTest.php
+
+Expected: FAIL.
+
+**Step 3: Implement FFI callback mechanism**
+
+- Côté Rust (PHP extension) : enregistrer des callbacks PHP (closures) via `Pool::onConnectionState(callback)` et `Pool::onBackpressure(callback)`.
+- Stocker les callbacks dans le `Pool` PHP (Zend objects, jamais en threads Rust — les callbacks sont invoqués sur le thread PHP via `block_on`).
+- Le `ConnectionActor` publie `ConnectionState` via `watch` ; le `Pool` PHP poll le `watch::Receiver` lors des opérations synchrones et invoque le callback si l'état a changé.
+- Le `Metrics` atomic `backpressure_total` peut être comparé entre deux appels à `stats()` pour détecter le backpressure et invoquer le callback.
+
+**Step 4: Wire events in Laravel**
+
+- `RabbitMqServiceProvider` : enregistrer les callbacks par défaut qui dispatch les events Laravel.
+- `RabbitMqQueue` : exposer `onConnectionState()` et `onBackpressure()` pour override.
+
+**Step 5: Verify**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/NativeEventDispatchTest.php
+
+Expected: PASS.
+
+**Step 6: Commit**
+
+    git add crates packages
+    git commit -m "feat(laravel): dispatch native events for connection state and backpressure"
+
+### Task 34: Exposer les métriques consumer et latences
+
+**Files:**
+- Modify: crates/rabbit-rs-php/src/classes/pool.rs
+- Modify: crates/rabbit-rs-core/src/metrics.rs
+- Modify: packages/laravel-queue/src/Console/RabbitMqStatusCommand.php
+- Modify: packages/laravel-queue/tests/Feature/RabbitMqStatusCommandTest.php
+
+**Contexte :**
+
+3 compteurs (`deliveries_total`, `acks_total`, `rejects_total`) et 2 histogrammes (`confirmation_latency`, `settlement_latency`) sont collectés en Rust mais non exposés à PHP. Le status command ne montre que les métriques éditeur.
+
+**Step 1: Write failing metrics tests**
+
+Scénarios :
+
+1. `Pool::stats()` inclut `deliveries_total`, `acks_total`, `rejects_total`.
+2. `Pool::stats()` inclut `confirmation_latency_p50`, `confirmation_latency_p95`, `confirmation_latency_p99`.
+3. `Pool::stats()` inclut `settlement_latency_p50`, `settlement_latency_p95`, `settlement_latency_p99`.
+4. `RabbitMqStatusCommand` affiche les métriques consumer et les latences.
+
+**Step 2: Verify failure**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/RabbitMqStatusCommandTest.php
+
+Expected: FAIL.
+
+**Step 3: Expose metrics to PHP**
+
+- `pool.rs::stats()` : ajouter `deliveries_total`, `acks_total`, `rejects_total` depuis `MetricsSnapshot`.
+- `pool.rs::stats()` : calculer percentiles (p50/p95/p99) depuis les histogrammes atomiques et les exposer.
+- `RabbitMqStatusCommand` : afficher les nouvelles métriques.
+
+**Step 4: Verify**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/RabbitMqStatusCommandTest.php
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+    git add crates packages
+    git commit -m "feat(metrics): expose consumer metrics and latency histograms to PHP"
+
+### Task 35: Câbler la config publisher (confirms, mandatory, timeout)
+
+**Files:**
+- Modify: crates/rabbit-rs-core/src/config.rs
+- Modify: crates/rabbit-rs-core/src/client.rs
+- Modify: crates/rabbit-rs-php/src/classes/pool.rs
+- Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
+- Modify: packages/laravel-queue/config/rabbit-rs.php
+- Modify: packages/laravel-queue/src/Support/MessageMapper.php
+
+**Contexte :**
+
+`publisher.confirms` et `publisher.mandatory` dans la config Laravel sont normalisés mais jamais passés au native `Pool`. `normalized['publisher']` n'arrive pas à `Pool::__construct()`. `confirm_timeout` est hardcoded à 30s. `timeout_ms` n'est pas envoyé par défaut dans `MessageMapper::map()`.
+
+**Step 1: Write failing config publisher tests**
+
+Scénarios :
+
+1. Config avec `publisher.confirms = false` → le publisher n'active pas `confirm_select`.
+2. Config avec `publisher.confirms = true` → le publisher active `confirm_select`.
+3. Config avec `publisher.mandatory = false` → `basic_publish` avec `mandatory = false`.
+4. Config avec `publisher.confirm_timeout = 5000` → le timeout de confirm est 5s.
+5. `MessageMapper::map()` inclut `timeout_ms` depuis la config publisher par défaut.
+
+**Step 2: Verify failure**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit --testsuite "Rabbit RS Laravel"
+
+Expected: FAIL.
+
+**Step 3: Wire publisher config to native**
+
+- `ConfigNormalizer` : inclure `publisher` dans `normalized['native']` (pas seulement dans `normalized['publisher']`).
+- Le native `Config` doit désérialiser `publisher.confirms`, `publisher.mandatory`, `publisher.confirm_timeout`.
+- `PublisherConfig` dans `config.rs` : désérialiser depuis config au lieu de hardcoder.
+- `client.rs::publisher_config()` : lire depuis la config validée.
+- `MessageMapper::map()` : inclure `timeout_ms` par défaut depuis `publisher.confirm_timeout` quand pas explicitement fourni.
+
+**Step 4: Verify**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit --testsuite "Rabbit RS Laravel"
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+    git add crates packages
+    git commit -m "fix(core): wire publisher config (confirms, mandatory, timeout) end-to-end"
+
+### Task 36: Câbler le lifecycle Octane complet
+
+**Files:**
+- Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
+- Modify: packages/laravel-queue/src/Octane/OctaneLifecycle.php
+- Modify: packages/laravel-queue/tests/Feature/OctaneLifecycleTest.php
+
+**Contexte :**
+
+Seul `flush()` (no-op) est branché via `$app->terminating()`. `reload()` et `stop()` ne sont pas hookés aux events Octane. Les consumers cachés dans `RabbitMqQueue::$consumers` ne sont pas nettoyés entre requêtes Octane.
+
+**Step 1: Write failing Octane lifecycle tests**
+
+Scénarios :
+
+1. Quand Octane reload est déclenché → `OctaneLifecycle::reload()` est appelé → les pools sont flushés.
+2. Quand Octane worker stop est déclenché → `OctaneLifecycle::stop()` est appelé → les pools sont flushés et fermés.
+3. Après `flush()` en fin de requête Octane → les consumers de la queue courante sont fermés (pas seulement le pool factory).
+4. Le service provider enregistre les hooks Octane correctement quand `Laravel\Octane\Octane::class` existe.
+
+**Step 2: Verify failure**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/OctaneLifecycleTest.php
+
+Expected: FAIL.
+
+**Step 3: Wire Octane hooks**
+
+- `RabbitMqServiceProvider::registerOctaneLifecycle()` :
+  - Enregistrer `flush()` sur `Octane::tick()` ou `terminating` (déjà fait).
+  - Enregistrer `reload()` sur l'event `WorkerReload` d'Octane.
+  - Enregistrer `stop()` sur l'event `WorkerStopping` d'Octane.
+- `OctaneLifecycle::flush()` : appeler `closeConsumers()` sur la queue courante en plus du flush du pool factory (dépend de Task 32).
+
+**Step 4: Verify**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/OctaneLifecycleTest.php
+
+Expected: PASS.
+
+**Step 5: Commit**
+
+    git add packages
+    git commit -m "fix(laravel): wire full Octane lifecycle (reload, stop, consumer cleanup)"
+
+### Task 37: Câbler le WorkCommand et tester le supervisor end-to-end
+
+**Files:**
+- Modify: packages/laravel-queue/src/Console/RabbitMqWorkCommand.php
+- Modify: packages/laravel-queue/src/Console/WorkerSupervisor.php
+- Create: packages/laravel-queue/src/Console/RabbitMqWorkCommandExtension.php
+- Modify: packages/laravel-queue/tests/Feature/RabbitMqWorkCommandTest.php
+- Create: packages/laravel-queue/tests/Feature/WorkerSupervisorIntegrationTest.php
+
+**Contexte :**
+
+`--rabbit-rs-worker={i}` est émis par le supervisor mais jamais consommé. La méthode `run()` (supervision, crash detection, restart, signaux) n'est pas testée end-to-end.
+
+**Step 1: Write failing supervisor integration tests**
+
+Scénarios :
+
+1. Le supervisor spawn N workers → chaque worker reçoit `--rabbit-rs-worker={i}` → l'option est consommée pour le logging/metrics.
+2. Un worker crash → le supervisor le redémarre avec backoff.
+3. SIGTERM au supervisor → les workers sont arrêtés proprement.
+4. `maxRestarts` atteint → le supervisor retourne `EXIT_MAX_RESTARTS`.
+5. `--rabbit-rs-worker` est visible dans les logs du worker.
+
+**Step 2: Verify failure**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/WorkerSupervisorIntegrationTest.php
+
+Expected: FAIL.
+
+**Step 3: Implement option consumption**
+
+- Créer un `WorkCommandExtension` (ou override `getOptions()` sur le `WorkCommand`) qui reconnait `--rabbit-rs-worker` et l'utilise pour le logging/metrics.
+- Le `WorkerSupervisor::buildChildCommand()` doit passer l'option correctement.
+
+**Step 4: Implement end-to-end tests**
+
+- Tester `run()` avec mock processes (ou real processes avec un script PHP minimal).
+- Vérifier crash detection, restart, backoff, signal handling, graceful shutdown.
+
+**Step 5: Verify**
+
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit tests/Feature/WorkerSupervisorIntegrationTest.php
+
+Expected: PASS.
+
+**Step 6: Commit**
+
+    git add packages
+    git commit -m "fix(laravel): wire WorkCommand option and test supervisor end-to-end"
+
 Ce lot a été exécuté dans le worktree dédié `.worktrees/strict-audit-stabilization` sur la branche `fix/strict-audit-stabilization`. Les corrections déterministes issues des audits des 31 juillet et 1er août sont terminées ; les qualifications nécessitant un environnement de production représentatif sont reportées aux jalons dédiés et ne bloquent pas le démarrage de la Task 16.
 
 Périmètre initial des constats actifs :
@@ -1817,7 +2165,7 @@ Expected: PASS, missing = 0.
 
 ## Milestone E — Performance
 
-### Task 31: Créer bench-native
+### Task 38: Créer bench-native
 
 **Files:**
 - Create: benchmarks/native/Cargo.toml
@@ -1854,7 +2202,7 @@ Expected: PASS.
     git add Cargo.toml benchmarks/native
     git commit -m "perf: add native batching and transport benchmarks"
 
-### Task 32: Créer l'application bench-laravel
+### Task 39: Créer l'application bench-laravel
 
 **Files:**
 - Create: benchmarks/laravel/composer.json
@@ -1900,7 +2248,7 @@ Expected: PASS et fichier JSON de résultats.
     git add benchmarks/laravel
     git commit -m "perf: add reproducible Laravel queue comparison lab"
 
-### Task 33: Calibrer les defaults et figer les budgets
+### Task 40: Calibrer les defaults et figer les budgets
 
 **Files:**
 - Create: benchmarks/baselines/reference-machine.json
@@ -1940,7 +2288,7 @@ Expected: PASS.
 
 ## Milestone F — Distribution et documentation
 
-### Task 34: Préparer les packages Rabbit RS et la matrice PIE
+### Task 41: Préparer les packages Rabbit RS et la matrice PIE
 
 **Files:**
 - Modify: composer.json
@@ -2005,7 +2353,7 @@ Expected: PASS et matrice de 16 artefacts uniques.
     git add composer.json .gitattributes packages/laravel-queue/composer.json release scripts
     git commit -m "build: define Rabbit RS PIE and Packagist packages"
 
-### Task 35: Ajouter la CI et la publication synchronisée
+### Task 42: Ajouter la CI et la publication synchronisée
 
 **Files:**
 - Create: .github/workflows/rust.yml
@@ -2072,7 +2420,7 @@ Publier la GitHub Release uniquement après validation des artefacts, du dépôt
     git add .github scripts/verify-release-assets.sh
     git commit -m "ci: publish synchronized Rabbit RS releases"
 
-### Task 36: Documenter installation, configuration et exploitation
+### Task 43: Documenter installation, configuration et exploitation
 
 **Files:**
 - Create: README.md
@@ -2125,7 +2473,7 @@ Expected: PASS.
     git add README.md docs examples scripts/test-docs.sh
     git commit -m "docs: document Rabbit RS installation and operations"
 
-### Task 37: Effectuer la vérification de release
+### Task 44: Effectuer la vérification de release
 
 **Files:**
 - Create: docs/release-checklist.md
@@ -2196,6 +2544,13 @@ Ajouter versions, checksums, résultats, doublons observés, temps de recovery, 
 - Le delay routing côté éditeur fonctionne en mode plugin et TTL fallback.
 - La DLQ applicative est configurable depuis la config Laravel et déclarée par le topology reconciler.
 - Les arguments de queue génériques (`x-delivery-limit`, etc.) sont câblés depuis la config Laravel.
+- Le TLS est configurable (SNI, CA, cert client) et testé end-to-end.
+- Les consumers sont proprement fermés (pas de fuite de channels en process long).
+- Les events Laravel (connection state, backpressure) sont dispatchés depuis l'extension native.
+- Les métriques consumer et les latences sont exposées dans le status command.
+- La config publisher (confirms, mandatory, timeout) est câblée depuis Laravel.
+- Le lifecycle Octane (reload, stop, consumer cleanup) est entièrement branché.
+- Le WorkCommand supervisor est testé end-to-end (crash, restart, signaux).
 - Les defaults de batch, prefetch et buffers proviennent des benchmarks.
 - Les budgets absolus et comparatifs sont versionnés.
 - Les logs et diagnostics ne révèlent aucun secret.
