@@ -4,39 +4,7 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Pool;
 
-/**
- * PHP-side FFI conversion benchmark harness for the rabbit_rs native extension.
- *
- * Measures the cost of crossing the PHP/Rust boundary for configuration
- * validation, message construction, payload conversion, and header
- * conversion across varying payload sizes and batch sizes.
- *
- * The extension must be compiled and loaded (`./scripts/install.sh`).
- * No broker is required: all measurements fail at the conversion or
- * unknown-broker boundary, exercising the full FFI path without network I/O.
- */
-
-function environment(): array
-{
-    $phpVersion = PHP_VERSION;
-    $sapi = PHP_SAPI;
-    $isZts = defined('PHP_ZTS') && PHP_ZTS ? 'ZTS' : 'NTS';
-
-    $osFamily = PHP_OS_FAMILY;
-    $kernel = php_uname('r');
-    $cpu = php_uname('m');
-
-    return [
-        'php_version' => $phpVersion,
-        'sapi' => $sapi,
-        'thread_safety' => $isZts,
-        'os_family' => $osFamily,
-        'kernel' => $kernel,
-        'cpu' => $cpu,
-        'rabbitmq' => 'n/a (no broker)',
-        'extension' => extension_loaded('rabbit_rs') ? 'loaded' : 'missing',
-    ];
-}
+ini_set('memory_limit', '1G');
 
 function config(): array
 {
@@ -51,6 +19,20 @@ function config(): array
         ]],
         'workers' => [],
         'topology_mode' => 'external',
+    ];
+}
+
+function environment(): array
+{
+    return [
+        'php_version' => PHP_VERSION,
+        'sapi' => PHP_SAPI,
+        'thread_safety' => (defined('PHP_ZTS') && PHP_ZTS) ? 'ZTS' : 'NTS',
+        'os_family' => PHP_OS_FAMILY,
+        'kernel' => php_uname('r'),
+        'cpu' => php_uname('m'),
+        'rabbitmq' => getenv('RABBIT_BENCH_BROKER_URI') ?: 'n/a (no broker)',
+        'extension' => extension_loaded('rabbit_rs') ? 'loaded' : 'not loaded',
     ];
 }
 
@@ -111,6 +93,9 @@ function bench_single_publish(Pool $pool, int $payloadSize, int $headerCount): a
 function bench_batch_publish(Pool $pool, int $batchSize, int $payloadSize, int $headerCount): array
 {
     $iterations = 20;
+    $totalBatchSize = $batchSize * $payloadSize;
+    $iterations = $totalBatchSize > 50 * 1024 * 1024 ? 5 : 20;
+
     $messages = [];
     for ($i = 0; $i < $batchSize; $i++) {
         $messages[] = make_message($payloadSize, $headerCount, "msg-{$i}");
@@ -125,6 +110,8 @@ function bench_batch_publish(Pool $pool, int $batchSize, int $payloadSize, int $
         }
     }
     $elapsed = hrtime(true) - $start;
+
+    unset($messages);
 
     return [
         'operation' => 'publishBatch',
