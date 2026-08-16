@@ -13,6 +13,7 @@ use rabbit_rs_core::{
     },
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
+    topology::delay::DelayStrategy,
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
@@ -508,7 +509,8 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
     let publisher = publisher(&transport).await;
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
         .await
-        .delayed_publisher(publisher, Destination::new("jobs", "high"));
+        .delayed_publisher(publisher, Destination::new("jobs", "high"))
+        .delay_strategy(DelayStrategy::Plugin);
     let consumer = ConsumerSet::spawn(vec![subscription], 1)
         .await
         .expect("consumer set");
@@ -563,7 +565,8 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
     let publisher = publisher(&transport).await;
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
         .await
-        .delayed_publisher(publisher, Destination::new("jobs", "high"));
+        .delayed_publisher(publisher, Destination::new("jobs", "high"))
+        .delay_strategy(DelayStrategy::Plugin);
     let consumer = ConsumerSet::spawn(vec![subscription], 1)
         .await
         .expect("consumer set");

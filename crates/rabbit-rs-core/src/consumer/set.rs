@@ -85,7 +85,6 @@ impl Subscription {
     ) -> Self {
         self.publisher = Some(publisher);
         self.destination = Some(destination);
-        self.delay_strategy = Some(DelayStrategy::Plugin);
         self
     }
 

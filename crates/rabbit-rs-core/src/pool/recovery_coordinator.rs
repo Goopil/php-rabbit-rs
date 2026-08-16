@@ -388,6 +388,8 @@ async fn recover_generation(
     // Step 4: Re-establish consumers (open channels → QoS → basic_consume → update_generation).
     let connection_key = crate::pool::ConnectionKey::from_config(&context.config);
     let delay_strategy = compile_delay_strategy(&context.config);
+
+    let pub_handle = publisher.lock().await.clone();
     for worker in context.config.worker_profiles() {
         let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
         for (index, sub_config) in worker.subscriptions.iter().enumerate() {
@@ -401,22 +403,32 @@ async fn recover_generation(
                     .map_err(|_| CoordinatorError::new("failed to open consumer channel"))?,
             );
             let channel_id = u16::try_from(index.saturating_add(1)).unwrap_or(u16::MAX);
-            subscriptions.push(
-                Subscription::new(
-                    sub_config.name.clone(),
-                    connection_key,
-                    sub_config.queue.clone(),
-                    consumer_channel,
-                )
-                .prefetch(sub_config.prefetch)
-                .channel_id(channel_id)
-                .policy(SubscriptionPolicy::new(
-                    sub_config.weight,
-                    sub_config.priority_class,
-                    sub_config.starvation_after,
-                ))
-                .delay_strategy(delay_strategy.clone()),
-            );
+            let mut sub = Subscription::new(
+                sub_config.name.clone(),
+                connection_key,
+                sub_config.queue.clone(),
+                consumer_channel,
+            )
+            .prefetch(sub_config.prefetch)
+            .channel_id(channel_id)
+            .policy(SubscriptionPolicy::new(
+                sub_config.weight,
+                sub_config.priority_class,
+                sub_config.starvation_after,
+            ))
+            .delay_strategy(delay_strategy.clone());
+
+            if let Some(publisher) = &pub_handle {
+                sub = sub.delayed_publisher(
+                    publisher.clone(),
+                    crate::publisher::Destination::new(
+                        sub_config.queue.clone(),
+                        sub_config.queue.clone(),
+                    ),
+                );
+            }
+
+            subscriptions.push(sub);
         }
 
         if subscriptions.is_empty() {

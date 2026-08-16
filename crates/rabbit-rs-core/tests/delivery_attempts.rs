@@ -9,6 +9,7 @@ use rabbit_rs_core::{
     },
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
+    topology::delay::DelayStrategy,
     transport::{
         Delivery as TransportDelivery, HeaderValue, PublishConfirmation, Transport,
         mock::{MockTransport, TransportOperation},
@@ -247,7 +248,8 @@ async fn delayed_release_increments_the_application_attempt_header() {
         "jobs",
         Arc::from(consumer_channel),
     )
-    .delayed_publisher(publisher, Destination::new("jobs", "high"));
+    .delayed_publisher(publisher, Destination::new("jobs", "high"))
+    .delay_strategy(DelayStrategy::Plugin);
     let consumer = ConsumerSet::spawn(vec![subscription], 1)
         .await
         .expect("consumer set");
