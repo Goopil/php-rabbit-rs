@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** main
 
-**Prochaine étape :** Milestone D2 — Task 34 — Exposer les métriques consumer et latences.
+**Prochaine étape :** Milestone E — Task 39.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -64,7 +64,12 @@
 - [x] Task 30 — Câbler la DLQ et les arguments de queue génériques (`7d62e0c`).
 - [x] Task 31 — Câbler le TLS end-to-end (`e6881d3`).
 - [x] Task 32 — Câbler le nettoyage des consumers et éviter les fuites de channels.
-- [x] Task 33 — Dispatcher les events Laravel depuis l'extension native.
+- [x] Task 33 — Dispatcher les events Laravel depuis l'extension native (`9213d0d`, `c7ea2ad`).
+- [x] Task 34 — Exposer les métriques consumer et latences (`31e5676`, `6f41c7f`).
+- [x] Task 35 — Câbler la config publisher (confirms, mandatory, timeout) end-to-end (`c8261ec`).
+- [x] Task 36 — Câbler le lifecycle Octane complet (`e20a69b`).
+- [x] Task 37 — Câbler le WorkCommand et tester le supervisor end-to-end (`9c0e036`, `356b71b`, `7a68c6f`).
+- [x] Task 38 — Créer bench-native (`ae9c668`, `7f13f98`).
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
