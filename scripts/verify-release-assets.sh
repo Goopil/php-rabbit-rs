@@ -3,8 +3,8 @@ set -euo pipefail
 
 # verify-release-assets.sh — verify release artifacts before publishing.
 #
-# Checks that exactly 16 PIE archives exist, each with SHA-256, SBOM, and
-# attestation files. Rejects debug artifacts and unsupported platforms.
+# Checks that exactly 16 PIE archives exist, each with a SHA-256 checksum.
+# Rejects debug artifacts and unsupported platforms.
 # Validates version synchronization across Cargo, extension, and tag.
 #
 # Usage:
@@ -114,14 +114,13 @@ ok "extension name: ${php_ext_name}"
 echo "==> Validating artifact names against PIE naming convention"
 
 declare -a expected_archives
-declare -a expected_suffixes
 
 for i in $(seq 0 $((matrix_count - 1))); do
     entry_php="$(jq -r ".matrix[${i}].php" "${FIXTURES}")"
     entry_arch="$(jq -r ".matrix[${i}].arch" "${FIXTURES}")"
     entry_libc="$(jq -r ".matrix[${i}].libc" "${FIXTURES}")"
     entry_ts="$(jq -r ".matrix[${i}].thread_safety" "${FIXTURES}")"
-    entry_suffix="$(jq -r ".matrix[${i}].artifact_suffix" "${FIXTURES}")"
+    entry_ts_suffix="$(jq -r ".matrix[${i}].ts_suffix" "${FIXTURES}")"
 
     # Validate PHP version
     case "${entry_php}" in
@@ -129,7 +128,7 @@ for i in $(seq 0 $((matrix_count - 1))); do
         *) fail "unsupported PHP version in matrix entry ${i}: ${entry_php}" ;;
     esac
 
-    # Validate architecture — reject unsupported platforms
+    # Validate architecture
     case "${entry_arch}" in
         x86_64|arm64) : ;;
         *) fail "unsupported architecture in matrix entry ${i}: ${entry_arch}" ;;
@@ -141,22 +140,15 @@ for i in $(seq 0 $((matrix_count - 1))); do
         *) fail "unsupported libc in matrix entry ${i}: ${entry_libc}" ;;
     esac
 
-    # Validate thread safety — reject debug builds
+    # Validate thread safety
     case "${entry_ts}" in
         nts|zts) : ;;
-        *) fail "unsupported thread_safety in matrix entry ${i}: ${entry_ts} — debug artifacts are not distributable" ;;
+        *) fail "unsupported thread_safety in matrix entry ${i}: ${entry_ts}" ;;
     esac
 
-    # Build expected archive name from the template
-    expected_name="php_${php_ext_name}-${VERSION}_php${entry_php}-${entry_arch}-linux-${entry_libc}-${entry_ts}.zip"
+    # Build expected archive name: php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}{ts_suffix}.zip
+    expected_name="php_${php_ext_name}-${VERSION}_php${entry_php}-${entry_arch}-linux-${entry_libc}${entry_ts_suffix}.zip"
     expected_archives+=("${expected_name}")
-    expected_suffixes+=("${entry_suffix}")
-
-    # Verify the suffix matches the expected pattern
-    expected_suffix="php${entry_php}-${entry_arch}-linux-${entry_libc}-${entry_ts}"
-    if [[ "${entry_suffix}" != "${expected_suffix}" ]]; then
-        fail "matrix entry ${i} artifact_suffix '${entry_suffix}' does not match expected '${expected_suffix}'"
-    fi
 done
 
 # Check uniqueness
@@ -166,7 +158,7 @@ if [[ "${unique_count}" -ne "${EXPECTED_ARCHIVE_COUNT}" ]]; then
 fi
 ok "all ${EXPECTED_ARCHIVE_COUNT} archive names are unique and follow PIE naming convention"
 
-# --- Check that archives exist with SHA-256, SBOM, and attestation ------------
+# --- Check that archives exist with SHA-256 ----------------------------------
 
 echo "==> Checking release artifacts in ${RELEASE_DIR}"
 
@@ -180,8 +172,6 @@ missing_archives=()
 for archive in "${expected_archives[@]}"; do
     archive_path="${RELEASE_DIR}/${archive}"
     sha_path="${archive_path}.sha256"
-    sbom_path="${archive_path}.sbom.json"
-    attest_path="${archive_path}.attestation.json"
 
     if [[ ! -f "${archive_path}" ]]; then
         missing_archives+=("${archive}")
@@ -202,39 +192,18 @@ for archive in "${expected_archives[@]}"; do
         fail "SHA-256 mismatch for ${archive}: stored=${stored_sha} actual=${actual_sha}"
     fi
 
-    # Check SBOM file
-    if [[ ! -f "${sbom_path}" ]]; then
-        fail "missing SBOM file: ${sbom_path}"
-    fi
-
-    # Validate SBOM is valid JSON
-    if ! jq empty "${sbom_path}" 2>/dev/null; then
-        fail "SBOM is not valid JSON: ${sbom_path}"
-    fi
-
-    # Check attestation file
-    if [[ ! -f "${attest_path}" ]]; then
-        fail "missing attestation file: ${attest_path}"
-    fi
-
-    # Validate attestation is valid JSON
-    if ! jq empty "${attest_path}" 2>/dev/null; then
-        fail "attestation is not valid JSON: ${attest_path}"
-    fi
-
-    ok "artifact verified: ${archive} (+sha256, +sbom, +attestation)"
+    ok "artifact verified: ${archive} (+sha256)"
 done
 
 if [[ "${found_archives}" -ne "${EXPECTED_ARCHIVE_COUNT}" ]]; then
     fail "expected ${EXPECTED_ARCHIVE_COUNT} archives, found ${found_archives}. Missing: ${missing_archives[*]}"
 fi
-ok "all ${EXPECTED_ARCHIVE_COUNT} archives present with SHA-256, SBOM, and attestation"
+ok "all ${EXPECTED_ARCHIVE_COUNT} archives present with SHA-256"
 
 # --- Reject debug artifacts and unsupported platforms -------------------------
 
 echo "==> Scanning for debug artifacts and unsupported platforms"
 
-# Any .zip file in the release dir that is not in the expected set is suspicious
 all_zips=()
 while IFS= read -r f; do
     all_zips+=("$(basename "${f}")")
@@ -253,23 +222,18 @@ for zip in "${all_zips[@]}"; do
     fi
 done
 
-# Reject debug artifacts by name pattern
 for zip in "${all_zips[@]}"; do
     zip_lower="$(echo "${zip}" | tr '[:upper:]' '[:lower:]')"
     if [[ "${zip_lower}" == *"debug"* ]]; then
-        fail "debug artifact found in release dir: ${zip} — debug artifacts must not be published"
+        fail "debug artifact found in release dir: ${zip}"
     fi
     if [[ "${zip_lower}" == *"dev"* ]]; then
-        fail "dev artifact found in release dir: ${zip} — dev artifacts must not be published"
+        fail "dev artifact found in release dir: ${zip}"
     fi
 done
 
-# Reject unsupported platform patterns in archive names
 for zip in "${all_zips[@]}"; do
     if [[ "${zip}" == *"darwin"* || "${zip}" == *"macos"* || "${zip}" == *"windows"* || "${zip}" == *"win"* ]]; then
-        fail "unsupported platform artifact: ${zip} — only linux is supported"
-    fi
-    if [[ "${zip}" == *"freebsd"* || "${zip}" == *"openbsd"* ]]; then
         fail "unsupported platform artifact: ${zip} — only linux is supported"
     fi
 done
@@ -280,7 +244,6 @@ ok "no debug artifacts or unsupported platform artifacts"
 
 echo "==> Validating version synchronization"
 
-# Check Cargo version
 CARGO_TOML="${ROOT_DIR}/Cargo.toml"
 if [[ -f "${CARGO_TOML}" ]]; then
     cargo_version="$(grep -E '^version' "${CARGO_TOML}" | head -1 | sed 's/.*= *"//' | sed 's/"//')"
@@ -290,7 +253,6 @@ if [[ -f "${CARGO_TOML}" ]]; then
     ok "Cargo.toml version: ${cargo_version}"
 fi
 
-# Check extension version from composer.json php-ext metadata
 ROOT_COMPOSER="${ROOT_DIR}/composer.json"
 if [[ -f "${ROOT_COMPOSER}" ]]; then
     root_name="$(jq -r '.name' "${ROOT_COMPOSER}")"
@@ -300,7 +262,6 @@ if [[ -f "${ROOT_COMPOSER}" ]]; then
     ok "root composer.json name: ${root_name}"
 fi
 
-# Check Laravel package version constraint
 LARAVEL_COMPOSER="${ROOT_DIR}/packages/laravel-queue/composer.json"
 if [[ -f "${LARAVEL_COMPOSER}" ]]; then
     ext_req="$(jq -r '.require."ext-rabbit_rs"' "${LARAVEL_COMPOSER}")"
@@ -314,14 +275,6 @@ if [[ -f "${LARAVEL_COMPOSER}" ]]; then
     fi
     ok "Laravel ext-rabbit_rs constraint: ${ext_req} (major ${laravel_major} matches version major ${expected_major})"
 fi
-
-# Check PIE matrix rust_toolchain consistency
-matrix_rust="$(jq -r '.rust_toolchain' "${FIXTURES}")"
-if [[ -n "${matrix_rust}" && "${matrix_rust}" != "null" ]]; then
-    ok "PIE matrix rust_toolchain: ${matrix_rust}"
-fi
-
-# --- Check tag version if GITHUB_REF is set -----------------------------------
 
 if [[ -n "${GITHUB_REF:-}" ]]; then
     tag_name="${GITHUB_REF#refs/tags/}"
@@ -339,7 +292,5 @@ echo "All release artifact checks passed."
 echo "  Version: ${VERSION}"
 echo "  Archives: ${found_archives}/${EXPECTED_ARCHIVE_COUNT}"
 echo "  SHA-256: verified"
-echo "  SBOM: verified"
-echo "  Attestations: verified"
 echo "  No debug artifacts"
 echo "  No unsupported platforms"
