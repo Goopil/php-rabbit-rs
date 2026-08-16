@@ -40,8 +40,10 @@ class ProcessOrder implements ShouldQueue
 
 // Dispatch
 ProcessOrder::dispatch(42);
+```
 
-// Consume
+```bash
+# Consume
 php artisan queue:work --connection=rabbit-rs
 ```
 

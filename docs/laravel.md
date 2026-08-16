@@ -36,7 +36,7 @@ $jobs = [
     new ProcessOrder(3),
 ];
 
-// Bulk dispatch — uses a single FFI call for all immediate jobs
+// Bulk dispatch — uses a single native call for all immediate jobs
 ProcessOrder::dispatchBatch($jobs);
 ```
 
@@ -140,7 +140,7 @@ $messageIds = Queue::connection('rabbit-rs')->bulk([
 ], '', 'orders.high');
 ```
 
-Bulk publishing uses a single FFI call (`publishBatch`) for all immediate jobs. Jobs marked `dispatchAfterCommit` are deferred to the transaction commit callback.
+Bulk publishing uses a single native call (`publishBatch`) for all immediate jobs. Jobs marked `dispatchAfterCommit` are deferred to the transaction commit callback.
 
 ### pop
 
