@@ -119,5 +119,9 @@ class RabbitMqServiceProvider extends ServiceProvider
         $lifecycle = new OctaneLifecycle($app);
 
         $app->terminating(static fn () => $lifecycle->flush());
+
+        $events = $app->make('events');
+        $events->listen(\Laravel\Octane\Events\WorkerReload::class, static fn () => $lifecycle->reload());
+        $events->listen(\Laravel\Octane\Events\WorkerStopping::class, static fn () => $lifecycle->stop());
     }
 }
