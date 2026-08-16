@@ -5,5 +5,7 @@
 /docs export-ignore
 /lab export-ignore
 /packages export-ignore
+/release export-ignore
 /scripts export-ignore
 /target export-ignore
+/tests export-ignore

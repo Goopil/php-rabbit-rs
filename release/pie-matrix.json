@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "description": "PIE build matrix for the rabbit_rs native extension. Every entry is a release artifact — no debug builds.",
+  "minimum_glibc": "2.31",
+  "libre_ssl_required": false,
+  "rust_toolchain": "1.96.0",
+  "php_extension_name": "rabbit_rs",
+  "artifact_name_template": "php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.zip",
+  "matrix": [
+    {
+      "php": "8.4",
+      "arch": "x86_64",
+      "libc": "glibc",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.4-x86_64-linux-glibc-nts"
+    },
+    {
+      "php": "8.4",
+      "arch": "x86_64",
+      "libc": "glibc",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.4-x86_64-linux-glibc-zts"
+    },
+    {
+      "php": "8.4",
+      "arch": "x86_64",
+      "libc": "musl",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.4-x86_64-linux-musl-nts"
+    },
+    {
+      "php": "8.4",
+      "arch": "x86_64",
+      "libc": "musl",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.4-x86_64-linux-musl-zts"
+    },
+    {
+      "php": "8.4",
+      "arch": "arm64",
+      "libc": "glibc",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.4-arm64-linux-glibc-nts"
+    },
+    {
+      "php": "8.4",
+      "arch": "arm64",
+      "libc": "glibc",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.4-arm64-linux-glibc-zts"
+    },
+    {
+      "php": "8.4",
+      "arch": "arm64",
+      "libc": "musl",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.4-arm64-linux-musl-nts"
+    },
+    {
+      "php": "8.4",
+      "arch": "arm64",
+      "libc": "musl",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.4-arm64-linux-musl-zts"
+    },
+    {
+      "php": "8.5",
+      "arch": "x86_64",
+      "libc": "glibc",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.5-x86_64-linux-glibc-nts"
+    },
+    {
+      "php": "8.5",
+      "arch": "x86_64",
+      "libc": "glibc",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.5-x86_64-linux-glibc-zts"
+    },
+    {
+      "php": "8.5",
+      "arch": "x86_64",
+      "libc": "musl",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.5-x86_64-linux-musl-nts"
+    },
+    {
+      "php": "8.5",
+      "arch": "x86_64",
+      "libc": "musl",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.5-x86_64-linux-musl-zts"
+    },
+    {
+      "php": "8.5",
+      "arch": "arm64",
+      "libc": "glibc",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.5-arm64-linux-glibc-nts"
+    },
+    {
+      "php": "8.5",
+      "arch": "arm64",
+      "libc": "glibc",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.5-arm64-linux-glibc-zts"
+    },
+    {
+      "php": "8.5",
+      "arch": "arm64",
+      "libc": "musl",
+      "thread_safety": "nts",
+      "artifact_suffix": "php8.5-arm64-linux-musl-nts"
+    },
+    {
+      "php": "8.5",
+      "arch": "arm64",
+      "libc": "musl",
+      "thread_safety": "zts",
+      "artifact_suffix": "php8.5-arm64-linux-musl-zts"
+    }
+  ]
+}
