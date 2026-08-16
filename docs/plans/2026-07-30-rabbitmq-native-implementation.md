@@ -27,9 +27,9 @@
 
 **Dernière mise à jour :** 16 août 2026
 
-**Branche d'implémentation :** feature/laravel-package
+**Branche d'implémentation :** main
 
-**Prochaine étape :** Milestone E — Performance — Task 31 — Câbler le TLS end-to-end.
+**Prochaine étape :** Milestone D2 — Task 31 — Câbler le TLS end-to-end.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -59,9 +59,9 @@
 - [x] Task 25 — Créer le cluster RabbitMQ de test.
 - [x] Task 26 — Écrire les tests d'intégration end-to-end.
 - [x] Task 27 — Écrire les scénarios de panne (chaos/fault injection).
-- [x] Task 28 — Implémenter le coordinateur de recovery.
-- [x] Task 29 — Implémenter le delay routing côté éditeur.
-- [x] Task 30 — Câbler la DLQ et les arguments de queue génériques.
+- [x] Task 28 — Implémenter le coordinateur de recovery (`ad652c7`).
+- [x] Task 29 — Implémenter le delay routing côté éditeur (`e844375`, `89bff5f`).
+- [x] Task 30 — Câbler la DLQ et les arguments de queue génériques (`7d62e0c`).
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
@@ -287,6 +287,16 @@ Expected: PASS.
 
     git add crates packages
     git commit -m "feat(core): wire DLQ config and generic queue arguments"
+
+Checkpoint Milestone D2 (Tasks 28-30) — 16 août 2026 :
+
+- **Task 28** (`ad652c7`) : `RecoveryCoordinator` créé dans `pool/recovery_coordinator.rs`. Le coordinator spawn un `ConnectionActor` par broker, souscrit à son `watch::Receiver<ConnectionState>`, et orchestre le recovery déterministe : connection → channels → topology → QoS → consumers → publisher replay. `ClientPool` spawn un coordinator par broker au lieu d'ouvrir les connections directement. 5 tests dans `recovery_coordinator.rs`. Le `close` peut interrompre une recovery bloquée via `tokio::select!`. Les tests `client_pool.rs` ont été adaptés (le comportement de fermeture explicite des channels non committed est maintenant géré par la connection close en cascade).
+
+- **Task 29** (`e844375`, `89bff5f`) : `DelayConfig` ajouté à `Config`/`ValidatedConfig` avec serde. `ExchangeSpec` gagne un champ `arguments` et `ExchangeKind::Delayed` pour les exchanges `x-delayed-message`. Le `PublisherActor` route les messages avec `delay_ms > 0` via `DelayRouter` : mode Plugin publie sur l'exchange différée avec le header `x-delay`, mode TTL publie sur une TTL queue avec dead-letter vers la destination originale. Les TTL queues sont déclarées paresseusement par le publisher. Le `RecoveryCoordinator` compile la `DelayStrategy` depuis la config et la passe au publisher et aux consumers. La config Laravel expose une section `delay` (mode, buckets, max_buckets, queue_expiry_margin, detection_timeout). `DelayedJobTest` est un-skipped. 8 tests dans `publisher_delay.rs`. Le `delayed_publisher()` ne hardcode plus `DelayStrategy::Plugin` — la strategy est set séparément via `.delay_strategy()`. Le coordinator passe le publisher handle et la destination à chaque consumer subscription.
+
+- **Task 30** (`7d62e0c`) : `DeadLetterConfig` ajouté à `Config`/`ValidatedConfig`. `QueueSpec` gagne `delivery_limit` et `arguments` génériques. `lapin.rs::declare_queue()` émet `x-delivery-limit` et fusionne les arguments génériques. `ClientPool::build_topology_plan()` wire le `dead_letter` et `delivery_limit` depuis la config vers le `TopologyPlan`. `ConfigNormalizer` mappe `topology.dead_letter` et `topology.queue.delivery_limit` vers la config native. 11 tests dans `dlq_topology.rs`. 6 nouveaux tests `ConfigNormalizerTest`.
+
+- **Résultat global** : 177 tests Rust + 101 tests PHP passent. Quality gate `./scripts/check.sh` vert. Clippy clean. Fmt clean.
 
 ### Task 31: Câbler le TLS end-to-end
 
