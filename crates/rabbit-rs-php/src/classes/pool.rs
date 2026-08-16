@@ -3,7 +3,7 @@
     reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
 )]
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::{
     consumer::Consumer,
@@ -35,6 +35,7 @@ pub struct Pool {
     pid: u32,
     connection_state_callback: CallbackSlot,
     backpressure_callback: CallbackSlot,
+    last_connection_states: std::sync::Mutex<HashMap<String, (String, i64)>>,
     last_backpressure_total: std::sync::Mutex<u64>,
 }
 
@@ -64,6 +65,7 @@ impl Pool {
             pid: std::process::id(),
             connection_state_callback: CallbackSlot::new(),
             backpressure_callback: CallbackSlot::new(),
+            last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
         })
     }
@@ -241,6 +243,7 @@ impl Pool {
             pid: std::process::id(),
             connection_state_callback: CallbackSlot::new(),
             backpressure_callback: CallbackSlot::new(),
+            last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
         }
     }
@@ -259,13 +262,24 @@ impl Pool {
 
     fn invoke_connection_state_callbacks(&self) {
         let states = self.client.connection_states();
+        let mut last_states = self
+            .last_connection_states
+            .lock()
+            .expect("connection state mutex poisoned");
         for (broker, state) in &states {
             let (state_name, generation) = connection_state_parts(state);
-            let _ = self.connection_state_callback.invoke(vec![
-                &broker.as_str(),
-                &state_name,
-                &generation,
-            ]);
+            let current = (state_name.clone(), generation);
+            let changed = last_states
+                .get(broker)
+                .is_none_or(|previous| *previous != current);
+            if changed {
+                let _ = self.connection_state_callback.invoke(vec![
+                    &broker.as_str(),
+                    &state_name,
+                    &generation,
+                ]);
+                last_states.insert(broker.clone(), current);
+            }
         }
     }
 
@@ -275,10 +289,11 @@ impl Pool {
             .lock()
             .expect("backpressure mutex poisoned");
         if current_backpressure > *last {
+            let (in_flight, capacity) = self.client.publisher_utilization();
             let _ = self.backpressure_callback.invoke(vec![
-                &"default".to_string(),
-                &i64::try_from(current_backpressure - *last).unwrap_or(i64::MAX),
-                &i64::try_from(current_backpressure).unwrap_or(i64::MAX),
+                &"global".to_string(),
+                &i64::try_from(in_flight).unwrap_or(i64::MAX),
+                &i64::try_from(capacity).unwrap_or(i64::MAX),
             ]);
         }
         *last = current_backpressure;

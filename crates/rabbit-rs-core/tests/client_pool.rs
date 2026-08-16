@@ -585,3 +585,58 @@ async fn queue_size_on_unknown_broker_returns_configuration_error() {
 
     assert_eq!(error.kind(), ClientErrorKind::Configuration);
 }
+
+#[tokio::test]
+async fn connection_states_reports_known_brokers_after_initialization() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let pool = ClientPool::new(Arc::new(config()), transport);
+
+    pool.publish("default", request("first"))
+        .await
+        .expect("publish");
+
+    let states = pool.connection_states();
+    assert!(states.contains_key("default"));
+}
+
+#[tokio::test]
+async fn publisher_utilization_reports_capacity_and_in_flight() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let pool = ClientPool::new(Arc::new(config()), transport);
+
+    pool.publish("default", request("first"))
+        .await
+        .expect("publish");
+
+    let (in_flight, capacity) = pool.publisher_utilization();
+    assert_eq!(capacity, 8192);
+    assert_eq!(in_flight, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn publisher_utilization_reports_in_flight_when_confirmations_pending() {
+    let transport = Arc::new(MockTransport::default());
+    let _controlled = transport.push_controlled_confirmation();
+    let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
+
+    let publishing = tokio::spawn({
+        let pool = pool.clone();
+        async move { pool.publish("default", request("pending")).await }
+    });
+
+    for _ in 0..100 {
+        if pool.metrics_snapshot().publishes_total == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(pool.metrics_snapshot().publishes_total, 1);
+
+    let (in_flight, capacity) = pool.publisher_utilization();
+    assert_eq!(capacity, 8192);
+    assert_eq!(in_flight, 1);
+
+    let _ = publishing.await;
+}

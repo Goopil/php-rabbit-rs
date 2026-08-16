@@ -106,6 +106,15 @@ impl PublisherHandle {
         self.confirm_timeout
     }
 
+    /// Returns the number of available publisher capacity permits.
+    ///
+    /// Combined with the configured `buffer_capacity`, this yields the current
+    /// in-flight publication count: `buffer_capacity - available_permits()`.
+    #[must_use]
+    pub fn available_permits(&self) -> usize {
+        self.capacity.available_permits()
+    }
+
     /// Enqueues a publish while retaining one global capacity permit until its terminal outcome.
     ///
     /// # Errors

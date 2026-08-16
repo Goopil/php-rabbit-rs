@@ -257,6 +257,26 @@ impl ClientPool {
             .collect()
     }
 
+    /// Returns the aggregate publisher utilization across all known brokers.
+    ///
+    /// `in_flight` is the total number of retained capacity permits across
+    /// every publisher actor (i.e., publications awaiting a terminal
+    /// outcome). `capacity` is the total configured buffer capacity across
+    /// all publishers. Brokers whose publisher has not been started yet
+    /// contribute zero in-flight messages and zero capacity.
+    #[must_use]
+    pub fn publisher_utilization(&self) -> (usize, usize) {
+        let publishers = lock(&self.publishers);
+        let capacity_per_publisher = self.publisher_config.buffer_capacity.max(1);
+        let publisher_count = publishers.len();
+        let total_capacity = capacity_per_publisher.saturating_mul(publisher_count);
+        let in_flight = publishers
+            .values()
+            .map(|handle| capacity_per_publisher.saturating_sub(handle.available_permits()))
+            .sum::<usize>();
+        (in_flight, total_capacity)
+    }
+
     /// Returns the number of pending messages in a queue on the given broker.
     ///
     /// # Errors
