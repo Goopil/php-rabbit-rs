@@ -374,10 +374,12 @@ async fn recover_generation(
             })
             .await;
     } else {
-        let handle = PublisherActor::spawn_with_metrics(
+        let delay_strategy = compile_delay_strategy(&context.config);
+        let handle = PublisherActor::spawn_with_delay_strategy_and_metrics(
             publisher_channel.clone(),
             context.publisher_config,
             context.metrics.clone(),
+            delay_strategy,
         );
         *pub_guard = Some(handle);
     }
@@ -385,6 +387,7 @@ async fn recover_generation(
 
     // Step 4: Re-establish consumers (open channels → QoS → basic_consume → update_generation).
     let connection_key = crate::pool::ConnectionKey::from_config(&context.config);
+    let delay_strategy = compile_delay_strategy(&context.config);
     for worker in context.config.worker_profiles() {
         let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
         for (index, sub_config) in worker.subscriptions.iter().enumerate() {
@@ -411,7 +414,8 @@ async fn recover_generation(
                     sub_config.weight,
                     sub_config.priority_class,
                     sub_config.starvation_after,
-                )),
+                ))
+                .delay_strategy(delay_strategy.clone()),
             );
         }
 
@@ -439,5 +443,24 @@ fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> Transp
         TransportErrorKind::Connection => TransportError::connection(reason),
         TransportErrorKind::Protocol => TransportError::protocol(reason),
         TransportErrorKind::Closed => TransportError::closed(reason),
+    }
+}
+
+/// Compiles a delay strategy from configuration for the publisher actor.
+///
+/// In plugin mode the strategy is `Plugin`; in TTL mode it is `TtlBuckets`.
+/// In auto mode we default to `Plugin` for the publisher path — the consumer
+/// path performs runtime detection via `DelayStrategyResolver`.
+fn compile_delay_strategy(config: &ValidatedConfig) -> crate::topology::delay::DelayStrategy {
+    use crate::{
+        config::DelayMode,
+        topology::delay::{DelayStrategy, TtlBucketPlan},
+    };
+    let delay = config.delay();
+    match delay.mode {
+        DelayMode::Plugin | DelayMode::Auto => DelayStrategy::Plugin,
+        DelayMode::Ttl => {
+            TtlBucketPlan::compile(delay).map_or(DelayStrategy::Plugin, DelayStrategy::TtlBuckets)
+        }
     }
 }

@@ -29,6 +29,7 @@ fn exchange(name: &str) -> ExchangeSpec {
         durable: true,
         auto_delete: false,
         internal: false,
+        arguments: rabbit_rs_core::transport::Headers::new(),
     }
 }
 

@@ -322,15 +322,29 @@ async fn declare_exchange(
     spec: &ExchangeSpec,
     passive: bool,
 ) -> TransportResult<()> {
+    let mut arguments = FieldTable::default();
+    if let ExchangeKind::Delayed(underlying) = &spec.kind {
+        arguments.insert(
+            "x-delayed-type".into(),
+            AMQPValue::LongString(underlying.amqp_type_name().into()),
+        );
+    }
+    for (name, value) in &spec.arguments {
+        arguments.insert(name.clone().into(), publish_header_value(value));
+    }
+
+    let exchange_type = match &spec.kind {
+        ExchangeKind::Direct => lapin::ExchangeKind::Direct,
+        ExchangeKind::Fanout => lapin::ExchangeKind::Fanout,
+        ExchangeKind::Topic => lapin::ExchangeKind::Topic,
+        ExchangeKind::Headers => lapin::ExchangeKind::Headers,
+        ExchangeKind::Delayed(_) => lapin::ExchangeKind::Custom("x-delayed-message".into()),
+    };
+
     channel
         .exchange_declare(
             spec.name.clone().into(),
-            match spec.kind {
-                ExchangeKind::Direct => lapin::ExchangeKind::Direct,
-                ExchangeKind::Fanout => lapin::ExchangeKind::Fanout,
-                ExchangeKind::Topic => lapin::ExchangeKind::Topic,
-                ExchangeKind::Headers => lapin::ExchangeKind::Headers,
-            },
+            exchange_type,
             ExchangeDeclareOptions {
                 passive,
                 durable: spec.durable,
@@ -338,7 +352,7 @@ async fn declare_exchange(
                 internal: spec.internal,
                 nowait: false,
             },
-            FieldTable::default(),
+            arguments,
         )
         .await
         .map_err(map_lapin_error)

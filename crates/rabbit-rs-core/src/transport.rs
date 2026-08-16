@@ -151,13 +151,41 @@ impl QueueSpec {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ExchangeKind {
     #[default]
     Direct,
     Fanout,
     Topic,
     Headers,
+    /// `x-delayed-message` exchange backed by the `RabbitMQ` delayed-message plugin.
+    ///
+    /// The inner kind specifies the underlying exchange type used by the plugin
+    /// (direct, topic, etc.) and is emitted as the `x-delayed-type` argument.
+    Delayed(Box<ExchangeKind>),
+}
+
+impl ExchangeKind {
+    /// Returns the AMQP exchange type string used when declaring this exchange.
+    #[must_use]
+    pub fn amqp_type_name(&self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Fanout => "fanout",
+            Self::Topic => "topic",
+            Self::Headers => "headers",
+            Self::Delayed(_) => "x-delayed-message",
+        }
+    }
+
+    /// Returns the underlying exchange type for delayed exchanges, or `self` otherwise.
+    #[must_use]
+    pub fn underlying(&self) -> &Self {
+        match self {
+            Self::Delayed(inner) => inner,
+            other => other,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -167,6 +195,21 @@ pub struct ExchangeSpec {
     pub durable: bool,
     pub auto_delete: bool,
     pub internal: bool,
+    pub arguments: Headers,
+}
+
+impl ExchangeSpec {
+    #[must_use]
+    pub fn new(name: impl Into<String>, kind: ExchangeKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            durable: true,
+            auto_delete: false,
+            internal: false,
+            arguments: Headers::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

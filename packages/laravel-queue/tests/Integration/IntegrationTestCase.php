@@ -115,3 +115,4 @@ abstract class IntegrationTestCase extends PackageTestCase
         curl_close($ch);
     }
 }
+}

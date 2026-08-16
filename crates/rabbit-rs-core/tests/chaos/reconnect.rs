@@ -89,6 +89,7 @@ fn config_for_queue(
                 scheduler: SchedulerConfig::weighted_fair(16),
             }],
             topology_mode: TopologyMode::External,
+            delay: rabbit_rs_core::config::DelayConfig::default(),
         }
         .validate()
         .expect("valid config"),

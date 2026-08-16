@@ -27,6 +27,7 @@ fn config() -> rabbit_rs_core::config::ValidatedConfig {
         }],
         workers: Vec::new(),
         topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
     }
     .validate()
     .expect("valid config")
@@ -56,6 +57,7 @@ fn consumer_config() -> rabbit_rs_core::config::ValidatedConfig {
             scheduler: SchedulerConfig::weighted_fair(16),
         }],
         topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
     }
     .validate()
     .expect("valid consumer config")
@@ -76,6 +78,7 @@ fn two_broker_config() -> rabbit_rs_core::config::ValidatedConfig {
             .collect(),
         workers: Vec::new(),
         topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
     }
     .validate()
     .expect("valid two-broker config")

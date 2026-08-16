@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     future,
     sync::Arc,
     time::{Duration, Instant},
@@ -13,6 +13,7 @@ use tokio::{
 
 use crate::{
     metrics::{Metrics, MetricsSnapshot},
+    topology::delay::DelayStrategy,
     transport::{
         PublishConfirmation, PublishProperties as TransportProperties,
         PublishRequest as TransportRequest, PublisherChannel, TransportError, TransportResult,
@@ -22,6 +23,7 @@ use crate::{
 use super::{
     PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter, PublisherConfig,
     PublisherConnectionEvent, ReturnInfo, batcher::Batcher, confirms::ConfirmLedger,
+    delay::DelayRouter,
 };
 
 pub struct PublisherActor;
@@ -38,9 +40,49 @@ impl PublisherActor {
         config: PublisherConfig,
         metrics: Metrics,
     ) -> PublisherHandle {
+        Self::spawn_inner(channel, config, metrics, None)
+    }
+
+    /// Spawns the actor with delay routing enabled.
+    ///
+    /// When `delay_strategy` is `Some`, the actor routes messages with `delay_ms > 0`
+    /// through the `DelayRouter` before publishing.
+    #[must_use]
+    pub fn spawn_with_delay_strategy(
+        channel: Arc<dyn PublisherChannel>,
+        config: PublisherConfig,
+        delay_strategy: DelayStrategy,
+    ) -> PublisherHandle {
+        Self::spawn_inner(channel, config, Metrics::default(), Some(delay_strategy))
+    }
+
+    /// Spawns the actor with delay routing and shared metrics.
+    #[must_use]
+    pub fn spawn_with_delay_strategy_and_metrics(
+        channel: Arc<dyn PublisherChannel>,
+        config: PublisherConfig,
+        metrics: Metrics,
+        delay_strategy: DelayStrategy,
+    ) -> PublisherHandle {
+        Self::spawn_inner(channel, config, metrics, Some(delay_strategy))
+    }
+
+    #[must_use]
+    fn spawn_inner(
+        channel: Arc<dyn PublisherChannel>,
+        config: PublisherConfig,
+        metrics: Metrics,
+        delay_strategy: Option<DelayStrategy>,
+    ) -> PublisherHandle {
         let capacity = Arc::new(Semaphore::new(config.buffer_capacity.max(1)));
         let (commands, receiver) = mpsc::channel(config.buffer_capacity.max(1));
-        tokio::spawn(run_actor(channel, config, receiver, metrics.clone()));
+        tokio::spawn(run_actor(
+            channel,
+            config,
+            receiver,
+            metrics.clone(),
+            delay_strategy,
+        ));
         PublisherHandle {
             commands,
             capacity,
@@ -215,10 +257,17 @@ struct ActorState {
     flush_deadline: Option<time::Instant>,
     permanent_error: Option<PublishError>,
     metrics: Metrics,
+    delay_strategy: Option<DelayStrategy>,
+    declared_ttl_queues: HashSet<String>,
 }
 
 impl ActorState {
-    fn new(channel: Arc<dyn PublisherChannel>, config: PublisherConfig, metrics: Metrics) -> Self {
+    fn new(
+        channel: Arc<dyn PublisherChannel>,
+        config: PublisherConfig,
+        metrics: Metrics,
+        delay_strategy: Option<DelayStrategy>,
+    ) -> Self {
         Self {
             config,
             phase: Phase::Ready,
@@ -232,6 +281,8 @@ impl ActorState {
             flush_deadline: None,
             permanent_error: None,
             metrics,
+            delay_strategy,
+            declared_ttl_queues: HashSet::new(),
         }
     }
 
@@ -307,8 +358,9 @@ async fn run_actor(
     config: PublisherConfig,
     mut commands: mpsc::Receiver<Command>,
     metrics: Metrics,
+    delay_strategy: Option<DelayStrategy>,
 ) {
-    let mut state = ActorState::new(initial_channel, config, metrics);
+    let mut state = ActorState::new(initial_channel, config, metrics, delay_strategy);
     if let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
     {
@@ -467,6 +519,21 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             state.replay.extend(pending);
             return;
         };
+
+        match ensure_delay_topology(state, &channel, &retained).await {
+            DelayTopologyOutcome::Ready => {}
+            DelayTopologyOutcome::Suspend => {
+                state.replay.push_back(retained);
+                state.replay.extend(pending);
+                state.suspend(state.generation);
+                return;
+            }
+            DelayTopologyOutcome::Failed(error) => {
+                complete_error(retained, error);
+                continue;
+            }
+        }
+
         state.sequence = state.sequence.saturating_add(1);
         let sequence = state.sequence;
         let generation = state.generation;
@@ -474,7 +541,7 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             .request
             .deadline
             .min(time::Instant::now() + state.config.confirm_timeout);
-        let request = into_transport_request(&retained.request);
+        let request = into_transport_request(&retained.request, state.delay_strategy.as_ref());
 
         match channel.publish(request).await {
             Ok(receipt) => {
@@ -504,7 +571,38 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
     }
 }
 
-fn into_transport_request(request: &PublishRequest) -> TransportRequest {
+fn into_transport_request(
+    request: &PublishRequest,
+    delay_strategy: Option<&DelayStrategy>,
+) -> TransportRequest {
+    let delay_ms = request.properties.delay_ms.unwrap_or(0);
+
+    if delay_ms > 0
+        && let Some(strategy) = delay_strategy
+        && let Ok(route) = DelayRouter::route(
+            strategy,
+            &request.destination,
+            i64::try_from(delay_ms).unwrap_or(i64::MAX),
+        )
+    {
+        let properties = TransportProperties {
+            content_type: request.properties.content_type.clone(),
+            correlation_id: request.properties.correlation_id.clone(),
+            message_id: Some(request.properties.message_id.clone()),
+            delay_ms: route.queue.is_none().then_some(route.delay_ms),
+            headers: request.properties.headers.clone(),
+            persistent: true,
+        };
+
+        return TransportRequest {
+            exchange: route.exchange,
+            routing_key: route.routing_key,
+            payload: request.payload.clone(),
+            mandatory: true,
+            properties,
+        };
+    }
+
     TransportRequest {
         exchange: request.destination.exchange.clone(),
         routing_key: request.destination.routing_key.clone(),
@@ -610,6 +708,76 @@ fn complete_error(retained: RetainedPublish, error: PublishError) {
 
 fn transport_publish_error(error: &TransportError) -> PublishError {
     PublishError::new(PublishErrorKind::Transport, error.to_string())
+}
+
+enum DelayTopologyOutcome {
+    Ready,
+    Suspend,
+    Failed(PublishError),
+}
+
+/// Lazily declares delayed exchanges (plugin mode) or TTL delay queues (TTL mode)
+/// before the first delayed publish. Idempotent via the `declared_ttl_queues` cache.
+async fn ensure_delay_topology(
+    state: &mut ActorState,
+    channel: &Arc<dyn PublisherChannel>,
+    retained: &RetainedPublish,
+) -> DelayTopologyOutcome {
+    let Some(strategy) = &state.delay_strategy else {
+        return DelayTopologyOutcome::Ready;
+    };
+    let Some(delay_ms) = retained.request.properties.delay_ms else {
+        return DelayTopologyOutcome::Ready;
+    };
+    if delay_ms == 0 {
+        return DelayTopologyOutcome::Ready;
+    }
+
+    let Ok(route) = DelayRouter::route(
+        strategy,
+        &retained.request.destination,
+        i64::try_from(delay_ms).unwrap_or(i64::MAX),
+    ) else {
+        return DelayTopologyOutcome::Ready;
+    };
+
+    if route.queue.is_none() && !state.declared_ttl_queues.contains(&route.exchange) {
+        let spec = crate::transport::ExchangeSpec {
+            name: route.exchange.clone(),
+            kind: crate::transport::ExchangeKind::Delayed(Box::new(
+                crate::transport::ExchangeKind::Direct,
+            )),
+            durable: true,
+            auto_delete: false,
+            internal: false,
+            arguments: crate::transport::Headers::new(),
+        };
+        match channel.declare_exchange(&spec).await {
+            Ok(()) => {
+                state.declared_ttl_queues.insert(route.exchange.clone());
+            }
+            Err(error) if error.is_recoverable() => return DelayTopologyOutcome::Suspend,
+            Err(error) => {
+                return DelayTopologyOutcome::Failed(transport_publish_error(&error));
+            }
+        }
+    }
+
+    if let Some(queue_spec) = &route.queue
+        && !state.declared_ttl_queues.contains(&queue_spec.name)
+    {
+        match channel.declare_queue(queue_spec).await {
+            Ok(()) => {
+                state.declared_ttl_queues.insert(queue_spec.name.clone());
+            }
+            Err(error) if error.is_recoverable() => return DelayTopologyOutcome::Suspend,
+            Err(error) => {
+                return DelayTopologyOutcome::Failed(transport_publish_error(&error));
+            }
+        }
+    }
+
+    DelayTopologyOutcome::Ready
 }
 
 async fn wait_for_deadline(deadline: Option<time::Instant>) {

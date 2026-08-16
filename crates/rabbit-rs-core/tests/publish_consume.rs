@@ -50,6 +50,7 @@ fn config_single() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
                 scheduler: SchedulerConfig::weighted_fair(16),
             }],
             topology_mode: TopologyMode::External,
+            delay: rabbit_rs_core::config::DelayConfig::default(),
         }
         .validate()
         .expect("valid config"),
@@ -88,6 +89,7 @@ fn config_two_vhosts() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
                 scheduler: SchedulerConfig::weighted_fair(16),
             }],
             topology_mode: TopologyMode::External,
+            delay: rabbit_rs_core::config::DelayConfig::default(),
         }
         .validate()
         .expect("valid config"),

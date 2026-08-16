@@ -232,12 +232,16 @@ pub enum DelayMode {
 }
 
 /// Bounded delayed-delivery configuration shared by topology and publishers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, default)]
 pub struct DelayConfig {
     pub mode: DelayMode,
+    #[serde(deserialize_with = "deserialize_duration_seconds_vec")]
     pub buckets: Vec<Duration>,
     pub max_buckets: usize,
+    #[serde(deserialize_with = "deserialize_duration_seconds")]
     pub queue_expiry_margin: Duration,
+    #[serde(deserialize_with = "deserialize_duration_seconds")]
     pub detection_timeout: Duration,
 }
 
@@ -256,6 +260,23 @@ impl DelayConfig {
             max_buckets,
             queue_expiry_margin,
             detection_timeout,
+        }
+    }
+}
+
+impl Default for DelayConfig {
+    fn default() -> Self {
+        Self {
+            mode: DelayMode::Auto,
+            buckets: vec![
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+                Duration::from_mins(2),
+            ],
+            max_buckets: 8,
+            queue_expiry_margin: Duration::from_mins(1),
+            detection_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -283,6 +304,8 @@ pub struct Config {
     pub brokers: Vec<BrokerConfig>,
     pub workers: Vec<WorkerProfile>,
     pub topology_mode: TopologyMode,
+    #[serde(default)]
+    pub delay: DelayConfig,
 }
 
 impl Config {
@@ -377,14 +400,49 @@ impl Config {
         self.workers
             .sort_unstable_by(|left, right| left.name.cmp(&right.name));
 
+        Self::validate_delay(&self.delay)?;
+
         let fingerprint = ConfigFingerprint::calculate(&self);
 
         Ok(ValidatedConfig {
             brokers: self.brokers,
             workers: self.workers,
             topology_mode: self.topology_mode,
+            delay: self.delay,
             fingerprint,
         })
+    }
+
+    fn validate_delay(delay: &DelayConfig) -> Result<(), ConfigError> {
+        if delay.buckets.is_empty() {
+            return Err(ConfigError::new(
+                "delay.buckets",
+                "at least one TTL bucket is required",
+            ));
+        }
+        if delay.buckets.len() > delay.max_buckets {
+            return Err(ConfigError::new(
+                "delay.buckets",
+                format!(
+                    "TTL bucket count {} exceeds configured maximum {}",
+                    delay.buckets.len(),
+                    delay.max_buckets
+                ),
+            ));
+        }
+        if delay.buckets.contains(&Duration::ZERO) {
+            return Err(ConfigError::new(
+                "delay.buckets",
+                "TTL buckets must be greater than zero",
+            ));
+        }
+        if delay.detection_timeout.is_zero() {
+            return Err(ConfigError::new(
+                "delay.detection_timeout",
+                "detection_timeout must be greater than zero",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -394,6 +452,7 @@ pub struct ValidatedConfig {
     brokers: Vec<BrokerConfig>,
     workers: Vec<WorkerProfile>,
     topology_mode: TopologyMode,
+    delay: DelayConfig,
     fingerprint: ConfigFingerprint,
 }
 
@@ -423,6 +482,11 @@ impl ValidatedConfig {
     #[must_use]
     pub const fn topology_mode(&self) -> TopologyMode {
         self.topology_mode
+    }
+
+    #[must_use]
+    pub const fn delay(&self) -> &DelayConfig {
+        &self.delay
     }
 
     #[must_use]
@@ -478,6 +542,12 @@ impl ConfigFingerprint {
             }
         }
 
+        hash_value(&mut digest, delay_mode_name(config.delay.mode));
+        hash_value(&mut digest, &format!("{:?}", config.delay.buckets));
+        digest.update(config.delay.max_buckets.to_be_bytes());
+        digest.update(config.delay.queue_expiry_margin.as_secs().to_be_bytes());
+        digest.update(config.delay.detection_timeout.as_secs().to_be_bytes());
+
         Self(digest.finalize().into())
     }
 }
@@ -501,11 +571,27 @@ const fn scheduler_name(strategy: SchedulerStrategy) -> &'static str {
     }
 }
 
+const fn delay_mode_name(mode: DelayMode) -> &'static str {
+    match mode {
+        DelayMode::Auto => "auto",
+        DelayMode::Plugin => "plugin",
+        DelayMode::Ttl => "ttl",
+    }
+}
+
 fn deserialize_duration_seconds<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
 {
     u64::deserialize(deserializer).map(Duration::from_secs)
+}
+
+fn deserialize_duration_seconds_vec<'de, D>(deserializer: D) -> Result<Vec<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<u64>::deserialize(deserializer)
+        .map(|secs| secs.into_iter().map(Duration::from_secs).collect())
 }
 
 fn default_starvation_after() -> Duration {
@@ -519,8 +605,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BrokerConfig, Config, Credentials, Endpoint, SchedulerConfig, SubscriptionConfig,
-        TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, SchedulerConfig,
+        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     };
 
     fn broker(hosts: Vec<Endpoint>) -> BrokerConfig {
@@ -559,6 +645,7 @@ mod tests {
             brokers: vec![broker(hosts)],
             workers: vec![worker(16, 64)],
             topology_mode: TopologyMode::Declare,
+            delay: DelayConfig::default(),
         }
     }
 

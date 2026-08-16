@@ -57,6 +57,14 @@ return [
         'mandatory' => true,
     ],
 
+    'delay' => [
+        'mode' => env('RABBIT_RS_DELAY_MODE', 'auto'),
+        'buckets' => array_map('intval', array_filter(array_map('trim', explode(',', env('RABBIT_RS_DELAY_BUCKETS', '1,5,30,120'))))),
+        'max_buckets' => (int) env('RABBIT_RS_DELAY_MAX_BUCKETS', 8),
+        'queue_expiry_margin' => (int) env('RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN', 60),
+        'detection_timeout' => (int) env('RABBIT_RS_DELAY_DETECTION_TIMEOUT', 5),
+    ],
+
     'topology' => [
         'queue' => [
             'type' => 'quorum',

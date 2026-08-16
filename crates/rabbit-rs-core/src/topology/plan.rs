@@ -166,6 +166,7 @@ impl TopologyPlan {
                 durable: true,
                 auto_delete: false,
                 internal: false,
+                arguments: crate::transport::Headers::new(),
             });
             queues.push(QueueDefinition::new(dead_letter.queue.clone()).compile()?);
             bindings.push(BindingSpec {

@@ -30,6 +30,7 @@ final class ConfigNormalizer
                 'brokers' => $brokers,
                 'workers' => self::workers($config['workers'] ?? [], $brokerNames),
                 'topology_mode' => $topologyMode,
+                'delay' => self::delay($config['delay'] ?? []),
             ],
             'routes' => self::routes($config['routes'] ?? [], $brokerNames),
             'publisher' => self::publisher($config['publisher'] ?? []),
@@ -326,6 +327,49 @@ final class ConfigNormalizer
         return [
             'confirms' => self::boolean($publisher['confirms'] ?? true, 'publisher.confirms'),
             'mandatory' => self::boolean($publisher['mandatory'] ?? true, 'publisher.mandatory'),
+        ];
+    }
+
+    /**
+     * @return array{mode: string, buckets: list<int>, max_buckets: int, queue_expiry_margin: int, detection_timeout: int}
+     */
+    private static function delay(mixed $delay): array
+    {
+        if (! is_array($delay)) {
+            self::invalid('delay', 'must be an array');
+        }
+
+        $mode = $delay['mode'] ?? 'auto';
+        if (! is_string($mode) || ! in_array($mode, ['auto', 'plugin', 'ttl'], true)) {
+            self::invalid('delay.mode', 'must be auto, plugin, or ttl');
+        }
+
+        $buckets = $delay['buckets'] ?? [1, 5, 30, 120];
+        if (! is_array($buckets) || $buckets === []) {
+            self::invalid('delay.buckets', 'must contain at least one bucket');
+        }
+        $normalizedBuckets = [];
+        foreach ($buckets as $index => $bucket) {
+            $normalizedBuckets[] = self::positiveInt($bucket, "delay.buckets.{$index}");
+        }
+
+        $maxBuckets = self::positiveInt($delay['max_buckets'] ?? 8, 'delay.max_buckets');
+        if (count($normalizedBuckets) > $maxBuckets) {
+            self::invalid('delay.buckets', "bucket count exceeds configured maximum {$maxBuckets}");
+        }
+
+        return [
+            'mode' => $mode,
+            'buckets' => $normalizedBuckets,
+            'max_buckets' => $maxBuckets,
+            'queue_expiry_margin' => self::positiveInt(
+                $delay['queue_expiry_margin'] ?? 60,
+                'delay.queue_expiry_margin',
+            ),
+            'detection_timeout' => self::positiveInt(
+                $delay['detection_timeout'] ?? 5,
+                'delay.detection_timeout',
+            ),
         ];
     }
 

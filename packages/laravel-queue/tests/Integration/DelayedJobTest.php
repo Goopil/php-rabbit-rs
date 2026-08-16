@@ -46,16 +46,38 @@ final class DelayedJobTest extends IntegrationTestCase
         parent::tearDown();
     }
 
-    /**
-     * Publisher-side delay routing (DelayRouter → x-delayed-message exchange)
-     * is not yet wired into the publish path. The DelayRouter infrastructure
-     * exists but is only used by the consumer's release() method.
-     *
-     * @see docs/plans/2026-07-30-rabbitmq-native-implementation.md Task 26
-     */
     public function test_later_publishes_and_consumes_after_delay(): void
     {
-        self::markTestSkipped('Publisher-side delay routing not yet implemented');
+        $this->queue->clear($this->queueName);
+
+        $this->queue->later(2, 'stdClass', ['delayed' => 'job']);
+
+        $job = $this->queue->pop();
+        self::assertNull(
+            $job,
+            'a job published with a 2-second delay must not be immediately available',
+        );
+
+        // Wait for the delay to elapse, then poll for the job.
+        usleep(2_500_000);
+        $this->pollForMessage(5);
+
+        $job = $this->queue->pop();
+        self::assertNotNull($job, 'the delayed job should be available after the delay');
+        $job->delete();
+    }
+
+    private function pollForMessage(int $timeoutSeconds): void
+    {
+        $deadline = time() + $timeoutSeconds;
+        while (time() < $deadline) {
+            $job = $this->queue->pop();
+            if ($job !== null) {
+                $job->delete();
+                return;
+            }
+            usleep(200_000);
+        }
     }
 
     public function test_later_with_zero_delay_behaves_like_push(): void

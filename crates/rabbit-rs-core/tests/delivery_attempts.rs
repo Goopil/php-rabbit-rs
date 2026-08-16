@@ -128,6 +128,7 @@ fn connection_key() -> ConnectionKey {
             brokers: vec![broker()],
             workers: vec![],
             topology_mode: TopologyMode::External,
+            delay: rabbit_rs_core::config::DelayConfig::default(),
         }
         .validate()
         .expect("valid config"),
