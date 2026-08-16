@@ -73,6 +73,7 @@
 - [x] Task 39 — Créer l'application bench-laravel (`3fb9fc4`, `8d56ee8`, `e43cb68`).
 - [x] Task 40 — Calibrer les defaults et figer les budgets (`6ec500e`, `6546f4c`).
 - [x] Task 41 — Préparer les packages Rabbit RS et la matrice PIE (`aa2e7d2`).
+- [x] Task 42 — Ajouter la CI et la publication synchronisée (`f04dbd8`, `f7f374e`, `e2e742c`).
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
