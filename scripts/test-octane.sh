@@ -15,6 +15,6 @@ if ! command -v php &> /dev/null; then
     exit 1
 fi
 
-php -d memory_limit=512M vendor/bin/phpunit --filter OctaneLifecycleTest
+php -d memory_limit=512M vendor/bin/phpunit --testsuite="Rabbit RS Laravel" --filter OctaneLifecycleTest
 
 echo "Octane lifecycle tests passed for ${SERVER}"

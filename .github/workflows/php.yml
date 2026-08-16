@@ -77,7 +77,7 @@ jobs:
               apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
               . "$HOME/.cargo/env"
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
 
@@ -98,6 +98,6 @@ jobs:
               apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
               . "$HOME/.cargo/env"
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
