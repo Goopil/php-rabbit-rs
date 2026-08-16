@@ -64,53 +64,66 @@ fn bench_batching(c: &mut Criterion) {
                     let payloads: Vec<Vec<u8>> =
                         (0..batch_size).map(|_| payload(payload_size)).collect();
 
-                    b.iter(|| {
-                        runtime.block_on(async {
-                            let transport = MockTransport::default();
+                    b.iter_batched(
+                        || {
+                            runtime.block_on(async {
+                                let transport = MockTransport::default();
 
-                            for _ in 0..batch_size {
-                                if confirms {
-                                    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-                                } else {
-                                    transport
-                                        .push_confirmation(Ok(PublishConfirmation::NotRequested));
+                                for _ in 0..batch_size {
+                                    if confirms {
+                                        transport
+                                            .push_confirmation(Ok(PublishConfirmation::Ack(None)));
+                                    } else {
+                                        transport.push_confirmation(Ok(
+                                            PublishConfirmation::NotRequested,
+                                        ));
+                                    }
                                 }
-                            }
 
-                            let channel = transport
-                                .connect(&broker())
-                                .await
-                                .expect("connection")
-                                .open_publisher()
-                                .await
-                                .expect("publisher channel");
+                                let channel = transport
+                                    .connect(&broker())
+                                    .await
+                                    .expect("connection")
+                                    .open_publisher()
+                                    .await
+                                    .expect("publisher channel");
 
-                            let config = PublisherConfig::with_flags(
-                                batch_size,
-                                2 * 1024 * 1024,
-                                std::time::Duration::from_millis(1),
-                                1024,
-                                std::time::Duration::from_secs(30),
-                                confirms,
-                                true,
-                            );
-                            let publisher = PublisherActor::spawn(Arc::from(channel), config);
+                                let config = PublisherConfig::with_flags(
+                                    batch_size,
+                                    2 * 1024 * 1024,
+                                    std::time::Duration::from_millis(1),
+                                    1024,
+                                    std::time::Duration::from_secs(30),
+                                    confirms,
+                                    true,
+                                );
+                                PublisherActor::spawn(Arc::from(channel), config)
+                            })
+                        },
+                        |publisher| {
+                            runtime.block_on(async {
+                                let mut waiters = Vec::with_capacity(batch_size);
+                                for (index, payload) in payloads.iter().enumerate() {
+                                    let req = request(&format!("msg-{index}"), payload.clone());
+                                    let waiter = publisher.try_publish(req).expect("publish");
+                                    waiters.push(waiter);
+                                }
 
-                            let mut waiters = Vec::with_capacity(batch_size);
-                            for (index, payload) in payloads.iter().enumerate() {
-                                let req = request(&format!("msg-{index}"), payload.clone());
-                                let waiter = publisher.try_publish(req).expect("publish");
-                                waiters.push(waiter);
-                            }
+                                if confirms {
+                                    for waiter in waiters {
+                                        let outcome = waiter.wait().await.expect("outcome");
+                                        assert!(matches!(
+                                            outcome,
+                                            PublishOutcome::Confirmed { .. }
+                                        ));
+                                    }
+                                }
 
-                            for waiter in waiters {
-                                let outcome = waiter.wait().await.expect("outcome");
-                                assert!(matches!(outcome, PublishOutcome::Confirmed { .. }));
-                            }
-
-                            publisher.close().await.expect("close");
-                        });
-                    });
+                                publisher.close().await.expect("close");
+                            });
+                        },
+                        criterion::BatchSize::LargeInput,
+                    );
                 });
             }
         }

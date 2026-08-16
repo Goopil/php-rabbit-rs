@@ -22,10 +22,14 @@ fn setup_scheduler(count: usize) -> WeightedFairScheduler {
         let priority_class = i16::try_from(index % 2).expect("priority class");
         scheduler.register(id(&format!("sub-{index}")), policy(weight, priority_class));
     }
+    mark_all_ready(&mut scheduler, count);
+    scheduler
+}
+
+fn mark_all_ready(scheduler: &mut WeightedFairScheduler, count: usize) {
     for index in 0..count {
         scheduler.mark_ready(&id(&format!("sub-{index}")));
     }
-    scheduler
 }
 
 fn bench_scheduler_next(c: &mut Criterion) {
@@ -34,12 +38,15 @@ fn bench_scheduler_next(c: &mut Criterion) {
     for &count in &SUBSCRIPTION_COUNTS {
         let bench_id = BenchmarkId::new("subscriptions", count);
         group.bench_with_input(bench_id, &count, |b, &count| {
-            let mut scheduler = setup_scheduler(count);
             let now = Instant::now();
 
-            b.iter(|| {
-                let _selected = scheduler.next(now);
-            });
+            b.iter_batched(
+                || setup_scheduler(count),
+                |mut scheduler| {
+                    let _selected = scheduler.next(now);
+                },
+                criterion::BatchSize::SmallInput,
+            );
         });
     }
 

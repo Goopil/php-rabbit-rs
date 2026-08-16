@@ -1,7 +1,5 @@
-use std::collections::BTreeMap;
-
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rabbit_rs_core::{
     config::{
         BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
@@ -138,11 +136,11 @@ fn bench_header_conversion(c: &mut Criterion) {
                 .collect();
 
             b.iter(|| {
-                let mut headers: BTreeMap<String, HeaderValue> = BTreeMap::new();
+                let mut headers = PublishHeaders::new();
                 for (key, value) in &template {
                     headers.insert(key.clone(), value.clone());
                 }
-                let _converted: PublishHeaders = headers;
+                let _ = headers;
             });
         });
     }

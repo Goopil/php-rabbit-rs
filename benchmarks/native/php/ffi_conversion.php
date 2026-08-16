@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Pool;
+
 /**
  * PHP-side FFI conversion benchmark harness for the rabbit_rs native extension.
  *
@@ -18,9 +20,7 @@ function environment(): array
 {
     $phpVersion = PHP_VERSION;
     $sapi = PHP_SAPI;
-    $isZts = defined('PHP_INT_SIZE') && PHP_INT_SIZE === 8
-        ? (function_exists('zend_thread_id') ? 'ZTS' : 'NTS')
-        : 'NTS';
+    $isZts = defined('PHP_ZTS') && PHP_ZTS ? 'ZTS' : 'NTS';
 
     $osFamily = PHP_OS_FAMILY;
     $kernel = php_uname('r');
