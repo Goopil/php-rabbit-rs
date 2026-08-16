@@ -1,0 +1,17 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+require __DIR__ . '/bootstrap/app.php';
+
+use App\Console\Commands\ConsumeBenchmark;
+use App\Console\Commands\PublishBenchmark;
+use Symfony\Component\Console\Application;
+
+$application = new Application('rabbit-rs benchmark', '1.0.0');
+$application->addCommands([
+    new PublishBenchmark(),
+    new ConsumeBenchmark(),
+]);
+$application->run();
