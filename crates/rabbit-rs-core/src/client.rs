@@ -17,6 +17,7 @@ use crate::{
         PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublisherConfig,
         PublisherHandle,
     },
+    recovery::ConnectionState,
     topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{Transport, TransportConnection, TransportError, lapin::LapinTransport},
 };
@@ -241,6 +242,19 @@ impl ClientPool {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Returns the current connection state for each known broker coordinator.
+    ///
+    /// Brokers whose coordinator has not been started yet are absent from the
+    /// returned map. The map is a point-in-time snapshot and may be stale by
+    /// the time it is inspected.
+    #[must_use]
+    pub fn connection_states(&self) -> HashMap<String, ConnectionState> {
+        lock(&self.coordinators)
+            .iter()
+            .map(|(broker, handle)| (broker.clone(), handle.state()))
+            .collect()
     }
 
     /// Returns the number of pending messages in a queue on the given broker.

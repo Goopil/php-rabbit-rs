@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** main
 
-**Prochaine étape :** Milestone D2 — Task 33 — Dispatcher les events Laravel depuis l'extension native.
+**Prochaine étape :** Milestone D2 — Task 34 — Exposer les métriques consumer et latences.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -64,6 +64,7 @@
 - [x] Task 30 — Câbler la DLQ et les arguments de queue génériques (`7d62e0c`).
 - [x] Task 31 — Câbler le TLS end-to-end (`e6881d3`).
 - [x] Task 32 — Câbler le nettoyage des consumers et éviter les fuites de channels.
+- [x] Task 33 — Dispatcher les events Laravel depuis l'extension native.
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 

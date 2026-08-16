@@ -62,6 +62,30 @@ final class Pool
     {
     }
 
+    /**
+     * Registers a PHP callback invoked when a broker connection state changes.
+     *
+     * The callback receives (string $broker, string $state, int $generation).
+     * It is invoked synchronously on the PHP thread during stats().
+     *
+     * @param callable(string, string, int): void $callback
+     */
+    public function onConnectionState(callable $callback): void
+    {
+    }
+
+    /**
+     * Registers a PHP callback invoked when publisher backpressure is detected.
+     *
+     * The callback receives (string $broker, int $inFlight, int $capacity).
+     * It is invoked synchronously on the PHP thread during stats().
+     *
+     * @param callable(string, int, int): void $callback
+     */
+    public function onBackpressure(callable $callback): void
+    {
+    }
+
     public function close(): void
     {
     }

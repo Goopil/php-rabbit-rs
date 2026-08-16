@@ -188,6 +188,12 @@ namespace Goopil\RabbitRs {
             /** @var array<string, Consumer> */
             private array $consumers = [];
 
+            /** @var ?\Closure(string, string, int): void */
+            private ?\Closure $connectionStateCallback = null;
+
+            /** @var ?\Closure(string, int, int): void */
+            private ?\Closure $backpressureCallback = null;
+
             /**
              * @param array<string, mixed> $config
              */
@@ -273,6 +279,46 @@ namespace Goopil\RabbitRs {
                     $this->nextClearException = null;
 
                     throw $exception;
+                }
+            }
+
+            /**
+             * Registers a PHP callback invoked when the connection state changes.
+             *
+             * @param \Closure(string, string, int): void $callback
+             */
+            public function onConnectionState(\Closure $callback): void
+            {
+                $this->connectionStateCallback = $callback;
+            }
+
+            /**
+             * Registers a PHP callback invoked when backpressure is detected.
+             *
+             * @param \Closure(string, int, int): void $callback
+             */
+            public function onBackpressure(\Closure $callback): void
+            {
+                $this->backpressureCallback = $callback;
+            }
+
+            /**
+             * Simulates a connection state change and invokes the registered callback.
+             */
+            public function simulateConnectionState(string $broker, string $state, int $generation): void
+            {
+                if ($this->connectionStateCallback !== null) {
+                    ($this->connectionStateCallback)($broker, $state, $generation);
+                }
+            }
+
+            /**
+             * Simulates a backpressure event and invokes the registered callback.
+             */
+            public function simulateBackpressure(string $broker, int $inFlight, int $capacity): void
+            {
+                if ($this->backpressureCallback !== null) {
+                    ($this->backpressureCallback)($broker, $inFlight, $capacity);
                 }
             }
 

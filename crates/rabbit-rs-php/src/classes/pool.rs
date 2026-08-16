@@ -1,20 +1,27 @@
+#![expect(
+    non_snake_case,
+    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
+)]
+
 use std::sync::Arc;
 
 use super::{
     consumer::Consumer,
     exception::{client_exception, rabbit_exception},
 };
+use crate::callbacks::CallbackSlot;
 use crate::conversion;
 use ext_php_rs::{
     boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
-    types::ZendHashTable,
+    types::{ZendHashTable, Zval},
 };
 use rabbit_rs_core::{
     client::ClientPool,
     pool::{ConnectionHandle, ConnectionKey},
     publisher::PublishOutcome,
+    recovery::ConnectionState,
     runtime::RuntimeRegistry,
 };
 
@@ -26,6 +33,9 @@ pub struct Pool {
     handle: Arc<ConnectionHandle>,
     client: Arc<ClientPool>,
     pid: u32,
+    connection_state_callback: CallbackSlot,
+    backpressure_callback: CallbackSlot,
+    last_backpressure_total: std::sync::Mutex<u64>,
 }
 
 #[php_impl]
@@ -52,7 +62,29 @@ impl Pool {
             handle,
             client,
             pid: std::process::id(),
+            connection_state_callback: CallbackSlot::new(),
+            backpressure_callback: CallbackSlot::new(),
+            last_backpressure_total: std::sync::Mutex::new(0),
         })
+    }
+
+    /// Registers a PHP callback invoked when a broker connection state changes.
+    ///
+    /// The callback receives `(string $broker, string $state, int $generation)`.
+    /// It is invoked synchronously on the PHP thread during `stats()`.
+    pub fn onConnectionState(&self, callback: &Zval) -> PhpResult<()> {
+        self.connection_state_callback
+            .set(callback.shallow_clone())?;
+        Ok(())
+    }
+
+    /// Registers a PHP callback invoked when publisher backpressure is detected.
+    ///
+    /// The callback receives `(string $broker, int $inFlight, int $capacity)`.
+    /// It is invoked synchronously on the PHP thread during `stats()`.
+    pub fn onBackpressure(&self, callback: &Zval) -> PhpResult<()> {
+        self.backpressure_callback.set(callback.shallow_clone())?;
+        Ok(())
     }
 
     /// Publishes one message and returns its stable message identifier.
@@ -134,6 +166,10 @@ impl Pool {
             "reconnects_total",
             i64_from_counter(metrics.reconnects_total),
         )?;
+
+        self.invoke_connection_state_callbacks();
+        self.invoke_backpressure_callback(metrics.backpressure_total);
+
         Ok(stats)
     }
 
@@ -203,6 +239,9 @@ impl Pool {
             handle,
             client,
             pid: std::process::id(),
+            connection_state_callback: CallbackSlot::new(),
+            backpressure_callback: CallbackSlot::new(),
+            last_backpressure_total: std::sync::Mutex::new(0),
         }
     }
 
@@ -216,5 +255,52 @@ impl Pool {
             return rabbit_exception(format!("{operation} cannot use a closed pool"));
         }
         Ok(())
+    }
+
+    fn invoke_connection_state_callbacks(&self) {
+        let states = self.client.connection_states();
+        for (broker, state) in &states {
+            let (state_name, generation) = connection_state_parts(state);
+            let _ = self.connection_state_callback.invoke(vec![
+                &broker.as_str(),
+                &state_name,
+                &generation,
+            ]);
+        }
+    }
+
+    fn invoke_backpressure_callback(&self, current_backpressure: u64) {
+        let mut last = self
+            .last_backpressure_total
+            .lock()
+            .expect("backpressure mutex poisoned");
+        if current_backpressure > *last {
+            let _ = self.backpressure_callback.invoke(vec![
+                &"default".to_string(),
+                &i64::try_from(current_backpressure - *last).unwrap_or(i64::MAX),
+                &i64::try_from(current_backpressure).unwrap_or(i64::MAX),
+            ]);
+        }
+        *last = current_backpressure;
+    }
+}
+
+fn connection_state_parts(state: &ConnectionState) -> (String, i64) {
+    match state {
+        ConnectionState::Disconnected => ("disconnected".to_string(), 0),
+        ConnectionState::Connecting { attempt } => ("connecting".to_string(), i64::from(*attempt)),
+        ConnectionState::Ready { generation } => (
+            "ready".to_string(),
+            i64::try_from(*generation).unwrap_or(i64::MAX),
+        ),
+        ConnectionState::Recovering {
+            attempt,
+            retry_in: _,
+            reason: _,
+        } => ("recovering".to_string(), i64::from(*attempt)),
+        ConnectionState::FailedPermanent { kind: _, reason: _ } => {
+            ("failed_permanent".to_string(), 0)
+        }
+        ConnectionState::Closed => ("closed".to_string(), 0),
     }
 }

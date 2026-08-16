@@ -9,6 +9,8 @@ use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Exception as NativeException;
+use Goopil\RabbitRs\Laravel\Events\BackpressureDetected;
+use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
@@ -36,6 +38,52 @@ final class RabbitMqQueue extends Queue implements QueueContract
         private readonly int $blockForMilliseconds = 0,
     ) {
         $this->dispatchAfterCommit = $dispatchAfterCommit;
+        $this->registerDefaultCallbacks();
+    }
+
+    private function registerDefaultCallbacks(): void
+    {
+        $weak = \WeakReference::create($this);
+        $this->pool->onConnectionState(
+            static function (string $broker, string $state, int $generation) use ($weak): void {
+                $queue = $weak->get();
+                if ($queue !== null) {
+                    $queue->onConnectionState($broker, $state, $generation);
+                }
+            },
+        );
+        $this->pool->onBackpressure(
+            static function (string $broker, int $inFlight, int $capacity) use ($weak): void {
+                $queue = $weak->get();
+                if ($queue !== null) {
+                    $queue->onBackpressure($broker, $inFlight, $capacity);
+                }
+            },
+        );
+    }
+
+    /**
+     * Default handler for connection state changes, dispatching the
+     * ConnectionStateChanged event through the Laravel event system.
+     *
+     * Register a custom callback via Pool::onConnectionState() to replace
+     * this default behavior.
+     */
+    public function onConnectionState(string $broker, string $state, int $generation): void
+    {
+        app('events')->dispatch(new ConnectionStateChanged($broker, $state, $generation));
+    }
+
+    /**
+     * Default handler for backpressure detection, dispatching the
+     * BackpressureDetected event through the Laravel event system.
+     *
+     * Register a custom callback via Pool::onBackpressure() to replace
+     * this default behavior.
+     */
+    public function onBackpressure(string $broker, int $inFlight, int $capacity): void
+    {
+        app('events')->dispatch(new BackpressureDetected($broker, $inFlight, $capacity));
     }
 
     public function size($queue = null)

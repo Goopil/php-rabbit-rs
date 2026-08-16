@@ -2,6 +2,7 @@
 
 //! PHP extension boundary for Rabbit RS.
 
+mod callbacks;
 mod classes;
 mod conversion;
 #[cfg(feature = "extension-tests")]
