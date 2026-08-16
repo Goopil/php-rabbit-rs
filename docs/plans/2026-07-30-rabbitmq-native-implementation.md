@@ -72,6 +72,7 @@
 - [x] Task 38 — Créer bench-native (`ae9c668`, `7f13f98`).
 - [x] Task 39 — Créer l'application bench-laravel (`3fb9fc4`, `8d56ee8`, `e43cb68`).
 - [x] Task 40 — Calibrer les defaults et figer les budgets (`6ec500e`, `6546f4c`).
+- [x] Task 41 — Préparer les packages Rabbit RS et la matrice PIE (`aa2e7d2`).
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
