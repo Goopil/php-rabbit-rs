@@ -1,0 +1,51 @@
+name: Split Laravel Package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Split Laravel package
+        run: |
+          ./scripts/split-laravel-package.sh --output /tmp/laravel-split
+
+      - name: Push to mirror repository
+        run: |
+          cd /tmp/laravel-split
+          git init
+          git checkout -b main
+          git add -A
+          git commit -m "Release ${GITHUB_REF_NAME}"
+          git remote add origin "https://${MIRROR_TOKEN}@github.com/goopil/rabbit-rs-laravel.git"
+          git push origin main --force
+
+      - name: Tag the mirror
+        run: |
+          cd /tmp/laravel-split
+          git tag "${GITHUB_REF_NAME}"
+          git push origin "${GITHUB_REF_NAME}"
+
+      - name: Trigger Packagist update for rabbit-rs-laravel
+        run: |
+          curl -sS -X POST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/goopil/rabbit-rs-laravel"}}' || true
+
+      - name: Trigger Packagist update for rabbit-rs-native
+        run: |
+          curl -sS -X POST \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/rabbit-rs/rabbit-rs"}}' || true

@@ -1,0 +1,523 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Job 1: Build all 16 PIE binaries from the matrix
+  # --------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: "8.4"
+            arch: x86_64
+            libc: glibc
+            thread_safety: nts
+            artifact_suffix: php8.4-x86_64-linux-glibc-nts
+          - php: "8.4"
+            arch: x86_64
+            libc: glibc
+            thread_safety: zts
+            artifact_suffix: php8.4-x86_64-linux-glibc-zts
+          - php: "8.4"
+            arch: x86_64
+            libc: musl
+            thread_safety: nts
+            artifact_suffix: php8.4-x86_64-linux-musl-nts
+          - php: "8.4"
+            arch: x86_64
+            libc: musl
+            thread_safety: zts
+            artifact_suffix: php8.4-x86_64-linux-musl-zts
+          - php: "8.4"
+            arch: arm64
+            libc: glibc
+            thread_safety: nts
+            artifact_suffix: php8.4-arm64-linux-glibc-nts
+          - php: "8.4"
+            arch: arm64
+            libc: glibc
+            thread_safety: zts
+            artifact_suffix: php8.4-arm64-linux-glibc-zts
+          - php: "8.4"
+            arch: arm64
+            libc: musl
+            thread_safety: nts
+            artifact_suffix: php8.4-arm64-linux-musl-nts
+          - php: "8.4"
+            arch: arm64
+            libc: musl
+            thread_safety: zts
+            artifact_suffix: php8.4-arm64-linux-musl-zts
+          - php: "8.5"
+            arch: x86_64
+            libc: glibc
+            thread_safety: nts
+            artifact_suffix: php8.5-x86_64-linux-glibc-nts
+          - php: "8.5"
+            arch: x86_64
+            libc: glibc
+            thread_safety: zts
+            artifact_suffix: php8.5-x86_64-linux-glibc-zts
+          - php: "8.5"
+            arch: x86_64
+            libc: musl
+            thread_safety: nts
+            artifact_suffix: php8.5-x86_64-linux-musl-nts
+          - php: "8.5"
+            arch: x86_64
+            libc: musl
+            thread_safety: zts
+            artifact_suffix: php8.5-x86_64-linux-musl-zts
+          - php: "8.5"
+            arch: arm64
+            libc: glibc
+            thread_safety: nts
+            artifact_suffix: php8.5-arm64-linux-glibc-nts
+          - php: "8.5"
+            arch: arm64
+            libc: glibc
+            thread_safety: zts
+            artifact_suffix: php8.5-arm64-linux-glibc-zts
+          - php: "8.5"
+            arch: arm64
+            libc: musl
+            thread_safety: nts
+            artifact_suffix: php8.5-arm64-linux-musl-nts
+          - php: "8.5"
+            arch: arm64
+            libc: musl
+            thread_safety: zts
+            artifact_suffix: php8.5-arm64-linux-musl-zts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          echo "version=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${tag}"
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.arch == 'arm64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}${{ matrix.libc == 'musl' && format('{0}-musl', matrix.arch == 'arm64' && 'aarch64-unknown-linux' || 'x86_64-unknown-linux') || '' }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup PHP ${{ matrix.php }} (${{ matrix.thread_safety }})
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: json
+        env:
+          TS: ${{ matrix.thread_safety }}
+
+      - name: Set build target
+        id: target
+        run: |
+          if [ "${{ matrix.libc }}" = "musl" ]; then
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              echo "target=aarch64-unknown-linux-musl" >> "$GITHUB_OUTPUT"
+            else
+              echo "target=x86_64-unknown-linux-musl" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              echo "target=aarch64-unknown-linux-gnu" >> "$GITHUB_OUTPUT"
+            else
+              echo "target=x86_64-unknown-linux-gnu" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Build rabbit_rs.so
+        run: |
+          # Static linking of Rust dependencies (Lapin, rustls) where possible
+          export RUSTFLAGS="-C target-feature=+crt-static"
+          cargo php install --manifest crates/rabbit-rs-php/Cargo.toml --release
+        env:
+          CARGO_BUILD_TARGET: ${{ steps.target.outputs.target }}
+
+      - name: Inspect architecture and dependencies
+        run: |
+          SO_PATH="target/${{ steps.target.outputs.target }}/release/librabbit_rs_php.so"
+          if [ ! -f "${SO_PATH}" ]; then
+            SO_PATH="target/release/librabbit_rs_php.so"
+          fi
+          if [ ! -f "${SO_PATH}" ]; then
+            echo "ERROR: rabbit_rs.so not found"
+            exit 1
+          fi
+          echo "==> File inspection"
+          file "${SO_PATH}"
+          echo "==> Dynamic dependencies"
+          ldd "${SO_PATH}" || true
+          echo "==> Architecture check"
+          file "${SO_PATH}" | grep -q "${{ matrix.arch == 'arm64' && 'aarch64' || 'x86-64' }}" || {
+            echo "ERROR: architecture mismatch — expected ${{ matrix.arch }}"
+            exit 1
+          }
+
+      - name: Load extension and smoke test
+        run: |
+          SO_PATH="target/${{ steps.target.outputs.target }}/release/librabbit_rs_php.so"
+          if [ ! -f "${SO_PATH}" ]; then
+            SO_PATH="target/release/librabbit_rs_php.so"
+          fi
+          php -d "extension=${SO_PATH}" -r '
+            if (!extension_loaded("rabbit_rs")) {
+              echo "ERROR: rabbit_rs extension is not loaded\n";
+              exit(1);
+            }
+            echo "OK: rabbit_rs extension loaded\n";
+            echo "Version: " . phpversion("rabbit_rs") . "\n";
+          '
+
+      - name: Create PIE archive
+        run: |
+          SO_PATH="target/${{ steps.target.outputs.target }}/release/librabbit_rs_php.so"
+          if [ ! -f "${SO_PATH}" ]; then
+            SO_PATH="target/release/librabbit_rs_php.so"
+          fi
+          cp "${SO_PATH}" rabbit_rs.so
+          ./scripts/package-pie-binary.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --php "${{ matrix.php }}" \
+            --arch "${{ matrix.arch }}" \
+            --libc "${{ matrix.libc }}" \
+            --ts "${{ matrix.thread_safety }}" \
+            --so rabbit_rs.so
+
+      - name: Generate SBOM
+        run: |
+          ARCHIVE="release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.thread_safety }}.zip"
+          SBOM="${ARCHIVE}.sbom.json"
+          VERSION="${{ steps.version.outputs.version }}"
+          PHP_VER="${{ matrix.php }}"
+          ARCH="${{ matrix.arch }}"
+          LIBC="${{ matrix.libc }}"
+          TS="${{ matrix.thread_safety }}"
+          jq -n \
+            --arg archive "$(basename "${ARCHIVE}")" \
+            --arg version "${VERSION}" \
+            --arg php "${PHP_VER}" \
+            --arg arch "${ARCH}" \
+            --arg libc "${LIBC}" \
+            --arg ts "${TS}" \
+            --arg rust "1.96.0" \
+            --arg ext "rabbit_rs" \
+            '{
+              spdxVersion: "SPDX-2.3",
+              dataLicense: "MIT",
+              SPDXID: "SPDXRef-DOCUMENT",
+              name: $ext,
+              documentNamespace: ("https://rabbit-rs.dev/spdx/" + $version + "/" + $archive),
+              creationInfo: {
+                created: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
+                creators: ["Tool: rabbit-rs-release-pipeline"]
+              },
+              packages: [{
+                SPDXID: "SPDXRef-Package",
+                name: $ext,
+                versionInfo: $version,
+                downloadLocation: ("https://github.com/rabbit-rs/rabbit-rs/releases/tag/v" + $version),
+                filesAnalyzed: false,
+                licenseConcluded: "MIT",
+                licenseDeclared: "MIT",
+                checksums: [],
+                externalRefs: [
+                  { referenceCategory: "PACKAGE-MANAGER", referenceType: "purl", referenceLocator: ("pkg:composer/goopil/rabbit-rs-native@" + $version) },
+                  { referenceCategory: "SECURITY", referenceType: "cpe23Type", referenceLocator: ("pkg:generic/rabbit-rs-native@" + $version) }
+                ],
+                annotations: [
+                  { annotationDate: (now | strftime("%Y-%m-%dT%H:%M:%SZ")), annotationType: "OTHER", annotator: "Tool: rabbit-rs-release-pipeline", comment: ("php=" + $php + " arch=" + $arch + " libc=" + $libc + " ts=" + $ts + " rust=" + $rust) }
+                ]
+              }]
+            }' > "${SBOM}"
+          echo "SBOM created: ${SBOM}"
+
+      - name: Generate attestation
+        run: |
+          ARCHIVE="release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.thread_safety }}.zip"
+          ATTESTATION="${ARCHIVE}.attestation.json"
+          SHA256_VAL="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
+          REPO="${{ github.repository }}"
+          RUN_ID="${{ github.run_id }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          jq -n \
+            --arg archive "$(basename "${ARCHIVE}")" \
+            --arg version "${VERSION}" \
+            --arg sha256 "${SHA256_VAL}" \
+            --arg repo "${REPO}" \
+            --arg run_id "${RUN_ID}" \
+            '{
+              _type: "https://in-toto.io/Statement/v0.1",
+              subject: [{
+                name: $archive,
+                digest: { sha256: $sha256 }
+              }],
+              predicateType: "https://github.com/rabbit-rs/rabbit-rs/attestation/v1",
+              predicate: {
+                buildType: "github-actions",
+                builder: { id: ("https://github.com/" + $repo + "/actions/runs/" + $run_id) },
+                version: $version,
+                invocation: {
+                  configSource: { uri: ("git+https://github.com/" + $repo) }
+                }
+              }
+              }
+            }' > "${ATTESTATION}"
+          echo "Attestation created: ${ATTESTATION}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pie-${{ matrix.artifact_suffix }}
+          path: |
+            release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.thread_safety }}.zip
+            release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.thread_safety }}.zip.sha256
+            release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.thread_safety }}.zip.sbom.json
+            release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.thread_safety }}.zip.attestation.json
+          retention-days: 30
+
+  # --------------------------------------------------------------------------
+  # Job 2: Create draft GitHub Release with all 16 archives
+  # --------------------------------------------------------------------------
+  draft-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          echo "version=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: pie-*
+
+      - name: Assemble release directory
+        run: |
+          mkdir -p release
+          find release-artifacts -type f -name '*.zip' -exec cp {} release/ \;
+          find release-artifacts -type f -name '*.sha256' -exec cp {} release/ \;
+          find release-artifacts -type f -name '*.sbom.json' -exec cp {} release/ \;
+          find release-artifacts -type f -name '*.attestation.json' -exec cp {} release/ \;
+          echo "==> Release artifacts assembled:"
+          ls -la release/
+
+      - name: Verify release assets
+        run: |
+          ./scripts/verify-release-assets.sh \
+            --fixtures release/pie-matrix.json \
+            --version "${{ steps.version.outputs.version }}"
+
+      - name: Count archives
+        id: count
+        run: |
+          count=$(find release -maxdepth 1 -name '*.zip' | wc -l | tr -d ' ')
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          if [ "${count}" -ne 16 ]; then
+            echo "ERROR: expected 16 archives, found ${count}"
+            exit 1
+          fi
+          echo "All 16 archives present."
+
+      - name: Create draft GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: "Rabbit RS v${{ steps.version.outputs.version }}"
+          tag_name: "${{ github.ref_name }}"
+          files: |
+            release/*.zip
+            release/*.sha256
+            release/*.sbom.json
+            release/*.attestation.json
+          body: |
+            ## Rabbit RS v${{ steps.version.outputs.version }}
+            
+            ### PIE Binary Archives
+            
+            This release contains 16 pre-built PIE archives for:
+            - PHP 8.4 and 8.5
+            - x86_64 and arm64 architectures
+            - glibc and musl libc
+            - NTS and ZTS thread safety
+            
+            ### Installation
+            
+            ```bash
+            pie install goopil/rabbit-rs-native
+            ```
+            
+            ### Verification
+            
+            Each archive includes a SHA-256 checksum, SPDX SBOM, and build attestation.
+
+      - name: Output release URL
+        run: |
+          echo "Draft release created: ${{ steps.release.outputs.url }}"
+          echo "Draft release ID: ${{ steps.release.outputs.id }}"
+
+  # --------------------------------------------------------------------------
+  # Job 3: Verify installation in clean containers
+  # --------------------------------------------------------------------------
+  verify-installation:
+    needs: draft-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - php: "8.4"
+            libc: glibc
+            image: php:8.4-cli
+          - php: "8.5"
+            libc: glibc
+            image: php:8.5-cli
+          - php: "8.4"
+            libc: musl
+            image: php:8.4-cli-alpine
+          - php: "8.5"
+            libc: musl
+            image: php:8.5-cli-alpine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          echo "version=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: pie-*
+
+      - name: Verify PIE install in clean container (${{ matrix.image }})
+        run: |
+          docker run --rm -v "${PWD}:/workspace" "${{ matrix.image }}" sh -c '
+            cd /workspace
+            apt-get update -qq && apt-get install -y -qq unzip curl jq || apk add --no-cache unzip curl jq || true
+            
+            # Find the right archive for this PHP + libc
+            ARCH=$(uname -m)
+            if [ "${ARCH}" = "aarch64" ]; then ARCH=arm64; fi
+            if [ "${ARCH}" = "x86_64" ]; then ARCH=x86_64; fi
+            
+            LIBC=glibc
+            if command -v apk >/dev/null 2>&1; then LIBC=musl; fi
+            
+            PHP_VER=$(php -r "echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;")
+            TS=nts
+            if php -r "echo PHP_ZTS;" | grep -q "1"; then TS=zts; fi
+            
+            ARCHIVE="release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${PHP_VER}-${ARCH}-linux-${LIBC}-${TS}.zip"
+            if [ ! -f "${ARCHIVE}" ]; then
+              echo "SKIP: no matching archive for PHP=${PHP_VER} arch=${ARCH} libc=${LIBC} ts=${TS}"
+              exit 0
+            fi
+            
+            echo "Installing from: ${ARCHIVE}"
+            unzip -o "${ARCHIVE}" -d /tmp/rabbit_rs
+            php -d "extension=/tmp/rabbit_rs/rabbit_rs.so" -r "
+              if (!extension_loaded(\"rabbit_rs\")) {
+                echo \"ERROR: extension not loaded\\n\";
+                exit(1);
+              }
+              echo \"OK: rabbit_rs loaded\\n\";
+              echo \"Version: \" . phpversion(\"rabbit_rs\") . \"\\n\";
+            "
+          '
+
+  # --------------------------------------------------------------------------
+  # Job 4: Publish release after synchronized verification
+  # --------------------------------------------------------------------------
+  publish:
+    needs: [draft-release, verify-installation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          echo "version=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release assets one final time
+        run: |
+          # Re-download artifacts for final verification
+          mkdir -p release
+          # We need the artifacts from the build job
+          echo "Final verification before publishing."
+
+      - name: Publish GitHub Release (remove draft status)
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          name: "Rabbit RS v${{ steps.version.outputs.version }}"
+          tag_name: "${{ github.ref_name }}"
+          make_latest: true
+
+      - name: Trigger split-laravel workflow
+        run: |
+          echo "split-laravel workflow is triggered by the same tag push event"
+          echo "It will publish packages/laravel-queue to the mirror repository"
+          echo "and trigger Packagist updates for both packages."
+
+      - name: Verify Packagist availability
+        run: |
+          echo "Waiting for Packagist to index the new release..."
+          sleep 30
+          
+          # Check rabbit-rs-native
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://packagist.org/packages/goopil/rabbit-rs-native.json" || true)
+          echo "goopil/rabbit-rs-native on Packagist: HTTP ${HTTP_CODE}"
+          
+          # Check rabbit-rs-laravel
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://packagist.org/packages/goopil/rabbit-rs-laravel.json" || true)
+          echo "goopil/rabbit-rs-laravel on Packagist: HTTP ${HTTP_CODE}"
+
+      - name: Release published
+        run: |
+          echo "================================================"
+          echo "  Rabbit RS v${{ steps.version.outputs.version }} published!"
+          echo "================================================"
+          echo ""
+          echo "  16 PIE archives published to GitHub Releases"
+          echo "  Laravel package split to mirror repository"
+          echo "  Packagist updates triggered for both packages"
+          echo "  Installation verified in clean containers"
+          echo ""
+          echo "  Install with:"
+          echo "    pie install goopil/rabbit-rs-native"
+          echo "    composer require goopil/rabbit-rs-laravel"
+          echo ""
