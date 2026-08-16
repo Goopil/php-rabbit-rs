@@ -31,7 +31,7 @@ jobs:
           git checkout -b main
           git add -A
           git commit -m "Release ${GITHUB_REF_NAME}"
-          git remote add origin "https://${MIRROR_TOKEN}@github.com/goopil/rabbit-rs-laravel.git"
+          git remote add origin "https://${MIRROR_TOKEN}@github.com/Goopil/rabbit-rs-laravel.git"
           git push origin main --force
 
       - name: Tag the mirror
@@ -46,7 +46,7 @@ jobs:
             "https://packagist.org/api/update-package" \
             -H "Content-Type: application/json" \
             -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
-            -d '{"repository":{"url":"https://github.com/goopil/rabbit-rs-laravel"}}'
+            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
 
       - name: Trigger Packagist update for rabbit-rs-native
         run: |
@@ -54,4 +54,4 @@ jobs:
             "https://packagist.org/api/update-package" \
             -H "Content-Type: application/json" \
             -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
-            -d '{"repository":{"url":"https://github.com/goopil/rabbit-rs"}}'
+            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'

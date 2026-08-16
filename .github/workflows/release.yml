@@ -290,7 +290,7 @@ jobs:
                 SPDXID: "SPDXRef-Package",
                 name: $ext,
                 versionInfo: $version,
-                downloadLocation: ("https://github.com/rabbit-rs/rabbit-rs/releases/tag/v" + $version),
+                downloadLocation: ("https://github.com/Goopil/rabbit-rs/releases/tag/v" + $version),
                 filesAnalyzed: false,
                 licenseConcluded: "MIT",
                 licenseDeclared: "MIT",
@@ -326,7 +326,7 @@ jobs:
                 name: $archive,
                 digest: { sha256: $sha256 }
               }],
-              predicateType: "https://github.com/rabbit-rs/rabbit-rs/attestation/v1",
+              predicateType: "https://github.com/Goopil/rabbit-rs/attestation/v1",
               predicate: {
                 buildType: "github-actions",
                 builder: { id: ("https://github.com/" + $repo + "/actions/runs/" + $run_id) },
