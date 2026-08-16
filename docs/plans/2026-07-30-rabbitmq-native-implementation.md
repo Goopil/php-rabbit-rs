@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** main
 
-**Prochaine étape :** Milestone D2 — Task 31 — Câbler le TLS end-to-end.
+**Prochaine étape :** Milestone D2 — Task 32 — Câbler le nettoyage des consumers et éviter les fuites de channels.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -62,6 +62,7 @@
 - [x] Task 28 — Implémenter le coordinateur de recovery (`ad652c7`).
 - [x] Task 29 — Implémenter le delay routing côté éditeur (`e844375`, `89bff5f`).
 - [x] Task 30 — Câbler la DLQ et les arguments de queue génériques (`7d62e0c`).
+- [x] Task 31 — Câbler le TLS end-to-end (`e6881d3`).
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 
@@ -350,6 +351,19 @@ Expected: PASS.
 
     git add crates packages
     git commit -m "feat(core): wire TLS connector configuration end-to-end"
+
+Checkpoint après TLS end-to-end du 16 août 2026 :
+
+- `TlsConfig` étendu avec `ca_cert`, `client_cert`, `client_key` (chemins `PathBuf`) et `verify: TlsVerify` (`Peer` par défaut, `None` pour skip).
+- `TlsVerify` ajouté comme enum serde `snake_case` avec `#[default] Peer`.
+- `BrokerConfig::effective_server_name()` résout le SNI : `tls.server_name` si fourni, sinon le premier host.
+- `lapin.rs::connect()` utilise `Connection::connect_with_config` avec un `OwnedTLSConfig` construit depuis la config quand TLS est activé (CA cert en PEM, client cert/key en PKCS#8).
+- `connection_uri` rendue publique pour les tests.
+- Le `ConfigFingerprint` inclut `ca_cert`, `client_cert`, `client_key` et `verify` pour différencier les configs TLS.
+- La config Laravel expose `ca_cert`, `client_cert`, `client_key`, `verify` sous `brokers.default.tls`.
+- `ConfigNormalizer` valide et mappe ces champs vers la config native.
+- 10 tests Rust dans `tls.rs`, 3 nouveaux tests `ConfigNormalizerTest`.
+- `./scripts/check.sh` : PASS, 187 tests Rust + 104 tests PHP, Clippy clean, Fmt clean.
 
 ### Task 32: Câbler le nettoyage des consumers et éviter les fuites de channels
 
