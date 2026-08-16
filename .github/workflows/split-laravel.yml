@@ -32,7 +32,7 @@ jobs:
           git add -A
           git commit -m "Release ${GITHUB_REF_NAME}"
           git remote add origin "https://${MIRROR_TOKEN}@github.com/goopil/rabbit-rs-laravel.git"
-          git push origin main
+          git push origin main --force
 
       - name: Tag the mirror
         run: |

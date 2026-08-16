@@ -49,8 +49,8 @@ jobs:
         run: |
           cd packages/laravel-queue
           composer install --quiet --ignore-platform-reqs
-          composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update --dev || true
-          composer update --quiet --ignore-platform-reqs || true
+          composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update --dev
+          composer update --quiet --ignore-platform-reqs
 
       - name: Run PHPUnit tests
         run: |
