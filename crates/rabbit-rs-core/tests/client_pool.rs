@@ -28,6 +28,8 @@ fn config() -> rabbit_rs_core::config::ValidatedConfig {
         workers: Vec::new(),
         topology_mode: TopologyMode::External,
         delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
     }
     .validate()
     .expect("valid config")
@@ -58,6 +60,8 @@ fn consumer_config() -> rabbit_rs_core::config::ValidatedConfig {
         }],
         topology_mode: TopologyMode::External,
         delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
     }
     .validate()
     .expect("valid consumer config")
@@ -79,6 +83,8 @@ fn two_broker_config() -> rabbit_rs_core::config::ValidatedConfig {
         workers: Vec::new(),
         topology_mode: TopologyMode::External,
         delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
     }
     .validate()
     .expect("valid two-broker config")

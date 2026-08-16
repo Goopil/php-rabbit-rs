@@ -24,6 +24,7 @@ final class ConfigNormalizer
         $topologyMode = self::topologyMode($config['topology_mode'] ?? 'declare');
         $brokers = self::brokers($config['brokers'] ?? null);
         $brokerNames = array_fill_keys(array_column($brokers, 'name'), true);
+        $topology = self::topology($config['topology'] ?? []);
 
         return [
             'native' => [
@@ -31,10 +32,12 @@ final class ConfigNormalizer
                 'workers' => self::workers($config['workers'] ?? [], $brokerNames),
                 'topology_mode' => $topologyMode,
                 'delay' => self::delay($config['delay'] ?? []),
+                'dead_letter' => $topology['dead_letter'],
+                'delivery_limit' => $topology['queue']['delivery_limit'],
             ],
             'routes' => self::routes($config['routes'] ?? [], $brokerNames),
             'publisher' => self::publisher($config['publisher'] ?? []),
-            'topology' => self::topology($config['topology'] ?? []),
+            'topology' => $topology,
         ];
     }
 
@@ -393,8 +396,26 @@ final class ConfigNormalizer
         }
 
         $deadLetter = $topology['dead_letter'] ?? null;
-        if ($deadLetter !== null && ! is_array($deadLetter)) {
-            self::invalid('topology.dead_letter', 'must be null or an array');
+        $normalizedDeadLetter = null;
+        if ($deadLetter !== null) {
+            if (! is_array($deadLetter)) {
+                self::invalid('topology.dead_letter', 'must be null or an array');
+            }
+
+            $deadLetterPath = 'topology.dead_letter';
+            $exchange = self::string($deadLetter['exchange'] ?? null, $deadLetterPath.'.exchange');
+            $dlqQueue = self::string($deadLetter['queue'] ?? null, $deadLetterPath.'.queue');
+            $routingKey = $deadLetter['routing_key'] ?? null;
+            if ($routingKey !== null && (! is_string($routingKey) || $routingKey === '')) {
+                self::invalid($deadLetterPath.'.routing_key', 'must be null or a non-empty string');
+            }
+
+            $normalizedDeadLetter = [
+                'enabled' => true,
+                'exchange' => $exchange,
+                'queue' => $dlqQueue,
+                'routing_key' => $routingKey,
+            ];
         }
 
         return [
@@ -406,7 +427,7 @@ final class ConfigNormalizer
                     'topology.queue.delivery_limit',
                 ),
             ],
-            'dead_letter' => $deadLetter,
+            'dead_letter' => $normalizedDeadLetter,
         ];
     }
 

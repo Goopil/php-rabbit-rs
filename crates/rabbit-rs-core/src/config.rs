@@ -297,6 +297,16 @@ impl FromStr for TopologyMode {
     }
 }
 
+/// Dead-letter configuration attached to the application topology.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DeadLetterConfig {
+    pub enabled: bool,
+    pub exchange: String,
+    pub queue: String,
+    pub routing_key: Option<String>,
+}
+
 /// Unvalidated user configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -306,6 +316,10 @@ pub struct Config {
     pub topology_mode: TopologyMode,
     #[serde(default)]
     pub delay: DelayConfig,
+    #[serde(default)]
+    pub dead_letter: Option<DeadLetterConfig>,
+    #[serde(default)]
+    pub delivery_limit: Option<u32>,
 }
 
 impl Config {
@@ -409,6 +423,8 @@ impl Config {
             workers: self.workers,
             topology_mode: self.topology_mode,
             delay: self.delay,
+            dead_letter: self.dead_letter,
+            delivery_limit: self.delivery_limit,
             fingerprint,
         })
     }
@@ -453,6 +469,8 @@ pub struct ValidatedConfig {
     workers: Vec<WorkerProfile>,
     topology_mode: TopologyMode,
     delay: DelayConfig,
+    dead_letter: Option<DeadLetterConfig>,
+    delivery_limit: Option<u32>,
     fingerprint: ConfigFingerprint,
 }
 
@@ -487,6 +505,16 @@ impl ValidatedConfig {
     #[must_use]
     pub const fn delay(&self) -> &DelayConfig {
         &self.delay
+    }
+
+    #[must_use]
+    pub const fn dead_letter(&self) -> Option<&DeadLetterConfig> {
+        self.dead_letter.as_ref()
+    }
+
+    #[must_use]
+    pub const fn delivery_limit(&self) -> Option<u32> {
+        self.delivery_limit
     }
 
     #[must_use]
@@ -547,6 +575,22 @@ impl ConfigFingerprint {
         digest.update(config.delay.max_buckets.to_be_bytes());
         digest.update(config.delay.queue_expiry_margin.as_secs().to_be_bytes());
         digest.update(config.delay.detection_timeout.as_secs().to_be_bytes());
+
+        if let Some(dl) = &config.dead_letter {
+            hash_value(&mut digest, "dead_letter");
+            hash_value(&mut digest, if dl.enabled { "1" } else { "0" });
+            hash_value(&mut digest, &dl.exchange);
+            hash_value(&mut digest, &dl.queue);
+            hash_value(&mut digest, dl.routing_key.as_deref().unwrap_or_default());
+        } else {
+            hash_value(&mut digest, "no_dead_letter");
+        }
+        if let Some(limit) = config.delivery_limit {
+            hash_value(&mut digest, "delivery_limit");
+            digest.update(limit.to_be_bytes());
+        } else {
+            hash_value(&mut digest, "no_delivery_limit");
+        }
 
         Self(digest.finalize().into())
     }
@@ -646,6 +690,8 @@ mod tests {
             workers: vec![worker(16, 64)],
             topology_mode: TopologyMode::Declare,
             delay: DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
         }
     }
 

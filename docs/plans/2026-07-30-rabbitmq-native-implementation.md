@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Milestone D2 — Task 28 — Implémenter le coordinateur de recovery.
+**Prochaine étape :** Milestone E — Performance — Task 31 — Câbler le TLS end-to-end.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -59,6 +59,9 @@
 - [x] Task 25 — Créer le cluster RabbitMQ de test.
 - [x] Task 26 — Écrire les tests d'intégration end-to-end.
 - [x] Task 27 — Écrire les scénarios de panne (chaos/fault injection).
+- [x] Task 28 — Implémenter le coordinateur de recovery.
+- [x] Task 29 — Implémenter le delay routing côté éditeur.
+- [x] Task 30 — Câbler la DLQ et les arguments de queue génériques.
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 

@@ -390,6 +390,15 @@ async fn declare_queue(channel: &Channel, spec: &QueueSpec, passive: bool) -> Tr
             AMQPValue::LongUInt(duration_millis(expires)),
         );
     }
+    if let Some(delivery_limit) = spec.delivery_limit {
+        arguments.insert(
+            "x-delivery-limit".into(),
+            AMQPValue::LongUInt(delivery_limit),
+        );
+    }
+    for (name, value) in &spec.arguments {
+        arguments.insert(name.clone().into(), publish_header_value(value));
+    }
 
     channel
         .queue_declare(

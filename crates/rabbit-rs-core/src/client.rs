@@ -17,7 +17,7 @@ use crate::{
         PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublisherConfig,
         PublisherHandle,
     },
-    topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
+    topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{Transport, TransportConnection, TransportError, lapin::LapinTransport},
 };
 
@@ -450,13 +450,36 @@ impl ClientPool {
             .worker_profiles()
             .iter()
             .flat_map(|worker| &worker.subscriptions)
-            .map(|sub| QueueDefinition::new(&sub.queue))
+            .map(|sub| {
+                let mut qd = QueueDefinition::new(&sub.queue);
+                if let Some(limit) = self.config.delivery_limit() {
+                    qd = qd.delivery_limit(limit);
+                }
+                qd
+            })
             .collect();
-        TopologyPlan::compile(
-            self.config.topology_mode(),
-            TopologyDefinition::new(vec![], queues, vec![]),
-        )
-        .unwrap_or_else(|_error| {
+
+        let mut topology = TopologyDefinition::new(vec![], queues, vec![]);
+        if let Some(dl) = self.config.dead_letter()
+            && dl.enabled
+        {
+            for sub in self
+                .config
+                .worker_profiles()
+                .iter()
+                .flat_map(|w| &w.subscriptions)
+            {
+                let routing_key = dl.routing_key.clone().unwrap_or_else(|| sub.queue.clone());
+                topology = topology.with_dead_letter(DeadLetterDefinition::new(
+                    sub.queue.clone(),
+                    dl.exchange.clone(),
+                    dl.queue.clone(),
+                    routing_key,
+                ));
+            }
+        }
+
+        TopologyPlan::compile(self.config.topology_mode(), topology).unwrap_or_else(|_error| {
             TopologyPlan::compile(
                 TopologyMode::External,
                 TopologyDefinition::new(vec![], vec![], vec![]),

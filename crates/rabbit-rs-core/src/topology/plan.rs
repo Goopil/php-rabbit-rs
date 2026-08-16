@@ -1,8 +1,8 @@
-use std::{error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 use crate::{
     config::TopologyMode,
-    transport::{BindingSpec, ExchangeKind, ExchangeSpec, QueueKind, QueueSpec},
+    transport::{BindingSpec, ExchangeKind, ExchangeSpec, Headers, QueueKind, QueueSpec},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,6 +12,8 @@ pub struct QueueDefinition {
     durable: bool,
     exclusive: bool,
     auto_delete: bool,
+    delivery_limit: Option<u32>,
+    arguments: BTreeMap<String, crate::transport::HeaderValue>,
 }
 
 impl QueueDefinition {
@@ -23,6 +25,8 @@ impl QueueDefinition {
             durable: true,
             exclusive: false,
             auto_delete: false,
+            delivery_limit: None,
+            arguments: BTreeMap::new(),
         }
     }
 
@@ -44,6 +48,18 @@ impl QueueDefinition {
         self
     }
 
+    #[must_use]
+    pub const fn delivery_limit(mut self, limit: u32) -> Self {
+        self.delivery_limit = Some(limit);
+        self
+    }
+
+    #[must_use]
+    pub fn arguments(mut self, arguments: BTreeMap<String, crate::transport::HeaderValue>) -> Self {
+        self.arguments = arguments;
+        self
+    }
+
     fn compile(self) -> Result<QueueSpec, TopologyPlanError> {
         if self.kind == QueueKind::Quorum && (self.exclusive || self.auto_delete) {
             return Err(TopologyPlanError::new(format!(
@@ -62,6 +78,8 @@ impl QueueDefinition {
             dead_letter_routing_key: None,
             message_ttl: None,
             expires: None,
+            delivery_limit: self.delivery_limit,
+            arguments: self.arguments,
         })
     }
 }
@@ -96,7 +114,7 @@ pub struct TopologyDefinition {
     exchanges: Vec<ExchangeSpec>,
     queues: Vec<QueueDefinition>,
     bindings: Vec<BindingSpec>,
-    dead_letter: Option<DeadLetterDefinition>,
+    dead_letters: Vec<DeadLetterDefinition>,
 }
 
 impl TopologyDefinition {
@@ -110,13 +128,13 @@ impl TopologyDefinition {
             exchanges,
             queues,
             bindings,
-            dead_letter: None,
+            dead_letters: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn with_dead_letter(mut self, dead_letter: DeadLetterDefinition) -> Self {
-        self.dead_letter = Some(dead_letter);
+        self.dead_letters.push(dead_letter);
         self
     }
 }
@@ -148,7 +166,9 @@ impl TopologyPlan {
             .collect::<Result<Vec<_>, _>>()?;
         let mut bindings = definition.bindings;
 
-        if let Some(dead_letter) = definition.dead_letter {
+        let mut seen_exchanges: Vec<String> = Vec::new();
+        let mut seen_dlqs: Vec<String> = Vec::new();
+        for dead_letter in definition.dead_letters {
             let source = queues
                 .iter_mut()
                 .find(|queue| queue.name == dead_letter.source_queue)
@@ -160,20 +180,26 @@ impl TopologyPlan {
                 })?;
             source.dead_letter_exchange = Some(dead_letter.exchange.clone());
             source.dead_letter_routing_key = Some(dead_letter.routing_key.clone());
-            exchanges.push(ExchangeSpec {
-                name: dead_letter.exchange.clone(),
-                kind: ExchangeKind::Direct,
-                durable: true,
-                auto_delete: false,
-                internal: false,
-                arguments: crate::transport::Headers::new(),
-            });
-            queues.push(QueueDefinition::new(dead_letter.queue.clone()).compile()?);
-            bindings.push(BindingSpec {
-                queue: dead_letter.queue,
-                exchange: dead_letter.exchange,
-                routing_key: dead_letter.routing_key,
-            });
+            if !seen_exchanges.contains(&dead_letter.exchange) {
+                exchanges.push(ExchangeSpec {
+                    name: dead_letter.exchange.clone(),
+                    kind: ExchangeKind::Direct,
+                    durable: true,
+                    auto_delete: false,
+                    internal: false,
+                    arguments: Headers::new(),
+                });
+                seen_exchanges.push(dead_letter.exchange.clone());
+            }
+            if !seen_dlqs.contains(&dead_letter.queue) {
+                queues.push(QueueDefinition::new(dead_letter.queue.clone()).compile()?);
+                seen_dlqs.push(dead_letter.queue.clone());
+                bindings.push(BindingSpec {
+                    queue: dead_letter.queue.clone(),
+                    exchange: dead_letter.exchange.clone(),
+                    routing_key: dead_letter.routing_key.clone(),
+                });
+            }
         }
 
         Ok(Self {

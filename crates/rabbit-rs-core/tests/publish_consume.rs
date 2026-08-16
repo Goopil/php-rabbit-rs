@@ -51,6 +51,8 @@ fn config_single() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
             }],
             topology_mode: TopologyMode::External,
             delay: rabbit_rs_core::config::DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
         }
         .validate()
         .expect("valid config"),
@@ -90,6 +92,8 @@ fn config_two_vhosts() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
             }],
             topology_mode: TopologyMode::External,
             delay: rabbit_rs_core::config::DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
         }
         .validate()
         .expect("valid config"),

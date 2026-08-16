@@ -132,6 +132,8 @@ pub struct QueueSpec {
     pub dead_letter_routing_key: Option<String>,
     pub message_ttl: Option<Duration>,
     pub expires: Option<Duration>,
+    pub delivery_limit: Option<u32>,
+    pub arguments: Headers,
 }
 
 impl QueueSpec {
@@ -147,6 +149,8 @@ impl QueueSpec {
             dead_letter_routing_key: None,
             message_ttl: None,
             expires: None,
+            delivery_limit: None,
+            arguments: Headers::new(),
         }
     }
 }

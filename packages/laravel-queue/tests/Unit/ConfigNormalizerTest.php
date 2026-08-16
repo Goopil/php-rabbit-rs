@@ -80,6 +80,15 @@ final class ConfigNormalizerTest extends TestCase
                 ],
             ]],
             'topology_mode' => 'declare',
+            'delay' => [
+                'mode' => 'auto',
+                'buckets' => [1, 5, 30, 120],
+                'max_buckets' => 8,
+                'queue_expiry_margin' => 60,
+                'detection_timeout' => 5,
+            ],
+            'dead_letter' => null,
+            'delivery_limit' => 20,
         ], $normalized['native']);
         self::assertSame('default', $normalized['routes']['orders']['broker']);
         self::assertTrue($normalized['publisher']['confirms']);
@@ -176,6 +185,86 @@ final class ConfigNormalizerTest extends TestCase
             },
             'topology_mode',
         ];
+    }
+
+    public function testNormalizesDeadLetterConfigIntoNativeConfig(): void
+    {
+        $config = $this->validConfig();
+        $config['topology']['dead_letter'] = [
+            'exchange' => 'orders.dlx',
+            'queue' => 'orders.failed',
+            'routing_key' => 'failed',
+        ];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertSame([
+            'enabled' => true,
+            'exchange' => 'orders.dlx',
+            'queue' => 'orders.failed',
+            'routing_key' => 'failed',
+        ], $normalized['native']['dead_letter']);
+        self::assertSame(20, $normalized['native']['delivery_limit']);
+        self::assertSame([
+            'enabled' => true,
+            'exchange' => 'orders.dlx',
+            'queue' => 'orders.failed',
+            'routing_key' => 'failed',
+        ], $normalized['topology']['dead_letter']);
+    }
+
+    public function testNullDeadLetterProducesNullInNativeConfig(): void
+    {
+        $config = $this->validConfig();
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertNull($normalized['native']['dead_letter']);
+        self::assertSame(20, $normalized['native']['delivery_limit']);
+    }
+
+    public function testDeadLetterWithoutRoutingKeyProducesNullRoutingKey(): void
+    {
+        $config = $this->validConfig();
+        $config['topology']['dead_letter'] = [
+            'exchange' => 'orders.dlx',
+            'queue' => 'orders.failed',
+        ];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        self::assertSame([
+            'enabled' => true,
+            'exchange' => 'orders.dlx',
+            'queue' => 'orders.failed',
+            'routing_key' => null,
+        ], $normalized['native']['dead_letter']);
+    }
+
+    public function testRejectsDeadLetterWithoutExchange(): void
+    {
+        $config = $this->validConfig();
+        $config['topology']['dead_letter'] = [
+            'queue' => 'orders.failed',
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('topology.dead_letter.exchange');
+
+        ConfigNormalizer::normalize($config);
+    }
+
+    public function testRejectsDeadLetterWithoutQueue(): void
+    {
+        $config = $this->validConfig();
+        $config['topology']['dead_letter'] = [
+            'exchange' => 'orders.dlx',
+        ];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('topology.dead_letter.queue');
+
+        ConfigNormalizer::normalize($config);
     }
 
     public function testReportsMissingNativeExtensionExplicitly(): void

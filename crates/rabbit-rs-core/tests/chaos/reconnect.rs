@@ -90,6 +90,8 @@ fn config_for_queue(
             }],
             topology_mode: TopologyMode::External,
             delay: rabbit_rs_core::config::DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
         }
         .validate()
         .expect("valid config"),

@@ -355,6 +355,8 @@ mod tests {
             workers: Vec::new(),
             topology_mode: TopologyMode::External,
             delay: crate::config::DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
         }
         .validate()
         .expect("valid client config")

@@ -96,6 +96,8 @@ impl TtlBucketPlan {
             dead_letter_routing_key: Some(destination.routing_key.clone()),
             message_ttl: Some(bucket),
             expires: Some(bucket.saturating_add(self.expiry_margin)),
+            delivery_limit: None,
+            arguments: crate::transport::Headers::new(),
         })
     }
 }
