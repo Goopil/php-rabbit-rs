@@ -58,7 +58,7 @@
   "php_ffi_boundary": {
     "description": "PHP-to-Rust FFI call overhead measured by the PHP harness with the extension loaded (no broker).",
     "single_publish_ns": {
-      "256B_warm": { "measured": 1473, "target_max": 2500 },
+      "256B_warm": { "measured": 1500, "inferred": true, "note": "Inferred from BASELINE.md note: 'subsequent calls settle to ~1.5–3.4 µs'. First-call cold start is 30995 ns.", "target_max": 2500 },
       "1KiB_warm": { "measured": 1473, "target_max": 2500 },
       "10KiB_warm": { "measured": 1564, "target_max": 2500 }
     },
@@ -70,17 +70,20 @@
   },
 
   "laravel_comparison": {
-    "description": "Laravel comparison lab targets. Full broker comparison was not run (no broker available); targets are derived from the FFI cost advantage over pure-PHP AMQP libraries.",
+    "description": "Laravel comparison lab targets. Full broker comparison was not run (no broker available); targets are estimates derived from the FFI cost advantage over pure-PHP AMQP libraries. These are NOT measured values.",
+    "measured": false,
+    "status": "pending_measurement",
     "min_gain_over_php_amqplib": {
       "publish": "1.5x",
       "consume": "1.5x",
+      "measured": false,
       "rationale": "php-amqplib implements AMQP 0-9-1 in PHP userland; rabbit-rs crosses FFI (~1-2 µs) into native Rust. Expected gain is conservative because the broker I/O dominates end-to-end latency."
     },
     "p99_latency_ms": {
-      "256B": { "target_max": 5 },
-      "1KiB": { "target_max": 5 },
-      "10KiB": { "target_max": 10 },
-      "100KiB": { "target_max": 20 }
+      "256B": { "target_max": 5, "measured": false },
+      "1KiB": { "target_max": 5, "measured": false },
+      "10KiB": { "target_max": 10, "measured": false },
+      "100KiB": { "target_max": 20, "measured": false }
     },
     "losses": 0,
     "duplicates_max_per_5000": 0
