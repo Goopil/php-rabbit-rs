@@ -147,13 +147,17 @@ impl HistogramSnapshot {
     ///
     /// Returns `None` when no samples have been recorded.
     #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "latency bucket bounds and sample counts fit in 52-bit mantissa"
+    )]
     pub fn percentile_ns(&self, percentile: f64) -> Option<u64> {
         if self.samples == 0 {
             return None;
         }
 
         let percentile = percentile.clamp(0.0, 100.0);
-        let samples = f64::from(u32::try_from(self.samples).unwrap_or(u32::MAX));
+        let samples = self.samples as f64;
         let target = (percentile / 100.0) * samples;
 
         let mut cumulative: u64 = 0;
@@ -161,10 +165,8 @@ impl HistogramSnapshot {
             let previous = cumulative;
             cumulative = cumulative.saturating_add(*count);
 
-            if f64::from(u32::try_from(cumulative).unwrap_or(u32::MAX)) >= target {
-                let bucket_count = f64::from(
-                    u32::try_from(cumulative.saturating_sub(previous)).unwrap_or(u32::MAX),
-                );
+            if cumulative as f64 >= target {
+                let bucket_count = cumulative.saturating_sub(previous) as f64;
                 if bucket_count == 0.0 {
                     continue;
                 }
@@ -180,11 +182,10 @@ impl HistogramSnapshot {
                     self.bounds_ns[self.bounds_ns.len() - 1] * 2
                 };
 
-                let previous_f = f64::from(u32::try_from(previous).unwrap_or(u32::MAX));
+                let previous_f = previous as f64;
                 let position_in_bucket = (target - previous_f) / bucket_count;
-                let lower_f = f64::from(u32::try_from(lower).unwrap_or(u32::MAX));
-                let width =
-                    f64::from(u32::try_from(upper.saturating_sub(lower)).unwrap_or(u32::MAX));
+                let lower_f = lower as f64;
+                let width = upper.saturating_sub(lower) as f64;
                 let interpolated = lower_f + position_in_bucket * width;
                 return Some(round_to_u64(interpolated));
             }
@@ -326,6 +327,9 @@ mod tests {
         let histogram = snapshot(buckets, 10);
 
         let p99 = histogram.percentile_ns(99.0).expect("p99");
-        assert!(p99 >= LATENCY_BOUNDS_NS[LATENCY_BOUNDS_NS.len() - 1]);
+        assert!(
+            p99 > 9_000_000_000,
+            "p99 ({p99}) should be near upper bound for uniform overflow"
+        );
     }
 }
