@@ -48,7 +48,7 @@ final class RabbitRsDriver implements BenchmarkDriver
         }
         $batch = [];
         $queue = $this->config['queue'] ?? 'bench.rabbit-rs';
-        $exchange = $this->config['exchange'] ?? 'bench.rabbit-rs';
+        $exchange = $this->config['exchange'] ?? '';
         foreach ($messages as $message) {
             $batch[] = [
                 'broker' => 'default',

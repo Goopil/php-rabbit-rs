@@ -14,7 +14,7 @@ return [
             'class' => RabbitRsDriver::class,
             'connection' => env('BENCH_RABBIT_RS_DSN', 'amqp://guest:guest@127.0.0.1:5672/'),
             'queue' => env('BENCH_RABBIT_RS_QUEUE', 'bench.rabbit-rs'),
-            'exchange' => env('BENCH_RABBIT_RS_EXCHANGE', 'bench.rabbit-rs'),
+            'exchange' => env('BENCH_RABBIT_RS_EXCHANGE', ''),
         ],
         'php-amqplib' => [
             'class' => PhpAmqplibDriver::class,
@@ -57,64 +57,34 @@ return [
     'rabbit-rs-config' => [
         'topology_mode' => 'declare',
         'brokers' => [
-            'default' => [
-                'hosts' => env('BENCH_RABBIT_RS_HOSTS', '127.0.0.1:5672'),
-                'vhost' => env('BENCH_RABBIT_RS_VHOST', '/'),
+            [
+                'name' => 'default',
+                'hosts' => [['host' => '127.0.0.1', 'port' => (int) env('BENCH_RABBIT_RS_PORT', 5672)]],
+                'vhost' => env('BENCH_RABBIT_RS_VHOST', '/bench'),
                 'credentials' => [
-                    'username' => env('BENCH_RABBIT_RS_USER', 'guest'),
-                    'password' => env('BENCH_RABBIT_RS_PASSWORD', 'guest'),
+                    'username' => env('BENCH_RABBIT_RS_USER', 'admin'),
+                    'password' => env('BENCH_RABBIT_RS_PASSWORD', 'admin_lab'),
                 ],
+                'tls' => ['enabled' => false, 'server_name' => null],
                 'heartbeat' => 30,
             ],
         ],
-        'routes' => [
-            'default' => [
-                'broker' => 'default',
-                'exchange' => env('BENCH_RABBIT_RS_EXCHANGE', 'bench.rabbit-rs'),
-                'routing_key' => '{queue}',
-            ],
-        ],
         'workers' => [
-            'default' => [
-                'scheduler' => [
-                    'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
-                ],
+            [
+                'name' => 'default',
+                'scheduler' => ['strategy' => 'weighted_fair', 'max_in_flight' => 64],
                 'subscriptions' => [
-                    'default' => [
-                        'enabled' => true,
+                    [
+                        'name' => 'default',
                         'broker' => 'default',
                         'queue' => env('BENCH_RABBIT_RS_QUEUE', 'bench.rabbit-rs'),
                         'weight' => 1,
                         'priority_class' => 0,
-                        'prefetch' => [
-                            'mode' => 'fixed',
-                            'value' => 16,
-                        ],
+                        'prefetch' => 16,
                         'starvation_after' => 30,
                     ],
                 ],
             ],
-        ],
-        'publisher' => [
-            'confirms' => true,
-            'mandatory' => true,
-            'confirm_timeout' => 30000,
-        ],
-        'delay' => [
-            'mode' => 'auto',
-            'buckets' => [1, 5, 30, 120],
-            'max_buckets' => 8,
-            'queue_expiry_margin' => 60,
-            'detection_timeout' => 5,
-        ],
-        'topology' => [
-            'queue' => [
-                'type' => 'quorum',
-                'durable' => true,
-                'delivery_limit' => 20,
-            ],
-            'dead_letter' => null,
         ],
     ],
 ];

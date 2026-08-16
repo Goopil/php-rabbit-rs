@@ -52,7 +52,7 @@ else
     DRIVERS=("rabbit-rs" "php-amqplib" "vyuldashev" "redis" "database")
     PAYLOAD_SIZES=(256 1024 10240 102400)
     BATCH_SIZES=(1 16 64 256)
-    MSG_COUNT=5000
+    MSG_COUNT="${BENCH_FULL_COUNT:-5000}"
 fi
 
 mkdir -p "$RESULTS_DIR"
@@ -86,7 +86,12 @@ for driver in "${DRIVERS[@]}"; do
                 --count="$MSG_COUNT" \
                 --payload-size="$payload" \
                 --batch-size="$batch" \
-                --mode="$MODE" > "$PUBLISH_FILE" 2>&1 || true
+                --mode="$MODE" > "$PUBLISH_FILE" 2>&1 &
+            PUBLISH_PID=$!
+            ( sleep 30 && kill "$PUBLISH_PID" 2>/dev/null ) &
+            KILL_PID=$!
+            wait "$PUBLISH_PID" 2>/dev/null || true
+            kill "$KILL_PID" 2>/dev/null || true
 
             if [[ ! -s "$PUBLISH_FILE" ]]; then
                 echo '{}' > "$PUBLISH_FILE"
@@ -97,7 +102,12 @@ for driver in "${DRIVERS[@]}"; do
                 --count="$MSG_COUNT" \
                 --payload-size="$payload" \
                 --batch-size="$batch" \
-                --mode="$MODE" > "$CONSUME_FILE" 2>&1 || true
+                --mode="$MODE" > "$CONSUME_FILE" 2>&1 &
+            CONSUME_PID=$!
+            ( sleep 30 && kill "$CONSUME_PID" 2>/dev/null ) &
+            KILL_PID2=$!
+            wait "$CONSUME_PID" 2>/dev/null || true
+            kill "$KILL_PID2" 2>/dev/null || true
 
             if [[ ! -s "$CONSUME_FILE" ]]; then
                 echo '{}' > "$CONSUME_FILE"
