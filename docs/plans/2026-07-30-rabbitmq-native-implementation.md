@@ -29,7 +29,7 @@
 
 **Branche d'implémentation :** feature/laravel-package
 
-**Prochaine étape :** Milestone E — Task 28 — Créer bench-native.
+**Prochaine étape :** Milestone D2 — Task 28 — Implémenter le coordinateur de recovery.
 
 - [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
 - [x] Task 2 — Configuration normalisée et validée (`c324929`).
@@ -60,7 +60,230 @@
 - [x] Task 26 — Écrire les tests d'intégration end-to-end.
 - [x] Task 27 — Écrire les scénarios de panne (chaos/fault injection).
 
-### Lot de stabilisation stricte du Milestone B
+## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
+
+Ce jalon corrige les gaps identifiés par l'audit du 16 août 2026 : le coordinateur de recovery manquant, le delay routing côté éditeur non branché, et la DLQ/arguments génériques non câblés.
+
+### Task 28: Implémenter le coordinateur de recovery
+
+**Files:**
+- Create: crates/rabbit-rs-core/src/pool/recovery_coordinator.rs
+- Modify: crates/rabbit-rs-core/src/client.rs
+- Modify: crates/rabbit-rs-core/src/pool/mod.rs
+- Modify: crates/rabbit-rs-core/src/pool/connection_actor.rs
+- Modify: crates/rabbit-rs-core/src/consumer/set.rs
+- Create: crates/rabbit-rs-core/tests/recovery_coordinator.rs
+
+**Contexte :**
+
+Les primitives de recovery sont complètes (`ConnectionActor` avec backoff/génération, `PublisherActor` avec replay buffer borné, `TopologyReconciler` avec replay par génération, `ConsumerActor` avec `UpdateGeneration`), mais aucun coordinateur ne les relie. Le `ClientPool` ouvre les connections paresseusement et n'observe jamais leur perte. Les tests de chaos recréent les pools manuellement après chaque panne.
+
+**Step 1: Write failing recovery coordinator tests**
+
+Scénarios de test (mock transport, pas de broker réel) :
+
+1. Une connection est perdue → `PublisherActor` reçoit `Recovering` → les unconfirmed enters dans le replay buffer → la connection est rétablie → `TopologyReconciler` rejoue → `PublisherActor` reçoit `Ready { topology_restored: true }` → replay est flushé → les messages sont délivrés.
+2. Une connection est perdue → `ConsumerActor` reçoit `UpdateGeneration` après reconnexion → les deliveries de l'ancienne génération sont rejetées (`StaleGeneration`) → le broker redelivre.
+3. Ordre déterministe vérifié : connection → channels → exchanges → queues → bindings → QoS → consumers → publisher replay.
+4. Perte pendant le recovery → le coordinateur annule et relance.
+5. Erreur permanente (credentials) → `FailedPermanent` → le coordinateur ne boucle pas.
+
+**Step 2: Verify failure**
+
+Run: cargo test -p rabbit-rs-core --test recovery_coordinator
+
+Expected: FAIL — le coordinateur n'existe pas encore.
+
+**Step 3: Implement the recovery coordinator**
+
+Le coordinateur est une task par broker qui :
+
+1. Spawne un `ConnectionActor` et souscrit à son `watch::Receiver<ConnectionState>`.
+2. Sur `ConnectionLost` (erreur de transport détectée) → `ConnectionActor::connection_lost(error)` → émet `PublisherConnectionEvent::Recovering` au `PublisherActor` du broker.
+3. Sur `ConnectionState::Ready { generation }` → ouvre un nouveau `PublisherChannel`, exécute `TopologyReconciler::reconcile(channel, plan, generation)`, puis émet `PublisherConnectionEvent::Ready { generation, channel, topology_restored: true }` au `PublisherActor`.
+4. Pour les consumers → ouvre de nouveaux `ConsumerChannel`, ré-applique QoS, ré-émet `basic_consume`, et appelle `ConsumerHandle::update_generation` pour chaque subscription.
+5. Enforce l'ordre déterministe : connection → channels → exchanges → queues → bindings → QoS → consumers → publisher replay.
+
+Le `ClientPool` doit :
+- Spawner un coordinateur par broker à l'initialisation de la connection.
+- Stocker le `ConnectionActorHandle` et le `JoinHandle` du coordinateur.
+- Sur `close()`, annuler le coordinateur et l'acteur de connection.
+
+**Step 4: Verify**
+
+Run: cargo test -p rabbit-rs-core --test recovery_coordinator
+
+Expected: PASS.
+
+**Step 5: Update chaos tests to remove manual pool recreation**
+
+Modifier `crates/rabbit-rs-core/tests/chaos/reconnect.rs` :
+- Supprimer le pattern de recréation de `ClientPool` après chaque panne.
+- Les tests doivent créer un seul `ClientPool`, injecter la panne, et vérifier que le pool se rétablit automatiquement.
+- `missing = 0` doit être maintenu sans intervention manuelle.
+
+Run: cargo test -p rabbit-rs-core --features integration --test chaos_reconnect
+
+Expected: PASS.
+
+**Step 6: Run full quality gate**
+
+Run: ./scripts/check.sh
+
+Expected: PASS.
+
+**Step 7: Commit**
+
+    git add crates
+    git commit -m "feat(core): wire recovery coordinator end-to-end"
+
+### Task 29: Implémenter le delay routing côté éditeur
+
+**Files:**
+- Modify: crates/rabbit-rs-core/src/transport.rs
+- Modify: crates/rabbit-rs-core/src/transport/lapin.rs
+- Modify: crates/rabbit-rs-core/src/publisher/actor.rs
+- Modify: crates/rabbit-rs-core/src/publisher/mod.rs
+- Modify: crates/rabbit-rs-core/src/client.rs
+- Modify: crates/rabbit-rs-core/src/config.rs
+- Modify: crates/rabbit-rs-core/src/topology/plan.rs
+- Modify: crates/rabbit-rs-core/src/topology/reconciler.rs
+- Modify: crates/rabbit-rs-core/src/topology/delay.rs
+- Modify: crates/rabbit-rs-core/src/publisher/delay.rs
+- Create: crates/rabbit-rs-core/tests/publisher_delay.rs
+- Modify: packages/laravel-queue/config/rabbit-rs.php
+- Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
+- Modify: packages/laravel-queue/tests/Integration/DelayedJobTest.php
+
+**Contexte :**
+
+Le `DelayRouter` existe et est testé, mais il n'est branché que dans `release()` du consumer. Côté éditeur, `later()` pose le header `x-delay` sur l'exchange original — effet no-op. Les exchanges `x-delayed-message` ne peuvent pas être déclarés car `ExchangeSpec` n'a pas d'arguments. Les TTL delay queues ne sont jamais déclarées. `DelayConfig` n'est pas dans `ValidatedConfig`. La config Laravel n'expose pas de section delay.
+
+**Step 1: Write failing publisher delay tests**
+
+Scénarios :
+
+1. `publish()` avec `delay_ms > 0` en mode Plugin → le message est publié sur l'exchange `x-delayed-message` (pas l'exchange original) avec le header `x-delay`.
+2. `publish()` avec `delay_ms > 0` en mode TTL → le message est publié sur une TTL queue avec `x-message-ttl` et dead-letter vers la destination originale.
+3. `publish()` avec `delay_ms = 0` → pas de routing spécial (comportement normal).
+4. L'exchange `x-delayed-message` est déclaré par le `TopologyReconciler` quand le mode Plugin est actif.
+5. Les TTL queues sont déclarées paresseusement (on-demand) par le publisher.
+6. `DelayConfig` est validé et désérialisé depuis la config.
+7. `DelayMode::Auto` détecte le plugin et fallback TTL si absent.
+
+**Step 2: Verify failure**
+
+Run: cargo test -p rabbit-rs-core --test publisher_delay
+
+Expected: FAIL.
+
+**Step 3: Implement exchange arguments and delayed exchange support**
+
+- Ajouter `arguments: BTreeMap<String, HeaderValue>` à `ExchangeSpec`.
+- Ajouter `ExchangeKind::Delayed(ExchangeKind)` qui émet `x-delayed-message` comme type d'exchange et `x-delayed-type` comme argument (avec le type sous-jacent : direct, topic, etc.).
+- Mettre à jour `lapin.rs::declare_exchange()` pour passer les arguments au lieu de `FieldTable::default()`.
+- Le `TopologyReconciler` doit déclarer l'exchange `x-delayed-message` (nom `rabbit-rs.delayed` ou `{exchange}.delayed`) quand le mode Plugin est sélectionné.
+
+**Step 4: Wire DelayRouter into the publisher path**
+
+- Le `PublisherActor` (ou `ClientPool::publish()`) doit détecter `delay_ms > 0`, résoudre la `DelayStrategy` via `DelayStrategyResolver`, appeler `DelayRouter::route()`, et publier vers l'exchange/queue différée au lieu de l'original.
+- En mode TTL, déclarer paresseusement la TTL queue avant la première publication différée (idempotent via cache).
+- En mode Plugin, l'exchange différée est déclaré par le `TopologyReconciler` lors du recovery.
+
+**Step 5: Add DelayConfig to ValidatedConfig**
+
+- Ajouter `delay: DelayConfig` à `Config` et `ValidatedConfig`.
+- Désérialiser `mode` (auto/plugin/ttl), `buckets`, `max_buckets`, `queue_expiry_margin`, `detection_timeout`.
+- Valider : buckets non vide, ≤ max_buckets, sans zéro, detection_timeout borné.
+
+**Step 6: Wire DelayConfig through ClientPool**
+
+- Le `ClientPool` doit instancier un `DelayStrategyResolver` par broker et le passer au publisher et consumer.
+- Le `ConsumerSet` doit recevoir la `DelayStrategy` résolue (au lieu du hardcoded `Plugin`).
+- Le `ClientPool::consumer()` doit appeler `.delayed_publisher()` et `.delay_strategy()` sur chaque subscription.
+
+**Step 7: Expose delay config in Laravel**
+
+- Ajouter une section `delay` à `config/rabbit-rs.php` : `mode`, `buckets`, `max_buckets`, `queue_expiry_margin`, `detection_timeout`.
+- `ConfigNormalizer` doit mapper cette section vers la config native.
+
+**Step 8: Un-skip and fix the Laravel integration test**
+
+- Supprimer `markTestSkipped` de `test_later_publishes_and_consumes_after_delay`.
+- Le test doit publier avec `later(2, ...)` et vérifier que le job n'est pas immédiatement disponible, puis l'est après le délai.
+
+**Step 9: Verify**
+
+Run: cargo test -p rabbit-rs-core --test publisher_delay
+Run: ./scripts/test-integration.sh
+
+Expected: PASS.
+
+**Step 10: Commit**
+
+    git add crates packages
+    git commit -m "feat(core): wire publisher-side delay routing and config"
+
+### Task 30: Câbler la DLQ et les arguments de queue génériques
+
+**Files:**
+- Modify: crates/rabbit-rs-core/src/transport.rs
+- Modify: crates/rabbit-rs-core/src/transport/lapin.rs
+- Modify: crates/rabbit-rs-core/src/config.rs
+- Modify: crates/rabbit-rs-core/src/topology/plan.rs
+- Modify: crates/rabbit-rs-core/src/topology/reconciler.rs
+- Create: crates/rabbit-rs-core/tests/dlq_topology.rs
+- Modify: packages/laravel-queue/config/rabbit-rs.php
+- Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
+
+**Contexte :**
+
+La compilation DLQ (`TopologyPlan::compile` avec `DeadLetterDefinition`) est implémentée et testée en Rust, mais n'est pas configurable via `ValidatedConfig`. La config Laravel expose `dead_letter => null` et `delivery_limit => 20` mais ces valeurs sont validées puis droppées. `QueueSpec` n'a pas d'arguments génériques pour `x-delivery-limit`, `x-max-priority`, etc.
+
+**Step 1: Write failing DLQ config tests**
+
+Scénarios :
+
+1. Config avec `dead_letter` non-null → `ValidatedConfig` contient un `DeadLetterConfig` → `TopologyDefinition` est compilé avec `with_dead_letter` → le `TopologyReconciler` déclare le DLX, la DLQ et le binding.
+2. Config avec `delivery_limit: 20` → `QueueSpec` contient `x-delivery-limit: 20` → le `TopologyReconciler` déclare la queue avec cet argument.
+3. Config sans `dead_letter` → pas de DLQ (comportement par défaut).
+4. `ConfigNormalizer` Laravel mappe `topology.dead_letter` et `topology.queue.delivery_limit` vers la config native.
+
+**Step 2: Verify failure**
+
+Run: cargo test -p rabbit-rs-core --test dlq_topology
+
+Expected: FAIL.
+
+**Step 3: Add generic queue arguments**
+
+- Ajouter `arguments: BTreeMap<String, HeaderValue>` à `QueueSpec` (en plus des champs structurés existants).
+- Mettre à jour `lapin.rs::declare_queue()` pour fusionner les arguments structurés (DLX, TTL, etc.) et les arguments génériques.
+- Ajouter `delivery_limit: Option<u32>` à `QueueSpec` → émet `x-delivery-limit`.
+
+**Step 4: Add DeadLetterConfig to ValidatedConfig**
+
+- Créer `DeadLetterConfig` struct : `enabled: bool`, `exchange: String`, `queue: String`, `routing_key: Option<String>`.
+- Ajouter `dead_letter: Option<DeadLetterConfig>` à `Config`/`ValidatedConfig`.
+- Wire : `ValidatedConfig.dead_letter` → `TopologyDefinition::with_dead_letter` → `TopologyPlan::compile` → `TopologyReconciler::reconcile`.
+
+**Step 5: Wire Laravel config to native config**
+
+- `ConfigNormalizer` doit transformer `topology.dead_letter` (null ou array avec `exchange`, `queue`, `routing_key`) vers la config native `dead_letter`.
+- `ConfigNormalizer` doit transformer `topology.queue.delivery_limit` vers la config native (field `delivery_limit` sur les queues).
+- Le connector doit passer ces valeurs à la config native du `Pool`.
+
+**Step 6: Verify**
+
+Run: cargo test -p rabbit-rs-core --test dlq_topology
+Run: cd packages/laravel-queue && php -n vendor/bin/phpunit --testsuite "Rabbit RS Laravel"
+
+Expected: PASS.
+
+**Step 7: Commit**
+
+    git add crates packages
+    git commit -m "feat(core): wire DLQ config and generic queue arguments"
 
 Ce lot a été exécuté dans le worktree dédié `.worktrees/strict-audit-stabilization` sur la branche `fix/strict-audit-stabilization`. Les corrections déterministes issues des audits des 31 juillet et 1er août sont terminées ; les qualifications nécessitant un environnement de production représentatif sont reportées aux jalons dédiés et ne bloquent pas le démarrage de la Task 16.
 
@@ -1594,7 +1817,7 @@ Expected: PASS, missing = 0.
 
 ## Milestone E — Performance
 
-### Task 28: Créer bench-native
+### Task 31: Créer bench-native
 
 **Files:**
 - Create: benchmarks/native/Cargo.toml
@@ -1631,7 +1854,7 @@ Expected: PASS.
     git add Cargo.toml benchmarks/native
     git commit -m "perf: add native batching and transport benchmarks"
 
-### Task 29: Créer l'application bench-laravel
+### Task 32: Créer l'application bench-laravel
 
 **Files:**
 - Create: benchmarks/laravel/composer.json
@@ -1677,7 +1900,7 @@ Expected: PASS et fichier JSON de résultats.
     git add benchmarks/laravel
     git commit -m "perf: add reproducible Laravel queue comparison lab"
 
-### Task 30: Calibrer les defaults et figer les budgets
+### Task 33: Calibrer les defaults et figer les budgets
 
 **Files:**
 - Create: benchmarks/baselines/reference-machine.json
@@ -1717,7 +1940,7 @@ Expected: PASS.
 
 ## Milestone F — Distribution et documentation
 
-### Task 31: Préparer les packages Rabbit RS et la matrice PIE
+### Task 34: Préparer les packages Rabbit RS et la matrice PIE
 
 **Files:**
 - Modify: composer.json
@@ -1782,7 +2005,7 @@ Expected: PASS et matrice de 16 artefacts uniques.
     git add composer.json .gitattributes packages/laravel-queue/composer.json release scripts
     git commit -m "build: define Rabbit RS PIE and Packagist packages"
 
-### Task 32: Ajouter la CI et la publication synchronisée
+### Task 35: Ajouter la CI et la publication synchronisée
 
 **Files:**
 - Create: .github/workflows/rust.yml
@@ -1849,7 +2072,7 @@ Publier la GitHub Release uniquement après validation des artefacts, du dépôt
     git add .github scripts/verify-release-assets.sh
     git commit -m "ci: publish synchronized Rabbit RS releases"
 
-### Task 33: Documenter installation, configuration et exploitation
+### Task 36: Documenter installation, configuration et exploitation
 
 **Files:**
 - Create: README.md
@@ -1902,7 +2125,7 @@ Expected: PASS.
     git add README.md docs examples scripts/test-docs.sh
     git commit -m "docs: document Rabbit RS installation and operations"
 
-### Task 34: Effectuer la vérification de release
+### Task 37: Effectuer la vérification de release
 
 **Files:**
 - Create: docs/release-checklist.md
@@ -1967,8 +2190,12 @@ Ajouter versions, checksums, résultats, doublons observés, temps de recovery, 
 - CLI, FPM, FrankenPHP, RoadRunner, Swoole et Open Swoole sont certifiés.
 - Un queue:work standard consomme un profil contenant plusieurs vhosts.
 - rabbit-rs:work supervise plusieurs queue:work sans réimplémenter Worker.
-- Le lab chaos ne constate aucune perte silencieuse.
+- Le lab chaos ne constate aucune perte silencieuse sans recréation manuelle de pool.
+- Le recovery coordinator rétablit automatiquement connections, topology, publishers et consumers après une panne.
 - Les doublons des fenêtres ambiguës sont mesurés et documentés.
+- Le delay routing côté éditeur fonctionne en mode plugin et TTL fallback.
+- La DLQ applicative est configurable depuis la config Laravel et déclarée par le topology reconciler.
+- Les arguments de queue génériques (`x-delivery-limit`, etc.) sont câblés depuis la config Laravel.
 - Les defaults de batch, prefetch et buffers proviennent des benchmarks.
 - Les budgets absolus et comparatifs sont versionnés.
 - Les logs et diagnostics ne révèlent aucun secret.
