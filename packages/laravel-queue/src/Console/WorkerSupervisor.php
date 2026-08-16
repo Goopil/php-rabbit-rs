@@ -9,7 +9,7 @@ use Symfony\Component\Process\Process;
 /**
  * @phpstan-type ProcessFactory \Closure(int): Process
  */
-final class WorkerSupervisor
+class WorkerSupervisor
 {
     public const EXIT_CLEAN = 0;
     public const EXIT_SIGNAL = 130;

@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Tests\Feature;
 
+use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
+use Illuminate\Support\Facades\Log;
 
 final class RabbitMqWorkCommandTest extends TestCase
 {
@@ -140,5 +142,138 @@ final class RabbitMqWorkCommandTest extends TestCase
             putenv(WorkerSupervisor::workerEnv());
         }
     }
-}
 
+    /**
+     * Verifies that the --rabbit-rs-worker CLI option is wired into the
+     * command's handle() method: when the option is provided, the extension
+     * is created via fromOption() and its listeners are registered so job
+     * events are tagged with the worker index.
+     *
+     * A test-specific command subclass overrides createSupervisor() to return
+     * a supervisor whose run() is a no-op, avoiding real child processes.
+     */
+    public function testHandleWiresFromOptionWhenRabbitRsWorkerOptionProvided(): void
+    {
+        // Ensure the env var is not set so the extension only activates via
+        // the CLI option, not via fromEnvironment().
+        putenv(WorkerSupervisor::workerEnv());
+
+        try {
+            // Register a test command that stubs out the supervisor.
+            $this->registerTestCommand();
+
+            // Intercept Log::channel() calls to capture the worker tag.
+            $logged = [];
+            $logChannel = \Mockery::mock(\Psr\Log\LoggerInterface::class);
+            $logChannel->shouldReceive('info')
+                ->with('rabbit-rs worker', \Mockery::on(function ($context) use (&$logged): bool {
+                    $logged[] = ['level' => 'info', 'context' => $context];
+
+                    return true;
+                }));
+            $logManager = \Mockery::mock(\Illuminate\Log\LogManager::class);
+            $logManager->shouldReceive('channel')->andReturn($logChannel);
+            Log::swap($logManager);
+
+            // Invoke the test command with --rabbit-rs-worker=2.
+            $this->artisan('test:work-command', ['--rabbit-rs-worker' => '2'])
+                ->assertSuccessful();
+
+            // Dispatch a JobProcessing event; the listener registered by
+            // handle() should log it with the [worker-2] tag.
+            $events = $this->app->make('events');
+            $job = \Mockery::mock(\Illuminate\Contracts\Queue\Job::class);
+            $job->shouldReceive('resolveName')->andReturn('TestJob');
+            $job->shouldReceive('getJobId')->andReturn('test-123');
+            $job->shouldReceive('getQueue')->andReturn('default');
+            $job->shouldReceive('payload')->andReturn([]);
+            $job->shouldReceive('uuid')->andReturn('test-uuid');
+            $job->shouldReceive('attempts')->andReturn(1);
+            $job->shouldReceive('getConnectionName')->andReturn('rabbit-rs');
+
+            $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
+
+            self::assertNotEmpty($logged, 'JobProcessing event should have been logged via the extension wired in handle()');
+            self::assertSame('[worker-2]', $logged[0]['context']['worker']);
+        } finally {
+            putenv(WorkerSupervisor::workerEnv());
+        }
+    }
+
+    /**
+     * Verifies that when --rabbit-rs-worker is not provided, handle() does
+     * not register the extension and job events are not tagged.
+     */
+    public function testHandleDoesNotRegisterExtensionWhenRabbitRsWorkerOptionAbsent(): void
+    {
+        putenv(WorkerSupervisor::workerEnv());
+
+        try {
+            $this->registerTestCommand();
+
+            $logChannel = \Mockery::mock(\Psr\Log\LoggerInterface::class);
+            $logChannel->shouldNotReceive('info');
+            $logManager = \Mockery::mock(\Illuminate\Log\LogManager::class);
+            $logManager->shouldReceive('channel')->andReturn($logChannel);
+            Log::swap($logManager);
+
+            $this->artisan('test:work-command')
+                ->assertSuccessful();
+
+            // Dispatch a JobProcessing event; no listener should be registered
+            // by handle() since the option was not provided.
+            $events = $this->app->make('events');
+            $job = \Mockery::mock(\Illuminate\Contracts\Queue\Job::class);
+            $job->shouldReceive('resolveName')->andReturn('TestJob');
+            $job->shouldReceive('getJobId')->andReturn('test-123');
+            $job->shouldReceive('getQueue')->andReturn('default');
+            $job->shouldReceive('payload')->andReturn([]);
+            $job->shouldReceive('uuid')->andReturn('test-uuid');
+            $job->shouldReceive('attempts')->andReturn(1);
+            $job->shouldReceive('getConnectionName')->andReturn('rabbit-rs');
+
+            $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
+        } finally {
+            putenv(WorkerSupervisor::workerEnv());
+        }
+    }
+
+    /**
+     * Register a test command that subclasses RabbitMqWorkCommand and stubs
+     * out the supervisor so run() does not spawn real child processes.
+     */
+    private function registerTestCommand(): void
+    {
+        $stubSupervisor = new class('rabbit-rs', 'default', 1, 3, 1, null) extends WorkerSupervisor {
+            public function run(): int
+            {
+                return WorkerSupervisor::EXIT_CLEAN;
+            }
+        };
+
+        $command = new class($stubSupervisor) extends RabbitMqWorkCommand {
+            protected $signature = 'test:work-command
+                {--connection=rabbit-rs : The queue connection name}
+                {--queue=default : The queue/profile name}
+                {--workers=1 : Number of child workers}
+                {--max-restarts=3 : Maximum restarts per worker}
+                {--backoff=1 : Base backoff in seconds}
+                {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
+
+            protected $description = 'Test command';
+
+            public function __construct(
+                private readonly WorkerSupervisor $supervisor,
+            ) {
+                parent::__construct();
+            }
+
+            protected function createSupervisor(): WorkerSupervisor
+            {
+                return $this->supervisor;
+            }
+        };
+
+        $this->app->make('Illuminate\Contracts\Console\Kernel')->registerCommand($command);
+    }
+}
