@@ -6,21 +6,39 @@ namespace Goopil\RabbitRs\Laravel\Console;
 
 use Symfony\Component\Process\Process;
 
+/**
+ * @phpstan-type ProcessFactory \Closure(int): Process
+ */
 final class WorkerSupervisor
 {
     public const EXIT_CLEAN = 0;
     public const EXIT_SIGNAL = 130;
     public const EXIT_MAX_RESTARTS = 1;
 
+    public const WORKER_ENV = 'RABBIT_RS_WORKER';
+
+    /**
+     * @param ?ProcessFactory $processFactory Optional override used by tests
+     *         to spawn a stub process instead of `queue:work`.
+     */
     public function __construct(
         private readonly string $connection,
         private readonly string $queue,
         private readonly int $workers,
         private readonly int $maxRestarts,
         private readonly int $baseBackoffSeconds,
+        private readonly ?\Closure $processFactory = null,
     ) {}
 
     /**
+     * Build the child command for the given worker index.
+     *
+     * The worker index is passed via the RABBIT_RS_WORKER environment variable
+     * (see {@see workerEnv()}) rather than as a CLI option, because
+     * `queue:work` is Laravel's built-in command and Symfony Console rejects
+     * unknown options. The `--name` option (recognised by `queue:work`) is
+     * set to a unique value so the worker name appears in logs and metrics.
+     *
      * @return list<string>
      */
     public function buildChildCommand(int $workerIndex = 0): array
@@ -31,8 +49,26 @@ final class WorkerSupervisor
             'queue:work',
             "--connection={$this->connection}",
             "--queue={$this->queue}",
-            "--rabbit-rs-worker={$workerIndex}",
+            '--name=worker-'.$workerIndex,
         ];
+    }
+
+    /**
+     * Returns the environment variable name used to pass the worker index.
+     */
+    public static function workerEnv(): string
+    {
+        return self::WORKER_ENV;
+    }
+
+    /**
+     * Returns the environment variables to set when spawning the given worker.
+     *
+     * @return array<string, string>
+     */
+    public function workerEnvironment(int $workerIndex): array
+    {
+        return [self::WORKER_ENV => (string) $workerIndex];
     }
 
     public function shouldRestart(int $currentRestarts): bool
@@ -107,7 +143,15 @@ final class WorkerSupervisor
 
     private function startProcess(int $workerIndex): Process
     {
-        $process = new Process($this->buildChildCommand($workerIndex));
+        if ($this->processFactory !== null) {
+            $process = ($this->processFactory)($workerIndex);
+        } else {
+            $process = new Process(
+                $this->buildChildCommand($workerIndex),
+                null,
+                $this->workerEnvironment($workerIndex),
+            );
+        }
         $process->start();
 
         return $process;

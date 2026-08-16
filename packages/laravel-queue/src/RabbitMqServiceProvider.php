@@ -8,8 +8,10 @@ use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
+use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use RuntimeException;
 
@@ -29,6 +31,7 @@ class RabbitMqServiceProvider extends ServiceProvider
     {
         $this->registerQueueConnector();
         $this->commands([RabbitMqStatusCommand::class, RabbitMqWorkCommand::class]);
+        $this->registerWorkCommandExtension();
         $this->registerOctaneLifecycle();
 
         $this->publishes([
@@ -65,6 +68,23 @@ class RabbitMqServiceProvider extends ServiceProvider
                 return new RabbitMqConnector($pools, $normalizedConfig);
             },
         );
+    }
+
+    /**
+     * Register the WorkCommand extension so that supervised `queue:work`
+     * children tag their logs with the worker index from RABBIT_RS_WORKER.
+     */
+    private function registerWorkCommandExtension(): void
+    {
+        $extension = RabbitMqWorkCommandExtension::fromEnvironment();
+        if ($extension->workerIndex() === null) {
+            return;
+        }
+
+        $events = $this->app->make('events');
+        $extension->register($events, static function (string $level, array $context): void {
+            Log::channel()->{$level}('rabbit-rs worker', $context);
+        });
     }
 
     private function normalizeBrokerHosts(): void

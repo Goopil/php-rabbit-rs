@@ -44,7 +44,7 @@ final class WorkerSupervisorTest extends TestCase
         self::assertContains('--queue=orders', $command);
     }
 
-    public function testBuildChildCommandIncludesWorkerIndex(): void
+    public function testBuildChildCommandIncludesWorkerIndexInNameOption(): void
     {
         $supervisor = new WorkerSupervisor(
             connection: 'rabbit-rs',
@@ -57,8 +57,42 @@ final class WorkerSupervisorTest extends TestCase
         $cmd0 = $supervisor->buildChildCommand(workerIndex: 0);
         $cmd1 = $supervisor->buildChildCommand(workerIndex: 1);
 
-        self::assertContains('--rabbit-rs-worker=0', $cmd0);
-        self::assertContains('--rabbit-rs-worker=1', $cmd1);
+        self::assertContains('--name=worker-0', $cmd0);
+        self::assertContains('--name=worker-1', $cmd1);
+    }
+
+    public function testWorkerEnvironmentPassesIndexViaEnvVar(): void
+    {
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 2,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+        );
+
+        $env0 = $supervisor->workerEnvironment(0);
+        $env1 = $supervisor->workerEnvironment(1);
+
+        self::assertSame('0', $env0[WorkerSupervisor::workerEnv()]);
+        self::assertSame('1', $env1[WorkerSupervisor::workerEnv()]);
+    }
+
+    public function testBuildChildCommandDoesNotPassUnknownRabbitRsWorkerOption(): void
+    {
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+        );
+
+        $cmd = $supervisor->buildChildCommand();
+
+        foreach ($cmd as $arg) {
+            self::assertStringNotContainsString('--rabbit-rs-worker', $arg);
+        }
     }
 
     public function testMaxRestartsIsRespected(): void
