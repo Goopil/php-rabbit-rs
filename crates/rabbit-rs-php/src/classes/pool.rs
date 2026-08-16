@@ -168,6 +168,43 @@ impl Pool {
             "reconnects_total",
             i64_from_counter(metrics.reconnects_total),
         )?;
+        stats.insert(
+            "deliveries_total",
+            i64_from_counter(metrics.deliveries_total),
+        )?;
+        stats.insert("acks_total", i64_from_counter(metrics.acks_total))?;
+        stats.insert("rejects_total", i64_from_counter(metrics.rejects_total))?;
+
+        insert_percentile(
+            &mut stats,
+            "confirmation_latency_p50",
+            metrics.confirmation_latency.percentile_ns(50.0),
+        )?;
+        insert_percentile(
+            &mut stats,
+            "confirmation_latency_p95",
+            metrics.confirmation_latency.percentile_ns(95.0),
+        )?;
+        insert_percentile(
+            &mut stats,
+            "confirmation_latency_p99",
+            metrics.confirmation_latency.percentile_ns(99.0),
+        )?;
+        insert_percentile(
+            &mut stats,
+            "settlement_latency_p50",
+            metrics.settlement_latency.percentile_ns(50.0),
+        )?;
+        insert_percentile(
+            &mut stats,
+            "settlement_latency_p95",
+            metrics.settlement_latency.percentile_ns(95.0),
+        )?;
+        insert_percentile(
+            &mut stats,
+            "settlement_latency_p99",
+            metrics.settlement_latency.percentile_ns(99.0),
+        )?;
 
         self.invoke_connection_state_callbacks();
         self.invoke_backpressure_callback(metrics.backpressure_total);
@@ -232,6 +269,18 @@ fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
 
 fn i64_from_counter(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Inserts a latency percentile as integer milliseconds into the stats table.
+/// A `None` percentile (no samples recorded) is stored as `0`.
+fn insert_percentile(
+    stats: &mut ZendHashTable,
+    key: &str,
+    percentile_ns: Option<u64>,
+) -> PhpResult<()> {
+    let millis = percentile_ns.map_or(0, |nanos| nanos / 1_000_000);
+    stats.insert(key, i64::try_from(millis).unwrap_or(i64::MAX))?;
+    Ok(())
 }
 
 impl Pool {

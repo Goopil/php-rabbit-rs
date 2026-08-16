@@ -323,7 +323,7 @@ namespace Goopil\RabbitRs {
             }
 
             /**
-             * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
+             * @return array<string, mixed>
              */
             public function stats(): array
             {
@@ -336,6 +336,15 @@ namespace Goopil\RabbitRs {
                     'returns_total' => 2,
                     'backpressure_total' => 0,
                     'reconnects_total' => 1,
+                    'deliveries_total' => 50,
+                    'acks_total' => 48,
+                    'rejects_total' => 2,
+                    'confirmation_latency_p50' => 12,
+                    'confirmation_latency_p95' => 45,
+                    'confirmation_latency_p99' => 120,
+                    'settlement_latency_p50' => 8,
+                    'settlement_latency_p95' => 30,
+                    'settlement_latency_p99' => 85,
                 ];
             }
 

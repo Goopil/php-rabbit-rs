@@ -141,6 +141,59 @@ pub struct HistogramSnapshot {
     pub sum_ns: u64,
 }
 
+impl HistogramSnapshot {
+    /// Estimates the given percentile from the bucket counts using linear
+    /// interpolation within the bucket that crosses the requested rank.
+    ///
+    /// Returns `None` when no samples have been recorded.
+    #[must_use]
+    pub fn percentile_ns(&self, percentile: f64) -> Option<u64> {
+        if self.samples == 0 {
+            return None;
+        }
+
+        let percentile = percentile.clamp(0.0, 100.0);
+        let samples = f64::from(u32::try_from(self.samples).unwrap_or(u32::MAX));
+        let target = (percentile / 100.0) * samples;
+
+        let mut cumulative: u64 = 0;
+        for (index, count) in self.buckets.iter().enumerate() {
+            let previous = cumulative;
+            cumulative = cumulative.saturating_add(*count);
+
+            if f64::from(u32::try_from(cumulative).unwrap_or(u32::MAX)) >= target {
+                let bucket_count = f64::from(
+                    u32::try_from(cumulative.saturating_sub(previous)).unwrap_or(u32::MAX),
+                );
+                if bucket_count == 0.0 {
+                    continue;
+                }
+
+                let lower = if index == 0 {
+                    0
+                } else {
+                    self.bounds_ns[index - 1]
+                };
+                let upper = if index < self.bounds_ns.len() {
+                    self.bounds_ns[index]
+                } else {
+                    self.bounds_ns[self.bounds_ns.len() - 1] * 2
+                };
+
+                let previous_f = f64::from(u32::try_from(previous).unwrap_or(u32::MAX));
+                let position_in_bucket = (target - previous_f) / bucket_count;
+                let lower_f = f64::from(u32::try_from(lower).unwrap_or(u32::MAX));
+                let width =
+                    f64::from(u32::try_from(upper.saturating_sub(lower)).unwrap_or(u32::MAX));
+                let interpolated = lower_f + position_in_bucket * width;
+                return Some(round_to_u64(interpolated));
+            }
+        }
+
+        Some(self.bounds_ns[self.bounds_ns.len() - 1])
+    }
+}
+
 #[derive(Debug)]
 struct AtomicHistogram {
     buckets: [AtomicU64; LATENCY_BOUNDS_NS.len() + 1],
@@ -186,4 +239,93 @@ fn increment(counter: &AtomicU64) {
 
 fn load(counter: &AtomicU64) -> u64 {
     counter.load(Ordering::Relaxed)
+}
+
+/// Converts a non-negative `f64` nanosecond value to `u64`, clamping overflow.
+///
+/// The value is first clamped to `0.0..=i64::MAX` to guarantee a safe cast,
+/// then rounded to the nearest integer.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "clamped to i64 range first"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "latency buckets fit in 52-bit mantissa"
+)]
+fn round_to_u64(value: f64) -> u64 {
+    let clamped = value.clamp(0.0, i64::MAX as f64);
+    let rounded = clamped.round();
+    u64::try_from(rounded as i64).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(buckets: [u64; LATENCY_BOUNDS_NS.len() + 1], samples: u64) -> HistogramSnapshot {
+        HistogramSnapshot {
+            bounds_ns: LATENCY_BOUNDS_NS,
+            buckets,
+            samples,
+            sum_ns: 0,
+        }
+    }
+
+    #[test]
+    fn percentile_returns_none_for_empty_histogram() {
+        let empty = snapshot([0; LATENCY_BOUNDS_NS.len() + 1], 0);
+        assert!(empty.percentile_ns(50.0).is_none());
+    }
+
+    #[test]
+    fn percentile_handles_single_sample() {
+        let mut buckets = [0; LATENCY_BOUNDS_NS.len() + 1];
+        buckets[0] = 1; // 1 sample in first bucket (0..=100us)
+        let single = snapshot(buckets, 1);
+        let p50 = single.percentile_ns(50.0).expect("single sample p50");
+        assert!(p50 <= LATENCY_BOUNDS_NS[0]);
+    }
+
+    #[test]
+    fn percentile_interpolates_within_bucket() {
+        let mut buckets = [0; LATENCY_BOUNDS_NS.len() + 1];
+        buckets[0] = 10; // 10 samples all in first bucket
+        let histogram = snapshot(buckets, 10);
+
+        let p50 = histogram.percentile_ns(50.0).expect("p50");
+        let p95 = histogram.percentile_ns(95.0).expect("p95");
+        let p99 = histogram.percentile_ns(99.0).expect("p99");
+
+        assert_eq!(p50, LATENCY_BOUNDS_NS[0] / 2);
+        assert!(p95 > p50, "p95 ({p95}) should exceed p50 ({p50})");
+        assert!(p99 >= p95, "p99 ({p99}) should exceed p95 ({p95})");
+    }
+
+    #[test]
+    fn percentile_crosses_buckets() {
+        let mut buckets = [0; LATENCY_BOUNDS_NS.len() + 1];
+        buckets[0] = 50; // 50 samples in first bucket
+        buckets[1] = 50; // 50 samples in second bucket
+        let histogram = snapshot(buckets, 100);
+
+        let p50 = histogram.percentile_ns(50.0).expect("p50");
+        let p95 = histogram.percentile_ns(95.0).expect("p95");
+
+        assert!(p50 <= LATENCY_BOUNDS_NS[0], "p50 should be in first bucket");
+        assert!(
+            p95 > LATENCY_BOUNDS_NS[0],
+            "p95 should cross into second bucket"
+        );
+    }
+
+    #[test]
+    fn percentile_handles_overflow_bucket() {
+        let mut buckets = [0; LATENCY_BOUNDS_NS.len() + 1];
+        buckets[LATENCY_BOUNDS_NS.len()] = 10; // all in overflow
+        let histogram = snapshot(buckets, 10);
+
+        let p99 = histogram.percentile_ns(99.0).expect("p99");
+        assert!(p99 >= LATENCY_BOUNDS_NS[LATENCY_BOUNDS_NS.len() - 1]);
+    }
 }

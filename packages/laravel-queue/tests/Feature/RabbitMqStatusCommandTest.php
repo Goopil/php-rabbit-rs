@@ -19,6 +19,44 @@ final class RabbitMqStatusCommandTest extends TestCase
             ->expectsOutputToContain('reconnects');
     }
 
+    public function testJsonOutputIncludesConsumerMetrics(): void
+    {
+        $this->artisan('rabbit-rs:status --format=json')
+            ->assertSuccessful()
+            ->expectsOutputToContain('deliveries_total')
+            ->expectsOutputToContain('acks_total')
+            ->expectsOutputToContain('rejects_total');
+    }
+
+    public function testJsonOutputIncludesConfirmationLatencyPercentiles(): void
+    {
+        $this->artisan('rabbit-rs:status --format=json')
+            ->assertSuccessful()
+            ->expectsOutputToContain('confirmation_latency_p50')
+            ->expectsOutputToContain('confirmation_latency_p95')
+            ->expectsOutputToContain('confirmation_latency_p99');
+    }
+
+    public function testJsonOutputIncludesSettlementLatencyPercentiles(): void
+    {
+        $this->artisan('rabbit-rs:status --format=json')
+            ->assertSuccessful()
+            ->expectsOutputToContain('settlement_latency_p50')
+            ->expectsOutputToContain('settlement_latency_p95')
+            ->expectsOutputToContain('settlement_latency_p99');
+    }
+
+    public function testHumanOutputShowsConsumerMetricsAndLatencies(): void
+    {
+        $this->artisan('rabbit-rs:status')
+            ->assertSuccessful()
+            ->expectsOutputToContain('deliveries')
+            ->expectsOutputToContain('acks')
+            ->expectsOutputToContain('rejects')
+            ->expectsOutputToContain('confirmation_latency')
+            ->expectsOutputToContain('settlement_latency');
+    }
+
     public function testJsonOutputReturnsStructuredStats(): void
     {
         $this->artisan('rabbit-rs:status --format=json')

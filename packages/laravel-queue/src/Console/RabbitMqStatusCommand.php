@@ -20,7 +20,10 @@ final class RabbitMqStatusCommand extends Command
         $stats = $this->collectStats($pools);
 
         if ($format === 'json') {
-            $this->line(json_encode($stats, JSON_PRETTY_PRINT));
+            $json = json_encode($stats, JSON_PRETTY_PRINT);
+            foreach (explode("\n", $json) as $line) {
+                $this->line($line);
+            }
 
             return self::SUCCESS;
         }
@@ -54,6 +57,15 @@ final class RabbitMqStatusCommand extends Command
                 'returns_total' => 0,
                 'backpressure_total' => 0,
                 'reconnects_total' => 0,
+                'deliveries_total' => 0,
+                'acks_total' => 0,
+                'rejects_total' => 0,
+                'confirmation_latency_p50' => 0,
+                'confirmation_latency_p95' => 0,
+                'confirmation_latency_p99' => 0,
+                'settlement_latency_p50' => 0,
+                'settlement_latency_p95' => 0,
+                'settlement_latency_p99' => 0,
             ];
         }
 
@@ -71,11 +83,20 @@ final class RabbitMqStatusCommand extends Command
         $this->line("  PID:             {$stats['pid']}");
         $this->line("  Closed:          " . ($stats['closed'] ? 'yes' : 'no'));
         $this->line('');
-        $this->line('  Metrics:');
+        $this->line('  Publisher Metrics:');
         $this->line("    publishes:       {$stats['publishes_total']}");
         $this->line("    confirmations:   {$stats['confirmations_total']}");
         $this->line("    returns:         {$stats['returns_total']}");
         $this->line("    backpressure:    {$stats['backpressure_total']}");
         $this->line("    reconnects:      {$stats['reconnects_total']}");
+        $this->line('');
+        $this->line('  Consumer Metrics:');
+        $this->line("    deliveries:      {$stats['deliveries_total']}");
+        $this->line("    acks:            {$stats['acks_total']}");
+        $this->line("    rejects:         {$stats['rejects_total']}");
+        $this->line('');
+        $this->line('  Latency (ms):');
+        $this->line("    confirmation_latency p50: {$stats['confirmation_latency_p50']} p95: {$stats['confirmation_latency_p95']} p99: {$stats['confirmation_latency_p99']}");
+        $this->line("    settlement_latency p50:   {$stats['settlement_latency_p50']} p95: {$stats['settlement_latency_p95']} p99: {$stats['settlement_latency_p99']}");
     }
 }
