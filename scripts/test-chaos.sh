@@ -92,7 +92,7 @@ else
     echo ""
     echo "=== Building ext-rabbit_rs ==="
     EXTENSION_SO=""
-    if cargo build --release --manifest "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" 2>&1; then
+    if cargo build --release --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" 2>&1; then
         EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.so"
         echo "ext-rabbit_rs built: ${EXTENSION_SO}"
     else

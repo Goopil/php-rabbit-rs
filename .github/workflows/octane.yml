@@ -37,7 +37,7 @@ jobs:
               apt-get update && apt-get install -y curl gcc make libclang-dev
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
               . "$HOME/.cargo/env"
-              cargo build --release --manifest crates/rabbit-rs-php/Cargo.toml
+              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
             '
 
       - name: Verify extension is loaded
