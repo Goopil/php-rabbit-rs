@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: octane-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   octane:
     runs-on: ubuntu-latest

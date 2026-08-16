@@ -5,9 +5,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 2 * * *'
 
 permissions:
   contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   integration:
@@ -77,6 +83,33 @@ jobs:
           if [ -f scripts/run-matrix.sh ]; then
             ./scripts/run-matrix.sh --smoke || true
           fi
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh
+
+  chaos:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Run chaos tests
+        run: ./scripts/test-chaos.sh
 
       - name: Stop RabbitMQ lab
         if: always()

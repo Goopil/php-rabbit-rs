@@ -11,6 +11,10 @@ permissions:
   id-token: write
   attestations: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # --------------------------------------------------------------------------
   # Job 1: Build all 16 PIE binaries from the matrix
@@ -111,23 +115,34 @@ jobs:
           echo "version=${tag}" >> "$GITHUB_OUTPUT"
           echo "Version: ${tag}"
 
-      - name: Install Rust 1.96
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.96.0"
-          targets: ${{ matrix.arch == 'arm64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}${{ matrix.libc == 'musl' && format('{0}-musl', matrix.arch == 'arm64' && 'aarch64-unknown-linux' || 'x86_64-unknown-linux') || '' }}
+      - name: Install cross-compilation toolchain
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          fi
+          if [ "${{ matrix.libc }}" = "musl" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq musl-tools
+          fi
 
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup PHP ${{ matrix.php }} (${{ matrix.thread_safety }})
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ matrix.php }}
-          coverage: none
-          extensions: json
-        env:
-          TS: ${{ matrix.thread_safety }}
+      - name: Determine cross-compile environment
+        id: xenv
+        run: |
+          {
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              echo "CC=aarch64-linux-gnu-gcc"
+              echo "CXX=aarch64-linux-gnu-g++"
+              echo "AR=ar"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc"
+            fi
+            if [ "${{ matrix.libc }}" = "musl" ]; then
+              echo "CC=musl-gcc"
+              echo "CXX=musl-g++"
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc"
+            fi
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set build target
         id: target
@@ -146,13 +161,45 @@ jobs:
             fi
           fi
 
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ steps.target.outputs.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.artifact_suffix }}
+
+      - name: Setup PHP ${{ matrix.php }} (${{ matrix.thread_safety }})
+        # NOTE: shivammathur/setup-php@v2 has no explicit thread_safety input.
+        # The TS env var may not produce a ZTS PHP build on all runners.
+        # ZTS artifacts require a custom PHP build in a Docker container.
+        # ZTS matrix entries are marked continue-on-error to surface breakage
+        # without blocking the release pipeline.
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: json
+        env:
+          TS: ${{ matrix.thread_safety }}
+        continue-on-error: ${{ matrix.thread_safety == 'zts' }}
+
       - name: Build rabbit_rs.so
+        continue-on-error: ${{ matrix.thread_safety == 'zts' }}
         run: |
           # Static linking of Rust dependencies (Lapin, rustls) where possible
           export RUSTFLAGS="-C target-feature=+crt-static"
           cargo php install --manifest crates/rabbit-rs-php/Cargo.toml --release
         env:
           CARGO_BUILD_TARGET: ${{ steps.target.outputs.target }}
+          CC: ${{ steps.xenv.outputs.CC }}
+          CXX: ${{ steps.xenv.outputs.CXX }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ steps.xenv.outputs.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ steps.xenv.outputs.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ steps.xenv.outputs.CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER }}
 
       - name: Inspect architecture and dependencies
         run: |
@@ -174,7 +221,8 @@ jobs:
             exit 1
           }
 
-      - name: Load extension and smoke test
+      - name: Load extension and smoke test (native arch only)
+        if: matrix.arch == 'x86_64'
         run: |
           SO_PATH="target/${{ steps.target.outputs.target }}/release/librabbit_rs_php.so"
           if [ ! -f "${SO_PATH}" ]; then
@@ -188,6 +236,12 @@ jobs:
             echo "OK: rabbit_rs extension loaded\n";
             echo "Version: " . phpversion("rabbit_rs") . "\n";
           '
+
+      - name: Note cross-compiled load test
+        if: matrix.arch != 'x86_64'
+        run: |
+          echo "SKIP: host arch is x86_64, cannot load arm64 .so"
+          echo "Cross-compiled load verification happens in verify-installation job."
 
       - name: Create PIE archive
         run: |
@@ -439,8 +493,10 @@ jobs:
             
             ARCHIVE="release/php_rabbit_rs-${{ steps.version.outputs.version }}_php${PHP_VER}-${ARCH}-linux-${LIBC}-${TS}.zip"
             if [ ! -f "${ARCHIVE}" ]; then
-              echo "SKIP: no matching archive for PHP=${PHP_VER} arch=${ARCH} libc=${LIBC} ts=${TS}"
-              exit 0
+              echo "ERROR: no matching archive for PHP=${PHP_VER} arch=${ARCH} libc=${LIBC} ts=${TS}"
+              echo "Available archives:"
+              ls -1 release/*.zip 2>/dev/null || echo "(none)"
+              exit 1
             fi
             
             echo "Installing from: ${ARCHIVE}"
@@ -470,12 +526,25 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           echo "version=${tag}" >> "$GITHUB_OUTPUT"
 
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: pie-*
+
+      - name: Assemble release directory for verification
+        run: |
+          mkdir -p release
+          find release-artifacts -type f -name '*.zip' -exec cp {} release/ \;
+          find release-artifacts -type f -name '*.sha256' -exec cp {} release/ \;
+          find release-artifacts -type f -name '*.sbom.json' -exec cp {} release/ \;
+          find release-artifacts -type f -name '*.attestation.json' -exec cp {} release/ \;
+
       - name: Verify release assets one final time
         run: |
-          # Re-download artifacts for final verification
-          mkdir -p release
-          # We need the artifacts from the build job
-          echo "Final verification before publishing."
+          ./scripts/verify-release-assets.sh \
+            --fixtures release/pie-matrix.json \
+            --version "${{ steps.version.outputs.version }}"
 
       - name: Publish GitHub Release (remove draft status)
         uses: softprops/action-gh-release@v2
@@ -498,12 +567,12 @@ jobs:
           
           # Check rabbit-rs-native
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://packagist.org/packages/goopil/rabbit-rs-native.json" || true)
+            "https://packagist.org/packages/goopil/rabbit-rs-native.json")
           echo "goopil/rabbit-rs-native on Packagist: HTTP ${HTTP_CODE}"
           
           # Check rabbit-rs-laravel
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://packagist.org/packages/goopil/rabbit-rs-laravel.json" || true)
+            "https://packagist.org/packages/goopil/rabbit-rs-laravel.json")
           echo "goopil/rabbit-rs-laravel on Packagist: HTTP ${HTTP_CODE}"
 
       - name: Release published

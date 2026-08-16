@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: split-laravel-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   split:
     runs-on: ubuntu-latest
@@ -28,7 +32,7 @@ jobs:
           git add -A
           git commit -m "Release ${GITHUB_REF_NAME}"
           git remote add origin "https://${MIRROR_TOKEN}@github.com/goopil/rabbit-rs-laravel.git"
-          git push origin main --force
+          git push origin main
 
       - name: Tag the mirror
         run: |
@@ -39,13 +43,15 @@ jobs:
       - name: Trigger Packagist update for rabbit-rs-laravel
         run: |
           curl -sS -X POST \
-            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            "https://packagist.org/api/update-package" \
             -H "Content-Type: application/json" \
-            -d '{"repository":{"url":"https://github.com/goopil/rabbit-rs-laravel"}}' || true
+            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
+            -d '{"repository":{"url":"https://github.com/goopil/rabbit-rs-laravel"}}'
 
       - name: Trigger Packagist update for rabbit-rs-native
         run: |
           curl -sS -X POST \
-            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_TOKEN}" \
+            "https://packagist.org/api/update-package" \
             -H "Content-Type: application/json" \
-            -d '{"repository":{"url":"https://github.com/rabbit-rs/rabbit-rs"}}' || true
+            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
+            -d '{"repository":{"url":"https://github.com/goopil/rabbit-rs"}}'
