@@ -2226,7 +2226,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rabbit-rs-core"
-version = "1.0.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "rabbit-rs-native-bench"
-version = "1.0.0"
+version = "0.0.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "rabbit-rs-php"
-version = "1.0.0"
+version = "0.0.1"
 dependencies = [
  "bytes",
  "ext-php-rs",
