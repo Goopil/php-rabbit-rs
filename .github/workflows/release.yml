@@ -106,10 +106,10 @@ jobs:
             ${{ steps.docker.outputs.image }} \
             sh -c '
               set -e
+              export CARGO_HOME=/cargo
               apt-get update && apt-get install -y curl gcc make libclang-dev
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-              . "$HOME/.cargo/env"
-              export CARGO_HOME=/cargo
+              . "/cargo/env"
               cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
             '
@@ -125,10 +125,10 @@ jobs:
             ${{ steps.docker.outputs.image }} \
             sh -c '
               set -e
+              export CARGO_HOME=/cargo
               apk add --no-cache curl gcc g++ make pkgconfig clang-dev musl-dev linux-headers
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-              . "$HOME/.cargo/env"
-              export CARGO_HOME=/cargo
+              . "/cargo/env"
               RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
             '
