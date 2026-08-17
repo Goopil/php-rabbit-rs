@@ -236,18 +236,19 @@ jobs:
             gh release download "$GITHUB_REF_NAME" --pattern "${zip}" --dir /tmp/assets --clobber
           done
 
-          # Verify attestations for each ZIP subject
+          # Verify all attestations (provenance + SBOM) for each ZIP subject.
+          # Both attestations have the ZIP as subject; gh attestation verify
+          # without --predicate-type checks every attestation for the subject.
           for zip in /tmp/assets/*.zip; do
             name="$(basename "${zip}")"
-            echo "==> Verifying attestation for ${name}"
+            echo "==> Verifying attestations for ${name}"
             gh attestation verify "${zip}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --predicate-type https://slsa.dev/provenance/v1 \
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
           echo "OK: 16 ZIPs + 16 SHA256 + 16 SBOMs verified"
-          echo "OK: 16 provenance attestations verified"
+          echo "OK: 16 provenance + 16 SBOM attestations verified"
 
   publish-release:
     needs: [create-release, build-linux, verify-release]

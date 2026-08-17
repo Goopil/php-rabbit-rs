@@ -328,7 +328,7 @@ cargo cyclonedx --manifest-path "${ROOT_DIR}/crates/rabbit-rs-php/Cargo.toml" \
 mv "${SBOM_TMP}" "${SBOM_PATH}"
 
 # Validate the SBOM is JSON and looks like CycloneDX
-if ! jq -e '.bomFormat == "CycloneDX" and (.specVersion | type == "string")' \
+if ! jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.5"' \
         "${SBOM_PATH}" >/dev/null 2>&1; then
     fail "SBOM is not valid CycloneDX JSON: ${SBOM_PATH}"
 fi

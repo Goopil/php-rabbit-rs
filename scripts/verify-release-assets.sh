@@ -200,7 +200,7 @@ for archive in "${expected_archives[@]}"; do
     fi
 
     # Validate SBOM is JSON and CycloneDX
-    if ! jq -e '.bomFormat == "CycloneDX" and (.specVersion | type == "string")' \
+    if ! jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.5"' \
             "${sbom_path}" >/dev/null 2>&1; then
         fail "invalid CycloneDX SBOM: ${sbom_path}"
     fi
