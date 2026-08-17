@@ -49,6 +49,8 @@ jobs:
         run: |
           cd /tmp/laravel-split
           git init
+          git config user.name "rabbit-rs-ci"
+          git config user.email "ci@rabbit-rs.local"
           git checkout -b main
           git add -A
           git commit -m "Release ${GITHUB_REF_NAME}"
