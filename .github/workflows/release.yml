@@ -91,25 +91,22 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          key: cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-${{ matrix.ts }}-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
-            cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-
+            cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-${{ matrix.ts }}-${{ matrix.php }}-
 
       - name: Build and smoke test in Docker (glibc)
         if: matrix.libc == 'glibc'
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
-            -v "$HOME/.cargo:/cargo" \
-            -e CARGO_HOME=/cargo \
             -w /src \
             ${{ steps.docker.outputs.image }} \
             sh -c '
               set -e
-              export CARGO_HOME=/cargo
               apt-get update && apt-get install -y curl gcc make libclang-dev
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-              . "/cargo/env"
+              . "$HOME/.cargo/env"
               cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
               php -d extension=/src/rabbit_rs.so -r "
@@ -126,16 +123,13 @@ jobs:
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
-            -v "$HOME/.cargo:/cargo" \
-            -e CARGO_HOME=/cargo \
             -w /src \
             ${{ steps.docker.outputs.image }} \
             sh -c '
               set -e
-              export CARGO_HOME=/cargo
               apk add --no-cache curl gcc g++ make pkgconfig clang-dev musl-dev linux-headers
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-              . "/cargo/env"
+              . "$HOME/.cargo/env"
               RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
               php -d extension=/src/rabbit_rs.so -r "
