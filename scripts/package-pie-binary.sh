@@ -18,6 +18,7 @@ set -euo pipefail
 # Produces:
 #   php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
 #   php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.zip.sha256
+#   php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.sbom.json
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXTENSION_NAME="rabbit_rs"
@@ -149,6 +150,23 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
             *) : ;;
         esac
     done
+
+    # Validate SBOM naming convention: sbom name = archive base + .sbom.json
+    for pv in ${VALID_PHP}; do
+        for ar in ${VALID_ARCH}; do
+            for lc in ${VALID_LIBC}; do
+                for ts in ${VALID_TS}; do
+                    V="1.2.3"
+                    archive="php_${EXTENSION_NAME}-${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
+                    expected_sbom="php_${EXTENSION_NAME}-${V}_php${pv}-${ar}-linux-${lc}-${ts}.sbom.json"
+                    sbom_name="${archive%.zip}.sbom.json"
+                    [[ "${sbom_name}" == "${expected_sbom}" ]] \
+                        || fail "SBOM naming broken for ${pv}/${ar}/${lc}/${ts}: got ${sbom_name} expected ${expected_sbom}"
+                done
+            done
+        done
+    done
+    ok "SBOM naming logic for all 16 combinations"
 
     ok "validation logic for version, arch, libc, ts"
     echo ""
@@ -289,6 +307,33 @@ echo "==> Computing SHA-256"
 sha256sum "${ZIP_PATH}" | awk '{print $1}' > "${SHA_PATH}"
 ok "created: ${SHA_PATH}"
 
+# --- SBOM (CycloneDX) ---------------------------------------------------------
+
+echo "==> Generating CycloneDX SBOM"
+SBOM_PATH="${ROOT_DIR}/release/${ARCHIVE_BASE}.sbom.json"
+
+# Install cargo-cyclonedx if not present (pinned version)
+if ! command -v cargo-cyclonedx >/dev/null 2>&1; then
+    echo "    installing cargo-cyclonedx 0.5.9"
+    cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
+fi
+
+# Generate SBOM from the rabbit-rs-php crate. cargo-cyclonedx writes to
+# the crate directory; we move/rename to the release dir with the artifact name.
+SBOM_TMP="${ROOT_DIR}/crates/rabbit-rs-php/rabbit-rs-php.cdx.json"
+cargo cyclonedx --manifest-path "${ROOT_DIR}/crates/rabbit-rs-php/Cargo.toml" \
+    --format json --spec-version 1.5 --quiet
+[[ -f "${SBOM_TMP}" ]] \
+    || fail "cargo-cyclonedx did not produce ${SBOM_TMP}"
+mv "${SBOM_TMP}" "${SBOM_PATH}"
+
+# Validate the SBOM is JSON and looks like CycloneDX
+if ! jq -e '.bomFormat == "CycloneDX" and (.specVersion | type == "string")' \
+        "${SBOM_PATH}" >/dev/null 2>&1; then
+    fail "SBOM is not valid CycloneDX JSON: ${SBOM_PATH}"
+fi
+ok "created: ${SBOM_PATH}"
+
 # --- verify -------------------------------------------------------------------
 
 echo "==> Verifying archive contents"
@@ -311,3 +356,4 @@ echo ""
 echo "Packaging complete:"
 echo "  ZIP:    ${ZIP_PATH}"
 echo "  SHA256: ${SHA_PATH}"
+echo "  SBOM:   ${SBOM_PATH}"
