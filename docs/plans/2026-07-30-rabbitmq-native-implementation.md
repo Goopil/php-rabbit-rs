@@ -2408,6 +2408,11 @@ Expected: PASS et matrice de 16 artefacts uniques.
 
 ### Task 42: Ajouter la CI et la publication synchronisée
 
+> **Statut :** Partiellement implémenté. Le workflow de release build/package/verify
+> existe, mais les étapes SBOM (CycloneDX via cargo-cyclonedx) et attestation
+> de provenance (actions/attest@v4) ont été ajoutées post-implémentation
+> initiale. Voir `docs/superpowers/plans/2026-08-17-release-sbom-attestation.md`.
+
 **Files:**
 - Create: .github/workflows/rust.yml
 - Create: .github/workflows/php.yml

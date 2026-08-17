@@ -48,9 +48,21 @@ php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 
 Each release archive is accompanied by:
 
-- A **SHA-256** checksum file
-- A **SBOM** (Software Bill of Materials)
-- A **GitHub attestation** of provenance
+- A **SHA-256** checksum file (`.sha256`)
+- A **CycloneDX SBOM** in JSON format (`.sbom.json`), generated from the
+  `rabbit-rs-php` crate via `cargo-cyclonedx` 0.5.9
+- A **GitHub build provenance attestation** (SLSA v1), signed with Sigstore
+  using the workflow's OIDC identity
+- A **GitHub SBOM attestation** binding the SBOM to the ZIP artifact
+
+Attestations are stored in the GitHub attestations API and verified with:
+
+    gh attestation verify <asset.zip> --repo Goopil/rabbit-rs \
+        --predicate-type https://slsa.dev/provenance/v1
+
+Each release therefore contains **48 assets**: 16 ZIPs, 16 SHA256 files, and
+16 SBOM files, plus 32 attestations (provenance + SBOM) stored in the
+attestations API (not listed as release assets).
 
 PIE inspects your PHP installation, determines the correct artifact, downloads it, verifies the checksum, copies the `.so` to your extension directory, and enables it in your PHP configuration.
 

@@ -192,7 +192,20 @@ for archive in "${expected_archives[@]}"; do
         fail "SHA-256 mismatch for ${archive}: stored=${stored_sha} actual=${actual_sha}"
     fi
 
-    ok "artifact verified: ${archive} (+sha256)"
+    # Check SBOM file
+    archive_base="${archive%.zip}"
+    sbom_path="${RELEASE_DIR}/${archive_base}.sbom.json"
+    if [[ ! -f "${sbom_path}" ]]; then
+        fail "missing SBOM file: ${sbom_path}"
+    fi
+
+    # Validate SBOM is JSON and CycloneDX
+    if ! jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.5"' \
+            "${sbom_path}" >/dev/null 2>&1; then
+        fail "invalid CycloneDX SBOM: ${sbom_path}"
+    fi
+
+    ok "artifact verified: ${archive} (+sha256 +sbom)"
 done
 
 if [[ "${found_archives}" -ne "${EXPECTED_ARCHIVE_COUNT}" ]]; then
@@ -219,6 +232,25 @@ for zip in "${all_zips[@]}"; do
     done
     if [[ "${found}" -eq 0 ]]; then
         fail "unexpected archive in release dir: ${zip} — not in PIE matrix"
+    fi
+done
+
+all_sboms=()
+while IFS= read -r f; do
+    all_sboms+=("$(basename "${f}")")
+done < <(find "${RELEASE_DIR}" -maxdepth 1 -name '*.sbom.json' -type f 2>/dev/null || true)
+
+for sbom in "${all_sboms[@]}"; do
+    found=0
+    for expected in "${expected_archives[@]}"; do
+        expected_sbom="${expected%.zip}.sbom.json"
+        if [[ "${sbom}" == "${expected_sbom}" ]]; then
+            found=1
+            break
+        fi
+    done
+    if [[ "${found}" -eq 0 ]]; then
+        fail "unexpected SBOM in release dir: ${sbom} — not in PIE matrix"
     fi
 done
 
@@ -292,5 +324,6 @@ echo "All release artifact checks passed."
 echo "  Version: ${VERSION}"
 echo "  Archives: ${found_archives}/${EXPECTED_ARCHIVE_COUNT}"
 echo "  SHA-256: verified"
+echo "  SBOM (CycloneDX): verified"
 echo "  No debug artifacts"
 echo "  No unsupported platforms"
