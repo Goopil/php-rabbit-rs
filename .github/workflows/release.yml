@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -107,8 +110,11 @@ jobs:
               apt-get update && apt-get install -y curl gcc make libclang-dev
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
               . "$HOME/.cargo/env"
+              cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
               cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
+              cargo cyclonedx --manifest-path crates/rabbit-rs-php/Cargo.toml --format json --spec-version 1.5 --quiet
+              cp crates/rabbit-rs-php/rabbit-rs-php.cdx.json /src/rabbit_rs.sbom.json
               php -d extension=/src/rabbit_rs.so -r "
                 if (!extension_loaded(\"rabbit_rs\")) {
                   echo \"ERROR: rabbit_rs extension is not loaded\n\";
@@ -130,8 +136,11 @@ jobs:
               apk add --no-cache curl gcc g++ make pkgconfig clang-dev musl-dev linux-headers
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
               . "$HOME/.cargo/env"
+              cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
               RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
+              cargo cyclonedx --manifest-path crates/rabbit-rs-php/Cargo.toml --format json --spec-version 1.5 --quiet
+              cp crates/rabbit-rs-php/rabbit-rs-php.cdx.json /src/rabbit_rs.sbom.json
               php -d extension=/src/rabbit_rs.so -r "
                 if (!extension_loaded(\"rabbit_rs\")) {
                   echo \"ERROR: rabbit_rs extension is not loaded\n\";
@@ -148,23 +157,47 @@ jobs:
           if [[ "${{ matrix.ts }}" == "zts" ]]; then
             TS_SUFFIX="-zts"
           fi
-          ASSET_NAME="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}.zip"
+          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}"
+          ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
           sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+
+          # SBOM was generated inside the Docker build container and copied to rabbit_rs.sbom.json
+          cp rabbit_rs.sbom.json "${ASSET_BASE}.sbom.json"
+          [[ -f "${ASSET_BASE}.sbom.json" ]] || { echo "::error::SBOM not found"; exit 1; }
+
           echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
+          echo "ASSET_BASE=${ASSET_BASE}" >> "$GITHUB_ENV"
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" "$ASSET_NAME" "$ASSET_NAME.sha256" --clobber
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
+            --clobber
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+
+      - name: Attest SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+          sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
 
   verify-release:
     needs: [create-release, build-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify release assets
+      - name: Verify release assets and attestations
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.create-release.outputs.version }}
@@ -176,31 +209,45 @@ jobs:
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 32 ]]; then
-            echo "::error::Expected 32 assets (16 ZIPs + 16 SHA256), found ${ASSET_COUNT}"
+          if [[ "${ASSET_COUNT}" -ne 48 ]]; then
+            echo "::error::Expected 48 assets (16 ZIP + 16 SHA256 + 16 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
-          if [[ "${ZIP_COUNT}" -ne 16 ]]; then
-            echo "::error::Expected 16 ZIPs, found ${ZIP_COUNT}"
-            exit 1
-          fi
-          if [[ "${SHA_COUNT}" -ne 16 ]]; then
-            echo "::error::Expected 16 SHA256 files, found ${SHA_COUNT}"
-            exit 1
-          fi
+          SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
+          [[ "${ZIP_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
-          # Verify every ZIP has a matching SHA256
+          # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
-            if ! echo "${ASSETS_JSON}" | grep -q "${zip}.sha256"; then
-              echo "::error::Missing SHA256 for ${zip}"
-              exit 1
-            fi
+            base="${zip%.zip}"
+            echo "${ASSETS_JSON}" | grep -q "${zip}.sha256" \
+              || { echo "::error::Missing SHA256 for ${zip}"; exit 1; }
+            echo "${ASSETS_JSON}" | grep -q "${base}.sbom.json" \
+              || { echo "::error::Missing SBOM for ${zip}"; exit 1; }
           done
 
-          echo "OK: 16 ZIPs + 16 SHA256 verified"
+          # Download each ZIP to verify attestations (gh attestation verify needs the file)
+          mkdir -p /tmp/assets
+          for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
+            gh release download "$GITHUB_REF_NAME" --pattern "${zip}" --dir /tmp/assets --clobber
+          done
+
+          # Verify attestations for each ZIP subject
+          for zip in /tmp/assets/*.zip; do
+            name="$(basename "${zip}")"
+            echo "==> Verifying attestation for ${name}"
+            gh attestation verify "${zip}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
+          done
+
+          echo "OK: 16 ZIPs + 16 SHA256 + 16 SBOMs verified"
+          echo "OK: 16 provenance attestations verified"
 
   publish-release:
     needs: [create-release, build-linux, verify-release]
