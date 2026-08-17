@@ -75,17 +75,6 @@ jobs:
             -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
 
-      - name: Trigger Packagist update for rabbit-rs-native
-        if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
-        env:
-          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
-        run: |
-          curl -sS -X POST \
-            "https://packagist.org/api/update-package" \
-            -H "Content-Type: application/json" \
-            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
-            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
-
       - name: Summary
         if: steps.check.outputs.skip == 'true'
         run: |

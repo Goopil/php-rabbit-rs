@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -80,11 +84,24 @@ jobs:
             fi
           fi
 
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-
+
       - name: Build in Docker (glibc)
         if: matrix.libc == 'glibc'
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
+            -v "$HOME/.cargo:/cargo" \
+            -e CARGO_HOME=/cargo \
             -w /src \
             ${{ steps.docker.outputs.image }} \
             sh -c '
@@ -92,6 +109,7 @@ jobs:
               apt-get update && apt-get install -y curl gcc make libclang-dev
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
               . "$HOME/.cargo/env"
+              export CARGO_HOME=/cargo
               cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
             '
@@ -101,6 +119,8 @@ jobs:
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
+            -v "$HOME/.cargo:/cargo" \
+            -e CARGO_HOME=/cargo \
             -w /src \
             ${{ steps.docker.outputs.image }} \
             sh -c '
@@ -108,12 +128,12 @@ jobs:
               apk add --no-cache curl gcc g++ make pkgconfig clang-dev musl-dev linux-headers
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
               . "$HOME/.cargo/env"
+              export CARGO_HOME=/cargo
               RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
             '
 
-      - name: Smoke test (native arch only)
-        if: matrix.arch == 'x86_64'
+      - name: Smoke test
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
@@ -146,8 +166,52 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" "$ASSET_NAME" "$ASSET_NAME.sha256" --clobber
 
-  publish-release:
+  verify-release:
     needs: [create-release, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -e
+          ASSETS_JSON="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          ASSET_COUNT="$(echo "${ASSETS_JSON}" | wc -l | tr -d ' ')"
+
+          echo "Found ${ASSET_COUNT} assets:"
+          echo "${ASSETS_JSON}"
+
+          if [[ "${ASSET_COUNT}" -ne 32 ]]; then
+            echo "::error::Expected 32 assets (16 ZIPs + 16 SHA256), found ${ASSET_COUNT}"
+            exit 1
+          fi
+
+          ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
+          SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
+          if [[ "${ZIP_COUNT}" -ne 16 ]]; then
+            echo "::error::Expected 16 ZIPs, found ${ZIP_COUNT}"
+            exit 1
+          fi
+          if [[ "${SHA_COUNT}" -ne 16 ]]; then
+            echo "::error::Expected 16 SHA256 files, found ${SHA_COUNT}"
+            exit 1
+          fi
+
+          # Verify every ZIP has a matching SHA256
+          for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
+            if ! echo "${ASSETS_JSON}" | grep -q "${zip}.sha256"; then
+              echo "::error::Missing SHA256 for ${zip}"
+              exit 1
+            fi
+          done
+
+          echo "OK: 16 ZIPs + 16 SHA256 verified"
+
+  publish-release:
+    needs: [create-release, build-linux, verify-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

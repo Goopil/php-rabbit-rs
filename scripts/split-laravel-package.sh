@@ -103,6 +103,7 @@ while IFS= read -r -d '' f; do
     pkg_files+=("${rel}")
 done < <(find "${LARAVEL_PKG_DIR}" -type f \
     -not -name '.gitkeep' \
+    -not -name 'composer.lock' \
     -not -path '*/vendor/*' \
     -not -path '*/node_modules/*' \
     -not -path '*/.git/*' \
