@@ -4,3 +4,11 @@
 target/
 vendor/
 .phpunit.cache/
+
+# PHPT test run artifacts (sources are *.phpt, these are generated outputs)
+crates/rabbit-rs-php/tests/phpt/*.diff
+crates/rabbit-rs-php/tests/phpt/*.exp
+crates/rabbit-rs-php/tests/phpt/*.log
+crates/rabbit-rs-php/tests/phpt/*.out
+crates/rabbit-rs-php/tests/phpt/*.php
+crates/rabbit-rs-php/tests/phpt/*.sh
