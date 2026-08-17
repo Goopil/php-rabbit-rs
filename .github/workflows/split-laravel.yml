@@ -61,8 +61,8 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: |
           cd /tmp/laravel-split
-          git tag "${GITHUB_REF_NAME}"
-          git push origin "${GITHUB_REF_NAME}"
+          git tag -f "${GITHUB_REF_NAME}"
+          git push origin "${GITHUB_REF_NAME}" --force
 
       - name: Trigger Packagist update for rabbit-rs-laravel
         if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
