@@ -22,12 +22,20 @@ jobs:
 
       - name: Check prerequisites
         id: check
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
         run: |
-          if [[ -z "${{ secrets.MIRROR_TOKEN }}" ]]; then
+          if [[ -z "${MIRROR_TOKEN}" ]]; then
             echo "::warning::MIRROR_TOKEN secret is not configured — skipping push to mirror"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "${PACKAGIST_TOKEN}" ]]; then
+            echo "has_packagist=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_packagist=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Split Laravel package
@@ -36,13 +44,15 @@ jobs:
 
       - name: Push to mirror repository
         if: steps.check.outputs.skip == 'false'
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           cd /tmp/laravel-split
           git init
           git checkout -b main
           git add -A
           git commit -m "Release ${GITHUB_REF_NAME}"
-          git remote add origin "https://${{ secrets.MIRROR_TOKEN }}@github.com/Goopil/rabbit-rs-laravel.git"
+          git remote add origin "https://${MIRROR_TOKEN}@github.com/Goopil/rabbit-rs-laravel.git"
           git push origin main --force
 
       - name: Tag the mirror
@@ -53,21 +63,25 @@ jobs:
           git push origin "${GITHUB_REF_NAME}"
 
       - name: Trigger Packagist update for rabbit-rs-laravel
-        if: steps.check.outputs.skip == 'false' && ${{ secrets.PACKAGIST_TOKEN != '' }}
+        if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
+        env:
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
         run: |
           curl -sS -X POST \
             "https://packagist.org/api/update-package" \
             -H "Content-Type: application/json" \
-            -H "X-Packagist-Token: ${{ secrets.PACKAGIST_TOKEN }}" \
+            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
 
       - name: Trigger Packagist update for rabbit-rs-native
-        if: steps.check.outputs.skip == 'false' && ${{ secrets.PACKAGIST_TOKEN != '' }}
+        if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
+        env:
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
         run: |
           curl -sS -X POST \
             "https://packagist.org/api/update-package" \
             -H "Content-Type: application/json" \
-            -H "X-Packagist-Token: ${{ secrets.PACKAGIST_TOKEN }}" \
+            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
 
       - name: Summary
