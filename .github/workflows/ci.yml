@@ -184,6 +184,11 @@ jobs:
       - name: Build PHP extension
         run: cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
 
+      - name: Install Laravel package dependencies
+        run: |
+          cd packages/laravel-queue
+          composer install --quiet --ignore-platform-reqs
+
       - name: Start RabbitMQ lab
         run: ./scripts/lab-up.sh with-plugin
 
