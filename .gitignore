@@ -12,3 +12,4 @@ crates/rabbit-rs-php/tests/phpt/*.log
 crates/rabbit-rs-php/tests/phpt/*.out
 crates/rabbit-rs-php/tests/phpt/*.php
 crates/rabbit-rs-php/tests/phpt/*.sh
+/benchmarks/laravel/.phpunit.result.cache
