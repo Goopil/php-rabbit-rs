@@ -38,27 +38,32 @@ impl ConversionBudget {
         Ok(())
     }
 
-    fn add_headers(&mut self, path: &str, entries: usize) -> Result<(), String> {
+    fn add_headers(&mut self, parent_path: &str, entries: usize) -> Result<(), String> {
         self.header_entries = self
             .header_entries
             .checked_add(entries)
-            .ok_or_else(|| format!("{path}: header count overflow"))?;
+            .ok_or_else(|| format!("{parent_path}.headers: header count overflow"))?;
         if self.header_entries > MAX_HEADER_ENTRIES {
             return Err(format!(
-                "{path}: exceeds the {MAX_HEADER_ENTRIES} header entry limit"
+                "{parent_path}.headers: exceeds the {MAX_HEADER_ENTRIES} header entry limit"
             ));
         }
         Ok(())
     }
 
-    fn add_header_bytes(&mut self, path: &str, bytes: usize) -> Result<(), String> {
+    fn add_header_bytes(
+        &mut self,
+        parent_path: &str,
+        key: &str,
+        bytes: usize,
+    ) -> Result<(), String> {
         self.header_bytes = self
             .header_bytes
             .checked_add(bytes)
-            .ok_or_else(|| format!("{path}: header size overflow"))?;
+            .ok_or_else(|| format!("{parent_path}.headers.{key}: header size overflow"))?;
         if self.header_bytes > MAX_HEADER_BYTES {
             return Err(format!(
-                "{path}: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
+                "{parent_path}.headers.{key}: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
             ));
         }
         Ok(())
@@ -338,7 +343,7 @@ fn optional_headers(
     let headers = value
         .array()
         .ok_or_else(|| format!("{path}.headers: expected an associative array"))?;
-    budget.add_headers(&format!("{path}.headers"), headers.len())?;
+    budget.add_headers(path, headers.len())?;
     let mut output = PublishHeaders::new();
     for (key, value) in headers {
         let key = match key {
@@ -354,9 +359,8 @@ fn optional_headers(
                 ));
             }
         };
-        budget.add_header_bytes(&format!("{path}.headers"), key.len())?;
-        let value_path = format!("{path}.headers.{key}");
-        let value = header_value(value, &value_path, budget)?;
+        budget.add_header_bytes(path, &key, key.len())?;
+        let value = header_value(value, path, &key, budget)?;
         output.insert(key.into_owned(), value);
     }
     Ok(output)
@@ -364,7 +368,8 @@ fn optional_headers(
 
 fn header_value(
     input: &Zval,
-    path: &str,
+    parent_path: &str,
+    key: &str,
     budget: &mut ConversionBudget,
 ) -> Result<HeaderValue, String> {
     let input = input.dereference();
@@ -372,34 +377,38 @@ fn header_value(
         return Ok(HeaderValue::Void);
     }
     if let Some(value) = input.bool() {
-        budget.add_header_bytes(path, 1)?;
+        budget.add_header_bytes(parent_path, key, 1)?;
         return Ok(HeaderValue::Boolean(value));
     }
     if let Some(value) = input.long() {
-        budget.add_header_bytes(path, size_of::<i64>())?;
+        budget.add_header_bytes(parent_path, key, size_of::<i64>())?;
         return Ok(HeaderValue::Integer(value));
     }
     if let Some(value) = input.double() {
         let value = HeaderFloat::new(value)
             .map(HeaderValue::Double)
-            .ok_or_else(|| format!("{path}: non-finite floating-point value is unsupported"))?;
-        budget.add_header_bytes(path, size_of::<f64>())?;
+            .ok_or_else(|| {
+                format!(
+                    "{parent_path}.headers.{key}: non-finite floating-point value is unsupported"
+                )
+            })?;
+        budget.add_header_bytes(parent_path, key, size_of::<f64>())?;
         return Ok(value);
     }
     if let Some(value) = input.zend_str() {
-        budget.add_header_bytes(path, value.as_bytes().len())?;
+        budget.add_header_bytes(parent_path, key, value.as_bytes().len())?;
         return Ok(HeaderValue::Binary(Bytes::copy_from_slice(
             value.as_bytes(),
         )));
     }
     if input.array().is_some() {
         return Err(format!(
-            "{path}: nested arrays are unsupported; headers must be flat"
+            "{parent_path}.headers.{key}: nested arrays are unsupported; headers must be flat"
         ));
     }
 
     Err(format!(
-        "{path}: expected null, bool, int, finite float, or string"
+        "{parent_path}.headers.{key}: expected null, bool, int, finite float, or string"
     ))
 }
 
