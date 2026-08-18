@@ -36,9 +36,8 @@ $queue = $connector->connect([
     'block_for' => 3,
 ]);
 
-$container = new class {
-    public function make($class) { return new $class(); }
-};
+$container = new \Illuminate\Container\Container();
+$container->instance('config', new \Illuminate\Config\Repository());
 $queue->setContainer($container);
 $queue->setConnectionName('rabbit-rs-bench');
 
@@ -158,7 +157,7 @@ function declareQueue(string $queueName): void
     $url = 'http://localhost:15672/api/queues/%2Forders-eu/' . urlencode($queueName);
     $payload = json_encode([
         'durable' => true,
-        'arguments' => ['x-queue-type' => 'quorum'],
+        'arguments' => ['x-queue-type' => 'quorum', 'x-delivery-limit' => 20],
     ]);
 
     $ch = curl_init($url);

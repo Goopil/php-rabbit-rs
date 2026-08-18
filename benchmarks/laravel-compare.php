@@ -115,9 +115,8 @@ function benchRabbitRs(string $queueName, int $count, string $payload): array
     $factory = new NativePoolFactory(createPool: fn (): Pool => $pool);
     $connector = new RabbitMqConnector($factory, $normalized);
     $queue = $connector->connect(['queue' => $queueName, 'block_for' => 3]);
-    $container = new class {
-        public function make($class) { return new $class(); }
-    };
+    $container = new \Illuminate\Container\Container();
+    $container->instance('config', new \Illuminate\Config\Repository());
     $queue->setContainer($container);
     $queue->setConnectionName('rabbit-rs-bench');
     $queue->clear($queueName);
