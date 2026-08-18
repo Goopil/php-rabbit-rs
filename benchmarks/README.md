@@ -31,13 +31,44 @@ Options:
 - `--batch` — batch size (default: `64`)
 - `--output` — write JSON results to this path (optional)
 
+### Laravel comparative benchmark
+
+Compares rabbit-rs, php-amqplib, and vyuldashev **through the Laravel queue layer** (`RabbitMqQueue::push()` / `pop()`). Measures the full path including job marshaling, serialization, and container overhead.
+
+```bash
+composer install --working-dir=benchmarks
+php benchmarks/laravel-compare.php --driver all --count 1000 --payload 256
+```
+
+Options:
+- `--driver` — `rabbit-rs`, `php-amqplib`, `vyuldashev`, or `all` (default: `all`)
+- `--count` — number of messages (default: `1000`)
+- `--payload` — payload size in bytes (default: `256`)
+
+### Laravel smoke test
+
+A quick test that publishes and consumes 100 messages through the full Laravel `RabbitMqQueue` path to verify the integration has no regression.
+
+```bash
+php benchmarks/laravel-smoke.php
+```
+
+### Rust microbenchmarks
+
+Criterion benchmarks for subsystem-level performance, used during optimization work.
+
+```bash
+cargo bench -p rabbit-rs-core
+cargo bench -p rabbit-rs-core --features bench lapin_properties
+```
+
 ## Requirements
 
 - PHP 8.4 or later
-- `rabbit_rs` extension loaded (for rabbit-rs driver and smoke benchmark)
-- `composer install` in `benchmarks/` for the php-amqplib driver
+- `rabbit_rs` extension loaded (for rabbit-rs driver, smoke, and laravel-smoke)
+- `composer install` in `benchmarks/` for php-amqplib, vyuldashev, and laravel-compare
 - pecl `amqp` extension for the amqp-ext driver (optional)
-- RabbitMQ broker at `127.0.0.1:5672`
+- RabbitMQ broker at `127.0.0.1:5672` with vhost `/orders-eu` and user `rabbit_rs`/`rabbit_rs_lab`
 
 ## Safety modes
 
@@ -73,20 +104,22 @@ End-to-end publish-to-consume latency is measured by embedding `hrtime(true)` (n
 
 ```
 benchmarks/
-├── README.md           # This file
-├── composer.json       # Package metadata and autoloading
-├── smoke.php           # Smoke benchmark script
-├── compare.php         # Comparative benchmark script
-├── drivers/            # Driver implementations
+├── README.md              # This file
+├── composer.json          # Package metadata and autoloading
+├── smoke.php              # CI smoke benchmark (rabbit-rs extension only)
+├── compare.php            # PHP-level comparative benchmark (3 drivers, 3 safety modes)
+├── laravel-smoke.php      # Laravel path smoke test (100 msgs via RabbitMqQueue)
+├── laravel-compare.php    # Laravel-level comparative benchmark (rabbit-rs vs php-amqplib vs vyuldashev)
+├── drivers/               # Driver implementations for compare.php
 │   ├── Driver.php
 │   ├── RabbitRsDriver.php
 │   ├── PhpAmqplibDriver.php
 │   └── AmqpExtDriver.php
-├── lib/                # Shared utilities
+├── lib/                   # Shared utilities
 │   ├── Metrics.php
 │   └── Budget.php
-├── baselines/          # Budget files
+├── baselines/             # Budget files
 │   └── smoke-budget.json
-└── results/            # Output directory (gitignored except .gitkeep)
+└── results/               # Output directory (gitignored except .gitkeep)
     └── .gitkeep
 ```
