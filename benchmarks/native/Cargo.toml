@@ -24,8 +24,24 @@ path = "benches/batching.rs"
 harness = false
 
 [[bench]]
+name = "confirm_ledger"
+path = "benches/confirm_ledger.rs"
+harness = false
+
+[[bench]]
 name = "ffi_conversion"
 path = "benches/ffi_conversion.rs"
+harness = false
+
+[[bench]]
+name = "lapin_properties"
+path = "benches/lapin_properties.rs"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "publisher_actor"
+path = "benches/publisher_actor.rs"
 harness = false
 
 [[bench]]
@@ -37,6 +53,10 @@ harness = false
 name = "transport"
 path = "benches/transport.rs"
 harness = false
+
+[features]
+default = ["bench"]
+bench = ["rabbit-rs-core/bench"]
 
 [lints]
 workspace = true

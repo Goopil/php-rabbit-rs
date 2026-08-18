@@ -68,9 +68,63 @@ fn bench_scheduler_register(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_scheduler_next_all_ready(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scheduler/next_all_ready");
+
+    let count = 32;
+    let bench_id = BenchmarkId::new("subscriptions", count);
+    group.bench_with_input(bench_id, &count, |b, &count| {
+        let now = Instant::now();
+
+        b.iter_batched(
+            || setup_scheduler(count),
+            |mut scheduler| {
+                let _selected = scheduler.next(now);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn bench_scheduler_churn(c: &mut Criterion) {
+    let mut group = c.benchmark_group("scheduler/churn");
+
+    let count = 32;
+    let iterations = 1000;
+    let bench_id = BenchmarkId::new("subscriptions", count);
+    group.throughput(criterion::Throughput::Elements(
+        u64::try_from(iterations).expect("iter"),
+    ));
+
+    group.bench_with_input(bench_id, &count, |b, &count| {
+        let now = Instant::now();
+
+        b.iter_batched(
+            || setup_scheduler(count),
+            |mut scheduler| {
+                let ids: Vec<SubscriptionId> = (0..count)
+                    .map(|index| id(&format!("sub-{index}")))
+                    .collect();
+                for _ in 0..iterations {
+                    let _ = scheduler.next(now);
+                    scheduler.mark_empty(&ids[0]);
+                    scheduler.mark_ready(&ids[0]);
+                }
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 fn bench_scheduler(c: &mut Criterion) {
     bench_scheduler_register(c);
     bench_scheduler_next(c);
+    bench_scheduler_next_all_ready(c);
+    bench_scheduler_churn(c);
 }
 
 criterion_group!(scheduler_group, bench_scheduler);

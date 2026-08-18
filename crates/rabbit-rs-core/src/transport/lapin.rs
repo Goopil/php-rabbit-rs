@@ -533,6 +533,17 @@ fn publish_properties(request: &PublishRequest) -> BasicProperties {
     properties
 }
 
+/// Benchmark-only accessor for `publish_properties`.
+///
+/// Exposed behind the `bench` feature so benchmarks can measure the
+/// `BasicProperties` construction in isolation without a socket or
+/// `basic_publish` call.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub fn publish_properties_bench(request: &PublishRequest) -> BasicProperties {
+    publish_properties(request)
+}
+
 fn publish_header_value(value: &HeaderValue) -> AMQPValue {
     match value {
         HeaderValue::Void => AMQPValue::Void,

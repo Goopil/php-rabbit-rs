@@ -148,10 +148,36 @@ fn bench_header_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_header_path_allocation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ffi_conversion/header_path_allocation");
+
+    for &header_count in &HEADER_COUNTS {
+        let bench_id = BenchmarkId::new("headers", header_count);
+        group.throughput(Throughput::Elements(header_count as u64));
+
+        group.bench_with_input(bench_id, &header_count, |b, &header_count| {
+            let keys: Vec<String> = (0..header_count).map(|i| format!("h{i}")).collect();
+
+            b.iter(|| {
+                let path = "messages[0]";
+                let mut total_len = 0usize;
+                for key in &keys {
+                    let value_path = format!("{path}.headers.{key}");
+                    total_len += value_path.len();
+                }
+                let _ = total_len;
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_ffi_conversion(c: &mut Criterion) {
     bench_config_validation(c);
     bench_message_construction(c);
     bench_header_conversion(c);
+    bench_header_path_allocation(c);
 }
 
 criterion_group!(ffi_conversion_group, bench_ffi_conversion);

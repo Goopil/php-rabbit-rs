@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 test-support = []
 integration = []
+bench = []
 
 [dependencies]
 async-trait = "0.1"
