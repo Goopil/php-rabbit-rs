@@ -29,7 +29,9 @@ impl<T> ConfirmLedger<T> {
     }
 
     pub fn drain(&mut self) -> impl Iterator<Item = T> {
-        std::mem::take(&mut self.pending).into_values()
+        let mut entries: Vec<(u64, T)> = std::mem::take(&mut self.pending).into_iter().collect();
+        entries.sort_by_key(|(seq, _)| *seq);
+        entries.into_iter().map(|(_, value)| value)
     }
 
     #[cfg(test)]
@@ -57,6 +59,17 @@ mod tests {
         let mut drained: Vec<&'static str> = ledger.drain().collect();
         drained.sort_unstable();
         assert_eq!(drained, vec!["five", "one", "three"]);
+    }
+
+    #[test]
+    fn drain_returns_entries_in_ascending_sequence_order() {
+        let mut ledger = ConfirmLedger::<u64>::with_capacity(64);
+        for seq in (1..=50).rev() {
+            ledger.insert(seq, seq);
+        }
+
+        let drained: Vec<u64> = ledger.drain().collect();
+        assert_eq!(drained, (1..=50).collect::<Vec<_>>());
     }
 
     #[test]

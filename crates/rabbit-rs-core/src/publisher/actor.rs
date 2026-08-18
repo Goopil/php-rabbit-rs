@@ -284,7 +284,7 @@ impl ActorState {
             channel: Some(channel),
             batch: Batcher::new(config.max_messages, config.max_bytes),
             replay: VecDeque::new(),
-            ledger: ConfirmLedger::with_capacity(config.buffer_capacity),
+            ledger: ConfirmLedger::with_capacity(config.max_messages),
             confirmations: FuturesUnordered::new(),
             sequence: 0,
             flush_deadline: None,
