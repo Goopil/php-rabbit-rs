@@ -1,6 +1,9 @@
 //! Weighted scheduling across ready subscriptions.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
 
 /// Stable identity of a configured subscription.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -65,10 +68,20 @@ pub trait Scheduler {
 }
 
 /// A deterministic smooth weighted scheduler with starvation protection.
+///
+/// `eligible_indices` is used only for O(1) membership testing during
+/// cursor-based selection; iteration order for selection is provided by
+/// `eligible_list`, which preserves the same order as an enumerate-based
+/// scan of `entries`. `index` maps each `SubscriptionId` to its position in
+/// `entries` so `register`/`mark_ready`/`mark_empty` are O(1) lookups
+/// instead of linear scans.
 #[derive(Debug, Default)]
 pub struct WeightedFairScheduler {
     entries: Vec<Entry>,
     cursor: usize,
+    index: HashMap<SubscriptionId, usize>,
+    eligible_indices: HashSet<usize>,
+    eligible_list: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -82,24 +95,27 @@ struct Entry {
 
 impl Scheduler for WeightedFairScheduler {
     fn register(&mut self, id: SubscriptionId, policy: SubscriptionPolicy) {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
-            entry.policy = policy;
+        if let Some(&position) = self.index.get(&id) {
+            self.entries[position].policy = policy;
             return;
         }
 
+        let position = self.entries.len();
         self.entries.push(Entry {
-            id,
+            id: id.clone(),
             policy,
             ready: false,
             ready_since: None,
             credit: 0,
         });
+        self.index.insert(id, position);
     }
 
     fn mark_ready(&mut self, id: &SubscriptionId) {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.id == id)
-            && !entry.ready
+        if let Some(&position) = self.index.get(id)
+            && !self.entries[position].ready
         {
+            let entry = &mut self.entries[position];
             entry.ready = true;
             entry.ready_since = None;
             entry.credit = 0;
@@ -107,7 +123,8 @@ impl Scheduler for WeightedFairScheduler {
     }
 
     fn mark_empty(&mut self, id: &SubscriptionId) {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.id == id) {
+        if let Some(&position) = self.index.get(id) {
+            let entry = &mut self.entries[position];
             entry.ready = false;
             entry.ready_since = None;
             entry.credit = 0;
@@ -126,27 +143,28 @@ impl Scheduler for WeightedFairScheduler {
             .map(|entry| effective_priority(entry, now))
             .max()?;
 
-        let eligible = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                (entry.ready && effective_priority(entry, now) == highest_priority).then_some(index)
-            })
-            .collect::<Vec<_>>();
+        self.eligible_indices.clear();
+        self.eligible_list.clear();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if entry.ready && effective_priority(entry, now) == highest_priority {
+                self.eligible_indices.insert(index);
+                self.eligible_list.push(index);
+            }
+        }
 
-        let total_weight = eligible
+        let total_weight = self
+            .eligible_list
             .iter()
             .map(|&index| i64::from(self.entries[index].policy.weight))
             .sum::<i64>();
 
-        for &index in &eligible {
+        for &index in &self.eligible_list {
             self.entries[index].credit += i64::from(self.entries[index].policy.weight);
         }
 
         let chosen = (0..self.entries.len())
             .map(|offset| (self.cursor + offset) % self.entries.len())
-            .filter(|index| eligible.contains(index))
+            .filter(|index| self.eligible_indices.contains(index))
             .max_by_key(|&index| self.entries[index].credit)?;
 
         let entry = &mut self.entries[chosen];
