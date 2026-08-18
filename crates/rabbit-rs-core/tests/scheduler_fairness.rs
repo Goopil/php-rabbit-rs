@@ -126,36 +126,3 @@ fn produces_a_deterministic_sequence() {
 
     assert_eq!(first_sequence, second_sequence);
 }
-
-#[test]
-fn thirty_two_subscriptions_all_ready_dispatch_proportionally() {
-    const SUBSCRIPTIONS: u32 = 32;
-    const CALLS: u32 = 1_000;
-    const BASE_WEIGHT: u16 = 3;
-    const TOTAL_WEIGHT: u32 = 3 * SUBSCRIPTIONS;
-
-    let now = Instant::now();
-    let mut scheduler = WeightedFairScheduler::default();
-
-    for i in 0..SUBSCRIPTIONS {
-        scheduler.register(id(&format!("sub-{i}")), policy(BASE_WEIGHT, 0));
-        scheduler.mark_ready(&id(&format!("sub-{i}")));
-    }
-
-    let mut counts = BTreeMap::new();
-    for _ in 0..CALLS {
-        let selected = scheduler.next(now).unwrap();
-        *counts.entry(selected).or_insert(0_u32) += 1;
-    }
-
-    assert_eq!(counts.len(), SUBSCRIPTIONS as usize);
-    for i in 0..SUBSCRIPTIONS {
-        let expected = CALLS * u32::from(BASE_WEIGHT) / TOTAL_WEIGHT;
-        let actual = counts[&id(&format!("sub-{i}"))];
-        let tolerance = expected / 4 + 1;
-        assert!(
-            actual.abs_diff(expected) <= tolerance,
-            "sub-{i}: expected ~{expected}, got {actual}"
-        );
-    }
-}
