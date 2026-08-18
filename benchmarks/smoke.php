@@ -140,11 +140,24 @@ $budgetResult = $budget->check($publishMetrics, $consumeMetrics);
 $allPass = $budgetResult['pass'];
 
 fwrite(STDOUT, "Budget Check:\n");
-foreach ($budgetResult['failures'] as $f) {
-    fwrite(STDOUT, "  {$f['metric']}: expected {$f['expected']}, got {$f['actual']} ... FAIL\n");
-}
-if ($budgetResult['failures'] === []) {
-    fwrite(STDOUT, "  All metrics within budget ... PASS\n");
+$budgetKeys = [
+    'publish_throughput_min' => ['value' => $publishThroughput, 'label' => 'publish_throughput'],
+    'consume_throughput_min' => ['value' => $consumeThroughput, 'label' => 'consume_throughput'],
+    'publish_p99_max_ms' => ['value' => $publishP99, 'label' => 'publish_p99'],
+    'consume_p99_max_ms' => ['value' => $consumeP99, 'label' => 'consume_p99'],
+    'losses_max' => ['value' => $losses, 'label' => 'losses'],
+];
+$failedKeys = array_column($budgetResult['failures'], 'metric');
+foreach ($budgetKeys as $key => $info) {
+    $isMin = str_ends_with($key, '_throughput_min');
+    $isMax = str_ends_with($key, '_p99_max_ms');
+    $isLosses = $key === 'losses_max';
+    $expected = $budget->budget()[$key] ?? null;
+    if ($expected === null) continue;
+    $actual = $info['value'];
+    $pass = $isMin ? $actual >= $expected : ($isMax ? $actual <= $expected : ($isLosses ? $actual == 0 : true));
+    $op = $isMin ? '>=' : ($isMax ? '<=' : '==');
+    fwrite(STDOUT, sprintf("  %s: %s %s %s ... %s\n", $info['label'], formatNumber($actual), $op, formatNumber($expected), $pass ? 'PASS' : 'FAIL'));
 }
 fwrite(STDOUT, "\n");
 
