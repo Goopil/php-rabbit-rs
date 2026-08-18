@@ -533,6 +533,12 @@ fn publish_properties(request: &PublishRequest) -> BasicProperties {
     properties
 }
 
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub fn publish_properties_bench(request: &PublishRequest) -> BasicProperties {
+    publish_properties(request)
+}
+
 fn publish_header_value(value: &HeaderValue) -> AMQPValue {
     match value {
         HeaderValue::Void => AMQPValue::Void,
