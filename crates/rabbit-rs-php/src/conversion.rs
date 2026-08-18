@@ -51,6 +51,19 @@ impl ConversionBudget {
         Ok(())
     }
 
+    fn add_header_key_bytes(&mut self, parent_path: &str, bytes: usize) -> Result<(), String> {
+        self.header_bytes = self
+            .header_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| format!("{parent_path}.headers: header size overflow"))?;
+        if self.header_bytes > MAX_HEADER_BYTES {
+            return Err(format!(
+                "{parent_path}.headers: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
+            ));
+        }
+        Ok(())
+    }
+
     fn add_header_bytes(
         &mut self,
         parent_path: &str,
@@ -359,7 +372,7 @@ fn optional_headers(
                 ));
             }
         };
-        budget.add_header_bytes(path, &key, key.len())?;
+        budget.add_header_key_bytes(path, key.len())?;
         let value = header_value(value, path, &key, budget)?;
         output.insert(key.into_owned(), value);
     }
