@@ -184,9 +184,6 @@ jobs:
       - name: Build PHP extension
         run: cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
 
-      - name: Install extension
-        run: ./scripts/install.sh --release --yes
-
       - name: Start RabbitMQ lab
         run: ./scripts/lab-up.sh with-plugin
 
@@ -206,10 +203,10 @@ jobs:
         run: cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
 
       - name: Run smoke benchmark
-        run: php benchmarks/smoke.php
+        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/smoke.php
 
       - name: Run Laravel smoke test
-        run: php benchmarks/laravel-smoke.php
+        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/laravel-smoke.php
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
