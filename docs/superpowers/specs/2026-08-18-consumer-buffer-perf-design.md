@@ -112,6 +112,22 @@ The actor keeps its role for: channel creation, recovery, topology reconciliatio
 
 **Status:** PR #4 commits `415c50b` (batcher spare-vec) and `b424601` (Lapin move) are ready to cherry-pick. The batcher optimization becomes obsolete once phase 3b (hot path bypass) removes the batcher, but is valuable in the interim.
 
+### 1d. Lapin/Tokio tuning (free, config only)
+
+**Problem:** Default Lapin and Tokio settings are not tuned for throughput.
+
+**Fix:**
+- `frame_max`: increase from 128KB to 1MB — fewer frame overhead for larger payloads
+- `TCP_NODELAY`: disable Nagle's algorithm — reduces latency for small frames
+- `heartbeat`: set to 0 in benchmarks (no heartbeat frames)
+- Tokio runtime: `worker_threads = 1` for I/O-bound workloads — less scheduling overhead
+
+**Location:** `crates/rabbit-rs-core/src/transport/lapin.rs` (ConnectionProperties), `crates/rabbit-rs-core/src/runtime.rs`
+
+**Gain:** 10-20% on both publish and consume
+
+**Laravel compatibility:** Config-level. No API change. Can be exposed as configurable options in `config/rabbit-rs.php`.
+
 ---
 
 ## Phase 2: Buffered Consumer (major change)
@@ -252,6 +268,18 @@ The iterator calls `next()` internally with a configurable default timeout. `nex
 **Gain:** Ergonomic, no perf gain
 
 **Laravel compatibility:** Additive. Laravel's `pop()` loop is unchanged.
+
+### 2e. Zero-copy consume (second-order optimization)
+
+**Problem:** Each consumed delivery copies the payload from Lapin's buffer to a Rust `Bytes`, then from `Bytes` to a PHP `ZendString`. At 30-50K msgs/s × 1KB = 30-50MB/s of unnecessary copies.
+
+**Solution:** ext-php-rs provides zero-copy **read** via `Zval::str()` / `ZendStr::as_bytes()` which return `&[u8]` directly on PHP memory. Replace `Bytes::copy_from_slice()` in the consume path with a wrapper that avoids the intermediate copy. Zero-copy **write** (publish side) is impossible — `zend_string` uses inline storage (`char val[1]`), so data must be copied into the allocation.
+
+**Location:** `crates/rabbit-rs-php/src/classes/delivery.rs` (payload conversion)
+
+**Gain:** 5-10% on consume (reduced allocation + GC pressure)
+
+**Laravel compatibility:** `Delivery::payload(): string` returns the same type. Internal optimization only.
 
 ---
 
@@ -469,18 +497,19 @@ Currently, the actor collects all stats because all publishes pass through it. W
 
 ## Implementation Order
 
-1. **Phase 1** (1a + 1b + 1c) — quick wins, ~1-2 days, immediate gain, no risk
+1. **Phase 1** (1a + 1b + 1c + 1d) — quick wins, ~2-3 days, immediate gain, no risk
 2. **Phase 2a** (buffered consumer) — biggest consume gain, ~2-3 days
 3. **Phase 2b** (batched ack + `multiple=true`) — completes consume optimization, ~1-2 days
 4. **Phase 2c** (callback consume) — 1 FFI crossing per batch, ~2-3 days
 5. **Phase 2d** (iterator API) — syntactic sugar, ~0.5 days
-6. **Phase 3a** (batch frames) — moderate publish gain, ~1 day
-7. **Phase 3b** (hot path bypass + `now_or_never()`) — biggest publish gain, ~3-5 days
-8. **Phase 3c** (parallel confirms) — optimizes safe mode, ~2-3 days
-9. **Phase 3d** (PHP-side publish buffer) — reduces FFI crossings, ~2-3 days
-10. **Phase 4a** (blind mode) — true fire-and-forget, ~2-3 days
+6. **Phase 2e** (zero-copy consume) — second-order, ~1 day
+7. **Phase 3a** (batch frames) — moderate publish gain, ~1 day
+8. **Phase 3b** (hot path bypass + `now_or_never()`) — biggest publish gain, ~3-5 days
+9. **Phase 3c** (parallel confirms) — optimizes safe mode, ~2-3 days
+10. **Phase 3d** (PHP-side publish buffer) — reduces FFI crossings, ~2-3 days
+11. **Phase 4a** (blind mode) — true fire-and-forget, ~2-3 days
 
-Total: ~17-25 days of implementation.
+Total: ~19-27 days of implementation.
 
 ---
 
@@ -492,11 +521,13 @@ Total: ~17-25 days of implementation.
 | 1a | Immediate flush | - | - | 10.5K | - | - | Low |
 | 1b | Reduce FFI conversion | - | - | 11.5K | - | - | Medium |
 | 1c | Reduce clones | - | - | 12K | - | - | Low |
+| 1d | Lapin/Tokio tuning | +10-20% | +10-20% | 14K | +10-20% | - | Low |
 | 2a | **Buffered consumer** | - | - | - | **30-50K** | - | **Medium** |
 | 2b | **Batched ack + multiple** | - | - | - | **+15-25x on ack** | - | **Medium** |
 | 2c | **Callback consume** | - | - | - | - | **80-100K** | **Medium** |
 | 2d | Iterator API | - | - | - | - (ergonomic) | - | Low |
-| 3a | Batch AMQP frames | - | - | 14K | - | - | Medium |
+| 2e | Zero-copy consume | - | - | - | +5-10% | +5-10% | Low |
+| 3a | Batch AMQP frames | - | - | 16K | - | - | Medium |
 | 3b | **Hot path + now_or_never** | 30-40K | 30-40K | 30-40K | - | - | **High** |
 | 3c | Parallel confirms | - | - | 35-45K | - | - | High |
 | 3d | **PHP publish buffer** | **80-100K** | **80-100K** | - | - | - | **Medium** |
@@ -597,8 +628,4 @@ We can't go fully synchronous (Lapin is async-only), but `now_or_never()` approx
 
 ### Zero-copy analysis (ext-php-rs)
 
-ext-php-rs provides zero-copy **read** via `Zval::str()` / `ZendStr::as_bytes()` (returns `&[u8]` directly on PHP memory). Zero-copy **write** is impossible — `zend_string` uses inline storage (`char val[1]`), so data must be copied into the allocation.
-
-- **Consume**: replace `Bytes::copy_from_slice()` with a wrapper around `&[u8]` from `ZendStr::as_bytes()` — saves 1 copy per message (~5-10% on consume)
-- **Publish**: no zero-copy possible, but the PHP-side buffer (3d) reduces FFI crossings which matters more than the copy
-- Zero-copy is a **second-order optimization** — the primary gains come from reducing FFI crossings (batch consume, publish buffer) and eliminating the actor overhead (hot path bypass)
+ext-php-rs provides zero-copy **read** via `Zval::str()` / `ZendStr::as_bytes()` (returns `&[u8]` directly on PHP memory). Zero-copy **write** is impossible — `zend_string` uses inline storage (`char val[1]`), so data must be copied into the allocation. The zero-copy consume optimization is captured as phase 2e above. Zero-copy is a **second-order optimization** — the primary gains come from reducing FFI crossings (batch consume, publish buffer) and eliminating the actor overhead (hot path bypass).
