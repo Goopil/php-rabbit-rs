@@ -2230,6 +2230,7 @@ version = "0.0.2"
 dependencies = [
  "async-trait",
  "bytes",
+ "criterion",
  "fastrand",
  "futures-lite",
  "futures-util",
@@ -2241,16 +2242,6 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "rabbit-rs-native-bench"
-version = "0.0.2"
-dependencies = [
- "bytes",
- "criterion",
- "rabbit-rs-core",
- "tokio",
 ]
 
 [[package]]

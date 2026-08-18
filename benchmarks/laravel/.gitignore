@@ -1,5 +1,0 @@
-vendor/
-results/
-.phpunit.cache/
-.phpunit.result.cache
-*.sqlite

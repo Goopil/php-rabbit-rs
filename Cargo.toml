@@ -2,7 +2,6 @@
 members = [
     "crates/rabbit-rs-core",
     "crates/rabbit-rs-php",
-    "benchmarks/native",
 ]
 resolver = "2"
 
