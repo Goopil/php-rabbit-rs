@@ -1,0 +1,248 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (fmt + clippy + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+  php:
+    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.4", "8.5"]
+        laravel: ["12", "13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: json
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/laravel-queue/vendor
+            ~/.cache/composer
+          key: composer-php${{ matrix.php }}-laravel${{ matrix.laravel }}-${{ hashFiles('packages/laravel-queue/composer.json') }}
+          restore-keys: |
+            composer-php${{ matrix.php }}-laravel${{ matrix.laravel }}-
+          fail-on-cache-miss: false
+
+      - name: Install dependencies (Laravel ${{ matrix.laravel }})
+        run: |
+          cd packages/laravel-queue
+          rm -f composer.lock
+          composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update --dev
+          composer update --quiet --ignore-platform-reqs
+
+      - name: Run PHPUnit tests
+        run: |
+          cd packages/laravel-queue
+          php vendor/bin/phpunit --testsuite="Rabbit RS Laravel" --testdox
+
+  phpt:
+    name: PHPT (${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.4", "8.5"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test in Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            php:${{ matrix.php }}-cli \
+            sh -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              . "$HOME/.cargo/env"
+              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+              ./scripts/test-extension.sh
+            '
+
+  zts:
+    name: ZTS build (8.4)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test in Docker (ZTS)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            php:8.4-zts \
+            sh -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              . "$HOME/.cargo/env"
+              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+              ./scripts/test-extension.sh
+            '
+
+  octane:
+    name: Octane lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json, mbstring
+
+      - name: Install Laravel package dependencies
+        run: |
+          cd packages/laravel-queue
+          composer install --quiet --ignore-platform-reqs
+
+      - name: Install Octane
+        run: |
+          cd packages/laravel-queue
+          composer require laravel/octane --dev --ignore-platform-reqs || true
+
+      - name: Run Octane lifecycle tests
+        run: ./scripts/test-octane.sh
+
+  integration:
+    name: Integration + Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Build PHP extension
+        run: cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+
+      - name: Install extension
+        run: ./scripts/install.sh --release --yes
+
+      - name: Start RabbitMQ lab
+        run: ./scripts/lab-up.sh with-plugin
+
+      - name: Wait for lab readiness
+        run: |
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh; then
+              echo "Lab is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Lab did not become ready after 120s." >&2
+          exit 1
+
+      - name: Run Rust integration tests
+        run: cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
+
+      - name: Run smoke benchmark
+        run: php benchmarks/smoke.php
+
+      - name: Run Laravel smoke test
+        run: php benchmarks/laravel-smoke.php
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: benchmarks/results/
+          retention-days: 7
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh
+
+  chaos:
+    name: Chaos tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Run chaos tests
+        run: ./scripts/test-chaos.sh
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh
