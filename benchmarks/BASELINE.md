@@ -207,3 +207,59 @@ Based on these measurements:
 | `max_bytes`       | 2 MiB                      | Prevents 256 × 1 MiB from exceeding memory budget              |
 | `prefetch`        | 16                         | Conservative default; scheduler handles 32 subs at < 1 µs      |
 | `buffer_capacity` | 1024                       | 4× the batch size to absorb bursts                             |
+
+---
+
+## Wave 1 Optimizations
+
+**Date:** August 17, 2026
+**Branch:** `perf/perf-wave-1`
+**Baseline reference:** The measurements above were captured immediately before
+this optimization wave and serve as the pre-optimization baseline.
+
+The following five optimizations were applied in Wave 1. Each targets a hot path
+identified by the baseline benchmarks above.
+
+| # | Optimization                                   | Hot path                        | Baseline observation                                              | Expected effect                                           |
+|--:|------------------------------------------------|---------------------------------|-------------------------------------------------------------------|-----------------------------------------------------------|
+| 1 | Defer header path formatting to error branches | FFI header conversion           | 128 headers add ~35 µs to a single publish                        | Skip string formatting on the success path                |
+| 2 | Split `add_header_bytes` key-overflow path      | FFI header conversion           | Key-byte overflow path was not exercised in the baseline          | Preserve overflow detection without branching on every key |
+| 3 | Spare-vec swap in `Batcher::take`               | Publisher batch flush           | A 256-message batch flush allocates a fresh `Vec` each flush      | Reuse a spare buffer to avoid per-flush allocation         |
+| 4 | Replace `BTreeMap` with `HashMap` in `ConfirmLedger` | Publisher confirm insert/remove | 256-message batches insert/remove per publish/confirm cycle       | O(1) insert/remove on the publish hot path                |
+| 5 | Move exchange/routing_key in Lapin publish      | Transport publish              | `publish` cloned exchange and routing_key on every call          | Avoid two clones per published message                    |
+
+### Deterministic replay preservation
+
+Optimization 4 (HashMap in `ConfirmLedger`) changed `drain()` order from
+ascending sequence (BTreeMap) to arbitrary (HashMap). This breaks the
+deterministic recovery-order invariant. The fix preserves O(1) insert/remove
+on the hot path while restoring deterministic drain order by sorting entries
+on `drain()` (a cold-path operation called only during suspend/fail_all).
+
+### Over-allocation correction
+
+`ConfirmLedger::with_capacity` was pre-allocated to `buffer_capacity`
+(default 1024). The realistic concurrent in-flight count per flush is
+`max_messages` (default 256, the batch size). Pre-allocation was corrected to
+`max_messages` to avoid over-allocating a HashMap sized for four batches.
+
+### Benchmark coverage
+
+The five benchmarks that measure the affected hot paths are:
+
+1. **Batching — Throughput by Batch/Payload Size** (measures optimizations 3, 4)
+2. **FFI Conversion — Cost per Operation** (measures optimizations 1, 2)
+3. **Scheduler — Decision Cost** (unaffected by Wave 1; included for completeness)
+4. **Single Publish — Per-Call Latency** (end-to-end FFI cost)
+5. **Batch Publish — Per-Message Latency** (measures optimization 3 amortization)
+
+### Wave 1 Delta
+
+A before/after delta requires running the benchmark suite against the
+pre-optimization code and the post-optimization code on the same machine.
+Because the optimizations were already merged to the branch before a
+pre-optimization baseline could be captured, a retrospective delta cannot be
+measured. The baseline table above documents the pre-optimization state;
+re-running the benchmark suite on this branch yields the post-optimization
+numbers for comparison. The decision gate (≥5% gain) should be evaluated by
+comparing a fresh run against the baseline table above.
