@@ -2,34 +2,40 @@
 
 declare(strict_types=1);
 
-namespace Drivers\Support;
+namespace Bench;
 
-trait MeasuresResources
+trait Metrics
 {
+    /** @var list<float> */
     private array $latencies = [];
-    private float $startedAt = 0.0;
+    private int $startedAt = 0;
 
-    protected function recordLatency(float $ms): void
+    public function recordLatency(float $ms): void
     {
         $this->latencies[] = $ms;
     }
 
-    protected function resetLatencies(): void
+    public function resetLatencies(): void
     {
         $this->latencies = [];
     }
 
-    protected function startTimer(): void
+    public function startTimer(): void
     {
-        $this->startedAt = microtime(true);
+        $this->startedAt = hrtime(true);
     }
 
-    protected function elapsedSeconds(): float
+    public function elapsedSeconds(): float
     {
-        return $this->startedAt > 0.0 ? max(microtime(true) - $this->startedAt, 0.0) : 0.0;
+        return $this->startedAt > 0 ? $this->elapsedNanos() / 1_000_000_000 : 0.0;
     }
 
-    protected function percentile(float $percentile): float
+    public function elapsedNanos(): int
+    {
+        return $this->startedAt > 0 ? hrtime(true) - $this->startedAt : 0;
+    }
+
+    public function percentile(float $p): float
     {
         if ($this->latencies === []) {
             return 0.0;
@@ -37,9 +43,10 @@ trait MeasuresResources
 
         $sorted = $this->latencies;
         sort($sorted);
-        $index = (int) floor(($percentile / 100) * count($sorted));
+        $count = count($sorted);
+        $index = (int) floor(($p / 100) * $count);
 
-        return $sorted[min($index, count($sorted) - 1)];
+        return $sorted[min($index, $count - 1)];
     }
 
     protected function rssKb(): int
@@ -87,14 +94,14 @@ trait MeasuresResources
      * }
      */
     protected function buildMetrics(
-        int $messageCount,
-        float $elapsedSeconds,
+        int $count,
+        float $elapsed,
         int $connections = 0,
         int $channels = 0,
         int $duplicates = 0,
         int $losses = 0,
     ): array {
-        $throughput = $elapsedSeconds > 0 ? $messageCount / $elapsedSeconds : 0.0;
+        $throughput = $elapsed > 0 ? $count / $elapsed : 0.0;
 
         return [
             'throughput' => round($throughput, 2),

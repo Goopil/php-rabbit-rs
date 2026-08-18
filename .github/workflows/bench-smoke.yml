@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  native-bench:
+  bench-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,16 +28,47 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run native benchmarks (minimal samples)
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Build PHP extension
+        run: cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+
+      - name: Install extension
+        run: ./scripts/install.sh --release --yes
+
+      - name: Start RabbitMQ lab
+        run: ./scripts/lab-up.sh with-plugin
+
+      - name: Wait for lab readiness
         run: |
-          cargo bench -p rabbit-rs-native-bench --bench batching -- --sample-size 10 --warm-up-time 1 --measurement-time 2
-          cargo bench -p rabbit-rs-native-bench --bench ffi_conversion -- --sample-size 10 --warm-up-time 1 --measurement-time 2
-          cargo bench -p rabbit-rs-native-bench --bench scheduler -- --sample-size 10 --warm-up-time 1 --measurement-time 2
-          cargo bench -p rabbit-rs-native-bench --bench transport -- --sample-size 10 --warm-up-time 1 --measurement-time 2
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh; then
+              echo "Lab is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Lab did not become ready after 120s." >&2
+          exit 1
+
+      - name: Run smoke benchmark
+        run: php benchmarks/smoke.php
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
-          name: native-bench-results
-          path: target/criterion/
+          name: bench-smoke-results
+          path: benchmarks/results/
           retention-days: 7
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh

@@ -1,0 +1,15 @@
+{
+    "name": "rabbit-rs/benchmarks",
+    "description": "Standalone PHP benchmarks for rabbit-rs",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.4",
+        "php-amqplib/php-amqplib": "^3.7"
+    },
+    "autoload": {
+        "psr-4": {
+            "Bench\\": "lib/",
+            "Bench\\Drivers\\": "drivers/"
+        }
+    }
+}

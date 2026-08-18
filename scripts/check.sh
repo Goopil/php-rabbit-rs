@@ -3,5 +3,5 @@ set -euo pipefail
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --exclude rabbit-rs-native-bench
+cargo test --workspace --all-targets
 composer validate --strict
