@@ -97,30 +97,34 @@ pub(crate) fn validated_config(table: &ZendHashTable) -> Result<ValidatedConfig,
 }
 
 pub(crate) fn publish(table: &ZendHashTable, path: &str) -> Result<NativePublish, String> {
-    publish_with_budget(table, path, &mut ConversionBudget::default())
+    let validate_keys = cfg!(debug_assertions);
+    publish_with_budget(table, path, &mut ConversionBudget::default(), validate_keys)
 }
 
 fn publish_with_budget(
     table: &ZendHashTable,
     path: &str,
     budget: &mut ConversionBudget,
+    validate_keys: bool,
 ) -> Result<NativePublish, String> {
-    reject_unknown_keys(
-        table,
-        path,
-        &[
-            "broker",
-            "exchange",
-            "routing_key",
-            "payload",
-            "message_id",
-            "content_type",
-            "correlation_id",
-            "headers",
-            "delay_ms",
-            "timeout_ms",
-        ],
-    )?;
+    if validate_keys {
+        reject_unknown_keys(
+            table,
+            path,
+            &[
+                "broker",
+                "exchange",
+                "routing_key",
+                "payload",
+                "message_id",
+                "content_type",
+                "correlation_id",
+                "headers",
+                "delay_ms",
+                "timeout_ms",
+            ],
+        )?;
+    }
 
     let broker = required_string(table, "broker", path)?;
     let exchange = required_string(table, "exchange", path)?;
@@ -169,6 +173,7 @@ pub(crate) fn publish_batch(table: &ZendHashTable) -> Result<Vec<NativePublish>,
             "messages: exceeds the {MAX_BATCH_MESSAGES} message limit"
         ));
     }
+    let validate_keys = cfg!(debug_assertions);
     let mut budget = ConversionBudget::default();
     let mut publishes = Vec::with_capacity(table.len());
     for (index, (_, value)) in table.iter().enumerate() {
@@ -177,7 +182,12 @@ pub(crate) fn publish_batch(table: &ZendHashTable) -> Result<Vec<NativePublish>,
             .dereference()
             .array()
             .ok_or_else(|| format!("{path}: expected an array"))?;
-        publishes.push(publish_with_budget(message, &path, &mut budget)?);
+        publishes.push(publish_with_budget(
+            message,
+            &path,
+            &mut budget,
+            validate_keys,
+        )?);
     }
     Ok(publishes)
 }
