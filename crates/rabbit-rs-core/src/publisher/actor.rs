@@ -80,6 +80,19 @@ impl PublisherActor {
         let hot_channel: Arc<ArcSwapOption<HotChannel>> =
             Arc::new(ArcSwapOption::from_pointee(HotChannel(channel.clone())));
         let delay_strategy_arc = delay_strategy.map(Arc::new);
+
+        // In Blind mode, create a fire-and-forget pump that bypasses the actor
+        // entirely: messages go directly to the transport channel without
+        // waiting for confirmations.
+        let pump = if matches!(config.safety, crate::config::SafetyMode::Blind) {
+            Some(Arc::new(super::pump::PublishPump::spawn(
+                channel.clone(),
+                config.buffer_capacity,
+            )))
+        } else {
+            None
+        };
+
         tokio::spawn(run_actor(
             channel,
             config,
@@ -96,6 +109,7 @@ impl PublisherActor {
             mandatory: config.mandatory_flag(),
             hot_channel,
             delay_strategy: delay_strategy_arc,
+            pump,
         }
     }
 }
@@ -120,6 +134,8 @@ pub struct PublisherHandle {
     mandatory: bool,
     hot_channel: Arc<ArcSwapOption<HotChannel>>,
     delay_strategy: Option<Arc<DelayStrategy>>,
+    /// When `Some`, blind-mode publishes go directly to the pump instead of the actor.
+    pump: Option<Arc<super::pump::PublishPump>>,
 }
 
 impl PublisherHandle {
@@ -235,6 +251,48 @@ impl PublisherHandle {
             drop(permit);
         }
         self.try_publish(request)
+    }
+
+    /// Blind-mode publish: enqueues to the background pump and returns immediately.
+    ///
+    /// When `SafetyMode::Blind` is configured, the handle owns a [`PublishPump`]
+    /// that publishes to the transport channel in a background task without
+    /// waiting for confirmations. This method converts the [`PublishRequest`]
+    /// to a [`TransportRequest`](crate::transport::PublishRequest) (with
+    /// `mandatory=false`) and enqueues it to the pump.
+    ///
+    /// The returned [`PublishWaiter`] is already resolved with a synthetic
+    /// `Confirmed` outcome — no confirmation is ever received in blind mode.
+    ///
+    /// Falls back to [`try_publish`](Self::try_publish) when no pump is
+    /// configured (non-blind safety mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublishErrorKind::Backpressure`] when the pump channel is
+    /// full or disconnected.
+    pub fn try_publish_blind(
+        &self,
+        request: PublishRequest,
+    ) -> Result<PublishWaiter, PublishError> {
+        let Some(pump) = &self.pump else {
+            return self.try_publish(request);
+        };
+        let message_id = request.properties.message_id.clone();
+        let transport_request =
+            super::into_transport_request(&request, self.delay_strategy.as_deref(), false);
+        if pump.try_publish(transport_request) {
+            self.metrics.record_publish();
+            Ok(PublishWaiter::resolved(PublishOutcome::Confirmed {
+                message_id,
+            }))
+        } else {
+            self.metrics.record_backpressure();
+            Err(PublishError::new(
+                PublishErrorKind::Backpressure,
+                "blind publish pump is full or disconnected",
+            ))
+        }
     }
 
     #[must_use]

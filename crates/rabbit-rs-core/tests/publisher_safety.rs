@@ -815,3 +815,192 @@ async fn safe_mode_calls_enable_confirms_and_uses_mandatory() {
         "publish must have mandatory=true in Safe mode"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_pump_publishes_and_returns_immediately() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Blind,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor
+        .try_publish_blind(request("blind-1", b"a"))
+        .expect("blind publish");
+
+    // The pump publishes in the background. The waiter is already resolved.
+    let outcome = waiter.wait().await.expect("resolved outcome");
+    assert!(
+        matches!(outcome, PublishOutcome::Confirmed { ref message_id } if message_id.as_ref() == "blind-1"),
+        "blind publish should resolve as Confirmed immediately"
+    );
+
+    // Give the pump task time to drain.
+    wait_for_publish_count(&transport, 1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_pump_uses_individual_publish_not_batch() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        256,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Blind,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let _waiter = actor
+        .try_publish_blind(request("blind-individual", b"a"))
+        .expect("blind publish");
+
+    wait_for_publish_count(&transport, 1).await;
+
+    let operations = transport.operations();
+    // The pump uses individual publish() calls, not publish_batch().
+    assert!(
+        operations
+            .iter()
+            .any(|op| matches!(op, TransportOperation::Publish(_))),
+        "blind pump should use individual Publish, not PublishBatch"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_pump_mandatory_is_false() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        256,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Blind,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let _waiter = actor
+        .try_publish_blind(request("blind-mandatory", b"a"))
+        .expect("blind publish");
+
+    wait_for_publish_count(&transport, 1).await;
+
+    let operations = transport.operations();
+    let publish = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::Publish(_)))
+        .expect("a publish operation from the pump");
+    let TransportOperation::Publish(req) = publish else {
+        panic!("expected a Publish operation");
+    };
+    assert!(
+        !req.mandatory,
+        "blind pump publish must have mandatory=false"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_pump_handles_multiple_messages() {
+    let transport = MockTransport::default();
+    for _ in 0..5 {
+        transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    }
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        256,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Blind,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let mut waiters = Vec::new();
+    for i in 0..5 {
+        let waiter = actor
+            .try_publish_blind(request(&format!("blind-{i}"), b"a"))
+            .expect("blind publish");
+        waiters.push(waiter);
+    }
+
+    for (i, waiter) in waiters.into_iter().enumerate() {
+        let outcome = waiter.wait().await.expect("resolved outcome");
+        assert!(
+            matches!(outcome, PublishOutcome::Confirmed { ref message_id } if message_id.as_ref() == format!("blind-{i}")),
+            "blind publish {i} should resolve as Confirmed"
+        );
+    }
+
+    wait_for_publish_count(&transport, 5).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn try_publish_blind_falls_back_when_no_pump() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    // Safe mode: no pump is created, so try_publish_blind falls back to try_publish.
+    let config = PublisherConfig::with_safety(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Safe,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor
+        .try_publish_blind(request("fallback", b"a"))
+        .expect("fallback publish");
+
+    wait_for_publish_count(&transport, 1).await;
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}

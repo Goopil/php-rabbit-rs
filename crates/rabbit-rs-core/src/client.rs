@@ -102,6 +102,9 @@ impl ClientPool {
 
     /// Publishes one message through a lazily reused broker connection and publisher actor.
     ///
+    /// When the publisher safety mode is `Blind`, the message is published via
+    /// the background pump without waiting for confirmation.
+    ///
     /// # Errors
     ///
     /// Returns a typed error for an unknown broker, connection failure, backpressure,
@@ -113,9 +116,18 @@ impl ClientPool {
     ) -> Result<PublishOutcome, ClientError> {
         self.ensure_open()?;
         let publisher = self.publisher(broker).await?;
-        let waiter = publisher
-            .try_publish(request)
-            .map_err(|error| ClientError::publish(&error))?;
+        let waiter = if matches!(
+            self.publisher_config.safety,
+            crate::config::SafetyMode::Blind
+        ) {
+            publisher
+                .try_publish_blind(request)
+                .map_err(|error| ClientError::publish(&error))?
+        } else {
+            publisher
+                .try_publish(request)
+                .map_err(|error| ClientError::publish(&error))?
+        };
         waiter
             .wait()
             .await
@@ -133,17 +145,28 @@ impl ClientPool {
         requests: Vec<(String, PublishRequest)>,
     ) -> Result<Vec<PublishOutcome>, ClientError> {
         self.ensure_open()?;
+        let blind = matches!(
+            self.publisher_config.safety,
+            crate::config::SafetyMode::Blind
+        );
         let mut waiters = Vec::with_capacity(requests.len());
         let mut immediate_error = None;
 
         for (broker, request) in requests {
             match self.publisher(&broker).await {
-                Ok(publisher) => match publisher.try_publish(request) {
-                    Ok(waiter) => waiters.push(waiter),
-                    Err(error) => {
-                        immediate_error.get_or_insert_with(|| ClientError::publish(&error));
+                Ok(publisher) => {
+                    let result = if blind {
+                        publisher.try_publish_blind(request)
+                    } else {
+                        publisher.try_publish(request)
+                    };
+                    match result {
+                        Ok(waiter) => waiters.push(waiter),
+                        Err(error) => {
+                            immediate_error.get_or_insert_with(|| ClientError::publish(&error));
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     immediate_error.get_or_insert(error);
                 }

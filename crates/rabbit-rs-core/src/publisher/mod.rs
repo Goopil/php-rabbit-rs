@@ -2,6 +2,7 @@ pub mod actor;
 pub mod batcher;
 pub mod confirms;
 pub mod delay;
+pub mod pump;
 
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
@@ -19,6 +20,7 @@ use crate::transport::{
 };
 
 pub use actor::{PublisherActor, PublisherHandle};
+pub use pump::PublishPump;
 
 pub enum PublisherConnectionEvent {
     Recovering {
