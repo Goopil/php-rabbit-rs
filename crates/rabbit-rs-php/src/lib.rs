@@ -9,7 +9,7 @@ mod conversion;
 mod testing;
 
 use classes::{
-    consumer::Consumer,
+    consumer::{Consumer, ConsumerIterator},
     delivery::Delivery,
     exception::{BackpressureException, ConnectionException, RabbitRsException},
     pool::Pool,
@@ -33,6 +33,7 @@ pub fn module(module: ModuleBuilder) -> ModuleBuilder {
         .class::<ConnectionException>()
         .class::<Pool>()
         .class::<Consumer>()
+        .class::<ConsumerIterator>()
         .class::<Delivery>();
 
     #[cfg(feature = "extension-tests")]

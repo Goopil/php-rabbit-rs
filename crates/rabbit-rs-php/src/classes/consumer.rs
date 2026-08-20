@@ -14,14 +14,19 @@ use ext_php_rs::{
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
     types::{ZendCallable, Zval},
+    zend::ce,
 };
 use rabbit_rs_core::consumer::ConsumerHandle;
 use tokio::{runtime::Handle, time};
+
+/// Default per-fetch timeout for the iterator slow path (milliseconds).
+const ITERATOR_DEFAULT_TIMEOUT_MS: u64 = 1000;
 
 /// Native consumer for an aggregated subscription profile.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Consumer")]
 #[php(flags = ClassFlags::Final)]
+#[php(implements(ce = ce::aggregate, stub = "\\IteratorAggregate"))]
 pub struct Consumer {
     handle: ConsumerHandle,
     runtime: Handle,
@@ -169,6 +174,19 @@ impl Consumer {
         Ok(i64::try_from(processed).unwrap_or(i64::MAX))
     }
 
+    /// Returns an iterator for use in `foreach` loops.
+    ///
+    /// The iterator uses `try_next()` (non-blocking) on the fast path and
+    /// `next()` with a default 1-second timeout on the slow path.
+    pub fn getIterator(&self) -> PhpResult<ConsumerIterator> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::getIterator")?;
+        Ok(ConsumerIterator::new(
+            self.handle.clone(),
+            self.runtime.clone(),
+            self.pid,
+        ))
+    }
+
     /// Closes this consumer handle.
     pub fn close(&self) -> PhpResult<()> {
         if self.pid != std::process::id() {
@@ -221,5 +239,138 @@ impl Consumer {
             return rabbit_exception(format!("{operation} cannot use a closed consumer"));
         }
         Ok(())
+    }
+}
+
+/// PHP `Iterator` for the `Consumer` class, returned by `getIterator()`.
+///
+/// The iterator stores the current delivery as a `Zval` (a PHP object
+/// reference). `current()` returns a shallow clone of this `Zval`, so repeated
+/// calls return the same PHP object. The `Zval` is only accessed on the PHP
+/// thread during synchronous method calls — it is never sent across async
+/// boundaries or Rust threads.
+#[php_class]
+#[php(name = "Goopil\\RabbitRs\\ConsumerIterator")]
+#[php(flags = ClassFlags::Final)]
+#[php(implements(ce = ce::iterator, stub = "\\Iterator"))]
+pub struct ConsumerIterator {
+    handle: ConsumerHandle,
+    runtime: Handle,
+    pid: u32,
+    key: u64,
+    current: Option<Zval>,
+    closed: AtomicBool,
+}
+
+#[php_impl]
+impl ConsumerIterator {
+    /// Returns the current delivery, or `null` if no delivery is available.
+    pub fn current(&self) -> Option<Zval> {
+        self.current.as_ref().map(Zval::shallow_clone)
+    }
+
+    /// Returns the current key (zero-based index).
+    pub fn key(&self) -> u64 {
+        self.key
+    }
+
+    /// Advances the iterator to the next delivery.
+    ///
+    /// Uses `try_next()` first (fast path), then `next()` with a default
+    /// 1-second timeout (slow path). On timeout or error, the current delivery
+    /// is cleared and `valid()` will return `false`.
+    pub fn next(&mut self) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\ConsumerIterator::next")?;
+        self.key = self.key.saturating_add(1);
+        self.current = self.fetch_delivery()?;
+        Ok(())
+    }
+
+    /// Rewinds the iterator to the beginning and fetches the first delivery.
+    pub fn rewind(&mut self) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\ConsumerIterator::rewind")?;
+        self.key = 0;
+        self.current = self.fetch_delivery()?;
+        Ok(())
+    }
+
+    /// Returns `true` if the iterator has a current delivery.
+    pub fn valid(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// Best-effort close on garbage collection.
+    pub fn __destruct(&self) {
+        if self.pid != std::process::id() {
+            return;
+        }
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self.runtime.block_on(self.handle.close());
+    }
+}
+
+impl ConsumerIterator {
+    pub(crate) fn new(handle: ConsumerHandle, runtime: Handle, pid: u32) -> Self {
+        Self {
+            handle,
+            runtime,
+            pid,
+            key: 0,
+            current: None,
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    fn ensure_open(&self, operation: &str) -> PhpResult<()> {
+        if self.pid != std::process::id() {
+            return rabbit_exception(format!(
+                "{operation} cannot use an iterator inherited across fork"
+            ));
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return rabbit_exception(format!("{operation} cannot use a closed iterator"));
+        }
+        Ok(())
+    }
+
+    /// Fetches the next delivery as a `Zval`, using fast then slow path.
+    fn fetch_delivery(&self) -> PhpResult<Option<Zval>> {
+        // Fast path: check the flume buffer without block_on.
+        match self.handle.try_next() {
+            Ok(Some(delivery)) => {
+                let php_delivery = Delivery::new(delivery, self.runtime.clone(), self.pid);
+                let zval = php_delivery.into_zval(false).map_err(|error| {
+                    ext_php_rs::prelude::PhpException::from_class::<
+                        super::exception::RabbitRsException,
+                    >(error.to_string())
+                })?;
+                Ok(Some(zval))
+            }
+            Ok(None) => {
+                // Slow path: block on async runtime with default timeout.
+                match self.runtime.block_on(async {
+                    time::timeout(
+                        std::time::Duration::from_millis(ITERATOR_DEFAULT_TIMEOUT_MS),
+                        self.handle.next(),
+                    )
+                    .await
+                }) {
+                    Ok(Ok(delivery)) => {
+                        let php_delivery = Delivery::new(delivery, self.runtime.clone(), self.pid);
+                        let zval = php_delivery.into_zval(false).map_err(|error| {
+                            ext_php_rs::prelude::PhpException::from_class::<
+                                super::exception::RabbitRsException,
+                            >(error.to_string())
+                        })?;
+                        Ok(Some(zval))
+                    }
+                    Ok(Err(error)) => consumer_exception(&error),
+                    Err(_) => Ok(None), // timeout
+                }
+            }
+            Err(error) => consumer_exception(&error),
+        }
     }
 }

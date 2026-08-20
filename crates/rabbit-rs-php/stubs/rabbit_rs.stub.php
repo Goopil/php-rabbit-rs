@@ -91,7 +91,7 @@ final class Pool
     }
 }
 
-final class Consumer
+final class Consumer implements \IteratorAggregate
 {
     public function next(int $timeoutMs): ?Delivery
     {
@@ -116,7 +116,43 @@ final class Consumer
     {
     }
 
+    /**
+     * Returns an iterator for use in foreach loops.
+     */
+    public function getIterator(): \Iterator
+    {
+    }
+
     public function close(): void
+    {
+    }
+}
+
+/**
+ * Iterator for the Consumer class, implementing PHP's Iterator interface.
+ *
+ * Uses try_next() (non-blocking) on the fast path and next() with a
+ * default 1-second timeout on the slow path.
+ */
+final class ConsumerIterator implements \Iterator
+{
+    public function current(): ?Delivery
+    {
+    }
+
+    public function key(): int
+    {
+    }
+
+    public function next(): void
+    {
+    }
+
+    public function rewind(): void
+    {
+    }
+
+    public function valid(): bool
     {
     }
 }
