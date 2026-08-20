@@ -234,14 +234,26 @@ impl PublisherHandle {
             // bypass the actor entirely. If the confirmation is pending,
             // fall back to the cold path so the actor's timeout and
             // lifecycle management apply.
+            let publish_started = Instant::now();
             if let Some(Ok(receipt)) = channel.publish(transport_request).now_or_never() {
                 let wait_fut = receipt.wait();
                 if let Some(confirmation) = wait_fut.now_or_never() {
                     self.metrics.record_publish();
-                    let outcome = super::confirmation_to_outcome(
-                        confirmation.map_err(|error| transport_publish_error(&error))?,
-                        message_id,
-                    )?;
+                    let confirmation =
+                        confirmation.map_err(|error| transport_publish_error(&error))?;
+                    if matches!(
+                        &confirmation,
+                        PublishConfirmation::Ack(_) | PublishConfirmation::Nack(_)
+                    ) {
+                        self.metrics.record_confirmation(publish_started.elapsed());
+                    }
+                    if matches!(
+                        &confirmation,
+                        PublishConfirmation::Ack(Some(_)) | PublishConfirmation::Nack(Some(_))
+                    ) {
+                        self.metrics.record_return();
+                    }
+                    let outcome = super::confirmation_to_outcome(confirmation, message_id)?;
                     drop(permit);
                     return Ok(PublishWaiter::resolved(outcome));
                 }

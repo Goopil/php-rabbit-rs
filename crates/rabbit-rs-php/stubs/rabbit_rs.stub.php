@@ -55,7 +55,25 @@ final class Pool
     }
 
     /**
-     * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
+     * @return array{
+     *   closed: bool,
+     *   pid: int,
+     *   handle: string,
+     *   publishes_total: int,
+     *   confirmations_total: int,
+     *   returns_total: int,
+     *   backpressure_total: int,
+     *   reconnects_total: int,
+     *   deliveries_total: int,
+     *   acks_total: int,
+     *   rejects_total: int,
+     *   confirmation_latency_p50: int,
+     *   confirmation_latency_p95: int,
+     *   confirmation_latency_p99: int,
+     *   settlement_latency_p50: int,
+     *   settlement_latency_p95: int,
+     *   settlement_latency_p99: int
+     * }
      */
     public function stats(): array
     {

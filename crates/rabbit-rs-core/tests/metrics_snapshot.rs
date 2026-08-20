@@ -359,3 +359,161 @@ async fn concurrent_snapshots_do_not_prevent_publisher_progress() {
     assert_eq!(publisher.metrics_snapshot().confirmations_total, expected);
     assert!(concurrent_snapshot.confirmations_total <= expected);
 }
+
+#[tokio::test(start_paused = true)]
+async fn hot_path_records_publish_and_confirmation_metrics() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let channel = transport
+        .connect(&broker("guest"))
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+    let metrics = Metrics::default();
+    let publisher = PublisherActor::spawn_with_metrics(
+        Arc::from(channel),
+        PublisherConfig::new(
+            1,
+            1_024,
+            Duration::from_millis(1),
+            1,
+            Duration::from_secs(5),
+        ),
+        metrics,
+    );
+
+    let waiter = publisher
+        .try_publish_hot(publish_request("hot-confirmed"))
+        .expect("hot path publish");
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+    wait_for_publish_count(&transport, 1).await;
+
+    let snapshot = publisher.metrics_snapshot();
+    assert_eq!(snapshot.publishes_total, 1);
+    assert_eq!(snapshot.confirmations_total, 1);
+    assert_eq!(snapshot.confirmation_latency.samples, 1);
+    assert_eq!(snapshot.returns_total, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_path_records_return_metric_for_returned_message() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(Some(ReturnedMessage {
+        reply_code: 312,
+        reply_text: "NO_ROUTE".to_owned(),
+        exchange: "jobs".to_owned(),
+        routing_key: "missing".to_owned(),
+        payload: Bytes::from_static(b"job"),
+    }))));
+    let channel = transport
+        .connect(&broker("guest"))
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+    let metrics = Metrics::default();
+    let publisher = PublisherActor::spawn_with_metrics(
+        Arc::from(channel),
+        PublisherConfig::new(
+            1,
+            1_024,
+            Duration::from_millis(1),
+            1,
+            Duration::from_secs(5),
+        ),
+        metrics,
+    );
+
+    let waiter = publisher
+        .try_publish_hot(publish_request("hot-returned"))
+        .expect("hot path publish");
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Returned { .. })
+    ));
+    wait_for_publish_count(&transport, 1).await;
+
+    let snapshot = publisher.metrics_snapshot();
+    assert_eq!(snapshot.publishes_total, 1);
+    assert_eq!(snapshot.confirmations_total, 1);
+    assert_eq!(snapshot.returns_total, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_path_records_nack_metric_but_not_return() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
+    let channel = transport
+        .connect(&broker("guest"))
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+    let metrics = Metrics::default();
+    let publisher = PublisherActor::spawn_with_metrics(
+        Arc::from(channel),
+        PublisherConfig::new(
+            1,
+            1_024,
+            Duration::from_millis(1),
+            1,
+            Duration::from_secs(5),
+        ),
+        metrics,
+    );
+
+    let error = publisher
+        .try_publish_hot(publish_request("hot-nack"))
+        .expect_err("NACK on hot path returns error");
+    assert_eq!(error.kind(), PublishErrorKind::Nack);
+    wait_for_publish_count(&transport, 1).await;
+
+    let snapshot = publisher.metrics_snapshot();
+    assert_eq!(snapshot.publishes_total, 1);
+    assert_eq!(snapshot.confirmations_total, 1);
+    assert_eq!(snapshot.returns_total, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_pump_records_publish_metric() {
+    use rabbit_rs_core::config::SafetyMode;
+
+    let transport = MockTransport::default();
+    let channel = transport
+        .connect(&broker("guest"))
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+    let metrics = Metrics::default();
+    let config = PublisherConfig::with_safety(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        1,
+        Duration::from_secs(5),
+        SafetyMode::Blind,
+    );
+    let publisher = PublisherActor::spawn_with_metrics(Arc::from(channel), config, metrics);
+
+    let waiter = publisher
+        .try_publish_blind(publish_request("blind-1"))
+        .expect("blind publish");
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+    wait_for_publish_count(&transport, 1).await;
+
+    let snapshot = publisher.metrics_snapshot();
+    assert_eq!(snapshot.publishes_total, 1);
+    assert_eq!(snapshot.confirmations_total, 0);
+}
