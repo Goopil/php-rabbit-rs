@@ -424,3 +424,146 @@ async fn try_next_discards_stale_generation_deliveries() {
         "stale delivery must be discarded, buffer empty"
     );
 }
+
+#[tokio::test]
+async fn try_ack_succeeds_and_marks_delivery_acked() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"job")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let item = consumer.next().await.expect("delivery");
+
+    // try_ack is synchronous — no .await needed.
+    item.try_ack().expect("try_ack");
+
+    // State must be Acked immediately.
+    assert_eq!(item.state(), DeliveryState::Acked);
+
+    // A second try_ack must fail with AlreadySettled.
+    let error = item.try_ack().expect_err("double ack");
+    assert_eq!(error.kind(), ConsumerErrorKind::AlreadySettled);
+}
+
+#[tokio::test(start_paused = true)]
+async fn try_ack_pushes_to_queue_and_drainer_coalesces() {
+    let transport = MockTransport::default();
+    for tag in 1..=8 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 8, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    let mut items = Vec::new();
+    for _ in 0..8 {
+        let item = consumer.next().await.expect("delivery");
+        item.try_ack().expect("try_ack");
+        items.push(item);
+    }
+
+    // All deliveries must be Acked.
+    for item in &items {
+        assert_eq!(item.state(), DeliveryState::Acked);
+    }
+
+    // No ack should have been sent to the transport yet (drainer hasn't fired).
+    assert!(
+        !transport
+            .operations()
+            .iter()
+            .any(|op| matches!(op, TransportOperation::Ack { .. })),
+        "no ack should be sent before the drain interval fires"
+    );
+
+    // Advance time to let the background drainer fire.
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // A single coalesced ack with multiple=true and the highest tag.
+    let ack_calls: Vec<_> = transport
+        .operations()
+        .into_iter()
+        .filter_map(|op| match op {
+            TransportOperation::Ack {
+                delivery_tag,
+                multiple,
+            } => Some((delivery_tag, multiple)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        ack_calls.len(),
+        1,
+        "expected one batched ack, got {ack_calls:?}"
+    );
+    assert!(ack_calls[0].1, "multiple flag must be true");
+    assert_eq!(ack_calls[0].0, 8, "delivery tag must be the highest (8)");
+}
+
+#[tokio::test]
+async fn try_ack_returns_already_settled_after_async_ack() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"job")));
+    transport.push_consumer_result(Ok(()));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let item = consumer.next().await.expect("delivery");
+
+    // Use async ack first (fast path also pushes to the queue).
+    item.ack().await.expect("async ack");
+
+    // try_ack after async ack must fail with AlreadySettled.
+    let error = item.try_ack().expect_err("try_ack after ack");
+    assert_eq!(error.kind(), ConsumerErrorKind::AlreadySettled);
+}
+
+#[tokio::test]
+async fn try_ack_on_stale_generation_returns_stale_error() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"stale")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let item = consumer.next().await.expect("delivery");
+
+    // Bump the generation — the delivery is now stale.
+    consumer
+        .update_generation(SubscriptionId::new("jobs"), 2)
+        .await
+        .expect("new generation");
+
+    let error = item.try_ack().expect_err("stale try_ack");
+    assert_eq!(error.kind(), ConsumerErrorKind::StaleGeneration);
+    assert_eq!(item.state(), DeliveryState::Lost);
+}

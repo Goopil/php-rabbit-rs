@@ -11,7 +11,7 @@ use ext_php_rs::{
     prelude::{PhpResult, php_class, php_impl},
     types::{ZendHashTable, Zval},
 };
-use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState};
+use rabbit_rs_core::consumer::{ConsumerErrorKind, Delivery as NativeDelivery, DeliveryState};
 use rabbit_rs_core::transport::HeaderValue;
 use tokio::runtime::Handle;
 
@@ -55,9 +55,19 @@ impl Delivery {
     /// Acknowledges the delivery.
     pub fn ack(&self) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::ack")?;
-        self.runtime
-            .block_on(self.inner.ack())
-            .map_err(|error| consumer_php_exception(&error))
+        // Fast path: try_ack pushes to the lock-free queue synchronously
+        // without crossing into the async runtime. Falls back to the
+        // async path only when the queue is full or the delivery is stale.
+        match self.inner.try_ack() {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ConsumerErrorKind::Closed => {
+                // Queue full — fall back to the async actor path.
+                self.runtime
+                    .block_on(self.inner.ack())
+                    .map_err(|error| consumer_php_exception(&error))
+            }
+            Err(error) => Err(consumer_php_exception(&error)),
+        }
     }
 
     /// Releases the delivery immediately or after a delay.

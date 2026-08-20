@@ -118,6 +118,25 @@ impl Delivery {
         self.token.settle(Settlement::Ack).await
     }
 
+    /// Attempts a synchronous, lock-free acknowledgement without crossing
+    /// into the async runtime.
+    ///
+    /// Pushes the delivery tag onto the bounded ack queue. The background
+    /// drainer coalesces tags and sends `basic_ack(highest, multiple=true)`
+    /// periodically.
+    ///
+    /// Unlike [`Self::ack`], this method never awaits. When the queue is full
+    /// the state reverts to `Pending` so the caller may retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AlreadySettled` if the delivery is already terminal or
+    /// transitioning, `StaleGeneration` if the delivery belongs to a stale
+    /// connection, or `Closed` if the ack queue is full.
+    pub fn try_ack(&self) -> Result<(), ConsumerError> {
+        self.token.try_ack()
+    }
+
     /// Releases this delivery immediately or through its delayed publisher.
     ///
     /// # Errors
@@ -158,6 +177,55 @@ impl DeliveryToken {
             value if value == DeliveryState::Lost as u8 => DeliveryState::Lost,
             _ => DeliveryState::Pending,
         }
+    }
+
+    /// Synchronous fast path for ack: CAS on the state, push to the lock-free
+    /// queue, and return without awaiting.
+    fn try_ack(&self) -> Result<(), ConsumerError> {
+        self.inner
+            .state
+            .compare_exchange(
+                DeliveryState::Pending as u8,
+                TRANSITIONING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| ConsumerError::already_settled())?;
+
+        let current = self.inner.current_generation.load(Ordering::Acquire);
+        if self.inner.generation != current {
+            self.inner
+                .state
+                .store(DeliveryState::Lost as u8, Ordering::Release);
+            return Err(ConsumerError::new(
+                ConsumerErrorKind::StaleGeneration,
+                "delivery belongs to a stale connection generation",
+            ));
+        }
+
+        if self
+            .inner
+            .ack_queue
+            .push(PendingAck {
+                delivery_tag: self.inner.delivery_tag,
+                subscription: self.inner.subscription.clone(),
+                generation: self.inner.generation,
+                reserved_at: self.inner.reserved_at,
+            })
+            .is_ok()
+        {
+            self.inner
+                .state
+                .store(DeliveryState::Acked as u8, Ordering::Release);
+            return Ok(());
+        }
+
+        // Queue is full — revert to Pending so the caller can retry via the
+        // async path, which falls back to the actor's synchronous ack.
+        self.inner
+            .state
+            .store(DeliveryState::Pending as u8, Ordering::Release);
+        Err(ConsumerError::closed())
     }
 
     async fn settle(&self, settlement: Settlement) -> Result<(), ConsumerError> {
