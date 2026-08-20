@@ -125,6 +125,34 @@ async fn flushes_on_the_configured_timer() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn small_batch_flushes_immediately_when_mpsc_empty() {
+    let transport = MockTransport::default();
+    for _ in 0..4 {
+        transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    }
+    let actor = actor(&transport, config(256, 2 * 1024 * 1024)).await;
+
+    let mut waiters = Vec::new();
+    for i in 0..4 {
+        let waiter = actor
+            .try_publish(request(&format!("msg-{i}"), b"payload"))
+            .expect("publish");
+        waiters.push(waiter);
+    }
+
+    tokio::task::yield_now().await;
+
+    wait_for_publish_count(&transport, 4).await;
+
+    for waiter in waiters {
+        assert!(matches!(
+            waiter.wait().await,
+            Ok(PublishOutcome::Confirmed { .. })
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn resolves_acks_for_multiple_sequences() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));

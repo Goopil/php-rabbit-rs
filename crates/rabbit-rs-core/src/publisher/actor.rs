@@ -384,6 +384,10 @@ async fn run_actor(
             command = commands.recv() => match command {
                 Some(Command::Publish(retained)) => {
                     accept_publish(&mut state, retained).await;
+                    if !state.batch.is_empty() && commands.is_empty() {
+                        flush_batch(&mut state).await;
+                        state.flush_deadline = None;
+                    }
                 }
                 Some(Command::ConnectionEvent(event, completed)) => {
                     let result = handle_connection_event(&mut state, event).await;

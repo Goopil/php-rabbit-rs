@@ -198,10 +198,12 @@ async fn message_still_in_batch_is_retained_across_connection_loss() {
     let waiter = actor
         .try_publish(request("batched", Instant::now() + Duration::from_secs(30)))
         .expect("batched publish");
-    tokio::task::yield_now().await;
+    // Send suspend before yielding so the mpsc is non-empty when the
+    // actor processes the publish, preventing an immediate flush and
+    // keeping the message in the batch so it follows the batch→replay path.
+    suspend(&actor).await;
     assert!(publish_operations(&transport).is_empty());
 
-    suspend(&actor).await;
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     actor
         .connection_event(PublisherConnectionEvent::Ready {
