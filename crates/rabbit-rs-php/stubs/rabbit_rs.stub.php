@@ -43,6 +43,13 @@ final class Pool
     {
     }
 
+    /**
+     * Flushes the publish buffer, sending all buffered messages to the broker.
+     */
+    public function flush(): void
+    {
+    }
+
     public function consumer(string $profile): Consumer
     {
     }
