@@ -32,8 +32,8 @@ pub fn module(module: ModuleBuilder) -> ModuleBuilder {
         .class::<BackpressureException>()
         .class::<ConnectionException>()
         .class::<Pool>()
-        .class::<Consumer>()
         .class::<ConsumerIterator>()
+        .class::<Consumer>()
         .class::<Delivery>();
 
     #[cfg(feature = "extension-tests")]
