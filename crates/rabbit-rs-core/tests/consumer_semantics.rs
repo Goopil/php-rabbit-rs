@@ -301,7 +301,7 @@ async fn consumer_tag_uses_the_raw_subscription_id() {
     assert_eq!(request.consumer_tag, "rabbit-rs.jobs");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn ack_uses_the_delivery_generation_and_channel() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
@@ -316,9 +316,13 @@ async fn ack_uses_the_delivery_generation_and_channel() {
     item.ack().await.expect("ACK");
 
     assert_eq!(item.state(), DeliveryState::Acked);
+    // Advance time to let the background drain fire.
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
     assert!(transport.operations().contains(&TransportOperation::Ack {
         delivery_tag: 42,
-        multiple: false,
+        multiple: true,
     }));
 }
 
@@ -452,8 +456,8 @@ async fn stale_generation_ack_is_rejected_without_touching_the_new_channel() {
     );
 }
 
-#[tokio::test]
-async fn transport_settlement_error_marks_the_delivery_lost() {
+#[tokio::test(start_paused = true)]
+async fn transport_settlement_error_is_logged_and_delivery_remains_acked() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await;
@@ -465,14 +469,16 @@ async fn transport_settlement_error_marks_the_delivery_lost() {
         .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
 
-    let error = item.ack().await.expect_err("transport ACK failure");
+    // With batched acks, ack() returns Ok(()) immediately (optimistic).
+    // The transport error happens in the background drainer and is logged.
+    item.ack().await.expect("optimistic ACK");
 
-    assert_eq!(error.kind(), ConsumerErrorKind::Transport);
-    assert_eq!(item.state(), DeliveryState::Lost);
+    assert_eq!(item.state(), DeliveryState::Acked);
+    // The token is terminal — a second ack returns AlreadySettled.
     assert_eq!(
         item.ack()
             .await
-            .expect_err("lost token remains terminal")
+            .expect_err("settled token remains terminal")
             .kind(),
         ConsumerErrorKind::AlreadySettled
     );

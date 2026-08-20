@@ -6,13 +6,14 @@ use std::{
     time::Duration,
 };
 
+use crossbeam_queue::ArrayQueue;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
     ConsumerError, Delivery, MessageId, SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
     attempts::AttemptsResolver,
-    delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner},
+    delivery::{ACK_QUEUE_CAPACITY, AckQueue, DeliveryIdentity, DeliveryToken, DeliveryTokenInner},
 };
 use crate::{
     metrics::{Metrics, MetricsSnapshot},
@@ -176,6 +177,7 @@ impl ConsumerSet {
                 .max()
                 .unwrap_or(1),
         ));
+        let ack_queue: Arc<AckQueue> = Arc::new(ArrayQueue::new(ACK_QUEUE_CAPACITY));
 
         tokio::spawn(run_actor(
             subscriptions.clone(),
@@ -183,6 +185,8 @@ impl ConsumerSet {
             receiver,
             commands.clone(),
             metrics.clone(),
+            ack_queue.clone(),
+            current_generation.clone(),
         ));
         for (subscription_id, stream) in streams {
             let subscription = subscriptions
@@ -195,6 +199,8 @@ impl ConsumerSet {
                 buffer_tx.clone(),
                 commands.clone(),
                 metrics.clone(),
+                ack_queue.clone(),
+                current_generation.clone(),
             );
         }
 
@@ -214,6 +220,8 @@ fn spawn_pump(
     buffer_tx: flume::Sender<BufferedDelivery>,
     commands: mpsc::Sender<ConsumerCommand>,
     metrics: Metrics,
+    ack_queue: Arc<AckQueue>,
+    current_generation: Arc<AtomicU64>,
 ) {
     tokio::spawn(async move {
         let connection_key = subscription.connection_key;
@@ -264,6 +272,8 @@ fn spawn_pump(
                 delivery.headers.clone(),
                 attempts,
                 commands.clone(),
+                ack_queue.clone(),
+                current_generation.clone(),
             ));
             let item = Delivery::new(
                 message_id,

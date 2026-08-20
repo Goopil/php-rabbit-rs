@@ -195,7 +195,7 @@ fn transport_delivery(tag: u64) -> TransportDelivery {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn consumer_records_deliveries_acks_rejects_and_settlement_latency() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(transport_delivery(1)));
@@ -217,6 +217,12 @@ async fn consumer_records_deliveries_acks_rejects_and_settlement_latency() {
     acknowledged.ack().await.expect("ACK");
     let rejected = consumer.next().await.expect("second delivery");
     rejected.release(Duration::ZERO).await.expect("reject");
+
+    // Advance time to let the background ack drain fire so the ack metric
+    // is recorded.
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
 
     let snapshot = consumer.metrics_snapshot();
     assert_eq!(snapshot.deliveries_total, 2);

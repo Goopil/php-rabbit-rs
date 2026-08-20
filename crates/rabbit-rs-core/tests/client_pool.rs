@@ -221,7 +221,7 @@ async fn batch_enqueues_all_messages_before_waiting_for_confirms() {
     assert_eq!(outcomes.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
     let transport = Arc::new(MockTransport::default());
     transport.push_delivery(Ok(TransportDelivery {
@@ -241,6 +241,11 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
     assert_eq!(delivery.payload, Bytes::from_static(b"job-payload"));
     delivery.ack().await.expect("ack");
 
+    // Advance time to let the background drain fire.
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
     let operations = transport.operations();
     assert!(
         operations
@@ -251,7 +256,7 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
         operation,
         TransportOperation::Ack {
             delivery_tag: 42,
-            multiple: false
+            multiple: true
         }
     )));
 }

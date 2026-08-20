@@ -1,10 +1,17 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
     AttemptsResolver, ConsumerError, ConsumerErrorKind, DeliveryState,
-    delivery::{DeliveryTokenInner, Settlement},
+    delivery::{AckQueue, DeliveryTokenInner, PendingAck, Settlement},
     set::Subscription,
 };
 use crate::{
@@ -14,6 +21,9 @@ use crate::{
     },
     topology::delay::DelayStrategy,
 };
+
+/// Interval at which the actor drains the pending-ack queue.
+const ACK_DRAIN_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) enum ConsumerCommand {
     Settle {
@@ -75,63 +85,163 @@ pub(crate) async fn run_actor(
     mut receiver: mpsc::Receiver<ConsumerCommand>,
     _commands: mpsc::Sender<ConsumerCommand>,
     metrics: Metrics,
+    ack_queue: Arc<AckQueue>,
+    current_generation: Arc<AtomicU64>,
 ) {
     let mut state = ActorState::new(subscriptions, metrics);
-    while let Some(command) = receiver.recv().await {
-        match command {
-            ConsumerCommand::Settle {
-                token,
-                settlement,
-                completed,
-            } => {
-                let result = settle(&state, &token, settlement).await;
-                match result {
-                    Ok(terminal) => {
-                        match terminal {
-                            DeliveryState::Acked => {
-                                state.metrics.record_ack(token.reserved_at.elapsed());
-                            }
-                            DeliveryState::Rejected => {
-                                state.metrics.record_reject(token.reserved_at.elapsed());
-                            }
-                            DeliveryState::Pending | DeliveryState::Lost => {}
+
+    loop {
+        match tokio::time::timeout(ACK_DRAIN_INTERVAL, receiver.recv()).await {
+            Ok(Some(command)) => {
+                if handle_command(&mut state, command, &ack_queue, &current_generation).await {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {
+                drain_ack_queue(&mut state, &ack_queue, &current_generation).await;
+            }
+        }
+    }
+}
+
+/// Returns `true` if the actor should terminate (Close command).
+async fn handle_command(
+    state: &mut ActorState,
+    command: ConsumerCommand,
+    ack_queue: &Arc<AckQueue>,
+    current_generation: &Arc<AtomicU64>,
+) -> bool {
+    match command {
+        ConsumerCommand::Settle {
+            token,
+            settlement,
+            completed,
+        } => {
+            let result = settle(&*state, &token, settlement).await;
+            match result {
+                Ok(terminal) => {
+                    match terminal {
+                        DeliveryState::Acked => {
+                            state.metrics.record_ack(token.reserved_at.elapsed());
                         }
-                        let _ = completed.send(Ok(terminal));
+                        DeliveryState::Rejected => {
+                            state.metrics.record_reject(token.reserved_at.elapsed());
+                        }
+                        DeliveryState::Pending | DeliveryState::Lost => {}
                     }
-                    Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
-                        let _ = completed.send(Err(error));
-                    }
-                    Err(error) => {
-                        let _ = completed.send(Err(error));
-                    }
+                    let _ = completed.send(Ok(terminal));
+                }
+                Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
+                    let _ = completed.send(Err(error));
+                }
+                Err(error) => {
+                    let _ = completed.send(Err(error));
                 }
             }
-            ConsumerCommand::UpdateGeneration {
-                subscription,
-                generation,
-                completed,
-            } => {
-                let result = state.subscriptions.get_mut(&subscription).map_or_else(
-                    || {
-                        Err(ConsumerError::new(
-                            ConsumerErrorKind::InvalidSubscription,
-                            "cannot update an unknown subscription",
-                        ))
-                    },
-                    |runtime| {
-                        runtime.generation = generation;
-                        Ok(())
-                    },
-                );
-                let _ = completed.send(result);
+        }
+        ConsumerCommand::UpdateGeneration {
+            subscription,
+            generation,
+            completed,
+        } => {
+            let result = state.subscriptions.get_mut(&subscription).map_or_else(
+                || {
+                    Err(ConsumerError::new(
+                        ConsumerErrorKind::InvalidSubscription,
+                        "cannot update an unknown subscription",
+                    ))
+                },
+                |runtime| {
+                    runtime.generation = generation;
+                    Ok(())
+                },
+            );
+            let _ = completed.send(result);
+        }
+        ConsumerCommand::Close(completed) => {
+            drain_ack_queue(state, ack_queue, current_generation).await;
+            for runtime in state.subscriptions.values() {
+                let _ = runtime.channel.close().await;
             }
-            ConsumerCommand::Close(completed) => {
-                for runtime in state.subscriptions.values() {
-                    let _ = runtime.channel.close().await;
+            let _ = completed.send(());
+            return true;
+        }
+    }
+    false
+}
+
+/// Drains the pending-ack queue, coalesces contiguous delivery tags per
+/// subscription, and sends one `basic_ack(highest, multiple=true)` per
+/// contiguous run.
+///
+/// # Non-contiguous tags
+///
+/// `multiple=true` acks all deliveries up to and including the given tag on
+/// the same channel. If there are gaps (e.g. tags 1,2,5,6 where 3,4 were
+/// nacked), we split into separate acks: `ack(2, true)` and `ack(6, true)`.
+///
+/// # Errors
+///
+/// If a batched ack fails, the error is logged. The deliveries were already
+/// optimistically marked as `Acked` — the broker will redeliver them if the
+/// ack truly failed.
+async fn drain_ack_queue(
+    state: &mut ActorState,
+    ack_queue: &Arc<AckQueue>,
+    current_generation: &Arc<AtomicU64>,
+) {
+    if ack_queue.is_empty() {
+        return;
+    }
+
+    // Group pending acks by subscription.
+    let mut groups: HashMap<super::SubscriptionId, Vec<PendingAck>> = HashMap::new();
+    while let Some(pending) = ack_queue.pop() {
+        groups
+            .entry(pending.subscription.clone())
+            .or_default()
+            .push(pending);
+    }
+
+    for (subscription_id, mut pending) in groups {
+        let Some(runtime) = state.subscriptions.get(&subscription_id) else {
+            continue;
+        };
+
+        // Skip stale-generation acks.
+        let current_gen = current_generation.load(Ordering::Acquire);
+        pending.retain(|p| p.generation == current_gen);
+        if pending.is_empty() {
+            continue;
+        }
+
+        // Sort by delivery tag and coalesce contiguous runs.
+        pending.sort_unstable_by_key(|p| p.delivery_tag);
+        let mut tags: Vec<u64> = pending.iter().map(|p| p.delivery_tag).collect();
+        tags.dedup();
+
+        // Find contiguous runs and send one ack(highest, true) per run.
+        let mut run_end = tags[0];
+        let reserved_ats: Vec<_> = pending.iter().map(|p| p.reserved_at).collect();
+
+        for &tag in tags.iter().skip(1) {
+            if tag == run_end + 1 {
+                run_end = tag;
+            } else {
+                if let Err(_error) = runtime.channel.ack(run_end, true).await {
+                    // Batched ack failed — broker will redeliver (at-least-once).
                 }
-                let _ = completed.send(());
-                return;
+                run_end = tag;
             }
+        }
+        if let Err(_error) = runtime.channel.ack(run_end, true).await {
+            // Batched ack failed — broker will redeliver (at-least-once).
+        }
+
+        // Record metrics for all acked deliveries.
+        for reserved_at in reserved_ats {
+            state.metrics.record_ack(reserved_at.elapsed());
         }
     }
 }

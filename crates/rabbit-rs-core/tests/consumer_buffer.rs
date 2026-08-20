@@ -6,9 +6,12 @@ use rabbit_rs_core::{
         BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
         TopologyMode,
     },
-    consumer::{ConsumerErrorKind, ConsumerSet, Subscription, SubscriptionPolicy},
+    consumer::{ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionPolicy},
     pool::ConnectionKey,
-    transport::{Delivery as TransportDelivery, Transport, mock::MockTransport},
+    transport::{
+        Delivery as TransportDelivery, Transport,
+        mock::{MockTransport, TransportOperation},
+    },
 };
 use std::collections::BTreeMap;
 
@@ -156,4 +159,115 @@ async fn buffered_consumer_supports_ack_and_close() {
     let delivery = consumer.next().await.expect("delivery");
     delivery.ack().await.expect("ACK");
     consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn batched_ack_coalesces_multiple_deliveries_into_one_ack_with_multiple_true() {
+    let transport = MockTransport::default();
+    for tag in 1..=16 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 16, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    let mut tags = Vec::new();
+    for _ in 0..16 {
+        let item = consumer.next().await.expect("delivery");
+        item.ack().await.expect("ACK");
+        tags.push(item.id.as_str().to_owned());
+    }
+
+    // Advance time to let the background drain fire.
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let ack_calls: Vec<_> = transport
+        .operations()
+        .into_iter()
+        .filter_map(|op| match op {
+            TransportOperation::Ack {
+                delivery_tag,
+                multiple,
+            } => Some((delivery_tag, multiple)),
+            _ => None,
+        })
+        .collect();
+
+    // A single batched ack with multiple=true and the highest delivery tag.
+    assert_eq!(
+        ack_calls.len(),
+        1,
+        "expected one batched ack, got {ack_calls:?}"
+    );
+    assert!(ack_calls[0].1, "multiple flag must be true");
+    assert_eq!(ack_calls[0].0, 16, "delivery tag must be the highest (16)");
+}
+
+#[tokio::test(start_paused = true)]
+async fn batched_ack_returns_immediately_without_awaiting_transport() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"job")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    let item = consumer.next().await.expect("delivery");
+
+    // ack() should return immediately without any transport round-trip.
+    // The transport ack only fires after the drain interval.
+    item.ack().await.expect("ACK");
+
+    assert_eq!(item.state(), DeliveryState::Acked);
+    // No ack should have been sent to the transport yet.
+    assert!(
+        !transport
+            .operations()
+            .iter()
+            .any(|op| matches!(op, TransportOperation::Ack { .. })),
+        "no ack should be sent before the drain interval fires"
+    );
+
+    tokio::time::advance(Duration::from_millis(2)).await;
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    assert!(
+        transport
+            .operations()
+            .iter()
+            .any(|op| matches!(op, TransportOperation::Ack { multiple: true, .. }))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn batched_ack_drains_on_close() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"job")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    let item = consumer.next().await.expect("delivery");
+    item.ack().await.expect("ACK");
+
+    // Close should flush any pending acks.
+    consumer.close().await.expect("close");
+
+    assert!(
+        transport
+            .operations()
+            .iter()
+            .any(|op| matches!(op, TransportOperation::Ack { multiple: true, .. }))
+    );
 }

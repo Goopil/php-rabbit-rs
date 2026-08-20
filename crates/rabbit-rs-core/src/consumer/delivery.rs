@@ -3,18 +3,33 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
+use crossbeam_queue::ArrayQueue;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{SubscriptionId, actor::ConsumerCommand};
 use crate::pool::ConnectionKey;
 
 pub use crate::transport::Headers;
+
+/// Maximum number of pending acks queued before a fallback synchronous flush.
+pub(crate) const ACK_QUEUE_CAPACITY: usize = 1024;
+
+/// A delivery tag awaiting a batched `basic_ack(multiple=true)`.
+pub(crate) struct PendingAck {
+    pub delivery_tag: u64,
+    pub subscription: SubscriptionId,
+    pub generation: u64,
+    pub reserved_at: Instant,
+}
+
+/// Bounded lock-free MPMC queue for pending acks.
+pub(crate) type AckQueue = ArrayQueue<PendingAck>;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct MessageId(String);
@@ -155,6 +170,41 @@ impl DeliveryToken {
                 Ordering::Acquire,
             )
             .map_err(|_| ConsumerError::already_settled())?;
+
+        // Ack path: push to the lock-free queue and return immediately.
+        // The background drainer in the actor coalesces tags and sends
+        // basic_ack(highest_tag, multiple=true).
+        if matches!(settlement, Settlement::Ack) {
+            let current = self.inner.current_generation.load(Ordering::Acquire);
+            if self.inner.generation != current {
+                self.inner
+                    .state
+                    .store(DeliveryState::Lost as u8, Ordering::Release);
+                return Err(ConsumerError::new(
+                    ConsumerErrorKind::StaleGeneration,
+                    "delivery belongs to a stale connection generation",
+                ));
+            }
+            if self
+                .inner
+                .ack_queue
+                .push(PendingAck {
+                    delivery_tag: self.inner.delivery_tag,
+                    subscription: self.inner.subscription.clone(),
+                    generation: self.inner.generation,
+                    reserved_at: self.inner.reserved_at,
+                })
+                .is_ok()
+            {
+                self.inner
+                    .state
+                    .store(DeliveryState::Acked as u8, Ordering::Release);
+                return Ok(());
+            }
+            // Queue is full — fall through to synchronous ack through the actor.
+        }
+
+        // Release / Reject (and Ack overflow): use the actor via mpsc + oneshot.
         let (completed, completion) = oneshot::channel();
         if self
             .inner
@@ -218,6 +268,8 @@ pub(crate) struct DeliveryTokenInner {
     pub attempts: u32,
     pub reserved_at: Instant,
     pub commands: mpsc::Sender<ConsumerCommand>,
+    pub ack_queue: Arc<AckQueue>,
+    pub current_generation: Arc<AtomicU64>,
     state: AtomicU8,
 }
 
@@ -230,6 +282,7 @@ pub(crate) struct DeliveryIdentity {
 }
 
 impl DeliveryTokenInner {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn pending(
         identity: DeliveryIdentity,
         message_id: MessageId,
@@ -238,6 +291,8 @@ impl DeliveryTokenInner {
         headers: Headers,
         attempts: u32,
         commands: mpsc::Sender<ConsumerCommand>,
+        ack_queue: Arc<AckQueue>,
+        current_generation: Arc<AtomicU64>,
     ) -> Self {
         Self {
             subscription: identity.subscription,
@@ -252,6 +307,8 @@ impl DeliveryTokenInner {
             attempts,
             reserved_at: Instant::now(),
             commands,
+            ack_queue,
+            current_generation,
             state: AtomicU8::new(DeliveryState::Pending as u8),
         }
     }

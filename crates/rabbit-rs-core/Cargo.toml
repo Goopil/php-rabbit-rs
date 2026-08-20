@@ -14,6 +14,7 @@ bench = []
 [dependencies]
 async-trait = "0.1"
 bytes = "1.10"
+crossbeam-queue = "0.3"
 fastrand = "2.3"
 flume = "0.11"
 futures-lite = "2.6"
