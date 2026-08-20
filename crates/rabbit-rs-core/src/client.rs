@@ -116,17 +116,13 @@ impl ClientPool {
     ) -> Result<PublishOutcome, ClientError> {
         self.ensure_open()?;
         let publisher = self.publisher(broker).await?;
-        let waiter = if matches!(
-            self.publisher_config.safety,
-            crate::config::SafetyMode::Blind
-        ) {
-            publisher
+        let waiter = match self.publisher_config.safety {
+            crate::config::SafetyMode::Blind => publisher
                 .try_publish_blind(request)
-                .map_err(|error| ClientError::publish(&error))?
-        } else {
-            publisher
-                .try_publish(request)
-                .map_err(|error| ClientError::publish(&error))?
+                .map_err(|error| ClientError::publish(&error))?,
+            crate::config::SafetyMode::Safe | crate::config::SafetyMode::Unsafe => publisher
+                .try_publish_hot(request)
+                .map_err(|error| ClientError::publish(&error))?,
         };
         waiter
             .wait()

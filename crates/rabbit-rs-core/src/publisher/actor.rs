@@ -100,6 +100,7 @@ impl PublisherActor {
             metrics.clone(),
             delay_strategy_arc.clone(),
             hot_channel.clone(),
+            pump.clone(),
         ));
         PublisherHandle {
             commands,
@@ -232,8 +233,8 @@ impl PublisherHandle {
             // Hot path: publish and try to get the confirmation immediately.
             // If both publish and confirmation complete without yielding,
             // bypass the actor entirely. If the confirmation is pending,
-            // fall back to the cold path so the actor's timeout and
-            // lifecycle management apply.
+            // resolve as Ambiguous (message was sent, outcome unknown) to
+            // avoid duplicate publishes via the cold path.
             let publish_started = Instant::now();
             if let Some(Ok(receipt)) = channel.publish(transport_request).now_or_never() {
                 let wait_fut = receipt.wait();
@@ -257,9 +258,16 @@ impl PublisherHandle {
                     drop(permit);
                     return Ok(PublishWaiter::resolved(outcome));
                 }
-                // Confirmation not ready — fall through to the cold path.
+                // Confirmation not ready — the message was already sent to the
+                // broker. Resolve as Ambiguous to avoid a duplicate publish via
+                // the cold path.
+                self.metrics.record_publish();
+                drop(permit);
+                return Ok(PublishWaiter::resolved(PublishOutcome::Ambiguous {
+                    message_id,
+                }));
             }
-            // Publish not ready or confirmation pending — fall through.
+            // Publish not ready (Pending) — fall through to the cold path.
             drop(permit);
         }
         self.try_publish(request)
@@ -420,6 +428,7 @@ struct ActorState {
     delay_strategy: Option<Arc<DelayStrategy>>,
     declared_ttl_queues: HashSet<Arc<str>>,
     hot_channel: Arc<ArcSwapOption<HotChannel>>,
+    pump: Option<Arc<super::pump::PublishPump>>,
 }
 
 impl ActorState {
@@ -429,6 +438,7 @@ impl ActorState {
         metrics: Metrics,
         delay_strategy: Option<Arc<DelayStrategy>>,
         hot_channel: Arc<ArcSwapOption<HotChannel>>,
+        pump: Option<Arc<super::pump::PublishPump>>,
     ) -> Self {
         Self {
             config,
@@ -446,6 +456,7 @@ impl ActorState {
             delay_strategy,
             declared_ttl_queues: HashSet::new(),
             hot_channel,
+            pump,
         }
     }
 
@@ -481,6 +492,9 @@ impl ActorState {
             .extend(self.ledger.drain().map(|in_flight| in_flight.retained));
         self.confirmations = FuturesUnordered::new();
         self.hot_channel.store(None);
+        if let Some(pump) = &self.pump {
+            pump.clear_channel();
+        }
     }
 
     fn fail_all(&mut self, error: &PublishError) {
@@ -524,6 +538,7 @@ async fn run_actor(
     metrics: Metrics,
     delay_strategy: Option<Arc<DelayStrategy>>,
     hot_channel: Arc<ArcSwapOption<HotChannel>>,
+    pump: Option<Arc<super::pump::PublishPump>>,
 ) {
     let mut state = ActorState::new(
         initial_channel,
@@ -531,6 +546,7 @@ async fn run_actor(
         metrics,
         delay_strategy,
         hot_channel.clone(),
+        pump,
     );
     if state.config.enables_confirms()
         && let Some(channel) = &state.channel
@@ -657,7 +673,12 @@ async fn handle_connection_event(
             state.channel = Some(channel.clone());
             state.phase = Phase::Ready;
             state.permanent_error = None;
-            state.hot_channel.store(Some(Arc::new(HotChannel(channel))));
+            state
+                .hot_channel
+                .store(Some(Arc::new(HotChannel(channel.clone()))));
+            if let Some(pump) = &state.pump {
+                pump.update_channel(channel);
+            }
             flush_replay(state).await;
             Ok(())
         }
@@ -669,6 +690,9 @@ async fn handle_connection_event(
             state.channel = None;
             state.permanent_error = Some(error);
             state.hot_channel.store(None);
+            if let Some(pump) = &state.pump {
+                pump.clear_channel();
+            }
             Ok(())
         }
     }

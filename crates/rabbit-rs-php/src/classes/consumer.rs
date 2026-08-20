@@ -298,17 +298,6 @@ impl ConsumerIterator {
     pub fn valid(&self) -> bool {
         self.current.is_some()
     }
-
-    /// Best-effort close on garbage collection.
-    pub fn __destruct(&self) {
-        if self.pid != std::process::id() {
-            return;
-        }
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let _ = self.runtime.block_on(self.handle.close());
-    }
 }
 
 impl ConsumerIterator {

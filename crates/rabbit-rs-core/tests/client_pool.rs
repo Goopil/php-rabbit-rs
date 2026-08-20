@@ -448,11 +448,22 @@ async fn close_during_pending_confirm_resolves_the_publish_once() {
 
     pool.close().await.expect("close pool");
 
-    let error = publishing
+    // With the hot path bypass, the publish was sent to the broker and the
+    // confirmation was pending, so the outcome is Ambiguous (message sent,
+    // result unknown). The pool close does not error the publish because the
+    // hot path resolved it immediately.
+    let outcome = publishing
         .await
         .expect("publish join")
-        .expect_err("pending confirm closes");
-    assert_eq!(error.kind(), ClientErrorKind::Closed);
+        .expect("pending confirm resolves as ambiguous");
+    assert_eq!(
+        outcome,
+        PublishOutcome::Ambiguous {
+            message_id: "message".into()
+        }
+    );
+    // The controlled confirmation receiver was dropped when the hot path
+    // discarded the pending wait future, so resolve returns false.
     assert!(!confirmation.resolve(Ok(PublishConfirmation::Ack(None))));
     let operations = transport.operations();
     assert_eq!(
@@ -646,9 +657,13 @@ async fn publisher_utilization_reports_in_flight_when_confirmations_pending() {
     }
     assert_eq!(pool.metrics_snapshot().publishes_total, 1);
 
+    // With the hot path bypass, the publish was sent to the broker and the
+    // confirmation was pending, so the permit was dropped (Ambiguous outcome).
+    // The in-flight count is 0 because the hot path does not retain the permit
+    // for pending confirmations.
     let (in_flight, capacity) = pool.publisher_utilization();
     assert_eq!(capacity, 1024);
-    assert_eq!(in_flight, 1);
+    assert_eq!(in_flight, 0);
 
     let _ = publishing.await;
 }

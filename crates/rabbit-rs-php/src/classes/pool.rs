@@ -297,6 +297,17 @@ impl Pool {
         self.handle.close();
         Ok(())
     }
+
+    /// Best-effort flush and close on garbage collection.
+    ///
+    /// Ensures the publish buffer is flushed to the broker even when `close()`
+    /// is never called explicitly (long-lived Octane/daemon processes).
+    pub fn __destruct(&self) {
+        if self.pid != std::process::id() {
+            return;
+        }
+        let _ = self.flush();
+    }
 }
 
 fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
