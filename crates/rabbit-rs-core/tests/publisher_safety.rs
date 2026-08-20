@@ -539,6 +539,87 @@ async fn batch_publish_uses_arc_refcount_for_destination() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn hot_path_bypass_publishes_directly_to_channel() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor = actor(&transport, config(1, 1_024)).await;
+
+    let waiter = actor
+        .try_publish_hot(request("hot", b"job"))
+        .expect("hot path publish");
+
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+    wait_for_publish_count(&transport, 1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_path_falls_back_when_channel_unavailable_after_recovery() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor = actor(&transport, config(1, 1_024)).await;
+
+    actor.connection_lost().await.expect("connection lost");
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let replacement = transport
+        .connect(&broker())
+        .await
+        .expect("replacement")
+        .open_publisher()
+        .await
+        .expect("channel");
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 2,
+            channel: Arc::from(replacement),
+            topology_restored: true,
+        })
+        .await
+        .expect("recovery");
+
+    let waiter = actor
+        .try_publish_hot(request("after-recover", b"job"))
+        .expect("hot path after recovery");
+
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_path_does_not_consume_mpsc_capacity() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor = actor(
+        &transport,
+        PublisherConfig::new(1, 1_024, Duration::from_secs(1), 1, Duration::from_secs(5)),
+    )
+    .await;
+
+    let waiter = actor
+        .try_publish_hot(request("hot", b"job"))
+        .expect("hot path publish");
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+    wait_for_publish_count(&transport, 1).await;
+
+    let cold = actor
+        .try_publish(request("cold", b"job"))
+        .expect("cold path still has capacity");
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    assert!(matches!(
+        cold.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+    wait_for_publish_count(&transport, 2).await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn flush_uses_publish_batch_instead_of_individual_publish() {
     let transport = MockTransport::default();
     for _ in 0..3 {

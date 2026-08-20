@@ -12,6 +12,7 @@ integration = []
 bench = []
 
 [dependencies]
+arc-swap = "1"
 async-trait = "0.1"
 bytes = "1.10"
 crossbeam-queue = "0.3"

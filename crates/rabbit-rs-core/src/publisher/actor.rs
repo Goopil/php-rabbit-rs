@@ -5,7 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use arc_swap::ArcSwapOption;
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time,
@@ -15,8 +16,8 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     topology::delay::DelayStrategy,
     transport::{
-        PublishConfirmation, PublishProperties as TransportProperties,
-        PublishRequest as TransportRequest, PublisherChannel, TransportError, TransportResult,
+        PublishConfirmation, PublishRequest as TransportRequest, PublisherChannel, TransportError,
+        TransportResult,
     },
 };
 
@@ -76,19 +77,37 @@ impl PublisherActor {
     ) -> PublisherHandle {
         let capacity = Arc::new(Semaphore::new(config.buffer_capacity.max(1)));
         let (commands, receiver) = mpsc::channel(config.buffer_capacity.max(1));
+        let hot_channel: Arc<ArcSwapOption<HotChannel>> =
+            Arc::new(ArcSwapOption::from_pointee(HotChannel(channel.clone())));
+        let delay_strategy_arc = delay_strategy.map(Arc::new);
         tokio::spawn(run_actor(
             channel,
             config,
             receiver,
             metrics.clone(),
-            delay_strategy,
+            delay_strategy_arc.clone(),
+            hot_channel.clone(),
         ));
         PublisherHandle {
             commands,
             capacity,
             metrics,
             confirm_timeout: config.confirm_timeout,
+            mandatory: config.mandatory,
+            hot_channel,
+            delay_strategy: delay_strategy_arc,
         }
+    }
+}
+
+/// Sized wrapper around `Arc<dyn PublisherChannel>` so it can be stored in
+/// `ArcSwapOption` (which requires `Sized` types for its `RefCnt` impls).
+#[derive(Clone)]
+struct HotChannel(Arc<dyn PublisherChannel>);
+
+impl std::fmt::Debug for HotChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HotChannel").finish_non_exhaustive()
     }
 }
 
@@ -98,6 +117,9 @@ pub struct PublisherHandle {
     capacity: Arc<Semaphore>,
     metrics: Metrics,
     confirm_timeout: Duration,
+    mandatory: bool,
+    hot_channel: Arc<ArcSwapOption<HotChannel>>,
+    delay_strategy: Option<Arc<DelayStrategy>>,
 }
 
 impl PublisherHandle {
@@ -154,6 +176,65 @@ impl PublisherHandle {
                 "publisher actor is closed",
             )),
         }
+    }
+
+    /// Hot path: publishes directly to the transport channel via `now_or_never`,
+    /// bypassing the actor mpsc crossing entirely when the channel is ready and
+    /// the socket buffer has capacity.
+    ///
+    /// Falls back to the cold actor path ([`try_publish`](Self::try_publish)) when
+    /// the hot channel is unavailable (connection recovery), the immediate
+    /// publish is not ready (`Pending`), or the channel returns an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed errors as [`try_publish`](Self::try_publish) on the
+    /// cold path fallback.
+    /// Hot path: attempts to publish directly to the transport channel via
+    /// `now_or_never`, bypassing the actor mpsc crossing when the channel is
+    /// ready and the confirmation completes immediately.
+    ///
+    /// If the channel is unavailable (connection recovery), the publish is not
+    /// ready, or the confirmation is pending, falls back to the cold actor path
+    /// ([`try_publish`](Self::try_publish)) which provides full lifecycle
+    /// management (timeouts, recovery, close).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed errors as [`try_publish`](Self::try_publish).
+    pub fn try_publish_hot(&self, request: PublishRequest) -> Result<PublishWaiter, PublishError> {
+        if let Some(hot) = self.hot_channel.load_full()
+            && let Ok(permit) = self.capacity.clone().try_acquire_owned()
+        {
+            let channel = &hot.0;
+            let message_id = request.properties.message_id.clone();
+            let transport_request = super::into_transport_request(
+                &request,
+                self.delay_strategy.as_deref(),
+                self.mandatory,
+            );
+            // Hot path: publish and try to get the confirmation immediately.
+            // If both publish and confirmation complete without yielding,
+            // bypass the actor entirely. If the confirmation is pending,
+            // fall back to the cold path so the actor's timeout and
+            // lifecycle management apply.
+            if let Some(Ok(receipt)) = channel.publish(transport_request).now_or_never() {
+                let wait_fut = receipt.wait();
+                if let Some(confirmation) = wait_fut.now_or_never() {
+                    self.metrics.record_publish();
+                    let outcome = super::confirmation_to_outcome(
+                        confirmation.map_err(|error| transport_publish_error(&error))?,
+                        message_id,
+                    )?;
+                    drop(permit);
+                    return Ok(PublishWaiter::resolved(outcome));
+                }
+                // Confirmation not ready — fall through to the cold path.
+            }
+            // Publish not ready or confirmation pending — fall through.
+            drop(permit);
+        }
+        self.try_publish(request)
     }
 
     #[must_use]
@@ -266,8 +347,9 @@ struct ActorState {
     flush_deadline: Option<time::Instant>,
     permanent_error: Option<PublishError>,
     metrics: Metrics,
-    delay_strategy: Option<DelayStrategy>,
+    delay_strategy: Option<Arc<DelayStrategy>>,
     declared_ttl_queues: HashSet<Arc<str>>,
+    hot_channel: Arc<ArcSwapOption<HotChannel>>,
 }
 
 impl ActorState {
@@ -275,7 +357,8 @@ impl ActorState {
         channel: Arc<dyn PublisherChannel>,
         config: PublisherConfig,
         metrics: Metrics,
-        delay_strategy: Option<DelayStrategy>,
+        delay_strategy: Option<Arc<DelayStrategy>>,
+        hot_channel: Arc<ArcSwapOption<HotChannel>>,
     ) -> Self {
         Self {
             config,
@@ -292,6 +375,7 @@ impl ActorState {
             metrics,
             delay_strategy,
             declared_ttl_queues: HashSet::new(),
+            hot_channel,
         }
     }
 
@@ -326,6 +410,7 @@ impl ActorState {
         self.replay
             .extend(self.ledger.drain().map(|in_flight| in_flight.retained));
         self.confirmations = FuturesUnordered::new();
+        self.hot_channel.store(None);
     }
 
     fn fail_all(&mut self, error: &PublishError) {
@@ -367,9 +452,16 @@ async fn run_actor(
     config: PublisherConfig,
     mut commands: mpsc::Receiver<Command>,
     metrics: Metrics,
-    delay_strategy: Option<DelayStrategy>,
+    delay_strategy: Option<Arc<DelayStrategy>>,
+    hot_channel: Arc<ArcSwapOption<HotChannel>>,
 ) {
-    let mut state = ActorState::new(initial_channel, config, metrics, delay_strategy);
+    let mut state = ActorState::new(
+        initial_channel,
+        config,
+        metrics,
+        delay_strategy,
+        hot_channel.clone(),
+    );
     if state.config.confirms
         && let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
@@ -377,6 +469,7 @@ async fn run_actor(
         let error = transport_publish_error(&error);
         state.phase = Phase::FailedPermanent;
         state.permanent_error = Some(error);
+        hot_channel.store(None);
     }
 
     loop {
@@ -491,9 +584,10 @@ async fn handle_connection_event(
                     .map_err(|error| transport_publish_error(&error))?;
             }
             state.generation = generation;
-            state.channel = Some(channel);
+            state.channel = Some(channel.clone());
             state.phase = Phase::Ready;
             state.permanent_error = None;
+            state.hot_channel.store(Some(Arc::new(HotChannel(channel))));
             flush_replay(state).await;
             Ok(())
         }
@@ -504,6 +598,7 @@ async fn handle_connection_event(
             state.phase = Phase::FailedPermanent;
             state.channel = None;
             state.permanent_error = Some(error);
+            state.hot_channel.store(None);
             Ok(())
         }
     }
@@ -568,9 +663,9 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             .request
             .deadline
             .min(time::Instant::now() + state.config.confirm_timeout);
-        let request = into_transport_request(
+        let request = super::into_transport_request(
             &retained.request,
-            state.delay_strategy.as_ref(),
+            state.delay_strategy.as_deref(),
             state.config.mandatory,
         );
 
@@ -615,55 +710,6 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
                 complete_error(retained, transport_publish_error(&error));
             }
         }
-    }
-}
-
-fn into_transport_request(
-    request: &PublishRequest,
-    delay_strategy: Option<&DelayStrategy>,
-    mandatory: bool,
-) -> TransportRequest {
-    let delay_ms = request.properties.delay_ms.unwrap_or(0);
-
-    if delay_ms > 0
-        && let Some(strategy) = delay_strategy
-        && let Ok(route) = DelayRouter::route(
-            strategy,
-            &request.destination,
-            i64::try_from(delay_ms).unwrap_or(i64::MAX),
-        )
-    {
-        let properties = TransportProperties {
-            content_type: request.properties.content_type.clone(),
-            correlation_id: request.properties.correlation_id.clone(),
-            message_id: Some(request.properties.message_id.as_ref().to_owned()),
-            delay_ms: route.queue.is_none().then_some(route.delay_ms),
-            headers: request.properties.headers.clone(),
-            persistent: true,
-        };
-
-        return TransportRequest {
-            exchange: route.exchange,
-            routing_key: route.routing_key,
-            payload: request.payload.clone(),
-            mandatory,
-            properties,
-        };
-    }
-
-    TransportRequest {
-        exchange: request.destination.exchange.clone(),
-        routing_key: request.destination.routing_key.clone(),
-        payload: request.payload.clone(),
-        mandatory,
-        properties: TransportProperties {
-            content_type: request.properties.content_type.clone(),
-            correlation_id: request.properties.correlation_id.clone(),
-            message_id: Some(request.properties.message_id.as_ref().to_owned()),
-            delay_ms: request.properties.delay_ms,
-            headers: request.properties.headers.clone(),
-            persistent: true,
-        },
     }
 }
 

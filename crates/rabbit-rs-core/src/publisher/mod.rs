@@ -6,9 +6,16 @@ pub mod delay;
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use tokio::{sync::oneshot, time::Instant};
+use tokio::{
+    sync::{OwnedSemaphorePermit, oneshot},
+    time::Instant,
+};
 
-use crate::transport::{PublishHeaders, PublisherChannel, TransportError};
+use crate::topology::delay::DelayStrategy;
+use crate::transport::{
+    PublishConfirmation, PublishHeaders, PublishProperties as TransportProperties,
+    PublishRequest as TransportRequest, PublisherChannel, TransportError,
+};
 
 pub use actor::{PublisherActor, PublisherHandle};
 
@@ -215,14 +222,41 @@ impl Error for PublishError {}
 
 #[derive(Debug)]
 pub struct PublishWaiter {
-    receiver: oneshot::Receiver<Result<PublishOutcome, PublishError>>,
+    source: WaitSource,
+    /// Hot-path permit; held until the confirmation resolves so that
+    /// `available_permits` reflects in-flight hot publishes.
+    _permit: Option<OwnedSemaphorePermit>,
+}
+
+enum WaitSource {
+    /// Cold path: the actor resolves the outcome via a oneshot channel.
+    Channel(oneshot::Receiver<Result<PublishOutcome, PublishError>>),
+    /// Hot path with immediate confirmation: the outcome is already resolved.
+    Resolved(Result<PublishOutcome, PublishError>),
+}
+
+impl fmt::Debug for WaitSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Channel(_) => f.debug_tuple("Channel").finish(),
+            Self::Resolved(r) => f.debug_tuple("Resolved").field(r).finish(),
+        }
+    }
 }
 
 impl PublishWaiter {
-    pub(crate) const fn new(
-        receiver: oneshot::Receiver<Result<PublishOutcome, PublishError>>,
-    ) -> Self {
-        Self { receiver }
+    pub(crate) fn new(receiver: oneshot::Receiver<Result<PublishOutcome, PublishError>>) -> Self {
+        Self {
+            source: WaitSource::Channel(receiver),
+            _permit: None,
+        }
+    }
+
+    pub(crate) fn resolved(outcome: PublishOutcome) -> Self {
+        Self {
+            source: WaitSource::Resolved(Ok(outcome)),
+            _permit: None,
+        }
     }
 
     /// Waits for the safe terminal outcome of one publish.
@@ -232,11 +266,93 @@ impl PublishWaiter {
     /// Returns a typed publish failure or [`PublishErrorKind::Closed`] if the
     /// actor exits without resolving the command.
     pub async fn wait(self) -> Result<PublishOutcome, PublishError> {
-        self.receiver.await.unwrap_or_else(|_| {
-            Err(PublishError::new(
-                PublishErrorKind::Closed,
-                "publisher actor closed before resolving the command",
-            ))
-        })
+        match self.source {
+            WaitSource::Channel(receiver) => receiver.await.unwrap_or_else(|_| {
+                Err(PublishError::new(
+                    PublishErrorKind::Closed,
+                    "publisher actor closed before resolving the command",
+                ))
+            }),
+            WaitSource::Resolved(result) => result,
+        }
+    }
+}
+
+pub(crate) fn confirmation_to_outcome(
+    confirmation: PublishConfirmation,
+    message_id: Arc<str>,
+) -> Result<PublishOutcome, PublishError> {
+    match confirmation {
+        PublishConfirmation::Ack(Some(returned)) | PublishConfirmation::Nack(Some(returned)) => {
+            Ok(PublishOutcome::Returned {
+                message_id,
+                reply: ReturnInfo {
+                    code: returned.reply_code,
+                    text: returned.reply_text,
+                    exchange: returned.exchange,
+                    routing_key: returned.routing_key,
+                },
+            })
+        }
+        PublishConfirmation::Ack(None) => Ok(PublishOutcome::Confirmed { message_id }),
+        PublishConfirmation::Nack(None) => Err(PublishError::new(
+            PublishErrorKind::Nack,
+            "broker negatively acknowledged the message",
+        )),
+        PublishConfirmation::NotRequested => Err(PublishError::new(
+            PublishErrorKind::Unconfirmed,
+            "publisher confirms were not enabled",
+        )),
+    }
+}
+
+/// Converts a publisher-level request into the transport-level request,
+/// applying the delay strategy and mandatory flag.
+pub(crate) fn into_transport_request(
+    request: &PublishRequest,
+    delay_strategy: Option<&DelayStrategy>,
+    mandatory: bool,
+) -> TransportRequest {
+    let delay_ms = request.properties.delay_ms.unwrap_or(0);
+
+    if delay_ms > 0
+        && let Some(strategy) = delay_strategy
+        && let Ok(route) = delay::DelayRouter::route(
+            strategy,
+            &request.destination,
+            i64::try_from(delay_ms).unwrap_or(i64::MAX),
+        )
+    {
+        let properties = TransportProperties {
+            content_type: request.properties.content_type.clone(),
+            correlation_id: request.properties.correlation_id.clone(),
+            message_id: Some(request.properties.message_id.as_ref().to_owned()),
+            delay_ms: route.queue.is_none().then_some(route.delay_ms),
+            headers: request.properties.headers.clone(),
+            persistent: true,
+        };
+
+        return TransportRequest {
+            exchange: route.exchange,
+            routing_key: route.routing_key,
+            payload: request.payload.clone(),
+            mandatory,
+            properties,
+        };
+    }
+
+    TransportRequest {
+        exchange: request.destination.exchange.clone(),
+        routing_key: request.destination.routing_key.clone(),
+        payload: request.payload.clone(),
+        mandatory,
+        properties: TransportProperties {
+            content_type: request.properties.content_type.clone(),
+            correlation_id: request.properties.correlation_id.clone(),
+            message_id: Some(request.properties.message_id.as_ref().to_owned()),
+            delay_ms: request.properties.delay_ms,
+            headers: request.properties.headers.clone(),
+            persistent: true,
+        },
     }
 }
