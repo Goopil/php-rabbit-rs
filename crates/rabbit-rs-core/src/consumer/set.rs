@@ -9,8 +9,10 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    ConsumerError, Delivery, SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, MessageId, SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
+    attempts::AttemptsResolver,
+    delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner},
 };
 use crate::{
     metrics::{Metrics, MetricsSnapshot},
@@ -22,6 +24,12 @@ use crate::{
 
 const COMMAND_CAPACITY: usize = 256;
 
+pub(crate) enum BufferedDelivery {
+    Delivery { delivery: Delivery, generation: u64 },
+    Error(ConsumerError),
+}
+
+#[derive(Clone)]
 pub struct Subscription {
     pub(crate) id: SubscriptionId,
     pub(crate) connection_key: ConnectionKey,
@@ -115,6 +123,10 @@ impl ConsumerSet {
     /// # Errors
     ///
     /// Returns a typed transport error when `QoS` or consumer registration fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a stream cannot be matched back to its subscription (internal invariant).
     pub async fn spawn_with_metrics(
         subscriptions: Vec<Subscription>,
         max_in_flight: usize,
@@ -151,37 +163,122 @@ impl ConsumerSet {
             streams.push((subscription.id.clone(), stream));
         }
 
+        let buffer_size = subscriptions
+            .iter()
+            .map(|s| (s.prefetch as usize * 3 / 2).max(1))
+            .max()
+            .unwrap_or(1);
+        let (buffer_tx, buffer_rx) = flume::bounded(buffer_size);
+        let current_generation = Arc::new(AtomicU64::new(
+            subscriptions
+                .iter()
+                .map(|s| s.generation)
+                .max()
+                .unwrap_or(1),
+        ));
+
         tokio::spawn(run_actor(
-            subscriptions,
+            subscriptions.clone(),
             max_in_flight.max(1),
             receiver,
             commands.clone(),
             metrics.clone(),
         ));
-        for (subscription, stream) in streams {
-            spawn_source(subscription, stream, commands.clone());
+        for (subscription_id, stream) in streams {
+            let subscription = subscriptions
+                .iter()
+                .find(|s| s.id == subscription_id)
+                .expect("subscription exists");
+            spawn_pump(
+                subscription.clone(),
+                stream,
+                buffer_tx.clone(),
+                commands.clone(),
+                metrics.clone(),
+            );
         }
 
         Ok(ConsumerHandle {
             commands,
+            buffer_rx,
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
-            next_waiter_id: Arc::new(AtomicU64::new(1)),
+            current_generation,
         })
     }
 }
 
-fn spawn_source(
-    subscription: SubscriptionId,
+fn spawn_pump(
+    subscription: Subscription,
     mut stream: Box<dyn DeliveryStream>,
+    buffer_tx: flume::Sender<BufferedDelivery>,
     commands: mpsc::Sender<ConsumerCommand>,
+    metrics: Metrics,
 ) {
     tokio::spawn(async move {
+        let connection_key = subscription.connection_key;
+        let generation = subscription.generation;
+        let channel_id = subscription.channel_id;
+        let subscription_id = subscription.id.clone();
+
         while let Some(result) = stream.next().await {
-            if commands
-                .send(ConsumerCommand::Incoming {
-                    subscription: subscription.clone(),
-                    result,
+            let delivery = match result {
+                Ok(delivery) => delivery,
+                Err(error) => {
+                    let consumer_error =
+                        ConsumerError::new(super::ConsumerErrorKind::Transport, error.to_string());
+                    if buffer_tx
+                        .send_async(BufferedDelivery::Error(consumer_error))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
+            };
+
+            let message_id = delivery.message_id.as_ref().map_or_else(
+                || {
+                    MessageId::new(format!(
+                        "{generation}:{channel_id}:{}",
+                        delivery.delivery_tag
+                    ))
+                },
+                |message_id| MessageId::new(message_id.clone()),
+            );
+            let attempts = AttemptsResolver::default()
+                .resolve(&delivery.headers, delivery.redelivered)
+                .unwrap_or(if delivery.redelivered { 2 } else { 1 });
+            let token = DeliveryToken::new(DeliveryTokenInner::pending(
+                DeliveryIdentity {
+                    subscription: subscription_id.clone(),
+                    connection_key,
+                    generation,
+                    channel_id,
+                    delivery_tag: delivery.delivery_tag,
+                },
+                message_id.clone(),
+                delivery.correlation_id.clone(),
+                delivery.payload.clone(),
+                delivery.headers.clone(),
+                attempts,
+                commands.clone(),
+            ));
+            let item = Delivery::new(
+                message_id,
+                delivery.correlation_id,
+                subscription_id.clone(),
+                delivery.payload,
+                delivery.headers,
+                attempts,
+                token,
+            );
+            metrics.record_delivery();
+            if buffer_tx
+                .send_async(BufferedDelivery::Delivery {
+                    delivery: item,
+                    generation,
                 })
                 .await
                 .is_err()
@@ -201,9 +298,10 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
 #[derive(Clone, Debug)]
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
+    buffer_rx: flume::Receiver<BufferedDelivery>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
-    next_waiter_id: Arc<AtomicU64>,
+    current_generation: Arc<AtomicU64>,
 }
 
 impl Drop for ConsumerHandle {
@@ -216,51 +314,47 @@ impl Drop for ConsumerHandle {
     }
 }
 
-struct WaiterCancellation {
-    waiter_id: u64,
-    commands: mpsc::Sender<ConsumerCommand>,
-    armed: bool,
-}
-
-impl Drop for WaiterCancellation {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = self
-                .commands
-                .try_send(ConsumerCommand::CancelWaiter(self.waiter_id));
-        }
-    }
-}
-
 impl ConsumerHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
     }
 
-    /// Waits for the next scheduled delivery while respecting max in-flight.
+    /// Waits for the next scheduled delivery.
+    ///
+    /// The fast path uses `try_recv()` from the bounded flume buffer (sub-microsecond,
+    /// no async runtime crossing). The slow path awaits `recv_async()` when the buffer
+    /// is empty. Stale deliveries from a previous connection generation are discarded
+    /// (`RabbitMQ` will redeliver them on the new connection).
     ///
     /// # Errors
     ///
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
-        let waiter_id = self.next_waiter_id.fetch_add(1, Ordering::Relaxed);
-        let (completed, completion) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::Next {
-                waiter_id,
-                completed,
-            })
-            .await
-            .map_err(|_| ConsumerError::closed())?;
-        let mut cancellation = WaiterCancellation {
-            waiter_id,
-            commands: self.commands.clone(),
-            armed: true,
-        };
-        let result = completion.await.map_err(|_| ConsumerError::closed())?;
-        cancellation.armed = false;
-        result
+        let generation = self.current_generation.load(Ordering::Acquire);
+        loop {
+            match self.buffer_rx.try_recv() {
+                Ok(BufferedDelivery::Delivery {
+                    delivery,
+                    generation: deliv_gen,
+                }) if deliv_gen == generation => return Ok(delivery),
+                Ok(BufferedDelivery::Error(error)) => return Err(error),
+                Ok(BufferedDelivery::Delivery { .. }) => {
+                    continue;
+                }
+                Err(flume::TryRecvError::Empty) => {}
+                Err(flume::TryRecvError::Disconnected) => return Err(ConsumerError::closed()),
+            }
+            match self.buffer_rx.recv_async().await {
+                Ok(BufferedDelivery::Delivery {
+                    delivery,
+                    generation: deliv_gen,
+                }) if deliv_gen == generation => return Ok(delivery),
+                Ok(BufferedDelivery::Error(error)) => return Err(error),
+                Ok(BufferedDelivery::Delivery { .. }) => {}
+                Err(flume::RecvError::Disconnected) => return Err(ConsumerError::closed()),
+            }
+        }
     }
 
     /// Records a new connection generation for one subscription.
@@ -273,6 +367,7 @@ impl ConsumerHandle {
         subscription: SubscriptionId,
         generation: u64,
     ) -> Result<(), ConsumerError> {
+        self.current_generation.store(generation, Ordering::Release);
         let (completed, completion) = oneshot::channel();
         self.commands
             .send(ConsumerCommand::UpdateGeneration {

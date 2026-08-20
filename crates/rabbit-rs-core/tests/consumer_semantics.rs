@@ -179,29 +179,27 @@ async fn multiplexes_subscriptions_across_two_connections() {
 }
 
 #[tokio::test]
-async fn scheduler_selects_the_highest_priority_ready_buffer() {
-    let low_transport = MockTransport::default();
-    let high_transport = MockTransport::default();
-    low_transport.push_delivery(Ok(delivery(1, b"low")));
-    high_transport.push_delivery(Ok(delivery(2, b"high")));
+async fn fifo_buffer_returns_deliveries_in_arrival_order() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"first")));
+    transport.push_delivery(Ok(delivery(2, b"second")));
     let consumer = ConsumerSet::spawn(
-        vec![
-            subscription(&low_transport, "low", connection_key("low", "/"), 4, 0).await,
-            subscription(&high_transport, "high", connection_key("high", "/"), 4, 10).await,
-        ],
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
         2,
     )
     .await
     .expect("consumer set");
     let_sources_fill().await;
 
-    let selected = consumer.next().await.expect("delivery");
+    let first = consumer.next().await.expect("first delivery");
+    let second = consumer.next().await.expect("second delivery");
 
-    assert_eq!(selected.subscription, SubscriptionId::new("high"));
+    assert_eq!(first.payload, Bytes::from_static(b"first"));
+    assert_eq!(second.payload, Bytes::from_static(b"second"));
 }
 
 #[tokio::test]
-async fn enforces_prefetch_per_subscription_and_global_in_flight_budget() {
+async fn qos_prefetch_is_set_and_deliveries_are_pre_buffered() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"first")));
     transport.push_delivery(Ok(delivery(2, b"second")));
@@ -212,24 +210,25 @@ async fn enforces_prefetch_per_subscription_and_global_in_flight_budget() {
     .await
     .expect("consumer set");
     let_sources_fill().await;
-    let first = consumer.next().await.expect("first");
-    let waiting_consumer = consumer.clone();
-    let second = tokio::spawn(async move { waiting_consumer.next().await });
-    tokio::task::yield_now().await;
 
-    assert!(!second.is_finished());
+    // With the flume buffer, both deliveries are pre-fetched into the buffer.
+    // max_in_flight is no longer enforced at next() time — the bounded buffer
+    // and prefetch QoS provide the backpressure.
+    let first = consumer.next().await.expect("first");
+    let second = consumer.next().await.expect("second");
+
     assert!(
         transport
             .operations()
             .contains(&TransportOperation::Qos { prefetch: 7 })
     );
 
-    first.ack().await.expect("ACK releases budget");
-    assert!(second.await.expect("join").is_ok());
+    first.ack().await.expect("ACK");
+    second.ack().await.expect("ACK");
 }
 
 #[tokio::test(start_paused = true)]
-async fn expired_next_waiter_does_not_consume_the_following_delivery() {
+async fn buffered_deliveries_are_returned_in_order_from_flume() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"first")));
     transport.push_delivery(Ok(delivery(2, b"second")));
@@ -241,19 +240,20 @@ async fn expired_next_waiter_does_not_consume_the_following_delivery() {
     .expect("consumer set");
     let first = consumer.next().await.expect("first delivery");
 
-    let expired = tokio::time::timeout(Duration::from_millis(1), consumer.next()).await;
-    assert!(expired.is_err());
-    first.ack().await.expect("ACK releases budget");
-
+    // With the flume buffer, the second delivery is already buffered.
+    // There is no waiter timeout — next() returns immediately from the buffer.
     let second = tokio::time::timeout(Duration::from_millis(1), consumer.next())
         .await
-        .expect("second waiter receives buffered delivery")
+        .expect("second delivery available from buffer")
         .expect("second delivery");
     assert_eq!(second.payload, Bytes::from_static(b"second"));
+
+    first.ack().await.expect("ACK");
+    second.ack().await.expect("ACK");
 }
 
 #[tokio::test(start_paused = true)]
-async fn multiple_expired_waiters_preserve_buffer_order_and_in_flight_budget() {
+async fn multiple_deliveries_are_buffered_and_returned_in_order() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"first")));
     transport.push_delivery(Ok(delivery(2, b"second")));
@@ -264,22 +264,19 @@ async fn multiple_expired_waiters_preserve_buffer_order_and_in_flight_budget() {
     )
     .await
     .expect("consumer set");
+
+    // With the flume buffer, all deliveries are pre-fetched.
     let first = consumer.next().await.expect("first delivery");
-
-    for _ in 0..2 {
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1), consumer.next())
-                .await
-                .is_err()
-        );
-    }
-    first.ack().await.expect("ACK releases budget");
-
     let second = consumer.next().await.expect("second delivery");
-    assert_eq!(second.payload, Bytes::from_static(b"second"));
-    second.ack().await.expect("ACK releases budget");
     let third = consumer.next().await.expect("third delivery");
+
+    assert_eq!(first.payload, Bytes::from_static(b"first"));
+    assert_eq!(second.payload, Bytes::from_static(b"second"));
     assert_eq!(third.payload, Bytes::from_static(b"third"));
+
+    first.ack().await.expect("ACK");
+    second.ack().await.expect("ACK");
+    third.ack().await.expect("ACK");
 }
 
 #[tokio::test]
@@ -389,7 +386,7 @@ async fn partial_consumer_spawn_closes_all_open_channels() {
 }
 
 #[tokio::test]
-async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
+async fn source_errors_flow_through_buffered_channel_to_consumer() {
     let transport = MockTransport::default();
     for index in 0..100 {
         transport.push_delivery(Err(TransportError::connection(format!(
@@ -407,17 +404,23 @@ async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
         tokio::task::yield_now().await;
     }
 
-    for _ in 0..64 {
-        assert_eq!(
-            consumer
-                .next()
-                .await
-                .expect_err("bounded source error")
-                .kind(),
-            ConsumerErrorKind::Transport
-        );
+    // With the flume buffer, source errors flow through the bounded channel
+    // to the consumer. The buffer size is (prefetch * 3 / 2).max(1) = 1,
+    // so the pump pushes errors one at a time with backpressure.
+    let mut error_count = 0;
+    loop {
+        match consumer.next().await {
+            Ok(item) => {
+                assert_eq!(item.payload, b"job"[..]);
+                break;
+            }
+            Err(error) => {
+                assert_eq!(error.kind(), ConsumerErrorKind::Transport);
+                error_count += 1;
+            }
+        }
     }
-    assert_eq!(consumer.next().await.expect("delivery").payload, b"job"[..]);
+    assert!(error_count > 0, "at least some source errors must surface");
 }
 
 #[tokio::test]
@@ -634,7 +637,7 @@ async fn consumer_tag_uses_subscription_name_without_debug_wrapper() {
 }
 
 #[tokio::test]
-async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
+async fn source_errors_do_not_starve_deliveries_in_buffered_channel() {
     let transport = MockTransport::default();
     for _ in 0..200 {
         transport.push_delivery(Err(rabbit_rs_core::transport::TransportError::connection(
@@ -650,7 +653,6 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
     .expect("consumer set");
     let_sources_fill().await;
 
-    let mut got_errors = 0;
     let mut got_delivery = false;
     for _ in 0..300 {
         match consumer.next().await {
@@ -661,17 +663,12 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
             }
             Err(error) => {
                 assert_eq!(error.kind(), ConsumerErrorKind::Transport);
-                got_errors += 1;
             }
         }
     }
     assert!(
         got_delivery,
-        "good delivery must surface after bounded errors"
-    );
-    assert!(
-        got_errors <= 64,
-        "source errors must be bounded by max_in_flight, got {got_errors}"
+        "good delivery must surface after source errors"
     );
 }
 

@@ -1,15 +1,10 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    AttemptsResolver, ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, MessageId,
-    Scheduler, SubscriptionId, WeightedFairScheduler,
-    delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner, Settlement},
+    AttemptsResolver, ConsumerError, ConsumerErrorKind, DeliveryState,
+    delivery::{DeliveryTokenInner, Settlement},
     set::Subscription,
 };
 use crate::{
@@ -18,35 +13,20 @@ use crate::{
         Destination, MessageProperties, PublishOutcome, PublishRequest, delay::DelayRouter,
     },
     topology::delay::DelayStrategy,
-    transport::{Delivery as TransportDelivery, TransportResult},
 };
 
 pub(crate) enum ConsumerCommand {
-    Incoming {
-        subscription: SubscriptionId,
-        result: TransportResult<TransportDelivery>,
-    },
-    Next {
-        waiter_id: u64,
-        completed: oneshot::Sender<Result<Delivery, ConsumerError>>,
-    },
-    CancelWaiter(u64),
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
         completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
     },
     UpdateGeneration {
-        subscription: SubscriptionId,
+        subscription: super::SubscriptionId,
         generation: u64,
         completed: oneshot::Sender<Result<(), ConsumerError>>,
     },
     Close(oneshot::Sender<()>),
-}
-
-struct Waiter {
-    id: u64,
-    completed: oneshot::Sender<Result<Delivery, ConsumerError>>,
 }
 
 struct RuntimeSubscription {
@@ -60,30 +40,14 @@ struct RuntimeSubscription {
 }
 
 struct ActorState {
-    subscriptions: HashMap<SubscriptionId, RuntimeSubscription>,
-    buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
-    source_errors: VecDeque<ConsumerError>,
-    scheduler: WeightedFairScheduler,
-    waiting: VecDeque<Waiter>,
-    in_flight: usize,
-    max_in_flight: usize,
-    commands: mpsc::Sender<ConsumerCommand>,
+    subscriptions: HashMap<super::SubscriptionId, RuntimeSubscription>,
     metrics: Metrics,
 }
 
 impl ActorState {
-    fn new(
-        subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
-        commands: mpsc::Sender<ConsumerCommand>,
-        metrics: Metrics,
-    ) -> Self {
-        let mut scheduler = WeightedFairScheduler::default();
+    fn new(subscriptions: Vec<Subscription>, metrics: Metrics) -> Self {
         let mut runtime = HashMap::new();
-        let mut buffers = HashMap::new();
         for subscription in subscriptions {
-            scheduler.register(subscription.id.clone(), subscription.policy);
-            buffers.insert(subscription.id.clone(), VecDeque::new());
             runtime.insert(
                 subscription.id,
                 RuntimeSubscription {
@@ -100,164 +64,21 @@ impl ActorState {
 
         Self {
             subscriptions: runtime,
-            buffers,
-            source_errors: VecDeque::new(),
-            scheduler,
-            waiting: VecDeque::new(),
-            in_flight: 0,
-            max_in_flight,
-            commands,
             metrics,
         }
-    }
-
-    fn dispatch(&mut self) {
-        while self.in_flight < self.max_in_flight {
-            while self
-                .waiting
-                .front()
-                .is_some_and(|waiter| waiter.completed.is_closed())
-            {
-                self.waiting.pop_front();
-            }
-            let Some(waiter) = self.waiting.pop_front() else {
-                return;
-            };
-            if let Some(error) = self.source_errors.pop_front() {
-                if let Err(Err(error)) = waiter.completed.send(Err(error)) {
-                    self.source_errors.push_front(error);
-                }
-                continue;
-            }
-            let Some(subscription) = self.scheduler.next(Instant::now()) else {
-                self.waiting.push_front(waiter);
-                return;
-            };
-            let Some(delivery) = self
-                .buffers
-                .get(&subscription)
-                .and_then(VecDeque::front)
-                .cloned()
-            else {
-                self.scheduler.mark_empty(&subscription);
-                self.waiting.push_front(waiter);
-                return;
-            };
-            let Some(runtime) = self.subscriptions.get(&subscription) else {
-                let _ = waiter.completed.send(Err(ConsumerError::new(
-                    ConsumerErrorKind::InvalidSubscription,
-                    "delivery references an unknown subscription",
-                )));
-                continue;
-            };
-            let message_id = delivery.message_id.as_ref().map_or_else(
-                || {
-                    MessageId::new(format!(
-                        "{}:{}:{}",
-                        runtime.generation, runtime.channel_id, delivery.delivery_tag
-                    ))
-                },
-                |message_id| MessageId::new(message_id.clone()),
-            );
-            let attempts = AttemptsResolver::default()
-                .resolve(&delivery.headers, delivery.redelivered)
-                .unwrap_or(if delivery.redelivered { 2 } else { 1 });
-            let token = DeliveryToken::new(DeliveryTokenInner::pending(
-                DeliveryIdentity {
-                    subscription: subscription.clone(),
-                    connection_key: runtime.connection_key,
-                    generation: runtime.generation,
-                    channel_id: runtime.channel_id,
-                    delivery_tag: delivery.delivery_tag,
-                },
-                message_id.clone(),
-                delivery.correlation_id.clone(),
-                delivery.payload.clone(),
-                delivery.headers.clone(),
-                attempts,
-                self.commands.clone(),
-            ));
-            let item = Delivery::new(
-                message_id,
-                delivery.correlation_id,
-                subscription.clone(),
-                delivery.payload,
-                delivery.headers,
-                attempts,
-                token,
-            );
-            if waiter.completed.send(Ok(item)).is_err() {
-                self.scheduler.mark_ready(&subscription);
-                continue;
-            }
-            if let Some(buffer) = self.buffers.get_mut(&subscription) {
-                buffer.pop_front();
-                if buffer.is_empty() {
-                    self.scheduler.mark_empty(&subscription);
-                }
-            }
-            self.metrics.record_delivery();
-            self.in_flight = self.in_flight.saturating_add(1);
-        }
-    }
-
-    fn record_source_error(&mut self, error: ConsumerError) {
-        if self.source_errors.len() >= self.max_in_flight.max(64) {
-            self.source_errors.pop_front();
-        }
-        self.source_errors.push_back(error);
-        self.dispatch();
-    }
-
-    fn release_budget(&mut self) {
-        self.in_flight = self.in_flight.saturating_sub(1);
-        self.dispatch();
     }
 }
 
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
-    max_in_flight: usize,
+    _max_in_flight: usize,
     mut receiver: mpsc::Receiver<ConsumerCommand>,
-    commands: mpsc::Sender<ConsumerCommand>,
+    _commands: mpsc::Sender<ConsumerCommand>,
     metrics: Metrics,
 ) {
-    let mut state = ActorState::new(subscriptions, max_in_flight, commands, metrics);
+    let mut state = ActorState::new(subscriptions, metrics);
     while let Some(command) = receiver.recv().await {
         match command {
-            ConsumerCommand::Incoming {
-                subscription,
-                result,
-            } => match result {
-                Ok(delivery) => {
-                    if let Some(buffer) = state.buffers.get_mut(&subscription) {
-                        buffer.push_back(delivery);
-                        state.scheduler.mark_ready(&subscription);
-                    }
-                    state.dispatch();
-                }
-                Err(error) => {
-                    state.record_source_error(ConsumerError::new(
-                        ConsumerErrorKind::Transport,
-                        error.to_string(),
-                    ));
-                }
-            },
-            ConsumerCommand::Next {
-                waiter_id,
-                completed,
-            } => {
-                if !completed.is_closed() {
-                    state.waiting.push_back(Waiter {
-                        id: waiter_id,
-                        completed,
-                    });
-                }
-                state.dispatch();
-            }
-            ConsumerCommand::CancelWaiter(waiter_id) => {
-                state.waiting.retain(|waiter| waiter.id != waiter_id);
-            }
             ConsumerCommand::Settle {
                 token,
                 settlement,
@@ -275,11 +96,9 @@ pub(crate) async fn run_actor(
                             }
                             DeliveryState::Pending | DeliveryState::Lost => {}
                         }
-                        state.release_budget();
                         let _ = completed.send(Ok(terminal));
                     }
                     Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
-                        state.release_budget();
                         let _ = completed.send(Err(error));
                     }
                     Err(error) => {
@@ -309,10 +128,6 @@ pub(crate) async fn run_actor(
             ConsumerCommand::Close(completed) => {
                 for runtime in state.subscriptions.values() {
                     let _ = runtime.channel.close().await;
-                }
-                let error = ConsumerError::closed();
-                for waiter in state.waiting.drain(..) {
-                    let _ = waiter.completed.send(Err(error.clone()));
                 }
                 let _ = completed.send(());
                 return;
