@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
+use std::{collections::BTreeMap, error::Error, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -248,8 +248,8 @@ impl Default for PublishProperties {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishRequest {
-    pub exchange: String,
-    pub routing_key: String,
+    pub exchange: Arc<str>,
+    pub routing_key: Arc<str>,
     pub payload: Bytes,
     pub mandatory: bool,
     pub properties: PublishProperties,
@@ -258,8 +258,8 @@ pub struct PublishRequest {
 impl PublishRequest {
     #[must_use]
     pub fn new(
-        exchange: impl Into<String>,
-        routing_key: impl Into<String>,
+        exchange: impl Into<Arc<str>>,
+        routing_key: impl Into<Arc<str>>,
         payload: impl Into<Bytes>,
     ) -> Self {
         Self {

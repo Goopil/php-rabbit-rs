@@ -29,13 +29,13 @@ pub enum PublisherConnectionEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Destination {
-    pub exchange: String,
-    pub routing_key: String,
+    pub exchange: Arc<str>,
+    pub routing_key: Arc<str>,
 }
 
 impl Destination {
     #[must_use]
-    pub fn new(exchange: impl Into<String>, routing_key: impl Into<String>) -> Self {
+    pub fn new(exchange: impl Into<Arc<str>>, routing_key: impl Into<Arc<str>>) -> Self {
         Self {
             exchange: exchange.into(),
             routing_key: routing_key.into(),
@@ -45,7 +45,7 @@ impl Destination {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageProperties {
-    pub message_id: String,
+    pub message_id: Arc<str>,
     pub content_type: Option<String>,
     pub correlation_id: Option<String>,
     pub delay_ms: Option<u64>,
@@ -54,7 +54,7 @@ pub struct MessageProperties {
 
 impl MessageProperties {
     #[must_use]
-    pub fn new(message_id: impl Into<String>) -> Self {
+    pub fn new(message_id: impl Into<Arc<str>>) -> Self {
         Self {
             message_id: message_id.into(),
             content_type: None,
@@ -164,14 +164,14 @@ pub struct ReturnInfo {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublishOutcome {
     Confirmed {
-        message_id: String,
+        message_id: Arc<str>,
     },
     Returned {
-        message_id: String,
+        message_id: Arc<str>,
         reply: ReturnInfo,
     },
     Ambiguous {
-        message_id: String,
+        message_id: Arc<str>,
     },
 }
 

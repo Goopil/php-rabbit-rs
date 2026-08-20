@@ -153,8 +153,8 @@ impl PublisherChannel for LapinPublisherChannel {
         let confirmation = self
             .inner
             .basic_publish(
-                exchange.into(),
-                routing_key.into(),
+                exchange.as_ref().into(),
+                routing_key.as_ref().into(),
                 BasicPublishOptions {
                     mandatory: request.mandatory,
                     immediate: false,

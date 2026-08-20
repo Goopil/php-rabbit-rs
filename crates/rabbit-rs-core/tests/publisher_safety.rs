@@ -165,13 +165,13 @@ async fn resolves_acks_for_multiple_sequences() {
     assert_eq!(
         first.wait().await.expect("first ACK"),
         PublishOutcome::Confirmed {
-            message_id: "one".to_owned()
+            message_id: "one".into()
         }
     );
     assert_eq!(
         second.wait().await.expect("second ACK"),
         PublishOutcome::Confirmed {
-            message_id: "two".to_owned()
+            message_id: "two".into()
         }
     );
 }
@@ -295,7 +295,7 @@ async fn connection_loss_before_confirm_is_replayed() {
     assert_eq!(
         waiter.wait().await.expect("replayed outcome"),
         PublishOutcome::Confirmed {
-            message_id: "uncertain".to_owned()
+            message_id: "uncertain".into()
         }
     );
 }
@@ -306,7 +306,7 @@ fn republication_preserves_the_message_id() {
 
     let retry = original.republish(Instant::now() + Duration::from_secs(30));
 
-    assert_eq!(retry.properties.message_id, "stable-id");
+    assert_eq!(retry.properties.message_id.as_ref(), "stable-id");
     assert_eq!(retry.payload, original.payload);
 }
 
@@ -491,4 +491,43 @@ async fn confirm_timeout_from_config_is_applied() {
         waiter.wait().await.expect_err("timeout").kind(),
         PublishErrorKind::Timeout
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn batch_publish_uses_arc_refcount_for_destination() {
+    let transport = MockTransport::default();
+    for _ in 0..100 {
+        transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    }
+    let actor = actor(
+        &transport,
+        PublisherConfig::new(
+            256,
+            1024 * 1024,
+            Duration::from_millis(1),
+            256,
+            Duration::from_secs(30),
+        ),
+    )
+    .await;
+
+    let mut waiters = Vec::with_capacity(100);
+    for i in 0..100 {
+        let request = PublishRequest::new(
+            Destination::new("test-exchange", "test-key"),
+            Bytes::from_static(b"payload"),
+            MessageProperties::new(format!("msg-{i}")),
+            Instant::now() + Duration::from_secs(30),
+        );
+        waiters.push(actor.try_publish(request).expect("publish"));
+    }
+
+    wait_for_publish_count(&transport, 100).await;
+
+    for waiter in waiters {
+        assert!(matches!(
+            waiter.wait().await,
+            Ok(PublishOutcome::Confirmed { .. })
+        ));
+    }
 }

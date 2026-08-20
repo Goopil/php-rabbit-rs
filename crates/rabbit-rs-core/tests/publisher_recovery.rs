@@ -118,7 +118,7 @@ async fn publication_accepted_during_recovery_is_sent_after_ready() {
     assert_eq!(
         waiter.wait().await.expect("confirmed after recovery"),
         PublishOutcome::Confirmed {
-            message_id: "during-outage".to_owned()
+            message_id: "during-outage".into()
         }
     );
 }
@@ -148,7 +148,7 @@ async fn ready_with_the_same_generation_as_recovering_resumes_publication() {
     assert_eq!(
         waiter.wait().await.expect("confirmed after recovery"),
         PublishOutcome::Confirmed {
-            message_id: "same-generation".to_owned()
+            message_id: "same-generation".into()
         }
     );
 }
@@ -183,7 +183,7 @@ async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() 
     assert_eq!(
         waiter.wait().await.expect("replayed ACK"),
         PublishOutcome::Confirmed {
-            message_id: "stable-id".to_owned()
+            message_id: "stable-id".into()
         }
     );
 }
@@ -246,7 +246,7 @@ async fn late_confirm_from_old_generation_cannot_resolve_the_waiter() {
     assert_eq!(
         waiter.wait().await.expect("new generation ACK"),
         PublishOutcome::Confirmed {
-            message_id: "generation-safe".to_owned()
+            message_id: "generation-safe".into()
         }
     );
 }
@@ -455,7 +455,7 @@ async fn ready_with_same_generation_as_recovering_resumes() {
     assert_eq!(
         waiter.wait().await.expect("confirmed after recovery"),
         PublishOutcome::Confirmed {
-            message_id: "same-gen".to_owned()
+            message_id: "same-gen".into()
         }
     );
 }

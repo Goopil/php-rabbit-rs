@@ -549,7 +549,7 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
         })
         .expect("ACK original");
     assert!(publish < ack);
-    assert_eq!(transport_request.exchange, "jobs.delayed");
+    assert_eq!(transport_request.exchange.as_ref(), "jobs.delayed");
     assert_eq!(
         transport_request.properties.message_id.as_deref(),
         Some("broker-message-id")

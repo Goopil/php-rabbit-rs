@@ -256,7 +256,7 @@ impl Pool {
 
 fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
     match outcome {
-        PublishOutcome::Confirmed { message_id } => Ok(message_id),
+        PublishOutcome::Confirmed { message_id } => Ok(message_id.as_ref().to_owned()),
         PublishOutcome::Returned { message_id, reply } => rabbit_exception(format!(
             "message {message_id} was returned as unroutable (AMQP {})",
             reply.code

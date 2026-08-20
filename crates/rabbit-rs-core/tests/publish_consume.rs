@@ -167,7 +167,7 @@ async fn publish_confirm_then_consume_and_ack() {
     assert_eq!(
         outcome,
         PublishOutcome::Confirmed {
-            message_id: "msg-confirm-1".to_owned(),
+            message_id: "msg-confirm-1".into(),
         }
     );
 
@@ -275,7 +275,7 @@ async fn bulk_publish_then_consume_all() {
         assert_eq!(
             outcome,
             &PublishOutcome::Confirmed {
-                message_id: format!("msg-bulk-{i}")
+                message_id: format!("msg-bulk-{i}").into()
             }
         );
     }

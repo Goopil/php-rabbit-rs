@@ -121,13 +121,13 @@ async fn reuses_one_connection_and_publisher_for_confirmed_messages() {
     assert_eq!(
         first,
         PublishOutcome::Confirmed {
-            message_id: "first".to_owned()
+            message_id: "first".into()
         }
     );
     assert_eq!(
         second,
         PublishOutcome::Confirmed {
-            message_id: "second".to_owned()
+            message_id: "second".into()
         }
     );
     let operations = transport.operations();

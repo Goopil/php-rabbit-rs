@@ -26,8 +26,8 @@ fn make_request(header_count: usize) -> PublishRequest {
     };
 
     PublishRequest {
-        exchange: "jobs".to_owned(),
-        routing_key: "high".to_owned(),
+        exchange: "jobs".into(),
+        routing_key: "high".into(),
         payload: Bytes::from(vec![0x42; 256]),
         mandatory: true,
         properties,
