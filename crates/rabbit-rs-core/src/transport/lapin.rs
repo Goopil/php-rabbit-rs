@@ -33,6 +33,11 @@ impl Transport for LapinTransport {
     ) -> TransportResult<Box<dyn TransportConnection>> {
         let properties = ConnectionProperties::default()
             .with_connection_name(format!("rabbit-rs:{}", config.name).into());
+        // TCP_NODELAY: Lapin 4.10 does not expose a socket-level nodelay option
+        // through ConnectionProperties or its IO loop. The underlying TCP stream
+        // is managed internally by Lapin's IO loop with no public hook to set
+        // socket options. Disabling Nagle's algorithm would need a custom IO
+        // loop or a Lapin fork; deferred until Lapin exposes this.
         let tls_config = build_tls_config(config);
         let mut last_error = None;
 
@@ -358,7 +363,10 @@ pub fn connection_uri(config: &BrokerConfig, endpoint: &Endpoint) -> TransportRe
         .clear()
         .push(&config.vhost);
     uri.query_pairs_mut()
-        .append_pair("heartbeat", &config.heartbeat.as_secs().to_string());
+        .append_pair("heartbeat", &config.heartbeat.as_secs().to_string())
+        // Negotiate a 1 MB frame size (up from the 128 KB default) so larger
+        // payloads can be sent in a single frame, reducing per-frame overhead.
+        .append_pair("frame_max", "1048576");
 
     Ok(uri)
 }
@@ -671,7 +679,7 @@ mod tests {
         assert_eq!(uri.username(), "user%40example.com");
         assert_eq!(uri.password(), Some("p%40ss%2Fword"));
         assert_eq!(uri.path(), "/tenant%2Fone");
-        assert_eq!(uri.query(), Some("heartbeat=30"));
+        assert_eq!(uri.query(), Some("heartbeat=30&frame_max=1048576"));
     }
 
     #[test]
