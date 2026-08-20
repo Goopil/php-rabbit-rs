@@ -104,6 +104,18 @@ final class Consumer
     {
     }
 
+    /**
+     * Processes messages by calling the given callback for each delivery.
+     *
+     * @param callable(Delivery): bool $handler
+     * @param int $count Number of messages to process (0 = unlimited)
+     * @param int $timeoutMs Total timeout in milliseconds
+     * @return int Number of messages processed
+     */
+    public function consume(callable $handler, int $count = 0, int $timeoutMs = 1000): int
+    {
+    }
+
     public function close(): void
     {
     }
