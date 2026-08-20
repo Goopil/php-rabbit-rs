@@ -60,11 +60,15 @@ async fn actor(
 
 async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
     for _ in 0..100 {
-        let count = transport
+        let count: usize = transport
             .operations()
             .iter()
-            .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-            .count();
+            .map(|op| match op {
+                TransportOperation::Publish(_) => 1,
+                TransportOperation::PublishBatch(requests) => requests.len(),
+                _ => 0,
+            })
+            .sum();
         if count == expected {
             return;
         }
@@ -409,11 +413,12 @@ async fn publishes_with_mandatory_false_when_configured_off() {
     let operations = transport.operations();
     let publish = operations
         .iter()
-        .find(|op| matches!(op, TransportOperation::Publish(_)))
-        .expect("a publish operation");
-    let TransportOperation::Publish(req) = publish else {
-        panic!("expected a Publish operation");
+        .find(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .expect("a publish batch operation");
+    let TransportOperation::PublishBatch(requests) = publish else {
+        panic!("expected a PublishBatch operation");
     };
+    let req = &requests[0];
     assert!(
         !req.mandatory,
         "publish must have mandatory=false when config.mandatory=false"
@@ -449,11 +454,12 @@ async fn publishes_with_mandatory_true_when_configured_on() {
     let operations = transport.operations();
     let publish = operations
         .iter()
-        .find(|op| matches!(op, TransportOperation::Publish(_)))
-        .expect("a publish operation");
-    let TransportOperation::Publish(req) = publish else {
-        panic!("expected a Publish operation");
+        .find(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .expect("a publish batch operation");
+    let TransportOperation::PublishBatch(requests) = publish else {
+        panic!("expected a PublishBatch operation");
     };
+    let req = &requests[0];
     assert!(
         req.mandatory,
         "publish must have mandatory=true when config.mandatory=true"
@@ -530,4 +536,60 @@ async fn batch_publish_uses_arc_refcount_for_destination() {
             Ok(PublishOutcome::Confirmed { .. })
         ));
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn flush_uses_publish_batch_instead_of_individual_publish() {
+    let transport = MockTransport::default();
+    for _ in 0..3 {
+        transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    }
+    let actor = actor(&transport, config(3, 1_024)).await;
+
+    let _first = actor.try_publish(request("one", b"a")).expect("first");
+    let _second = actor.try_publish(request("two", b"b")).expect("second");
+    let _third = actor.try_publish(request("three", b"c")).expect("third");
+
+    for _ in 0..100 {
+        let has_batch = transport
+            .operations()
+            .iter()
+            .any(|op| matches!(op, TransportOperation::PublishBatch(_)));
+        if has_batch {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let operations = transport.operations();
+    let batch_count = operations
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .count();
+    let individual_count = operations
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Publish(_)))
+        .count();
+
+    assert!(
+        batch_count >= 1,
+        "expected at least one PublishBatch operation, got operations: {operations:?}"
+    );
+    assert_eq!(
+        individual_count, 0,
+        "expected no individual Publish operations when batch is used"
+    );
+
+    let TransportOperation::PublishBatch(requests) = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .expect("a PublishBatch operation")
+    else {
+        panic!("expected a PublishBatch operation");
+    };
+    assert_eq!(
+        requests.len(),
+        3,
+        "batch should contain all three publishes"
+    );
 }

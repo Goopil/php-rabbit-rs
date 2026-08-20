@@ -141,7 +141,7 @@ async fn publisher_replays_unconfirmed_messages_after_recovery() {
         if transport
             .operations()
             .iter()
-            .any(|op| matches!(op, TransportOperation::Publish(_)))
+            .any(|op| matches!(op, TransportOperation::PublishBatch(_)))
         {
             break;
         }

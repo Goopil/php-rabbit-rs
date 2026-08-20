@@ -75,11 +75,15 @@ async fn spawn_actor(
 
 async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
     for _ in 0..200 {
-        let count = transport
+        let count: usize = transport
             .operations()
             .iter()
-            .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-            .count();
+            .map(|op| match op {
+                TransportOperation::Publish(_) => 1,
+                TransportOperation::PublishBatch(requests) => requests.len(),
+                _ => 0,
+            })
+            .sum();
         if count == expected {
             return;
         }
@@ -94,7 +98,7 @@ fn find_publish(transport: &MockTransport) -> TransportRequest {
         .operations()
         .iter()
         .find_map(|operation| match operation {
-            TransportOperation::Publish(request) => Some(request.clone()),
+            TransportOperation::PublishBatch(requests) => requests.first().cloned(),
             _ => None,
         })
         .expect("at least one publish")

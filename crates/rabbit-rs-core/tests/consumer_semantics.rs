@@ -536,12 +536,12 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
     let operations = transport.operations();
     let publish = operations
         .iter()
-        .position(|operation| matches!(operation, TransportOperation::Publish(_)))
+        .position(|operation| matches!(operation, TransportOperation::PublishBatch(_)))
         .expect("republish");
     let transport_request = operations
         .iter()
         .find_map(|operation| match operation {
-            TransportOperation::Publish(request) => Some(request),
+            TransportOperation::PublishBatch(requests) => requests.first(),
             _ => None,
         })
         .expect("published request");

@@ -60,11 +60,15 @@ fn publish_request(message_id: &str) -> PublishRequest {
 
 async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
     for _ in 0..100 {
-        let count = transport
+        let count: usize = transport
             .operations()
             .iter()
-            .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-            .count();
+            .map(|op| match op {
+                TransportOperation::Publish(_) => 1,
+                TransportOperation::PublishBatch(requests) => requests.len(),
+                _ => 0,
+            })
+            .sum();
         if count == expected {
             return;
         }

@@ -413,6 +413,26 @@ pub trait PublisherChannel: TopologyChannel {
     ///
     /// Returns an error when the publish cannot be written to the channel.
     async fn publish(&self, request: PublishRequest) -> TransportResult<Box<dyn PublishReceipt>>;
+
+    /// Sends a batch of publishes, returning one receipt per request in order.
+    ///
+    /// The default implementation calls [`publish`](Self::publish) sequentially.
+    /// Implementations may override this to pipeline frames and reduce per-message
+    /// async overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any publish cannot be written to the channel.
+    async fn publish_batch(
+        &self,
+        requests: Vec<PublishRequest>,
+    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
+        let mut receipts = Vec::with_capacity(requests.len());
+        for request in requests {
+            receipts.push(self.publish(request).await?);
+        }
+        Ok(receipts)
+    }
 }
 
 #[async_trait]

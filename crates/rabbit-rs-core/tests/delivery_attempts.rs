@@ -269,7 +269,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
         .operations()
         .into_iter()
         .find_map(|operation| match operation {
-            TransportOperation::Publish(request) => Some(request),
+            TransportOperation::PublishBatch(requests) => requests.into_iter().next(),
             _ => None,
         })
         .expect("republished message");

@@ -27,6 +27,7 @@ pub enum TransportOperation {
     PurgeQueue { queue: String },
     EnableConfirms,
     Publish(PublishRequest),
+    PublishBatch(Vec<PublishRequest>),
     Qos { prefetch: u16 },
     Consume(ConsumerRequest),
     Ack { delivery_tag: u64, multiple: bool },
@@ -365,6 +366,31 @@ impl PublisherChannel for MockPublisherChannel {
         Ok(Box::new(MockPublishReceipt {
             confirmation: Some(result),
         }))
+    }
+
+    async fn publish_batch(
+        &self,
+        requests: Vec<PublishRequest>,
+    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
+        let count = requests.len();
+        self.record(TransportOperation::PublishBatch(requests));
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut receipts = Vec::with_capacity(count);
+        for _ in 0..count {
+            let result = state
+                .confirmations
+                .pop_front()
+                .unwrap_or(MockConfirmation::Ready(Ok(
+                    PublishConfirmation::NotRequested,
+                )));
+            receipts.push(Box::new(MockPublishReceipt {
+                confirmation: Some(result),
+            }) as Box<dyn PublishReceipt>);
+        }
+        Ok(receipts)
     }
 }
 

@@ -169,6 +169,36 @@ impl PublisherChannel for LapinPublisherChannel {
             inner: confirmation,
         }))
     }
+
+    async fn publish_batch(
+        &self,
+        requests: Vec<PublishRequest>,
+    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
+        let mut receipts = Vec::with_capacity(requests.len());
+        for request in requests {
+            let properties = publish_properties(&request);
+            let exchange = request.exchange;
+            let routing_key = request.routing_key;
+            let confirmation = self
+                .inner
+                .basic_publish(
+                    exchange.as_ref().into(),
+                    routing_key.as_ref().into(),
+                    BasicPublishOptions {
+                        mandatory: request.mandatory,
+                        immediate: false,
+                    },
+                    &request.payload,
+                    properties,
+                )
+                .await
+                .map_err(map_lapin_error)?;
+            receipts.push(Box::new(LapinPublishReceipt {
+                inner: confirmation,
+            }) as Box<dyn PublishReceipt>);
+        }
+        Ok(receipts)
+    }
 }
 
 struct LapinPublishReceipt {

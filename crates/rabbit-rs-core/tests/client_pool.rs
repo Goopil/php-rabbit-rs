@@ -210,8 +210,12 @@ async fn batch_enqueues_all_messages_before_waiting_for_confirms() {
         transport
             .operations()
             .iter()
-            .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-            .count(),
+            .map(|op| match op {
+                TransportOperation::Publish(_) => 1,
+                TransportOperation::PublishBatch(requests) => requests.len(),
+                _ => 0,
+            })
+            .sum::<usize>(),
         2
     );
     assert!(first.resolve(Ok(PublishConfirmation::Ack(None))));
@@ -434,7 +438,7 @@ async fn close_during_pending_confirm_resolves_the_publish_once() {
         if transport
             .operations()
             .iter()
-            .any(|operation| matches!(operation, TransportOperation::Publish(_)))
+            .any(|operation| matches!(operation, TransportOperation::PublishBatch(_)))
         {
             break;
         }

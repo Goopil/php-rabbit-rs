@@ -521,6 +521,19 @@ async fn flush_replay(state: &mut ActorState) {
 }
 
 async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPublish>) {
+    let Some(channel) = state.channel.clone() else {
+        state.replay.extend(pending);
+        return;
+    };
+
+    // Phase 1: Pre-process all messages — expire deadlines, ensure delay
+    // topology, assign sequence numbers, and convert to transport requests.
+    // If delay topology suspends mid-batch, replay everything collected so
+    // far plus the remaining messages without sending anything.
+    let mut batch: Vec<(u64, u64, time::Instant, RetainedPublish)> = Vec::new();
+    let mut transport_requests: Vec<TransportRequest> = Vec::new();
+    let mut suspended = false;
+
     while let Some(retained) = pending.pop_front() {
         if retained.request.deadline <= time::Instant::now() {
             complete_error(
@@ -530,19 +543,17 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             continue;
         }
 
-        let Some(channel) = state.channel.clone() else {
-            state.replay.push_back(retained);
-            state.replay.extend(pending);
-            return;
-        };
-
         match ensure_delay_topology(state, &channel, &retained).await {
             DelayTopologyOutcome::Ready => {}
             DelayTopologyOutcome::Suspend => {
+                for (_, _, _, r) in batch.drain(..) {
+                    state.replay.push_back(r);
+                }
                 state.replay.push_back(retained);
                 state.replay.extend(pending);
                 state.suspend(state.generation);
-                return;
+                suspended = true;
+                break;
             }
             DelayTopologyOutcome::Failed(error) => {
                 complete_error(retained, error);
@@ -563,8 +574,20 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             state.config.mandatory,
         );
 
-        match channel.publish(request).await {
-            Ok(receipt) => {
+        batch.push((sequence, generation, deadline, retained));
+        transport_requests.push(request);
+    }
+
+    if suspended || transport_requests.is_empty() {
+        return;
+    }
+
+    // Phase 2: Send all frames in one batch call.
+    match channel.publish_batch(transport_requests).await {
+        Ok(receipts) => {
+            for ((sequence, generation, deadline, retained), receipt) in
+                batch.into_iter().zip(receipts)
+            {
                 state.ledger.insert(
                     sequence,
                     InFlightPublish {
@@ -580,13 +603,17 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
                     (sequence, generation, result)
                 }));
             }
-            Err(error) if error.is_recoverable() => {
+        }
+        Err(error) if error.is_recoverable() => {
+            for (_, _, _, retained) in batch {
                 state.replay.push_back(retained);
-                state.replay.extend(pending);
-                state.suspend(generation);
-                return;
             }
-            Err(error) => complete_error(retained, transport_publish_error(&error)),
+            state.suspend(state.generation);
+        }
+        Err(error) => {
+            for (_, _, _, retained) in batch {
+                complete_error(retained, transport_publish_error(&error));
+            }
         }
     }
 }

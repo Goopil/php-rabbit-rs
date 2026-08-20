@@ -67,9 +67,10 @@ fn publish_operations(transport: &MockTransport) -> Vec<rabbit_rs_core::transpor
     transport
         .operations()
         .into_iter()
-        .filter_map(|operation| match operation {
-            TransportOperation::Publish(request) => Some(request),
-            _ => None,
+        .flat_map(|operation| match operation {
+            TransportOperation::Publish(request) => vec![request],
+            TransportOperation::PublishBatch(requests) => requests,
+            _ => vec![],
         })
         .collect()
 }
@@ -318,7 +319,7 @@ async fn topology_and_confirms_must_be_ready_before_replay() {
         .expect("confirm.select");
     let publish = operations
         .iter()
-        .position(|operation| matches!(operation, TransportOperation::Publish(_)))
+        .position(|operation| matches!(operation, TransportOperation::PublishBatch(_)))
         .expect("publish");
     assert!(confirms < publish);
 }
