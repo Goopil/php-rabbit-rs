@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::{BrokerConfig, Credentials, Endpoint, TlsConfig},
+    config::{BrokerConfig, Credentials, Endpoint, SafetyMode, TlsConfig},
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
         PublisherActor, PublisherConfig, PublisherConnectionEvent,
@@ -672,5 +672,146 @@ async fn flush_uses_publish_batch_instead_of_individual_publish() {
         requests.len(),
         3,
         "batch should contain all three publishes"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_skips_enable_confirms_and_mandatory() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Blind,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    assert!(
+        !operations
+            .iter()
+            .any(|op| matches!(op, TransportOperation::EnableConfirms)),
+        "enable_confirms must not be called in Blind mode"
+    );
+
+    let publish = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .expect("a publish batch operation");
+    let TransportOperation::PublishBatch(requests) = publish else {
+        panic!("expected a PublishBatch operation");
+    };
+    let req = &requests[0];
+    assert!(
+        !req.mandatory,
+        "publish must have mandatory=false in Blind mode"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn unsafe_mode_skips_enable_confirms() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Unsafe,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    assert!(
+        !operations
+            .iter()
+            .any(|op| matches!(op, TransportOperation::EnableConfirms)),
+        "enable_confirms must not be called in Unsafe mode"
+    );
+
+    let publish = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .expect("a publish batch operation");
+    let TransportOperation::PublishBatch(requests) = publish else {
+        panic!("expected a PublishBatch operation");
+    };
+    let req = &requests[0];
+    assert!(
+        !req.mandatory,
+        "publish must have mandatory=false in Unsafe mode"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn safe_mode_calls_enable_confirms_and_uses_mandatory() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let publisher = transport
+        .connect(&broker())
+        .await
+        .expect("connection")
+        .open_publisher()
+        .await
+        .expect("publisher");
+    let config = PublisherConfig::with_safety(
+        1,
+        1_024,
+        Duration::from_millis(1),
+        32,
+        Duration::from_secs(5),
+        SafetyMode::Safe,
+    );
+    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+
+    let waiter = actor.try_publish(request("one", b"a")).expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    let operations = transport.operations();
+    assert!(
+        operations
+            .iter()
+            .any(|op| matches!(op, TransportOperation::EnableConfirms)),
+        "enable_confirms must be called in Safe mode"
+    );
+
+    let publish = operations
+        .iter()
+        .find(|op| matches!(op, TransportOperation::PublishBatch(_)))
+        .expect("a publish batch operation");
+    let TransportOperation::PublishBatch(requests) = publish else {
+        panic!("expected a PublishBatch operation");
+    };
+    let req = &requests[0];
+    assert!(
+        req.mandatory,
+        "publish must have mandatory=true in Safe mode"
     );
 }

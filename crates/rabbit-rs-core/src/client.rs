@@ -618,14 +618,14 @@ fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
 
 fn publisher_config(config: &ValidatedConfig) -> PublisherConfig {
     let publisher = config.publisher();
-    PublisherConfig::with_flags(
+    let safety = publisher.effective_safety();
+    PublisherConfig::with_safety(
         DEFAULT_MAX_MESSAGES,
         DEFAULT_MAX_BYTES,
         Duration::from_millis(1),
         DEFAULT_BUFFER_CAPACITY,
         publisher.confirm_timeout,
-        publisher.confirms,
-        publisher.mandatory,
+        safety,
     )
 }
 

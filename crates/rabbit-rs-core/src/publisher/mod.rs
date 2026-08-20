@@ -11,6 +11,7 @@ use tokio::{
     time::Instant,
 };
 
+use crate::config::SafetyMode;
 use crate::topology::delay::DelayStrategy;
 use crate::transport::{
     PublishConfirmation, PublishHeaders, PublishProperties as TransportProperties,
@@ -114,6 +115,7 @@ pub struct PublisherConfig {
     pub flush_interval: Duration,
     pub buffer_capacity: usize,
     pub confirm_timeout: Duration,
+    pub safety: SafetyMode,
     pub confirms: bool,
     pub mandatory: bool,
 }
@@ -133,6 +135,7 @@ impl PublisherConfig {
             flush_interval,
             buffer_capacity,
             confirm_timeout,
+            safety: SafetyMode::Safe,
             confirms: true,
             mandatory: true,
         }
@@ -154,8 +157,61 @@ impl PublisherConfig {
             flush_interval,
             buffer_capacity,
             confirm_timeout,
+            safety: if confirms {
+                SafetyMode::Safe
+            } else {
+                SafetyMode::Unsafe
+            },
             confirms,
             mandatory,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_safety(
+        max_messages: usize,
+        max_bytes: usize,
+        flush_interval: Duration,
+        buffer_capacity: usize,
+        confirm_timeout: Duration,
+        safety: SafetyMode,
+    ) -> Self {
+        Self {
+            max_messages,
+            max_bytes,
+            flush_interval,
+            buffer_capacity,
+            confirm_timeout,
+            confirms: matches!(safety, SafetyMode::Safe),
+            mandatory: matches!(safety, SafetyMode::Safe),
+            safety,
+        }
+    }
+
+    /// Returns `true` if publisher confirms should be enabled.
+    ///
+    /// When `safety` is `Blind` or `Unsafe`, confirms are always off.
+    /// When `safety` is `Safe`, falls back to the legacy `confirms` field
+    /// for backward compatibility.
+    #[must_use]
+    pub const fn enables_confirms(&self) -> bool {
+        match self.safety {
+            SafetyMode::Safe => self.confirms,
+            SafetyMode::Unsafe | SafetyMode::Blind => false,
+        }
+    }
+
+    /// Returns the mandatory flag to use for publishes.
+    ///
+    /// When `safety` is `Blind`, mandatory is always `false`.
+    /// When `safety` is `Unsafe`, mandatory is `false` (no confirms).
+    /// When `safety` is `Safe`, falls back to the legacy `mandatory` field
+    /// for backward compatibility.
+    #[must_use]
+    pub const fn mandatory_flag(&self) -> bool {
+        match self.safety {
+            SafetyMode::Safe => self.mandatory,
+            SafetyMode::Unsafe | SafetyMode::Blind => false,
         }
     }
 }

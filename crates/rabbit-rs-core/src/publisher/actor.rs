@@ -93,7 +93,7 @@ impl PublisherActor {
             capacity,
             metrics,
             confirm_timeout: config.confirm_timeout,
-            mandatory: config.mandatory,
+            mandatory: config.mandatory_flag(),
             hot_channel,
             delay_strategy: delay_strategy_arc,
         }
@@ -462,7 +462,7 @@ async fn run_actor(
         delay_strategy,
         hot_channel.clone(),
     );
-    if state.config.confirms
+    if state.config.enables_confirms()
         && let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
     {
@@ -577,7 +577,7 @@ async fn handle_connection_event(
                     "publisher recovery generation is stale",
                 ));
             }
-            if state.config.confirms {
+            if state.config.enables_confirms() {
                 channel
                     .enable_confirms()
                     .await
@@ -666,7 +666,7 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         let request = super::into_transport_request(
             &retained.request,
             state.delay_strategy.as_deref(),
-            state.config.mandatory,
+            state.config.mandatory_flag(),
         );
 
         batch.push((sequence, generation, deadline, retained));
