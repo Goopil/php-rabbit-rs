@@ -6,7 +6,10 @@ use rabbit_rs_core::{
         BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
         TopologyMode,
     },
-    consumer::{ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionPolicy},
+    consumer::{
+        ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
+        SubscriptionPolicy,
+    },
     pool::ConnectionKey,
     transport::{
         Delivery as TransportDelivery, Transport,
@@ -269,5 +272,155 @@ async fn batched_ack_drains_on_close() {
             .operations()
             .iter()
             .any(|op| matches!(op, TransportOperation::Ack { multiple: true, .. }))
+    );
+}
+
+#[tokio::test]
+async fn try_next_returns_none_on_empty_buffer() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let result = consumer.try_next().expect("try_next ok");
+    assert!(result.is_none(), "empty buffer should return None");
+}
+
+#[tokio::test]
+async fn try_next_returns_some_delivery_from_filled_buffer() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    transport.push_delivery(Ok(delivery(1, b"msg-0")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let delivery = consumer
+        .try_next()
+        .expect("try_next ok")
+        .expect("delivery available");
+    assert_eq!(delivery.payload, Bytes::from_static(b"msg-0"));
+
+    let result = consumer.try_next().expect("try_next ok");
+    assert!(result.is_none(), "buffer should now be empty");
+}
+
+#[tokio::test]
+async fn try_next_returns_multiple_deliveries_in_order() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    transport.push_delivery(Ok(delivery(1, b"first")));
+    transport.push_delivery(Ok(delivery(2, b"second")));
+    transport.push_delivery(Ok(delivery(3, b"third")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let first = consumer.try_next().expect("try_next ok").expect("first");
+    let second = consumer.try_next().expect("try_next ok").expect("second");
+    let third = consumer.try_next().expect("try_next ok").expect("third");
+
+    assert_eq!(first.payload, Bytes::from_static(b"first"));
+    assert_eq!(second.payload, Bytes::from_static(b"second"));
+    assert_eq!(third.payload, Bytes::from_static(b"third"));
+
+    let result = consumer.try_next().expect("try_next ok");
+    assert!(result.is_none(), "buffer should be empty after three");
+}
+
+#[tokio::test]
+async fn try_next_returns_error_from_source_failure() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    transport.push_delivery(Err(rabbit_rs_core::transport::TransportError::connection(
+        "source failure",
+    )));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    let error = consumer.try_next().expect_err("source error");
+    assert_eq!(error.kind(), ConsumerErrorKind::Transport);
+}
+
+#[tokio::test]
+async fn try_next_returns_error_after_close() {
+    let transport = MockTransport::default();
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    // Give the pump time to exit (no deliveries, stream returns None, buffer
+    // disconnects). Then close and verify try_next reports the closed state.
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    consumer.close().await.expect("close");
+
+    let error = consumer.try_next().expect_err("closed error");
+    assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+}
+
+#[tokio::test]
+async fn try_next_discards_stale_generation_deliveries() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"stale")));
+    let consumer = ConsumerSet::spawn(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        1,
+    )
+    .await
+    .expect("consumer set");
+
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    // Bump the generation — deliveries buffered under generation 1 are now stale.
+    consumer
+        .update_generation(SubscriptionId::new("jobs"), 2)
+        .await
+        .expect("new generation");
+
+    // try_next should discard the stale delivery (generation 1 != current 2)
+    // and return None since the buffer is now empty.
+    let result = consumer.try_next();
+    assert!(result.is_ok(), "try_next should succeed, got: {result:?}");
+    assert!(
+        result.unwrap().is_none(),
+        "stale delivery must be discarded, buffer empty"
     );
 }

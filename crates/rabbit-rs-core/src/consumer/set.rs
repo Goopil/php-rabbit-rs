@@ -207,8 +207,10 @@ impl ConsumerSet {
         Ok(ConsumerHandle {
             commands,
             buffer_rx,
+            buffer_tx: buffer_tx.clone(),
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
+            close_notify: Arc::new(tokio::sync::Notify::new()),
             current_generation,
         })
     }
@@ -309,8 +311,12 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_rx: flume::Receiver<BufferedDelivery>,
+    /// Holds a sender to keep the flume channel open even when all pumps exit.
+    #[allow(dead_code)]
+    buffer_tx: flume::Sender<BufferedDelivery>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
+    close_notify: Arc<tokio::sync::Notify>,
     current_generation: Arc<AtomicU64>,
 }
 
@@ -319,6 +325,7 @@ impl Drop for ConsumerHandle {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.close_notify.notify_waiters();
         let (sender, _) = oneshot::channel();
         let _ = self.commands.try_send(ConsumerCommand::Close(sender));
     }
@@ -343,6 +350,9 @@ impl ConsumerHandle {
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
         let generation = self.current_generation.load(Ordering::Acquire);
         loop {
+            if self.closed.load(Ordering::Acquire) {
+                return Err(ConsumerError::closed());
+            }
             match self.buffer_rx.try_recv() {
                 Ok(BufferedDelivery::Delivery {
                     delivery,
@@ -355,14 +365,49 @@ impl ConsumerHandle {
                 Err(flume::TryRecvError::Empty) => {}
                 Err(flume::TryRecvError::Disconnected) => return Err(ConsumerError::closed()),
             }
-            match self.buffer_rx.recv_async().await {
+            tokio::select! {
+                result = self.buffer_rx.recv_async() => match result {
+                    Ok(BufferedDelivery::Delivery {
+                        delivery,
+                        generation: deliv_gen,
+                    }) if deliv_gen == generation => return Ok(delivery),
+                    Ok(BufferedDelivery::Error(error)) => return Err(error),
+                    Ok(BufferedDelivery::Delivery { .. }) => {}
+                    Err(flume::RecvError::Disconnected) => return Err(ConsumerError::closed()),
+                },
+                () = self.close_notify.notified() => return Err(ConsumerError::closed()),
+            }
+        }
+    }
+
+    /// Attempts to retrieve the next delivery without blocking.
+    ///
+    /// Uses `try_recv()` from the bounded flume buffer — sub-microsecond, no async
+    /// runtime crossing. Returns `Ok(None)` when the buffer is empty, `Ok(Some(delivery))`
+    /// on a fresh delivery, and `Err` on a closed consumer or transport error.
+    /// Stale deliveries from a previous connection generation are discarded
+    /// (`RabbitMQ` will redeliver them on the new connection).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transport or closed-consumer error.
+    pub fn try_next(&self) -> Result<Option<Delivery>, ConsumerError> {
+        let generation = self.current_generation.load(Ordering::Acquire);
+        loop {
+            match self.buffer_rx.try_recv() {
                 Ok(BufferedDelivery::Delivery {
                     delivery,
                     generation: deliv_gen,
-                }) if deliv_gen == generation => return Ok(delivery),
+                }) if deliv_gen == generation => return Ok(Some(delivery)),
                 Ok(BufferedDelivery::Error(error)) => return Err(error),
                 Ok(BufferedDelivery::Delivery { .. }) => {}
-                Err(flume::RecvError::Disconnected) => return Err(ConsumerError::closed()),
+                Err(flume::TryRecvError::Empty) => {
+                    if self.closed.load(Ordering::Acquire) {
+                        return Err(ConsumerError::closed());
+                    }
+                    return Ok(None);
+                }
+                Err(flume::TryRecvError::Disconnected) => return Err(ConsumerError::closed()),
             }
         }
     }
@@ -399,6 +444,7 @@ impl ConsumerHandle {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
+        self.close_notify.notify_waiters();
         let (completed, completion) = oneshot::channel();
         self.commands
             .send(ConsumerCommand::Close(completed))
