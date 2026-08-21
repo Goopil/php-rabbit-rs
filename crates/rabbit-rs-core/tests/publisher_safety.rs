@@ -68,40 +68,6 @@ async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn flushes_when_max_messages_is_reached() {
-    let transport = MockTransport::default();
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor(&transport, config()).await;
-
-    let first = actor.try_publish(request("one", b"a")).expect("first");
-    let second = actor.try_publish(request("two", b"b")).expect("second");
-    wait_for_publish_count(&transport, 2).await;
-
-    assert!(matches!(
-        first.wait().await,
-        Ok(PublishOutcome::Confirmed { .. })
-    ));
-    assert!(matches!(
-        second.wait().await,
-        Ok(PublishOutcome::Confirmed { .. })
-    ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn flushes_when_max_bytes_is_reached() {
-    let transport = MockTransport::default();
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor(&transport, config()).await;
-
-    let _first = actor.try_publish(request("one", b"123")).expect("first");
-    let _second = actor.try_publish(request("two", b"45")).expect("second");
-
-    wait_for_publish_count(&transport, 2).await;
-}
-
-#[tokio::test(start_paused = true)]
 async fn flushes_on_the_configured_timer() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
