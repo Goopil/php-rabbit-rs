@@ -136,8 +136,11 @@ cargo test -p rabbit-rs-core
 # PHP extension tests (requires the extension built and loaded)
 ./scripts/test-extension.sh
 
-# Laravel package tests
-cd packages/laravel-queue && vendor/bin/phpunit
+# Laravel package tests (Unit + Feature, no extension needed)
+./scripts/test-laravel.sh
+
+# Laravel integration tests (requires extension + RabbitMQ)
+./scripts/test-laravel.sh tests/Integration
 ```
 
 ### Generate stubs

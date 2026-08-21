@@ -6,7 +6,9 @@
 
 **Architecture:** Un workspace Rust contient rabbit-rs-core et l'extension rabbit-rs-php construisant ext-rabbit_rs. Le package Composer goopil/rabbit-rs-laravel adapte cette API aux contrats Laravel Queue sans remplacer Illuminate\Queue\Worker. Les connexions et channels sont pilotés par des acteurs Tokio par processus PHP, tandis qu'un laboratoire RabbitMQ reproductible valide performances et scénarios de panne.
 
-**Tech Stack:** Rust 1.96, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, PIE 1.5+, Composer, Packagist, Laravel 12/13, Pest, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus, Toxiproxy.
+**Tech Stack:** Rust 1.96, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, PIE 1.5+, Composer, Packagist, Laravel 12/13, Pest, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus.
+
+> **Note (2026-08-21):** Chaos tests and Toxiproxy fault injection have been removed. The at-least-once delivery guarantees are validated through integration tests with the mock transport and the 3-node RabbitMQ lab (without Toxiproxy). Criterion benchmarks have been replaced by the PHP benchmark suite.
 
 ---
 
