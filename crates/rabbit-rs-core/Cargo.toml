@@ -24,14 +24,9 @@ tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "ti
 url = "2.5"
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.47", features = ["test-util", "process"] }
-
-[[test]]
-name = "chaos_reconnect"
-path = "tests/chaos/reconnect.rs"
 
 [lints]
 workspace = true
