@@ -5,8 +5,6 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Illuminate\Support\ServiceProvider;
-use InvalidArgumentException;
-use RuntimeException;
 
 describe('package defaults', function (): void {
     it('publishes safe defaults', function (): void {

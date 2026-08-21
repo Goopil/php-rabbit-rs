@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use Closure;
 use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
@@ -10,9 +9,6 @@ use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Queue\Events\JobFailed;
-use RuntimeException;
-use Throwable;
-use WeakReference;
 
 final class RabbitMqFailedJobHandler
 {
@@ -30,7 +26,7 @@ final class RabbitMqFailedJobHandler
 function job(Delivery $delivery): RabbitMqJob
 {
     return new RabbitMqJob(
-        test()->app,
+        app(),
         $delivery,
         'rabbit-main',
         'orders.high',

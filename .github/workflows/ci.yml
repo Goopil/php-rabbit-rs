@@ -79,9 +79,7 @@ jobs:
           composer update --quiet --ignore-platform-reqs
 
       - name: Run Pest tests
-        run: |
-          cd packages/laravel-queue
-          php vendor/bin/pest tests/Unit tests/Feature --parallel --testdox
+        run: ./scripts/test-laravel.sh
 
   phpt:
     name: PHPT (${{ matrix.php }})
@@ -154,7 +152,9 @@ jobs:
           composer require laravel/octane --dev --ignore-platform-reqs || true
 
       - name: Run Octane lifecycle tests
-        run: ./scripts/test-octane.sh
+        run: |
+          cd packages/laravel-queue
+          php vendor/bin/pest tests/Feature/OctaneLifecycleTest.php tests/Feature/OctaneLifecycleHooksTest.php --testdox
 
   integration:
     name: Integration + Smoke

@@ -8,9 +8,6 @@ use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Http\Request;
-use InvalidArgumentException;
-use ReflectionProperty;
-use WeakReference;
 
 function connectorProperty(object $object, string $name): mixed
 {

@@ -35,7 +35,7 @@ function newAdminQueue(
     string $defaultQueue,
 ): RabbitMqQueue {
     $queue = new RabbitMqQueue($pool, $routes, $defaultQueue);
-    $queue->setContainer(test()->app);
+    $queue->setContainer(app());
 
     return $queue;
 }

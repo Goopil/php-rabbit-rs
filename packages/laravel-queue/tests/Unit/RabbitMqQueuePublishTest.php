@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use Closure;
 use Goopil\RabbitRs\BackpressureException;
 use Goopil\RabbitRs\Exception as NativeException;
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
@@ -12,7 +11,6 @@ use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Support\Str;
-use InvalidArgumentException;
 
 final class DelayedPublishTestJob
 {
@@ -39,7 +37,7 @@ function publishNewQueue(
     bool $dispatchAfterCommit = false,
 ): RabbitMqQueue {
     $queue = new RabbitMqQueue($pool, $routes, $defaultQueue, $dispatchAfterCommit);
-    $queue->setContainer(test()->app);
+    $queue->setContainer(app());
 
     return $queue;
 }

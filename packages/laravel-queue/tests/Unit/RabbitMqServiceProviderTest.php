@@ -6,7 +6,6 @@ use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
-use RuntimeException;
 
 describe('RabbitMqServiceProvider', function () {
     it('reports the missing native extension when resolving the queue', function () {
