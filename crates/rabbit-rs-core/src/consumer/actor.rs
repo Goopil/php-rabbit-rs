@@ -181,12 +181,10 @@ impl ActorState {
             self.source_errors.pop_front();
         }
         self.source_errors.push_back(error);
-        self.dispatch();
     }
 
     fn release_budget(&mut self) {
         self.in_flight = self.in_flight.saturating_sub(1);
-        self.dispatch();
     }
 }
 
@@ -197,10 +195,13 @@ pub(crate) async fn run_actor(
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     metrics: Metrics,
+    dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
     let mut state = ActorState::new(subscriptions, max_in_flight, commands, buffer_tx, metrics);
     let mut dispatch_timer = tokio::time::interval(Duration::from_millis(1));
     dispatch_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Allow pumps to push deliveries before the first dispatch.
+    tokio::task::yield_now().await;
     loop {
         tokio::select! {
             command = receiver.recv() => match command {
@@ -213,7 +214,6 @@ pub(crate) async fn run_actor(
                             buffer.push_back(delivery);
                             state.scheduler.mark_ready(&subscription);
                         }
-                        state.dispatch();
                     }
                     Err(error) => {
                         state.record_source_error(ConsumerError::new(
@@ -240,10 +240,12 @@ pub(crate) async fn run_actor(
                                 DeliveryState::Pending | DeliveryState::Lost => {}
                             }
                             state.release_budget();
+                            state.dispatch();
                             let _ = completed.send(Ok(terminal));
                         }
                         Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
                             state.release_budget();
+                            state.dispatch();
                             let _ = completed.send(Err(error));
                         }
                         Err(error) => {
@@ -279,6 +281,9 @@ pub(crate) async fn run_actor(
                 }
                 None => return,
             },
+            () = dispatch_notify.notified() => {
+                state.dispatch();
+            }
             _ = dispatch_timer.tick() => {
                 state.dispatch();
             }

@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
     ConsumerError, Delivery, SubscriptionId, SubscriptionPolicy,
@@ -156,6 +156,7 @@ impl ConsumerSet {
         let buffer_size = (total_prefetch as usize) * BUFFER_CAPACITY_FACTOR / 2;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
+        let dispatch_notify = Arc::new(Notify::new());
 
         tokio::spawn(run_actor(
             subscriptions,
@@ -164,6 +165,7 @@ impl ConsumerSet {
             commands.clone(),
             buffer_tx,
             metrics.clone(),
+            dispatch_notify.clone(),
         ));
         for (subscription, stream) in streams {
             spawn_source(subscription, stream, commands.clone());
@@ -174,6 +176,7 @@ impl ConsumerSet {
             buffer_rx,
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
+            dispatch_notify,
         })
     }
 }
@@ -211,6 +214,7 @@ pub struct ConsumerHandle {
     buffer_rx: flume::Receiver<Result<Delivery, ConsumerError>>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
+    dispatch_notify: Arc<Notify>,
 }
 
 impl Drop for ConsumerHandle {
@@ -239,8 +243,14 @@ impl ConsumerHandle {
     /// Returns a typed error when the consumer is closed.
     pub fn try_next(&self) -> Result<Option<Delivery>, ConsumerError> {
         match self.buffer_rx.try_recv() {
-            Ok(Ok(delivery)) => Ok(Some(delivery)),
-            Ok(Err(error)) => Err(error),
+            Ok(Ok(delivery)) => {
+                self.dispatch_notify.notify_one();
+                Ok(Some(delivery))
+            }
+            Ok(Err(error)) => {
+                self.dispatch_notify.notify_one();
+                Err(error)
+            }
             Err(flume::TryRecvError::Empty) => Ok(None),
             Err(flume::TryRecvError::Disconnected) => Err(ConsumerError::closed()),
         }
@@ -253,8 +263,14 @@ impl ConsumerHandle {
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
         match self.buffer_rx.recv_async().await {
-            Ok(Ok(delivery)) => Ok(delivery),
-            Ok(Err(error)) => Err(error),
+            Ok(Ok(delivery)) => {
+                self.dispatch_notify.notify_one();
+                Ok(delivery)
+            }
+            Ok(Err(error)) => {
+                self.dispatch_notify.notify_one();
+                Err(error)
+            }
             Err(flume::RecvError::Disconnected) => Err(ConsumerError::closed()),
         }
     }
