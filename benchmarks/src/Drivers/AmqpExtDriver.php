@@ -22,7 +22,7 @@ class AmqpExtDriver extends AbstractBenchmark
     public function __construct()
     {
         if (!extension_loaded('amqp')) {
-            throw new DriverUnavailableException('The pecl "amqp" extension is not loaded');
+            throw new \RuntimeException('The pecl "amqp" extension is not loaded');
         }
     }
 
