@@ -30,8 +30,27 @@ pub struct Consumer {
 #[php_impl]
 impl Consumer {
     /// Returns the next delivery within the requested timeout.
+    ///
+    /// The fast path checks the lock-free buffer without crossing into the
+    /// async runtime. The slow path blocks on the async runtime with the
+    /// specified timeout.
     pub fn next(&self, timeoutMs: i64) -> PhpResult<Option<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::next")?;
+
+        // Fast path: check the flume buffer without block_on.
+        if let Some(delivery) = self
+            .handle
+            .try_next()
+            .map_err(|error| consumer_php_exception(&error))?
+        {
+            return Ok(Some(Delivery::new(
+                delivery,
+                self.runtime.clone(),
+                self.pid,
+            )));
+        }
+
+        // Slow path: block on the async runtime with timeout.
         let timeout = u64::try_from(timeoutMs).map_err(|_| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
                 "timeoutMs must be a non-negative integer".to_owned(),
@@ -51,6 +70,23 @@ impl Consumer {
             ))),
             Ok(Err(error)) => consumer_exception(&error),
             Err(_) => Ok(None),
+        }
+    }
+
+    /// Attempts to return the next delivery without blocking.
+    ///
+    /// Returns `Some(Delivery)` when one is available in the buffer,
+    /// or `None` when the buffer is empty. No timeout, no async wait.
+    pub fn tryNext(&self) -> PhpResult<Option<Delivery>> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::tryNext")?;
+        match self.handle.try_next() {
+            Ok(Some(delivery)) => Ok(Some(Delivery::new(
+                delivery,
+                self.runtime.clone(),
+                self.pid,
+            ))),
+            Ok(None) => Ok(None),
+            Err(error) => consumer_exception(&error),
         }
     }
 
@@ -106,5 +142,14 @@ impl Consumer {
             return rabbit_exception(format!("{operation} cannot use a closed consumer"));
         }
         Ok(())
+    }
+}
+
+fn consumer_php_exception(
+    error: &rabbit_rs_core::consumer::ConsumerError,
+) -> ext_php_rs::prelude::PhpException {
+    match consumer_exception::<()>(error) {
+        Err(error) => error,
+        Ok(()) => unreachable!("consumer_exception always returns an error"),
     }
 }

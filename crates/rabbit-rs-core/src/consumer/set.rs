@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -21,6 +21,7 @@ use crate::{
 };
 
 const COMMAND_CAPACITY: usize = 256;
+const BUFFER_CAPACITY_FACTOR: usize = 3;
 
 pub struct Subscription {
     pub(crate) id: SubscriptionId,
@@ -151,11 +152,17 @@ impl ConsumerSet {
             streams.push((subscription.id.clone(), stream));
         }
 
+        let total_prefetch: u16 = subscriptions.iter().map(|s| s.prefetch).sum();
+        let buffer_size = (total_prefetch as usize) * BUFFER_CAPACITY_FACTOR / 2;
+        let (buffer_tx, buffer_rx) =
+            flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
+
         tokio::spawn(run_actor(
             subscriptions,
             max_in_flight.max(1),
             receiver,
             commands.clone(),
+            buffer_tx,
             metrics.clone(),
         ));
         for (subscription, stream) in streams {
@@ -164,9 +171,9 @@ impl ConsumerSet {
 
         Ok(ConsumerHandle {
             commands,
+            buffer_rx,
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
-            next_waiter_id: Arc::new(AtomicU64::new(1)),
         })
     }
 }
@@ -201,9 +208,9 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
 #[derive(Clone, Debug)]
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
+    buffer_rx: flume::Receiver<Result<Delivery, ConsumerError>>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
-    next_waiter_id: Arc<AtomicU64>,
 }
 
 impl Drop for ConsumerHandle {
@@ -216,51 +223,40 @@ impl Drop for ConsumerHandle {
     }
 }
 
-struct WaiterCancellation {
-    waiter_id: u64,
-    commands: mpsc::Sender<ConsumerCommand>,
-    armed: bool,
-}
-
-impl Drop for WaiterCancellation {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = self
-                .commands
-                .try_send(ConsumerCommand::CancelWaiter(self.waiter_id));
-        }
-    }
-}
-
 impl ConsumerHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
     }
 
-    /// Waits for the next scheduled delivery while respecting max in-flight.
+    /// Tries to receive the next delivery without blocking.
+    ///
+    /// Returns `Ok(Some(delivery))` when one is available in the buffer,
+    /// `Ok(None)` when the buffer is empty, or `Err` when the consumer is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the consumer is closed.
+    pub fn try_next(&self) -> Result<Option<Delivery>, ConsumerError> {
+        match self.buffer_rx.try_recv() {
+            Ok(Ok(delivery)) => Ok(Some(delivery)),
+            Ok(Err(error)) => Err(error),
+            Err(flume::TryRecvError::Empty) => Ok(None),
+            Err(flume::TryRecvError::Disconnected) => Err(ConsumerError::closed()),
+        }
+    }
+
+    /// Waits for the next scheduled delivery.
     ///
     /// # Errors
     ///
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
-        let waiter_id = self.next_waiter_id.fetch_add(1, Ordering::Relaxed);
-        let (completed, completion) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::Next {
-                waiter_id,
-                completed,
-            })
-            .await
-            .map_err(|_| ConsumerError::closed())?;
-        let mut cancellation = WaiterCancellation {
-            waiter_id,
-            commands: self.commands.clone(),
-            armed: true,
-        };
-        let result = completion.await.map_err(|_| ConsumerError::closed())?;
-        cancellation.armed = false;
-        result
+        match self.buffer_rx.recv_async().await {
+            Ok(Ok(delivery)) => Ok(delivery),
+            Ok(Err(error)) => Err(error),
+            Err(flume::RecvError::Disconnected) => Err(ConsumerError::closed()),
+        }
     }
 
     /// Records a new connection generation for one subscription.
