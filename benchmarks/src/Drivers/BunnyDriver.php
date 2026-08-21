@@ -6,6 +6,7 @@ namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
+use Bench\ScenarioMode;
 use Bunny\Channel;
 use Bunny\Client;
 use RuntimeException;
@@ -47,6 +48,21 @@ class BunnyDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET) {
+            for ($i = 0; $i < $count; $i++) {
+                $ts = hrtime(true);
+                $this->channel->publish(
+                    pack('P', $ts) . $this->createMessage((string) $i),
+                    ['delivery-mode' => 2, 'message-id' => $this->uuid()],
+                    self::EXCHANGE,
+                    self::QUEUE,
+                    false,
+                );
+            }
+            return;
+        }
+
+        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
         $this->channel->confirmSelect();
 
         for ($i = 0; $i < $count; $i++) {
@@ -58,6 +74,10 @@ class BunnyDriver extends AbstractBenchmark
                 self::QUEUE,
                 true,
             );
+
+            if (($i + 1) % $batchSize === 0) {
+                $this->channel->waitForConfirms();
+            }
         }
 
         $this->channel->waitForConfirms();
@@ -69,9 +89,11 @@ class BunnyDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK;
         $consumed = 0;
 
-        $this->channel->consume(function ($message, $channel) use ($count, &$consumed) {
+        $this->channel->consume(function ($message, $channel) use ($count, &$consumed, $autoAck): void {
             $body = $message->content;
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
@@ -80,12 +102,14 @@ class BunnyDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-            $channel->ack($message);
+            if (!$autoAck) {
+                $channel->ack($message);
+            }
             $consumed++;
             if ($consumed >= $count) {
                 $channel->cancel('');
             }
-        }, self::QUEUE);
+        }, self::QUEUE, '', false, $autoAck);
 
         $consecutiveTimeouts = 0;
         while ($consumed < $count) {
