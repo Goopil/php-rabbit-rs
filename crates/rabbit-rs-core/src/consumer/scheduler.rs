@@ -1,15 +1,22 @@
 //! Weighted scheduling across ready subscriptions.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// Stable identity of a configured subscription.
+///
+/// The inner `Arc<str>` makes per-delivery clones (one per incoming message
+/// in the pump and one per dispatch) an atomic refcount bump instead of a
+/// heap allocation.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SubscriptionId(String);
+pub struct SubscriptionId(Arc<str>);
 
 impl SubscriptionId {
     #[must_use]
     pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        Self(value.into().into_boxed_str().into())
     }
 
     #[must_use]

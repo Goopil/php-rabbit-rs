@@ -137,6 +137,7 @@ impl ActorState {
             let attempts = AttemptsResolver::default()
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
+            let headers = Arc::new(delivery.headers.clone());
             let token = DeliveryToken::new(DeliveryTokenInner::pending(
                 DeliveryIdentity {
                     subscription: subscription.clone(),
@@ -148,7 +149,7 @@ impl ActorState {
                 message_id.clone(),
                 delivery.correlation_id.clone(),
                 delivery.payload.clone(),
-                delivery.headers.clone(),
+                headers.clone(),
                 attempts,
                 self.commands.clone(),
             ));
@@ -157,7 +158,7 @@ impl ActorState {
                 delivery.correlation_id,
                 subscription.clone(),
                 delivery.payload,
-                delivery.headers,
+                headers,
                 attempts,
                 token,
             );
