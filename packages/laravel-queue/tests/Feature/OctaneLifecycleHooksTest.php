@@ -2,94 +2,60 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Feature {
-    use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
-    use Goopil\RabbitRs\Laravel\Tests\TestCase;
-    use Illuminate\Support\Facades\Event;
+use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Illuminate\Support\Facades\Event;
 
-    final class OctaneLifecycleHooksTest extends TestCase
-    {
-        public function testServiceProviderRegistersReloadHookOnWorkerReloadEvent(): void
-        {
-            $events = $this->app->make('events');
+function hooksNormalizedNativeConfig($app): array
+{
+    $config = $app['config']->get('rabbit-rs');
+    $normalized = \Goopil\RabbitRs\Laravel\Config\ConfigNormalizer::normalize(
+        is_array($config) ? $config : [],
+    );
 
-            self::assertTrue(
-                $events->hasListeners(\Laravel\Octane\Events\WorkerReload::class),
-                'The service provider must listen for WorkerReload events when Octane is installed',
-            );
-        }
-
-        public function testServiceProviderRegistersStopHookOnWorkerStoppingEvent(): void
-        {
-            $events = $this->app->make('events');
-
-            self::assertTrue(
-                $events->hasListeners(\Laravel\Octane\Events\WorkerStopping::class),
-                'The service provider must listen for WorkerStopping events when Octane is installed',
-            );
-        }
-
-        public function testWorkerReloadEventTriggersPoolFlush(): void
-        {
-            $factory = $this->app->make(NativePoolFactory::class);
-            $config = $this->normalizedNativeConfig();
-            $pool = $factory->make($config);
-
-            Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
-
-            $poolAfterReload = $factory->make($config);
-            self::assertNotSame($pool, $poolAfterReload, 'WorkerReload event must flush pools');
-        }
-
-        public function testWorkerStoppingEventTriggersPoolFlush(): void
-        {
-            $factory = $this->app->make(NativePoolFactory::class);
-            $config = $this->normalizedNativeConfig();
-            $pool = $factory->make($config);
-
-            Event::dispatch(new \Laravel\Octane\Events\WorkerStopping());
-
-            $poolAfterStop = $factory->make($config);
-            self::assertNotSame($pool, $poolAfterStop, 'WorkerStopping event must flush pools');
-        }
-
-        public function testTerminatingCallbackIsRegistered(): void
-        {
-            $reflection = new \ReflectionClass($this->app);
-            $property = $reflection->getProperty('terminatingCallbacks');
-            $property->setAccessible(true);
-            $callbacks = $property->getValue($this->app);
-
-            self::assertNotEmpty($callbacks, 'A terminating callback must be registered for flush()');
-        }
-
-        /**
-         * @return array<string, mixed>
-         */
-        private function normalizedNativeConfig(): array
-        {
-            $config = $this->app['config']->get('rabbit-rs');
-            $normalized = \Goopil\RabbitRs\Laravel\Config\ConfigNormalizer::normalize(
-                is_array($config) ? $config : [],
-            );
-
-            return $normalized['native'];
-        }
-    }
+    return $normalized['native'];
 }
 
-namespace Laravel\Octane {
-    if (! class_exists(Octane::class, false)) {
-        final class Octane {}
-    }
-}
+describe('Octane lifecycle hooks', function () {
+    it('service provider registers reload hook on WorkerReload event', function () {
+        $events = $this->app->make('events');
 
-namespace Laravel\Octane\Events {
-    if (! class_exists(WorkerReload::class, false)) {
-        final class WorkerReload {}
-    }
+        expect($events->hasListeners(\Laravel\Octane\Events\WorkerReload::class))->toBeTrue();
+    });
 
-    if (! class_exists(WorkerStopping::class, false)) {
-        final class WorkerStopping {}
-    }
-}
+    it('service provider registers stop hook on WorkerStopping event', function () {
+        $events = $this->app->make('events');
+
+        expect($events->hasListeners(\Laravel\Octane\Events\WorkerStopping::class))->toBeTrue();
+    });
+
+    it('WorkerReload event triggers pool flush', function () {
+        $factory = $this->app->make(NativePoolFactory::class);
+        $config = hooksNormalizedNativeConfig($this->app);
+        $pool = $factory->make($config);
+
+        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+
+        $poolAfterReload = $factory->make($config);
+        expect($poolAfterReload)->not->toBe($pool);
+    });
+
+    it('WorkerStopping event triggers pool flush', function () {
+        $factory = $this->app->make(NativePoolFactory::class);
+        $config = hooksNormalizedNativeConfig($this->app);
+        $pool = $factory->make($config);
+
+        Event::dispatch(new \Laravel\Octane\Events\WorkerStopping());
+
+        $poolAfterStop = $factory->make($config);
+        expect($poolAfterStop)->not->toBe($pool);
+    });
+
+    it('terminating callback is registered', function () {
+        $reflection = new \ReflectionClass($this->app);
+        $property = $reflection->getProperty('terminatingCallbacks');
+        $property->setAccessible(true);
+        $callbacks = $property->getValue($this->app);
+
+        expect($callbacks)->not->toBeEmpty();
+    });
+});

@@ -2,71 +2,81 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Unit;
-
 use Goopil\RabbitRs\Exception as NativeException;
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
-use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
-use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
-use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Goopil\RabbitRs\Pool;
 
-final class RabbitMqQueueAdminTest extends TestCase
+/**
+ * @return array<string, array<string, string>>
+ */
+function adminRoutes(): array
 {
-    public function testSizeReturnsPendingMessageCountForDefaultQueue(): void
-    {
-        [$queue, $pool] = $this->queue();
+    return [
+        'default' => [
+            'broker' => 'default-broker',
+            'exchange' => 'default.jobs',
+            'routing_key' => '{queue}',
+        ],
+        'orders' => [
+            'broker' => 'orders-broker',
+            'exchange' => 'orders.jobs',
+            'routing_key' => '{queue}.created.{queue}',
+        ],
+    ];
+}
+
+/**
+ * @param array<string, array<string, string>> $routes
+ */
+function newAdminQueue(
+    Pool $pool,
+    array $routes,
+    string $defaultQueue,
+): RabbitMqQueue {
+    $queue = new RabbitMqQueue($pool, $routes, $defaultQueue);
+    $queue->setContainer(test()->app);
+
+    return $queue;
+}
+
+/**
+ * @return array{RabbitMqQueue, Pool}
+ */
+function adminQueue(): array
+{
+    $pool = new Pool([]);
+
+    return [newAdminQueue($pool, adminRoutes(), 'default'), $pool];
+}
+
+describe('size', function (): void {
+    it('returns the pending message count for the default queue', function (): void {
+        [$queue, $pool] = adminQueue();
         $pool->sizeResults['default-broker:default'] = 42;
 
-        self::assertSame(42, $queue->size());
-    }
+        expect(42)->toBe($queue->size());
+    });
 
-    public function testSizeResolvesTheRouteAndQueriesTheRightBroker(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('resolves the route and queries the right broker', function (): void {
+        [$queue, $pool] = adminQueue();
         $pool->sizeResults['orders-broker:orders'] = 7;
 
-        self::assertSame(7, $queue->size('orders'));
-        self::assertSame([
-            ['broker' => 'orders-broker', 'queue' => 'orders'],
-        ], $pool->sizeCalls);
-    }
+        expect(7)->toBe($queue->size('orders'))
+            ->and([
+                ['broker' => 'orders-broker', 'queue' => 'orders'],
+            ])->toBe($pool->sizeCalls);
+    });
 
-    public function testSizeReturnsZeroWhenNoMessagesArePending(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('returns zero when no messages are pending', function (): void {
+        [$queue, $pool] = adminQueue();
 
-        self::assertSame(0, $queue->size());
-        self::assertCount(1, $pool->sizeCalls);
-    }
+        expect(0)->toBe($queue->size())
+            ->and($pool->sizeCalls)->toHaveCount(1);
+    });
 
-    public function testClearPurgesTheDefaultQueue(): void
-    {
-        [$queue, $pool] = $this->queue();
-
-        $queue->clear();
-
-        self::assertSame([
-            ['broker' => 'default-broker', 'queue' => 'default'],
-        ], $pool->clearCalls);
-    }
-
-    public function testClearResolvesTheRouteAndPurgesTheRightBroker(): void
-    {
-        [$queue, $pool] = $this->queue();
-
-        $queue->clear('orders');
-
-        self::assertSame([
-            ['broker' => 'orders-broker', 'queue' => 'orders'],
-        ], $pool->clearCalls);
-    }
-
-    public function testNativeFailureOnSizeBecomesAQueueException(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('translates a native failure into a QueueException', function (): void {
+        [$queue, $pool] = adminQueue();
         $native = new NativeException('broker unreachable');
         $pool->throwOnNextSize($native);
 
@@ -77,11 +87,43 @@ final class RabbitMqQueueAdminTest extends TestCase
             self::assertSame($native, $exception->getPrevious());
             self::assertStringContainsString('broker unreachable', $exception->getMessage());
         }
-    }
+    });
 
-    public function testNativeFailureOnClearBecomesAQueueException(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('fails when no route is configured', function (): void {
+        $queue = newAdminQueue(new Pool([]), [
+            'orders' => adminRoutes()['orders'],
+        ], 'missing');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('routes.missing');
+
+        $queue->size();
+    });
+});
+
+describe('clear', function (): void {
+    it('purges the default queue', function (): void {
+        [$queue, $pool] = adminQueue();
+
+        $queue->clear();
+
+        expect([
+            ['broker' => 'default-broker', 'queue' => 'default'],
+        ])->toBe($pool->clearCalls);
+    });
+
+    it('resolves the route and purges the right broker', function (): void {
+        [$queue, $pool] = adminQueue();
+
+        $queue->clear('orders');
+
+        expect([
+            ['broker' => 'orders-broker', 'queue' => 'orders'],
+        ])->toBe($pool->clearCalls);
+    });
+
+    it('translates a native failure into a QueueException', function (): void {
+        [$queue, $pool] = adminQueue();
         $native = new NativeException('purge refused');
         $pool->throwOnNextClear($native);
 
@@ -92,60 +134,5 @@ final class RabbitMqQueueAdminTest extends TestCase
             self::assertSame($native, $exception->getPrevious());
             self::assertStringContainsString('purge refused', $exception->getMessage());
         }
-    }
-
-    public function testSizeFailsWhenNoRouteIsConfigured(): void
-    {
-        $queue = $this->newQueue(new Pool([]), [
-            'orders' => $this->routes()['orders'],
-        ], 'missing');
-
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('routes.missing');
-
-        $queue->size();
-    }
-
-    /**
-     * @return array{RabbitMqQueue, Pool}
-     */
-    private function queue(): array
-    {
-        $pool = new Pool([]);
-
-        return [$this->newQueue($pool, $this->routes(), 'default'), $pool];
-    }
-
-    /**
-     * @param array<string, array<string, string>> $routes
-     */
-    private function newQueue(
-        Pool $pool,
-        array $routes,
-        string $defaultQueue,
-    ): RabbitMqQueue {
-        $queue = new RabbitMqQueue($pool, $routes, $defaultQueue);
-        $queue->setContainer($this->app);
-
-        return $queue;
-    }
-
-    /**
-     * @return array<string, array<string, string>>
-     */
-    private function routes(): array
-    {
-        return [
-            'default' => [
-                'broker' => 'default-broker',
-                'exchange' => 'default.jobs',
-                'routing_key' => '{queue}',
-            ],
-            'orders' => [
-                'broker' => 'orders-broker',
-                'exchange' => 'orders.jobs',
-                'routing_key' => '{queue}.created.{queue}',
-            ],
-        ];
-    }
-}
+    });
+});

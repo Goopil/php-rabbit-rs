@@ -2,98 +2,85 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Feature;
-
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
-use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Illuminate\Support\Facades\Log;
 
-final class RabbitMqWorkCommandTest extends TestCase
-{
-    public function testCommandIsRegistered(): void
-    {
+describe('rabbit-rs:work command', function () {
+    it('command is registered', function () {
         $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
 
-        self::assertArrayHasKey('rabbit-rs:work', $commands);
-    }
+        expect($commands)->toHaveKey('rabbit-rs:work');
+    });
 
-    public function testCommandSignatureAcceptsWorkersAndQueueOptions(): void
-    {
+    it('command signature accepts workers and queue options', function () {
         $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
 
-        self::assertTrue($definition->hasOption('workers'));
-        self::assertTrue($definition->hasOption('queue'));
-        self::assertTrue($definition->hasOption('connection'));
-        self::assertTrue($definition->hasOption('max-restarts'));
-        self::assertTrue($definition->hasOption('backoff'));
-        self::assertTrue($definition->hasOption('rabbit-rs-worker'), '--rabbit-rs-worker option should be recognized');
-    }
+        expect($definition->hasOption('workers'))->toBeTrue()
+            ->and($definition->hasOption('queue'))->toBeTrue()
+            ->and($definition->hasOption('connection'))->toBeTrue()
+            ->and($definition->hasOption('max-restarts'))->toBeTrue()
+            ->and($definition->hasOption('backoff'))->toBeTrue()
+            ->and($definition->hasOption('rabbit-rs-worker'))->toBeTrue('--rabbit-rs-worker option should be recognized');
+    });
 
-    public function testDefaultWorkerCountIsOne(): void
-    {
+    it('default worker count is one', function () {
         $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
         $workersOption = $definition->getOption('workers');
 
-        self::assertSame('1', $workersOption->getDefault());
-    }
+        expect($workersOption->getDefault())->toBe('1');
+    });
 
-    public function testDefaultConnectionIsRabbitRs(): void
-    {
+    it('default connection is rabbit-rs', function () {
         $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
         $connectionOption = $definition->getOption('connection');
 
-        self::assertSame('rabbit-rs', $connectionOption->getDefault());
-    }
+        expect($connectionOption->getDefault())->toBe('rabbit-rs');
+    });
 
-    public function testExtensionFromEnvironmentReturnsNullWhenNoWorkerEnvSet(): void
-    {
+    it('extension from environment returns null when no worker env set', function () {
         // Ensure the env var is not set in the test process.
         putenv(WorkerSupervisor::workerEnv());
 
         $extension = RabbitMqWorkCommandExtension::fromEnvironment();
 
-        self::assertNull($extension->workerIndex());
-    }
+        expect($extension->workerIndex())->toBeNull();
+    });
 
-    public function testExtensionFromEnvironmentReturnsIndexWhenWorkerEnvSet(): void
-    {
+    it('extension from environment returns index when worker env set', function () {
         putenv(WorkerSupervisor::workerEnv() . '=3');
 
         try {
             $extension = RabbitMqWorkCommandExtension::fromEnvironment();
 
-            self::assertSame(3, $extension->workerIndex());
+            expect($extension->workerIndex())->toBe(3);
         } finally {
             putenv(WorkerSupervisor::workerEnv());
         }
-    }
+    });
 
-    public function testExtensionFromOptionReturnsIndexWhenProvided(): void
-    {
+    it('extension from option returns index when provided', function () {
         $extension = RabbitMqWorkCommandExtension::fromOption('5');
 
-        self::assertSame(5, $extension->workerIndex());
-    }
+        expect($extension->workerIndex())->toBe(5);
+    });
 
-    public function testExtensionFromOptionReturnsNullWhenEmpty(): void
-    {
-        self::assertNull(RabbitMqWorkCommandExtension::fromOption(null)->workerIndex());
-        self::assertNull(RabbitMqWorkCommandExtension::fromOption('')->workerIndex());
-    }
+    it('extension from option returns null when empty', function () {
+        expect(RabbitMqWorkCommandExtension::fromOption(null)->workerIndex())->toBeNull()
+            ->and(RabbitMqWorkCommandExtension::fromOption('')->workerIndex())->toBeNull();
+    });
 
-    public function testExtensionRegisterIsNoOpWhenWorkerIndexIsNull(): void
-    {
+    it('extension register is no-op when worker index is null', function () {
         putenv(WorkerSupervisor::workerEnv());
 
         try {
@@ -104,14 +91,13 @@ final class RabbitMqWorkCommandTest extends TestCase
                 $called = true;
             });
 
-            self::assertFalse($called);
+            expect($called)->toBeFalse();
         } finally {
             putenv(WorkerSupervisor::workerEnv());
         }
-    }
+    });
 
-    public function testExtensionRegisterLogsJobProcessingEventWithWorkerTag(): void
-    {
+    it('extension register logs job processing event with worker tag', function () {
         putenv(WorkerSupervisor::workerEnv() . '=2');
 
         try {
@@ -135,13 +121,13 @@ final class RabbitMqWorkCommandTest extends TestCase
             $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
 
             // The extension should have logged the event with the worker tag.
-            self::assertNotEmpty($logged, 'JobProcessing event should have been logged');
-            self::assertSame('info', $logged[0]['level']);
-            self::assertSame('[worker-2]', $logged[0]['context']['worker']);
+            expect($logged)->not->toBeEmpty('JobProcessing event should have been logged');
+            expect($logged[0]['level'])->toBe('info');
+            expect($logged[0]['context']['worker'])->toBe('[worker-2]');
         } finally {
             putenv(WorkerSupervisor::workerEnv());
         }
-    }
+    });
 
     /**
      * Verifies that the --rabbit-rs-worker CLI option is wired into the
@@ -152,15 +138,14 @@ final class RabbitMqWorkCommandTest extends TestCase
      * A test-specific command subclass overrides createSupervisor() to return
      * a supervisor whose run() is a no-op, avoiding real child processes.
      */
-    public function testHandleWiresFromOptionWhenRabbitRsWorkerOptionProvided(): void
-    {
+    it('handle wires from option when rabbit-rs-worker option provided', function () {
         // Ensure the env var is not set so the extension only activates via
         // the CLI option, not via fromEnvironment().
         putenv(WorkerSupervisor::workerEnv());
 
         try {
             // Register a test command that stubs out the supervisor.
-            $this->registerTestCommand();
+            registerTestWorkCommand($this->app);
 
             // Intercept Log::channel() calls to capture the worker tag.
             $logged = [];
@@ -193,23 +178,22 @@ final class RabbitMqWorkCommandTest extends TestCase
 
             $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
 
-            self::assertNotEmpty($logged, 'JobProcessing event should have been logged via the extension wired in handle()');
-            self::assertSame('[worker-2]', $logged[0]['context']['worker']);
+            expect($logged)->not->toBeEmpty('JobProcessing event should have been logged via the extension wired in handle()');
+            expect($logged[0]['context']['worker'])->toBe('[worker-2]');
         } finally {
             putenv(WorkerSupervisor::workerEnv());
         }
-    }
+    });
 
     /**
      * Verifies that when --rabbit-rs-worker is not provided, handle() does
      * not register the extension and job events are not tagged.
      */
-    public function testHandleDoesNotRegisterExtensionWhenRabbitRsWorkerOptionAbsent(): void
-    {
+    it('handle does not register extension when rabbit-rs-worker option absent', function () {
         putenv(WorkerSupervisor::workerEnv());
 
         try {
-            $this->registerTestCommand();
+            registerTestWorkCommand($this->app);
 
             $logChannel = \Mockery::mock(\Psr\Log\LoggerInterface::class);
             $logChannel->shouldNotReceive('info');
@@ -236,44 +220,44 @@ final class RabbitMqWorkCommandTest extends TestCase
         } finally {
             putenv(WorkerSupervisor::workerEnv());
         }
-    }
+    });
+});
 
-    /**
-     * Register a test command that subclasses RabbitMqWorkCommand and stubs
-     * out the supervisor so run() does not spawn real child processes.
-     */
-    private function registerTestCommand(): void
-    {
-        $stubSupervisor = new class('rabbit-rs', 'default', 1, 3, 1, null) extends WorkerSupervisor {
-            public function run(): int
-            {
-                return WorkerSupervisor::EXIT_CLEAN;
-            }
-        };
+/**
+ * Register a test command that subclasses RabbitMqWorkCommand and stubs
+ * out the supervisor so run() does not spawn real child processes.
+ */
+function registerTestWorkCommand($app): void
+{
+    $stubSupervisor = new class('rabbit-rs', 'default', 1, 3, 1, null) extends WorkerSupervisor {
+        public function run(): int
+        {
+            return WorkerSupervisor::EXIT_CLEAN;
+        }
+    };
 
-        $command = new class($stubSupervisor) extends RabbitMqWorkCommand {
-            protected $signature = 'test:work-command
-                {--connection=rabbit-rs : The queue connection name}
-                {--queue=default : The queue/profile name}
-                {--workers=1 : Number of child workers}
-                {--max-restarts=3 : Maximum restarts per worker}
-                {--backoff=1 : Base backoff in seconds}
-                {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
+    $command = new class($stubSupervisor) extends RabbitMqWorkCommand {
+        protected $signature = 'test:work-command
+            {--connection=rabbit-rs : The queue connection name}
+            {--queue=default : The queue/profile name}
+            {--workers=1 : Number of child workers}
+            {--max-restarts=3 : Maximum restarts per worker}
+            {--backoff=1 : Base backoff in seconds}
+            {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
-            protected $description = 'Test command';
+        protected $description = 'Test command';
 
-            public function __construct(
-                private readonly WorkerSupervisor $supervisor,
-            ) {
-                parent::__construct();
-            }
+        public function __construct(
+            private readonly WorkerSupervisor $supervisor,
+        ) {
+            parent::__construct();
+        }
 
-            protected function createSupervisor(): WorkerSupervisor
-            {
-                return $this->supervisor;
-            }
-        };
+        protected function createSupervisor(): WorkerSupervisor
+        {
+            return $this->supervisor;
+        }
+    };
 
-        $this->app->make('Illuminate\Contracts\Console\Kernel')->registerCommand($command);
-    }
+    $app->make('Illuminate\Contracts\Console\Kernel')->registerCommand($command);
 }

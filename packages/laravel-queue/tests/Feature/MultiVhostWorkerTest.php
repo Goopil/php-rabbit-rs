@@ -2,8 +2,6 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Feature;
-
 use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Exception as NativeException;
@@ -12,66 +10,54 @@ use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
-use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Goopil\RabbitRs\Pool;
-use InvalidArgumentException;
 
-final class MultiVhostWorkerTest extends TestCase
-{
-    public function testOneWorkerProfileConsumesDeliveriesFromThreeSubscriptionsAcrossTwoVhosts(): void
-    {
-        [$queue, $pool, $normalized] = $this->queue(blockFor: 2);
-        $pool->pushDelivery('main', $this->delivery('orders_high', 2));
-        $pool->pushDelivery('main', $this->delivery('orders_low', 4));
-        $pool->pushDelivery('main', $this->delivery('billing', 6));
+describe('multi-vhost worker', function () {
+    it('one worker profile consumes deliveries from three subscriptions across two vhosts', function () {
+        [$queue, $pool, $normalized] = multiVhostQueue($this->app, blockFor: 2);
+        $pool->pushDelivery('main', multiVhostDelivery('orders_high', 2));
+        $pool->pushDelivery('main', multiVhostDelivery('orders_low', 4));
+        $pool->pushDelivery('main', multiVhostDelivery('billing', 6));
 
         $jobs = [$queue->pop(), $queue->pop(), $queue->pop()];
 
-        self::assertSame([
+        expect(array_column($normalized['native']['brokers'], 'vhost', 'name'))->toBe([
             'billing_us' => '/billing-us',
             'orders_eu' => '/orders-eu',
-        ], array_column($normalized['native']['brokers'], 'vhost', 'name'));
-        self::assertSame(
-            ['billing', 'orders_high', 'orders_low'],
+        ]);
+        expect(
             array_column($normalized['native']['workers'][0]['subscriptions'], 'name'),
-        );
-        self::assertSame(['main'], $pool->consumerProfiles);
-        self::assertSame([2_000, 2_000, 2_000], $pool->consumerFor('main')->timeouts);
-        self::assertSame(
-            ['orders.high', 'orders.low', 'billing.invoices'],
+        )->toBe(['billing', 'orders_high', 'orders_low']);
+        expect($pool->consumerProfiles)->toBe(['main']);
+        expect($pool->consumerFor('main')->timeouts)->toBe([2_000, 2_000, 2_000]);
+        expect(
             array_map(static fn ($job): string => $job->getQueue(), $jobs),
-        );
-        self::assertSame(
-            ['rabbit-main', 'rabbit-main', 'rabbit-main'],
+        )->toBe(['orders.high', 'orders.low', 'billing.invoices']);
+        expect(
             array_map(static fn ($job): string => $job->getConnectionName(), $jobs),
-        );
-        self::assertSame(
-            [2, 4, 6],
+        )->toBe(['rabbit-main', 'rabbit-main', 'rabbit-main']);
+        expect(
             array_map(static fn ($job): int => $job->attempts(), $jobs),
-        );
-    }
+        )->toBe([2, 4, 6]);
+    });
 
-    public function testDisabledSubscriptionIsExcludedBeforeCreatingTheNativePool(): void
-    {
-        [, $pool, $normalized] = $this->queue();
+    it('disabled subscription is excluded before creating the native pool', function () {
+        [, $pool, $normalized] = multiVhostQueue($this->app);
 
-        self::assertSame(
-            ['billing', 'orders_high', 'orders_low'],
+        expect(
             array_column($normalized['native']['workers'][0]['subscriptions'], 'name'),
-        );
-        self::assertSame($normalized['native'], $pool->config);
-    }
+        )->toBe(['billing', 'orders_high', 'orders_low']);
+        expect($normalized['native'])->toBe($pool->config);
+    });
 
-    public function testPublishedConfigurationEnablesItsDefaultSubscriptionExplicitly(): void
-    {
-        self::assertTrue(
+    it('published configuration enables its default subscription explicitly', function () {
+        expect(
             $this->app['config']->get('rabbit-rs.workers.default.subscriptions.default.enabled'),
-        );
-    }
+        )->toBeTrue();
+    });
 
-    public function testUnknownProfileIsRejectedBeforeCallingTheNativePool(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('unknown profile is rejected before calling the native pool', function () {
+        [$queue, $pool] = multiVhostQueue($this->app);
 
         try {
             $queue->pop('missing');
@@ -80,31 +66,28 @@ final class MultiVhostWorkerTest extends TestCase
             self::assertStringContainsString('missing', $exception->getMessage());
         }
 
-        self::assertSame([], $pool->consumerProfiles);
-    }
+        expect($pool->consumerProfiles)->toBe([]);
+    });
 
-    public function testTimeoutWithoutDeliveryReturnsNull(): void
-    {
-        [$queue, $pool] = $this->queue(blockFor: 3);
+    it('timeout without delivery returns null', function () {
+        [$queue, $pool] = multiVhostQueue($this->app, blockFor: 3);
 
-        self::assertNull($queue->pop());
-        self::assertSame([3_000], $pool->consumerFor('main')->timeouts);
-    }
+        expect($queue->pop())->toBeNull();
+        expect($pool->consumerFor('main')->timeouts)->toBe([3_000]);
+    });
 
-    public function testUnexpectedDeliverySubscriptionIsRejected(): void
-    {
-        [$queue, $pool] = $this->queue();
-        $pool->pushDelivery('main', $this->delivery('disabled_legacy', 1));
+    it('unexpected delivery subscription is rejected', function () {
+        [$queue, $pool] = multiVhostQueue($this->app);
+        $pool->pushDelivery('main', multiVhostDelivery('disabled_legacy', 1));
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('workers.main.subscriptions.disabled_legacy');
 
         $queue->pop();
-    }
+    });
 
-    public function testNativeConsumerFailureBecomesAQueueException(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('native consumer failure becomes a queue exception', function () {
+        [$queue, $pool] = multiVhostQueue($this->app);
         $native = new NativeException('consumer profile closed unexpectedly');
         $pool->consumerFor('main')->throwOnNext($native);
 
@@ -114,11 +97,10 @@ final class MultiVhostWorkerTest extends TestCase
         } catch (QueueException $exception) {
             self::assertSame($native, $exception->getPrevious());
         }
-    }
+    });
 
-    public function testNativeConnectionFailureRemainsRecognizable(): void
-    {
-        [$queue, $pool] = $this->queue();
+    it('native connection failure remains recognizable', function () {
+        [$queue, $pool] = multiVhostQueue($this->app);
         $native = new ConnectionException('consumer connection was lost');
         $pool->consumerFor('main')->throwOnNext($native);
 
@@ -128,22 +110,20 @@ final class MultiVhostWorkerTest extends TestCase
         } catch (ConnectionException $exception) {
             self::assertSame($native, $exception);
         }
-    }
+    });
 
-    public function testSubscriptionEnabledFlagMustBeBoolean(): void
-    {
-        $config = $this->config();
+    it('subscription enabled flag must be boolean', function () {
+        $config = multiVhostConfig();
         $config['workers']['main']['subscriptions']['disabled_legacy']['enabled'] = 'false';
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('workers.main.subscriptions.disabled_legacy.enabled');
 
         ConfigNormalizer::normalize($config);
-    }
+    });
 
-    public function testWorkerMustKeepAtLeastOneEnabledSubscription(): void
-    {
-        $config = $this->config();
+    it('worker must keep at least one enabled subscription', function () {
+        $config = multiVhostConfig();
         foreach ($config['workers']['main']['subscriptions'] as &$subscription) {
             $subscription['enabled'] = false;
         }
@@ -153,144 +133,143 @@ final class MultiVhostWorkerTest extends TestCase
         $this->expectExceptionMessage('workers.main.subscriptions');
 
         ConfigNormalizer::normalize($config);
-    }
+    });
 
-    public function testBlockForMustBeANonNegativeInteger(): void
-    {
-        $normalized = ConfigNormalizer::normalize($this->config());
+    it('block_for must be a non-negative integer', function () {
+        $normalized = ConfigNormalizer::normalize(multiVhostConfig());
         $connector = new RabbitMqConnector(new NativePoolFactory(), $normalized);
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('block_for');
 
         $connector->connect(['queue' => 'main', 'block_for' => -1]);
-    }
+    });
+});
 
-    /**
-     * @return array{RabbitMqQueue, Pool, array<string, mixed>}
-     */
-    private function queue(int $blockFor = 0): array
-    {
-        $normalized = ConfigNormalizer::normalize($this->config());
-        $pool = new Pool($normalized['native']);
-        $connector = new RabbitMqConnector(
-            new NativePoolFactory(createPool: static fn (array $config): Pool => $pool),
-            $normalized,
-        );
-        $queue = $connector->connect([
-            'queue' => 'main',
-            'block_for' => $blockFor,
-        ]);
-        $queue->setContainer($this->app);
-        $queue->setConnectionName('rabbit-main');
+/**
+ * @return array{RabbitMqQueue, Pool, array<string, mixed>}
+ */
+function multiVhostQueue($app, int $blockFor = 0): array
+{
+    $normalized = ConfigNormalizer::normalize(multiVhostConfig());
+    $pool = new Pool($normalized['native']);
+    $connector = new RabbitMqConnector(
+        new NativePoolFactory(createPool: static fn (array $config): Pool => $pool),
+        $normalized,
+    );
+    $queue = $connector->connect([
+        'queue' => 'main',
+        'block_for' => $blockFor,
+    ]);
+    $queue->setContainer($app);
+    $queue->setConnectionName('rabbit-main');
 
-        return [$queue, $pool, $normalized];
-    }
+    return [$queue, $pool, $normalized];
+}
 
-    private function delivery(string $subscription, int $attempts): Delivery
-    {
-        return new Delivery(
-            '{"uuid":"018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137","job":"App\\Jobs\\Report"}',
-            [
-                'message_id' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
-                'subscription' => $subscription,
-                'attempts' => $attempts,
-                'state' => 'pending',
-                'headers' => [],
+function multiVhostDelivery(string $subscription, int $attempts): Delivery
+{
+    return new Delivery(
+        '{"uuid":"018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137","job":"App\\Jobs\\Report"}',
+        [
+            'message_id' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
+            'subscription' => $subscription,
+            'attempts' => $attempts,
+            'state' => 'pending',
+            'headers' => [],
+        ],
+    );
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function multiVhostConfig(): array
+{
+    $credentials = [
+        'username' => 'worker',
+        'password' => 'secret',
+    ];
+
+    return [
+        'topology_mode' => 'external',
+        'brokers' => [
+            'orders_eu' => [
+                'hosts' => ['orders-rabbit:5672'],
+                'vhost' => '/orders-eu',
+                'credentials' => $credentials,
+                'tls' => ['enabled' => false, 'server_name' => null],
+                'heartbeat' => 30,
             ],
-        );
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function config(): array
-    {
-        $credentials = [
-            'username' => 'worker',
-            'password' => 'secret',
-        ];
-
-        return [
-            'topology_mode' => 'external',
-            'brokers' => [
-                'orders_eu' => [
-                    'hosts' => ['orders-rabbit:5672'],
-                    'vhost' => '/orders-eu',
-                    'credentials' => $credentials,
-                    'tls' => ['enabled' => false, 'server_name' => null],
-                    'heartbeat' => 30,
-                ],
-                'billing_us' => [
-                    'hosts' => ['billing-rabbit:5672'],
-                    'vhost' => '/billing-us',
-                    'credentials' => $credentials,
-                    'tls' => ['enabled' => false, 'server_name' => null],
-                    'heartbeat' => 30,
-                ],
+            'billing_us' => [
+                'hosts' => ['billing-rabbit:5672'],
+                'vhost' => '/billing-us',
+                'credentials' => $credentials,
+                'tls' => ['enabled' => false, 'server_name' => null],
+                'heartbeat' => 30,
             ],
-            'routes' => [
-                'default' => [
-                    'broker' => 'orders_eu',
-                    'exchange' => 'laravel.jobs',
-                    'routing_key' => '{queue}',
-                ],
+        ],
+        'routes' => [
+            'default' => [
+                'broker' => 'orders_eu',
+                'exchange' => 'laravel.jobs',
+                'routing_key' => '{queue}',
             ],
-            'workers' => [
-                'main' => [
-                    'scheduler' => [
-                        'strategy' => 'weighted_fair',
-                        'max_in_flight' => 32,
+        ],
+        'workers' => [
+            'main' => [
+                'scheduler' => [
+                    'strategy' => 'weighted_fair',
+                    'max_in_flight' => 32,
+                ],
+                'subscriptions' => [
+                    'orders_high' => [
+                        'enabled' => true,
+                        'broker' => 'orders_eu',
+                        'queue' => 'orders.high',
+                        'weight' => 8,
+                        'priority_class' => 1,
+                        'prefetch' => ['mode' => 'fixed', 'value' => 8],
+                        'starvation_after' => 30,
                     ],
-                    'subscriptions' => [
-                        'orders_high' => [
-                            'enabled' => true,
-                            'broker' => 'orders_eu',
-                            'queue' => 'orders.high',
-                            'weight' => 8,
-                            'priority_class' => 1,
-                            'prefetch' => ['mode' => 'fixed', 'value' => 8],
-                            'starvation_after' => 30,
-                        ],
-                        'orders_low' => [
-                            'enabled' => true,
-                            'broker' => 'orders_eu',
-                            'queue' => 'orders.low',
-                            'weight' => 2,
-                            'priority_class' => 0,
-                            'prefetch' => ['mode' => 'fixed', 'value' => 8],
-                            'starvation_after' => 30,
-                        ],
-                        'billing' => [
-                            'enabled' => true,
-                            'broker' => 'billing_us',
-                            'queue' => 'billing.invoices',
-                            'weight' => 4,
-                            'priority_class' => 0,
-                            'prefetch' => ['mode' => 'fixed', 'value' => 8],
-                            'starvation_after' => 30,
-                        ],
-                        'disabled_legacy' => [
-                            'enabled' => false,
-                            'broker' => 'billing_us',
-                            'queue' => 'billing.legacy',
-                            'weight' => 1,
-                            'priority_class' => 0,
-                            'prefetch' => ['mode' => 'fixed', 'value' => 8],
-                            'starvation_after' => 30,
-                        ],
+                    'orders_low' => [
+                        'enabled' => true,
+                        'broker' => 'orders_eu',
+                        'queue' => 'orders.low',
+                        'weight' => 2,
+                        'priority_class' => 0,
+                        'prefetch' => ['mode' => 'fixed', 'value' => 8],
+                        'starvation_after' => 30,
+                    ],
+                    'billing' => [
+                        'enabled' => true,
+                        'broker' => 'billing_us',
+                        'queue' => 'billing.invoices',
+                        'weight' => 4,
+                        'priority_class' => 0,
+                        'prefetch' => ['mode' => 'fixed', 'value' => 8],
+                        'starvation_after' => 30,
+                    ],
+                    'disabled_legacy' => [
+                        'enabled' => false,
+                        'broker' => 'billing_us',
+                        'queue' => 'billing.legacy',
+                        'weight' => 1,
+                        'priority_class' => 0,
+                        'prefetch' => ['mode' => 'fixed', 'value' => 8],
+                        'starvation_after' => 30,
                     ],
                 ],
             ],
-            'publisher' => ['confirms' => true, 'mandatory' => true],
-            'topology' => [
-                'queue' => [
-                    'type' => 'quorum',
-                    'durable' => true,
-                    'delivery_limit' => 20,
-                ],
-                'dead_letter' => null,
+        ],
+        'publisher' => ['confirms' => true, 'mandatory' => true],
+        'topology' => [
+            'queue' => [
+                'type' => 'quorum',
+                'durable' => true,
+                'delivery_limit' => 20,
             ],
-        ];
-    }
+            'dead_letter' => null,
+        ],
+    ];
 }

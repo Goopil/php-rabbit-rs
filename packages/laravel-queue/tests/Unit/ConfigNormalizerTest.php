@@ -2,54 +2,48 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Unit;
-
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
-use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
-use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 
-final class ConfigNormalizerTest extends TestCase
-{
-    public function testPackagePublishesSafeDefaults(): void
-    {
+describe('package defaults', function (): void {
+    it('publishes safe defaults', function (): void {
         $publishedConfig = require dirname(__DIR__, 2).'/config/rabbit-rs.php';
 
-        self::assertSame('127.0.0.1:5672', $publishedConfig['brokers']['default']['hosts']);
-        self::assertSame('declare', $publishedConfig['topology_mode']);
-        self::assertTrue($publishedConfig['publisher']['confirms']);
-        self::assertTrue($publishedConfig['publisher']['mandatory']);
-        self::assertSame(30000, $publishedConfig['publisher']['confirm_timeout']);
-        self::assertSame('quorum', $publishedConfig['topology']['queue']['type']);
-        self::assertTrue($publishedConfig['topology']['queue']['durable']);
-        self::assertSame(20, $publishedConfig['topology']['queue']['delivery_limit']);
-        self::assertNull($publishedConfig['topology']['dead_letter']);
+        expect('127.0.0.1:5672')->toBe($publishedConfig['brokers']['default']['hosts'])
+            ->and('declare')->toBe($publishedConfig['topology_mode'])
+            ->and($publishedConfig['publisher']['confirms'])->toBeTrue()
+            ->and($publishedConfig['publisher']['mandatory'])->toBeTrue()
+            ->and(30000)->toBe($publishedConfig['publisher']['confirm_timeout'])
+            ->and('quorum')->toBe($publishedConfig['topology']['queue']['type'])
+            ->and($publishedConfig['topology']['queue']['durable'])->toBeTrue()
+            ->and(20)->toBe($publishedConfig['topology']['queue']['delivery_limit'])
+            ->and($publishedConfig['topology']['dead_letter'])->toBeNull();
 
         $config = $this->app['config']->get('rabbit-rs');
-        self::assertSame(['127.0.0.1:5672'], $config['brokers']['default']['hosts']);
+        expect(['127.0.0.1:5672'])->toBe($config['brokers']['default']['hosts']);
         $normalized = ConfigNormalizer::normalize($config);
-        self::assertSame('default', $normalized['routes']['default']['broker']);
-        self::assertSame(16, $normalized['native']['workers'][0]['subscriptions'][0]['prefetch']);
+        expect('default')->toBe($normalized['routes']['default']['broker'])
+            ->and(16)->toBe($normalized['native']['workers'][0]['subscriptions'][0]['prefetch']);
 
         $paths = ServiceProvider::pathsToPublish(
             RabbitMqServiceProvider::class,
             'rabbit-rs-config',
         );
 
-        self::assertSame(
+        expect(
             [dirname(__DIR__, 2).'/config/rabbit-rs.php' => config_path('rabbit-rs.php')],
-            $paths,
-        );
-    }
+        )->toBe($paths);
+    });
+});
 
-    public function testNormalizesLaravelMapsForTheNativeExtension(): void
-    {
-        $normalized = ConfigNormalizer::normalize($this->validConfig());
+describe('native normalization', function (): void {
+    it('normalizes Laravel maps for the native extension', function (): void {
+        $normalized = ConfigNormalizer::normalize(configValidConfig());
 
-        self::assertSame([
+        expect([
             'brokers' => [[
                 'name' => 'default',
                 'hosts' => [
@@ -61,14 +55,14 @@ final class ConfigNormalizerTest extends TestCase
                     'username' => 'guest',
                     'password' => 'native-password-must-stay-secret',
                 ],
-                    'tls' => [
-                        'enabled' => false,
-                        'server_name' => null,
-                        'ca_cert' => null,
-                        'client_cert' => null,
-                        'client_key' => null,
-                        'verify' => 'peer',
-                    ],
+                'tls' => [
+                    'enabled' => false,
+                    'server_name' => null,
+                    'ca_cert' => null,
+                    'client_cert' => null,
+                    'client_key' => null,
+                    'verify' => 'peer',
+                ],
                 'heartbeat' => 30,
             ]],
             'workers' => [[
@@ -102,17 +96,18 @@ final class ConfigNormalizerTest extends TestCase
                 'mandatory' => true,
                 'confirm_timeout' => 30000,
             ],
-        ], $normalized['native']);
-        self::assertSame('default', $normalized['routes']['orders']['broker']);
-        self::assertTrue($normalized['publisher']['confirms']);
-        self::assertTrue($normalized['publisher']['mandatory']);
-        self::assertSame(30000, $normalized['publisher']['confirm_timeout']);
-        self::assertNull($normalized['topology']['dead_letter']);
-    }
+        ])->toBe($normalized['native'])
+            ->and('default')->toBe($normalized['routes']['orders']['broker'])
+            ->and($normalized['publisher']['confirms'])->toBeTrue()
+            ->and($normalized['publisher']['mandatory'])->toBeTrue()
+            ->and(30000)->toBe($normalized['publisher']['confirm_timeout'])
+            ->and($normalized['topology']['dead_letter'])->toBeNull();
+    });
+});
 
-    public function testPublisherSectionIsPropagatedToNativeConfig(): void
-    {
-        $config = $this->validConfig();
+describe('publisher section', function (): void {
+    it('is propagated to native config', function (): void {
+        $config = configValidConfig();
         $config['publisher'] = [
             'confirms' => false,
             'mandatory' => false,
@@ -121,60 +116,53 @@ final class ConfigNormalizerTest extends TestCase
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame([
+        expect([
             'confirms' => false,
             'mandatory' => false,
             'confirm_timeout' => 5000,
-        ], $normalized['native']['publisher']);
-        self::assertFalse($normalized['publisher']['confirms']);
-        self::assertFalse($normalized['publisher']['mandatory']);
-        self::assertSame(5000, $normalized['publisher']['confirm_timeout']);
-    }
+        ])->toBe($normalized['native']['publisher'])
+            ->and($normalized['publisher']['confirms'])->toBeFalse()
+            ->and($normalized['publisher']['mandatory'])->toBeFalse()
+            ->and(5000)->toBe($normalized['publisher']['confirm_timeout']);
+    });
 
-    public function testPublisherConfirmTimeoutDefaultsToThirtySeconds(): void
-    {
-        $config = $this->validConfig();
+    it('defaults the confirm timeout to thirty seconds', function (): void {
+        $config = configValidConfig();
         unset($config['publisher']['confirm_timeout']);
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame(30000, $normalized['native']['publisher']['confirm_timeout']);
-        self::assertSame(30000, $normalized['publisher']['confirm_timeout']);
-    }
+        expect(30000)->toBe($normalized['native']['publisher']['confirm_timeout'])
+            ->and(30000)->toBe($normalized['publisher']['confirm_timeout']);
+    });
 
-    public function testRejectsNonPositivePublisherConfirmTimeout(): void
-    {
-        $config = $this->validConfig();
+    it('rejects a non-positive confirm timeout', function (): void {
+        $config = configValidConfig();
         $config['publisher']['confirm_timeout'] = 0;
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('publisher.confirm_timeout');
 
         ConfigNormalizer::normalize($config);
-    }
+    });
+});
 
-    public function testNormalizesBracketedIpv6Endpoint(): void
-    {
-        $config = $this->validConfig();
+describe('IPv6', function (): void {
+    it('normalizes a bracketed IPv6 endpoint', function (): void {
+        $config = configValidConfig();
         $config['brokers']['default']['hosts'] = ['[::1]:5673'];
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame(
+        expect(
             [['host' => '::1', 'port' => 5673]],
-            $normalized['native']['brokers'][0]['hosts'],
-        );
-    }
+        )->toBe($normalized['native']['brokers'][0]['hosts']);
+    });
+});
 
-    /**
-     * @param callable(array<string, mixed>): void $mutate
-     */
-    #[DataProvider('invalidConfigurations')]
-    public function testRejectsInvalidConfigurationWithExactPath(
-        callable $mutate,
-        string $expectedPath,
-    ): void {
-        $config = $this->validConfig();
+describe('invalid configuration', function (): void {
+    it('rejects invalid configuration with the exact path', function (callable $mutate, string $expectedPath): void {
+        $config = configValidConfig();
         $mutate($config);
 
         try {
@@ -187,66 +175,12 @@ final class ConfigNormalizerTest extends TestCase
                 $exception->getMessage(),
             );
         }
-    }
+    })->with(configInvalidConfigurations());
+});
 
-    /**
-     * @return iterable<string, array{callable(array<string, mixed>): void, string}>
-     */
-    public static function invalidConfigurations(): iterable
-    {
-        yield 'missing brokers' => [
-            static function (array &$config): void {
-                $config['brokers'] = [];
-            },
-            'brokers',
-        ];
-        yield 'broker without hosts' => [
-            static function (array &$config): void {
-                $config['brokers']['default']['hosts'] = [];
-            },
-            'brokers.default.hosts',
-        ];
-        yield 'route with unknown broker' => [
-            static function (array &$config): void {
-                $config['routes']['orders']['broker'] = 'missing';
-            },
-            'routes.orders.broker',
-        ];
-        yield 'worker with unknown broker' => [
-            static function (array &$config): void {
-                $config['workers']['main']['subscriptions']['orders']['broker'] = 'missing';
-            },
-            'workers.main.subscriptions.orders.broker',
-        ];
-        yield 'zero prefetch' => [
-            static function (array &$config): void {
-                $config['workers']['main']['subscriptions']['orders']['prefetch']['value'] = 0;
-            },
-            'workers.main.subscriptions.orders.prefetch.value',
-        ];
-        yield 'prefetch above worker budget' => [
-            static function (array &$config): void {
-                $config['workers']['main']['scheduler']['max_in_flight'] = 8;
-            },
-            'workers.main.scheduler.max_in_flight',
-        ];
-        yield 'zero starvation duration' => [
-            static function (array &$config): void {
-                $config['workers']['main']['subscriptions']['orders']['starvation_after'] = 0;
-            },
-            'workers.main.subscriptions.orders.starvation_after',
-        ];
-        yield 'unsupported topology mode' => [
-            static function (array &$config): void {
-                $config['topology_mode'] = 'managed';
-            },
-            'topology_mode',
-        ];
-    }
-
-    public function testNormalizesDeadLetterConfigIntoNativeConfig(): void
-    {
-        $config = $this->validConfig();
+describe('dead letter', function (): void {
+    it('normalizes dead letter config into native config', function (): void {
+        $config = configValidConfig();
         $config['topology']['dead_letter'] = [
             'exchange' => 'orders.dlx',
             'queue' => 'orders.failed',
@@ -255,34 +189,32 @@ final class ConfigNormalizerTest extends TestCase
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame([
+        expect([
             'enabled' => true,
             'exchange' => 'orders.dlx',
             'queue' => 'orders.failed',
             'routing_key' => 'failed',
-        ], $normalized['native']['dead_letter']);
-        self::assertSame(20, $normalized['native']['delivery_limit']);
-        self::assertSame([
-            'enabled' => true,
-            'exchange' => 'orders.dlx',
-            'queue' => 'orders.failed',
-            'routing_key' => 'failed',
-        ], $normalized['topology']['dead_letter']);
-    }
+        ])->toBe($normalized['native']['dead_letter'])
+            ->and(20)->toBe($normalized['native']['delivery_limit'])
+            ->and([
+                'enabled' => true,
+                'exchange' => 'orders.dlx',
+                'queue' => 'orders.failed',
+                'routing_key' => 'failed',
+            ])->toBe($normalized['topology']['dead_letter']);
+    });
 
-    public function testNullDeadLetterProducesNullInNativeConfig(): void
-    {
-        $config = $this->validConfig();
+    it('produces null in native config when dead letter is null', function (): void {
+        $config = configValidConfig();
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertNull($normalized['native']['dead_letter']);
-        self::assertSame(20, $normalized['native']['delivery_limit']);
-    }
+        expect($normalized['native']['dead_letter'])->toBeNull()
+            ->and(20)->toBe($normalized['native']['delivery_limit']);
+    });
 
-    public function testDeadLetterWithoutRoutingKeyProducesNullRoutingKey(): void
-    {
-        $config = $this->validConfig();
+    it('produces a null routing key when dead letter has no routing key', function (): void {
+        $config = configValidConfig();
         $config['topology']['dead_letter'] = [
             'exchange' => 'orders.dlx',
             'queue' => 'orders.failed',
@@ -290,17 +222,16 @@ final class ConfigNormalizerTest extends TestCase
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame([
+        expect([
             'enabled' => true,
             'exchange' => 'orders.dlx',
             'queue' => 'orders.failed',
             'routing_key' => null,
-        ], $normalized['native']['dead_letter']);
-    }
+        ])->toBe($normalized['native']['dead_letter']);
+    });
 
-    public function testRejectsDeadLetterWithoutExchange(): void
-    {
-        $config = $this->validConfig();
+    it('rejects a dead letter without an exchange', function (): void {
+        $config = configValidConfig();
         $config['topology']['dead_letter'] = [
             'queue' => 'orders.failed',
         ];
@@ -309,11 +240,10 @@ final class ConfigNormalizerTest extends TestCase
         $this->expectExceptionMessage('topology.dead_letter.exchange');
 
         ConfigNormalizer::normalize($config);
-    }
+    });
 
-    public function testRejectsDeadLetterWithoutQueue(): void
-    {
-        $config = $this->validConfig();
+    it('rejects a dead letter without a queue', function (): void {
+        $config = configValidConfig();
         $config['topology']['dead_letter'] = [
             'exchange' => 'orders.dlx',
         ];
@@ -322,10 +252,11 @@ final class ConfigNormalizerTest extends TestCase
         $this->expectExceptionMessage('topology.dead_letter.queue');
 
         ConfigNormalizer::normalize($config);
-    }
+    });
+});
 
-    public function testReportsMissingNativeExtensionExplicitly(): void
-    {
+describe('native extension', function (): void {
+    it('reports a missing native extension explicitly', function (): void {
         $provider = new class($this->app) extends RabbitMqServiceProvider {
             protected function nativeExtensionLoaded(): bool
             {
@@ -337,11 +268,12 @@ final class ConfigNormalizerTest extends TestCase
         $this->expectExceptionMessage('ext-rabbit_rs');
 
         $provider->assertNativeExtensionLoaded();
-    }
+    });
+});
 
-    public function testNormalizesTlsClientAndCaCertConfig(): void
-    {
-        $config = $this->validConfig();
+describe('TLS', function (): void {
+    it('normalizes TLS client and CA cert config', function (): void {
+        $config = configValidConfig();
         $config['brokers']['default']['tls'] = [
             'enabled' => true,
             'server_name' => 'broker.internal',
@@ -353,29 +285,27 @@ final class ConfigNormalizerTest extends TestCase
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame([
+        expect([
             'enabled' => true,
             'server_name' => 'broker.internal',
             'ca_cert' => '/etc/ssl/certs/ca.pem',
             'client_cert' => '/etc/ssl/client/cert.pem',
             'client_key' => '/etc/ssl/client/key.pem',
             'verify' => 'peer',
-        ], $normalized['native']['brokers'][0]['tls']);
-    }
+        ])->toBe($normalized['native']['brokers'][0]['tls']);
+    });
 
-    public function testTlsDefaultsToPeerVerify(): void
-    {
-        $config = $this->validConfig();
+    it('defaults TLS verify to peer', function (): void {
+        $config = configValidConfig();
         $config['brokers']['default']['tls'] = ['enabled' => true];
 
         $normalized = ConfigNormalizer::normalize($config);
 
-        self::assertSame('peer', $normalized['native']['brokers'][0]['tls']['verify']);
-    }
+        expect('peer')->toBe($normalized['native']['brokers'][0]['tls']['verify']);
+    });
 
-    public function testRejectsInvalidTlsVerifyMode(): void
-    {
-        $config = $this->validConfig();
+    it('rejects an invalid TLS verify mode', function (): void {
+        $config = configValidConfig();
         $config['brokers']['default']['tls'] = [
             'enabled' => true,
             'verify' => 'custom',
@@ -385,23 +315,24 @@ final class ConfigNormalizerTest extends TestCase
         $this->expectExceptionMessage('brokers.default.tls.verify');
 
         ConfigNormalizer::normalize($config);
-    }
+    });
+});
 
-    /**
-     * @return array<string, mixed>
-     */
-    private function validConfig(): array
-    {
-        return [
-            'topology_mode' => 'declare',
-            'brokers' => [
-                'default' => [
-                    'hosts' => ['rabbit-b:5673', 'rabbit-a'],
-                    'vhost' => '/',
-                    'credentials' => [
-                        'username' => 'guest',
-                        'password' => 'native-password-must-stay-secret',
-                    ],
+/**
+ * @return array<string, mixed>
+ */
+function configValidConfig(): array
+{
+    return [
+        'topology_mode' => 'declare',
+        'brokers' => [
+            'default' => [
+                'hosts' => ['rabbit-b:5673', 'rabbit-a'],
+                'vhost' => '/',
+                'credentials' => [
+                    'username' => 'guest',
+                    'password' => 'native-password-must-stay-secret',
+                ],
                 'tls' => [
                     'enabled' => false,
                     'server_name' => null,
@@ -410,40 +341,94 @@ final class ConfigNormalizerTest extends TestCase
                     'client_key' => null,
                     'verify' => 'peer',
                 ],
-                    'heartbeat' => 30,
-                ],
+                'heartbeat' => 30,
             ],
-            'routes' => [
-                'orders' => [
-                    'broker' => 'default',
-                    'exchange' => 'laravel.jobs',
-                    'routing_key' => '{queue}',
-                ],
+        ],
+        'routes' => [
+            'orders' => [
+                'broker' => 'default',
+                'exchange' => 'laravel.jobs',
+                'routing_key' => '{queue}',
             ],
-            'workers' => [
-                'main' => [
-                    'scheduler' => [
-                        'strategy' => 'weighted_fair',
-                        'max_in_flight' => 64,
+        ],
+        'workers' => [
+            'main' => [
+                'scheduler' => [
+                    'strategy' => 'weighted_fair',
+                    'max_in_flight' => 64,
+                ],
+                'subscriptions' => [
+                    'orders' => [
+                        'broker' => 'default',
+                        'queue' => 'orders',
+                        'prefetch' => ['mode' => 'fixed', 'value' => 16],
                     ],
-                    'subscriptions' => [
-                        'orders' => [
-                            'broker' => 'default',
-                            'queue' => 'orders',
-                            'prefetch' => ['mode' => 'fixed', 'value' => 16],
-                        ],
-                    ],
                 ],
             ],
-            'publisher' => ['confirms' => true, 'mandatory' => true],
-            'topology' => [
-                'queue' => [
-                    'type' => 'quorum',
-                    'durable' => true,
-                    'delivery_limit' => 20,
-                ],
-                'dead_letter' => null,
+        ],
+        'publisher' => ['confirms' => true, 'mandatory' => true],
+        'topology' => [
+            'queue' => [
+                'type' => 'quorum',
+                'durable' => true,
+                'delivery_limit' => 20,
             ],
-        ];
-    }
+            'dead_letter' => null,
+        ],
+    ];
+}
+
+/**
+ * @return iterable<string, array{callable(array<string, mixed>): void, string}>
+ */
+function configInvalidConfigurations(): iterable
+{
+    yield 'missing brokers' => [
+        static function (array &$config): void {
+            $config['brokers'] = [];
+        },
+        'brokers',
+    ];
+    yield 'broker without hosts' => [
+        static function (array &$config): void {
+            $config['brokers']['default']['hosts'] = [];
+        },
+        'brokers.default.hosts',
+    ];
+    yield 'route with unknown broker' => [
+        static function (array &$config): void {
+            $config['routes']['orders']['broker'] = 'missing';
+        },
+        'routes.orders.broker',
+    ];
+    yield 'worker with unknown broker' => [
+        static function (array &$config): void {
+            $config['workers']['main']['subscriptions']['orders']['broker'] = 'missing';
+        },
+        'workers.main.subscriptions.orders.broker',
+    ];
+    yield 'zero prefetch' => [
+        static function (array &$config): void {
+            $config['workers']['main']['subscriptions']['orders']['prefetch']['value'] = 0;
+        },
+        'workers.main.subscriptions.orders.prefetch.value',
+    ];
+    yield 'prefetch above worker budget' => [
+        static function (array &$config): void {
+            $config['workers']['main']['scheduler']['max_in_flight'] = 8;
+        },
+        'workers.main.scheduler.max_in_flight',
+    ];
+    yield 'zero starvation duration' => [
+        static function (array &$config): void {
+            $config['workers']['main']['subscriptions']['orders']['starvation_after'] = 0;
+        },
+        'workers.main.subscriptions.orders.starvation_after',
+    ];
+    yield 'unsupported topology mode' => [
+        static function (array &$config): void {
+            $config['topology_mode'] = 'managed';
+        },
+        'topology_mode',
+    ];
 }
