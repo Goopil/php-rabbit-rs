@@ -8,6 +8,13 @@ abstract class AbstractBenchmark
 {
     protected array $latencies = [];
 
+    protected string $scenarioMode = ScenarioMode::BATCH_CONFIRM;
+
+    public function setScenarioMode(string $mode): void
+    {
+        $this->scenarioMode = $mode;
+    }
+
     abstract public function getName(): string;
     abstract public function setUp(): void;
     abstract public function tearDown(): void;
@@ -27,6 +34,13 @@ abstract class AbstractBenchmark
     public function runBenchmark(): array
     {
         $results = [];
+        $gcEnabled = gc_enabled();
+        gc_disable();
+
+        $this->latencies = [];
+        $this->publishMessages(Config::MESSAGE_COUNT);
+        $this->consumeMessages(Config::MESSAGE_COUNT);
+
         for ($i = 0; $i < Config::BENCHMARK_ROUNDS; $i++) {
             $this->latencies = [];
 
@@ -38,6 +52,9 @@ abstract class AbstractBenchmark
             $this->consumeMessages(Config::MESSAGE_COUNT);
             $consumeTime = microtime(true) - $start;
 
+            $consumedCount = count($this->latencies);
+            $losses = Config::MESSAGE_COUNT - $consumedCount;
+
             $results[] = [
                 'publish_time' => $publishTime,
                 'consume_time' => $consumeTime,
@@ -46,7 +63,11 @@ abstract class AbstractBenchmark
                 'p50' => $this->percentile(0.50),
                 'p95' => $this->percentile(0.95),
                 'p99' => $this->percentile(0.99),
+                'losses' => $losses,
             ];
+        }
+        if ($gcEnabled) {
+            gc_enable();
         }
         return $this->calculateStats($results);
     }
@@ -76,6 +97,7 @@ abstract class AbstractBenchmark
         $consumeTimes = $get('consume_time');
         $publishRates = $get('publish_rate');
         $consumeRates = $get('consume_rate');
+        $losses = $get('losses');
 
         return [
             'name' => $this->getName(),
@@ -97,6 +119,7 @@ abstract class AbstractBenchmark
                 'max_rate' => max($consumeRates),
                 'p50' => $avg($get('p50')),
                 'p95' => $avg($get('p95')),
+                'losses' => array_sum($losses),
             ],
         ];
     }
