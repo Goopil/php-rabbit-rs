@@ -106,7 +106,7 @@ if [[ ! -d "${PHP_EXT_DIR}/vendor" ]]; then
 fi
 
 echo "Running Pest tests..."
-(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -d "extension=${ARTIFACT}" vendor/bin/pest --parallel)
+(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -d "extension=${ARTIFACT}" vendor/bin/pest)
 
 # --- PHPT tests (only extension_metadata.phpt) ---
 PHPT_TEST="${PHPT_DIR}/extension_metadata.phpt"
