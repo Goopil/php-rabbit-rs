@@ -67,13 +67,7 @@ mod helper {
     }
 
     pub fn publisher_config() -> PublisherConfig {
-        PublisherConfig::new(
-            1,
-            1_024,
-            Duration::from_millis(1),
-            8,
-            Duration::from_secs(5),
-        )
+        PublisherConfig::new(8, Duration::from_secs(5))
     }
 
     pub fn publish_request(message_id: &str, deadline: Instant) -> PublishRequest {
