@@ -47,7 +47,7 @@ pub struct Delivery {
     pub correlation_id: Option<String>,
     pub subscription: SubscriptionId,
     pub payload: Bytes,
-    pub headers: Headers,
+    pub headers: Arc<Headers>,
     pub attempts: u32,
     token: DeliveryToken,
 }
@@ -73,7 +73,7 @@ impl Delivery {
         correlation_id: Option<String>,
         subscription: SubscriptionId,
         payload: Bytes,
-        headers: Headers,
+        headers: Arc<Headers>,
         attempts: u32,
         token: DeliveryToken,
     ) -> Self {
@@ -214,7 +214,7 @@ pub(crate) struct DeliveryTokenInner {
     pub message_id: MessageId,
     pub correlation_id: Option<String>,
     pub payload: Bytes,
-    pub headers: Headers,
+    pub headers: Arc<Headers>,
     pub attempts: u32,
     pub reserved_at: Instant,
     pub commands: mpsc::Sender<ConsumerCommand>,
@@ -235,7 +235,7 @@ impl DeliveryTokenInner {
         message_id: MessageId,
         correlation_id: Option<String>,
         payload: Bytes,
-        headers: Headers,
+        headers: Arc<Headers>,
         attempts: u32,
         commands: mpsc::Sender<ConsumerCommand>,
     ) -> Self {

@@ -174,7 +174,7 @@ return [
         'default' => [
             'scheduler' => [
                 'strategy' => 'weighted_fair',
-                'max_in_flight' => (int) env('RABBIT_RS_MAX_IN_FLIGHT', 64),
+                'max_in_flight' => (int) env('RABBIT_RS_MAX_IN_FLIGHT', 256),
             ],
             'subscriptions' => [
                 'default' => [
@@ -185,7 +185,7 @@ return [
                     'priority_class' => 0,
                     'prefetch' => [
                         'mode' => 'fixed',
-                        'value' => (int) env('RABBIT_RS_PREFETCH', 16),
+                        'value' => (int) env('RABBIT_RS_PREFETCH', 64),
                     ],
                     'starvation_after' => 30,
                 ],

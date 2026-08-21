@@ -97,6 +97,13 @@ final class Consumer
     {
     }
 
+    /**
+     * Returns the next delivery without blocking, or null when the buffer is empty.
+     */
+    public function tryNext(): ?Delivery
+    {
+    }
+
     public function close(): void
     {
     }

@@ -26,11 +26,6 @@ pub(crate) enum ConsumerCommand {
         subscription: SubscriptionId,
         result: TransportResult<TransportDelivery>,
     },
-    Next {
-        waiter_id: u64,
-        completed: oneshot::Sender<Result<Delivery, ConsumerError>>,
-    },
-    CancelWaiter(u64),
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
@@ -42,11 +37,6 @@ pub(crate) enum ConsumerCommand {
         completed: oneshot::Sender<Result<(), ConsumerError>>,
     },
     Close(oneshot::Sender<()>),
-}
-
-struct Waiter {
-    id: u64,
-    completed: oneshot::Sender<Result<Delivery, ConsumerError>>,
 }
 
 struct RuntimeSubscription {
@@ -64,10 +54,10 @@ struct ActorState {
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
-    waiting: VecDeque<Waiter>,
     in_flight: usize,
     max_in_flight: usize,
     commands: mpsc::Sender<ConsumerCommand>,
+    buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     metrics: Metrics,
 }
 
@@ -76,6 +66,7 @@ impl ActorState {
         subscriptions: Vec<Subscription>,
         max_in_flight: usize,
         commands: mpsc::Sender<ConsumerCommand>,
+        buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
         metrics: Metrics,
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
@@ -103,34 +94,24 @@ impl ActorState {
             buffers,
             source_errors: VecDeque::new(),
             scheduler,
-            waiting: VecDeque::new(),
             in_flight: 0,
             max_in_flight,
             commands,
+            buffer_tx,
             metrics,
         }
     }
 
     fn dispatch(&mut self) {
         while self.in_flight < self.max_in_flight {
-            while self
-                .waiting
-                .front()
-                .is_some_and(|waiter| waiter.completed.is_closed())
-            {
-                self.waiting.pop_front();
-            }
-            let Some(waiter) = self.waiting.pop_front() else {
-                return;
-            };
-            if let Some(error) = self.source_errors.pop_front() {
-                if let Err(Err(error)) = waiter.completed.send(Err(error)) {
-                    self.source_errors.push_front(error);
+            if let Some(error) = self.source_errors.front() {
+                if self.buffer_tx.try_send(Err(error.clone())).is_err() {
+                    return;
                 }
+                self.source_errors.pop_front();
                 continue;
             }
             let Some(subscription) = self.scheduler.next(Instant::now()) else {
-                self.waiting.push_front(waiter);
                 return;
             };
             let Some(delivery) = self
@@ -140,14 +121,9 @@ impl ActorState {
                 .cloned()
             else {
                 self.scheduler.mark_empty(&subscription);
-                self.waiting.push_front(waiter);
                 return;
             };
             let Some(runtime) = self.subscriptions.get(&subscription) else {
-                let _ = waiter.completed.send(Err(ConsumerError::new(
-                    ConsumerErrorKind::InvalidSubscription,
-                    "delivery references an unknown subscription",
-                )));
                 continue;
             };
             let message_id = delivery.message_id.as_ref().map_or_else(
@@ -162,6 +138,7 @@ impl ActorState {
             let attempts = AttemptsResolver::default()
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
+            let headers = Arc::new(delivery.headers.clone());
             let token = DeliveryToken::new(DeliveryTokenInner::pending(
                 DeliveryIdentity {
                     subscription: subscription.clone(),
@@ -173,7 +150,7 @@ impl ActorState {
                 message_id.clone(),
                 delivery.correlation_id.clone(),
                 delivery.payload.clone(),
-                delivery.headers.clone(),
+                headers.clone(),
                 attempts,
                 self.commands.clone(),
             ));
@@ -182,13 +159,13 @@ impl ActorState {
                 delivery.correlation_id,
                 subscription.clone(),
                 delivery.payload,
-                delivery.headers,
+                headers,
                 attempts,
                 token,
             );
-            if waiter.completed.send(Ok(item)).is_err() {
+            if self.buffer_tx.try_send(Ok(item)).is_err() {
                 self.scheduler.mark_ready(&subscription);
-                continue;
+                return;
             }
             if let Some(buffer) = self.buffers.get_mut(&subscription) {
                 buffer.pop_front();
@@ -206,12 +183,10 @@ impl ActorState {
             self.source_errors.pop_front();
         }
         self.source_errors.push_back(error);
-        self.dispatch();
     }
 
     fn release_budget(&mut self) {
         self.in_flight = self.in_flight.saturating_sub(1);
-        self.dispatch();
     }
 }
 
@@ -220,102 +195,99 @@ pub(crate) async fn run_actor(
     max_in_flight: usize,
     mut receiver: mpsc::Receiver<ConsumerCommand>,
     commands: mpsc::Sender<ConsumerCommand>,
+    buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     metrics: Metrics,
+    dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
-    let mut state = ActorState::new(subscriptions, max_in_flight, commands, metrics);
-    while let Some(command) = receiver.recv().await {
-        match command {
-            ConsumerCommand::Incoming {
-                subscription,
-                result,
-            } => match result {
-                Ok(delivery) => {
-                    if let Some(buffer) = state.buffers.get_mut(&subscription) {
-                        buffer.push_back(delivery);
-                        state.scheduler.mark_ready(&subscription);
-                    }
-                    state.dispatch();
-                }
-                Err(error) => {
-                    state.record_source_error(ConsumerError::new(
-                        ConsumerErrorKind::Transport,
-                        error.to_string(),
-                    ));
-                }
-            },
-            ConsumerCommand::Next {
-                waiter_id,
-                completed,
-            } => {
-                if !completed.is_closed() {
-                    state.waiting.push_back(Waiter {
-                        id: waiter_id,
-                        completed,
-                    });
-                }
-                state.dispatch();
-            }
-            ConsumerCommand::CancelWaiter(waiter_id) => {
-                state.waiting.retain(|waiter| waiter.id != waiter_id);
-            }
-            ConsumerCommand::Settle {
-                token,
-                settlement,
-                completed,
-            } => {
-                let result = settle(&state, &token, settlement).await;
-                match result {
-                    Ok(terminal) => {
-                        match terminal {
-                            DeliveryState::Acked => {
-                                state.metrics.record_ack(token.reserved_at.elapsed());
-                            }
-                            DeliveryState::Rejected => {
-                                state.metrics.record_reject(token.reserved_at.elapsed());
-                            }
-                            DeliveryState::Pending | DeliveryState::Lost => {}
+    let mut state = ActorState::new(subscriptions, max_in_flight, commands, buffer_tx, metrics);
+    let mut dispatch_timer = tokio::time::interval(Duration::from_millis(1));
+    dispatch_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Allow pumps to push deliveries before the first dispatch.
+    tokio::task::yield_now().await;
+    loop {
+        tokio::select! {
+            command = receiver.recv() => match command {
+                Some(ConsumerCommand::Incoming {
+                    subscription,
+                    result,
+                }) => match result {
+                    Ok(delivery) => {
+                        if let Some(buffer) = state.buffers.get_mut(&subscription) {
+                            buffer.push_back(delivery);
+                            state.scheduler.mark_ready(&subscription);
                         }
-                        state.release_budget();
-                        let _ = completed.send(Ok(terminal));
-                    }
-                    Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
-                        state.release_budget();
-                        let _ = completed.send(Err(error));
                     }
                     Err(error) => {
-                        let _ = completed.send(Err(error));
+                        state.record_source_error(ConsumerError::new(
+                            ConsumerErrorKind::Transport,
+                            error.to_string(),
+                        ));
+                    }
+                },
+                Some(ConsumerCommand::Settle {
+                    token,
+                    settlement,
+                    completed,
+                }) => {
+                    let result = settle(&state, &token, settlement).await;
+                    match result {
+                        Ok(terminal) => {
+                            match terminal {
+                                DeliveryState::Acked => {
+                                    state.metrics.record_ack(token.reserved_at.elapsed());
+                                }
+                                DeliveryState::Rejected => {
+                                    state.metrics.record_reject(token.reserved_at.elapsed());
+                                }
+                                DeliveryState::Pending | DeliveryState::Lost => {}
+                            }
+                            state.release_budget();
+                            state.dispatch();
+                            let _ = completed.send(Ok(terminal));
+                        }
+                        Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
+                            state.release_budget();
+                            state.dispatch();
+                            let _ = completed.send(Err(error));
+                        }
+                        Err(error) => {
+                            let _ = completed.send(Err(error));
+                        }
                     }
                 }
-            }
-            ConsumerCommand::UpdateGeneration {
-                subscription,
-                generation,
-                completed,
-            } => {
-                let result = state.subscriptions.get_mut(&subscription).map_or_else(
-                    || {
-                        Err(ConsumerError::new(
-                            ConsumerErrorKind::InvalidSubscription,
-                            "cannot update an unknown subscription",
-                        ))
-                    },
-                    |runtime| {
-                        runtime.generation = generation;
-                        Ok(())
-                    },
-                );
-                let _ = completed.send(result);
-            }
-            ConsumerCommand::Close(completed) => {
-                for runtime in state.subscriptions.values() {
-                    let _ = runtime.channel.close().await;
+                Some(ConsumerCommand::UpdateGeneration {
+                    subscription,
+                    generation,
+                    completed,
+                }) => {
+                    let result = state.subscriptions.get_mut(&subscription).map_or_else(
+                        || {
+                            Err(ConsumerError::new(
+                                ConsumerErrorKind::InvalidSubscription,
+                                "cannot update an unknown subscription",
+                            ))
+                        },
+                        |runtime| {
+                            runtime.generation = generation;
+                            Ok(())
+                        },
+                    );
+                    let _ = completed.send(result);
                 }
-                let error = ConsumerError::closed();
-                for waiter in state.waiting.drain(..) {
-                    let _ = waiter.completed.send(Err(error.clone()));
+                Some(ConsumerCommand::Close(completed)) => {
+                    for runtime in state.subscriptions.values() {
+                        let _ = runtime.channel.close().await;
+                    }
+                    let _ = completed.send(());
+                    return;
                 }
-                let _ = completed.send(());
-                return;
+                None => return,
+            },
+            () = dispatch_notify.notified() => {
+                state.dispatch();
+            }
+            _ = dispatch_timer.tick() => {
+                state.dispatch();
             }
         }
     }

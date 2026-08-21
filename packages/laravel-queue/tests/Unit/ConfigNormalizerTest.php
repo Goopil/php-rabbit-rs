@@ -24,7 +24,7 @@ describe('package defaults', function (): void {
         expect(['127.0.0.1:5672'])->toBe($config['brokers']['default']['hosts']);
         $normalized = ConfigNormalizer::normalize($config);
         expect('default')->toBe($normalized['routes']['default']['broker'])
-            ->and(16)->toBe($normalized['native']['workers'][0]['subscriptions'][0]['prefetch']);
+            ->and(64)->toBe($normalized['native']['workers'][0]['subscriptions'][0]['prefetch']);
 
         $paths = ServiceProvider::pathsToPublish(
             RabbitMqServiceProvider::class,

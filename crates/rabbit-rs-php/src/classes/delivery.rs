@@ -45,7 +45,7 @@ impl Delivery {
         metadata.insert("attempts", i64::from(self.inner.attempts))?;
         metadata.insert("state", state_name(self.inner.state()))?;
         let mut headers = ZendHashTable::new();
-        for (key, value) in &self.inner.headers {
+        for (key, value) in self.inner.headers.iter() {
             insert_header(&mut headers, key, value)?;
         }
         metadata.insert("headers", headers)?;

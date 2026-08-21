@@ -429,9 +429,13 @@ async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
     )
     .await
     .expect("consumer set");
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
+
+    // Let pumps push all deliveries and errors, and let the actor drain
+    // source_errors into the flume buffer. With max_in_flight=1 and a buffer
+    // capacity of 1, the actor dispatches one item per notify/timer tick.
+    // The source_errors deque is bounded to max(1, 64) = 64, so at most 64
+    // errors are retained; the remaining 36 are dropped on the floor.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     for _ in 0..64 {
         assert_eq!(
