@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace Bench\Scenarios;
 
 use Bench\AbstractBenchmark;
+use Bench\ScenarioMode;
 
 class AutoAckBenchmark extends AbstractBenchmark
 {
-    public function __construct(private readonly AbstractBenchmark $driver) {}
+    public function __construct(private readonly AbstractBenchmark $driver)
+    {
+        $driver->setScenarioMode(ScenarioMode::AUTO_ACK);
+    }
 
     public function getName(): string { return $this->driver->getName() . ' (auto-ack)'; }
     public function setUp(): void { $this->driver->setUp(); }

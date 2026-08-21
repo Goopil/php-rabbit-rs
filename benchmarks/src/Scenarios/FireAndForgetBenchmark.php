@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace Bench\Scenarios;
 
 use Bench\AbstractBenchmark;
+use Bench\ScenarioMode;
 
 class FireAndForgetBenchmark extends AbstractBenchmark
 {
-    public function __construct(private readonly AbstractBenchmark $driver) {}
+    public function __construct(private readonly AbstractBenchmark $driver)
+    {
+        $driver->setScenarioMode(ScenarioMode::FIRE_AND_FORGET);
+    }
 
     public function getName(): string { return $this->driver->getName() . ' (fire-and-forget)'; }
     public function setUp(): void { $this->driver->setUp(); }
