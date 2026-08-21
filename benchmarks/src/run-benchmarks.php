@@ -7,9 +7,9 @@ const BASE_DIR = __DIR__ . '/..';
 
 spl_autoload_register(static function (string $class): void {
     $prefixes = [
-        'Bench\\Drivers\\' => BASE_DIR . '/drivers/',
+        'Bench\\Drivers\\' => BASE_DIR . '/src/Drivers/',
         'Bench\\Scenarios\\' => BASE_DIR . '/src/Scenarios/',
-        'Bench\\' => BASE_DIR . '/lib/',
+        'Bench\\' => BASE_DIR . '/src/',
     ];
     foreach ($prefixes as $prefix => $base) {
         if (str_starts_with($class, $prefix)) {

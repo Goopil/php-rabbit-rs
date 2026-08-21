@@ -112,7 +112,7 @@ fi
 cd "${PACKAGE_DIR}"
 
 if [[ ${#PEST_ARGS[@]} -eq 0 ]]; then
-    "${PHP_CMD[@]}" vendor/bin/pest tests/Unit tests/Feature --testdox
+    "${PHP_CMD[@]}" vendor/bin/pest --testdox
 else
     "${PHP_CMD[@]}" vendor/bin/pest "${PEST_ARGS[@]}"
 fi
