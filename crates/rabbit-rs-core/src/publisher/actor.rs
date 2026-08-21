@@ -22,8 +22,7 @@ use crate::{
 
 use super::{
     PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter, PublisherConfig,
-    PublisherConnectionEvent, ReturnInfo, batcher::Batcher, confirms::ConfirmLedger,
-    delay::DelayRouter,
+    PublisherConnectionEvent, ReturnInfo, confirms::ConfirmLedger, delay::DelayRouter,
 };
 
 pub struct PublisherActor;
@@ -258,12 +257,10 @@ struct ActorState {
     phase: Phase,
     generation: u64,
     channel: Option<Arc<dyn PublisherChannel>>,
-    batch: Batcher<RetainedPublish>,
     replay: VecDeque<RetainedPublish>,
     ledger: ConfirmLedger<InFlightPublish>,
     confirmations: FuturesUnordered<ConfirmationFuture>,
     sequence: u64,
-    flush_deadline: Option<time::Instant>,
     permanent_error: Option<PublishError>,
     metrics: Metrics,
     delay_strategy: Option<DelayStrategy>,
@@ -282,12 +279,10 @@ impl ActorState {
             phase: Phase::Ready,
             generation: 1,
             channel: Some(channel),
-            batch: Batcher::new(config.max_messages, config.max_bytes),
             replay: VecDeque::new(),
             ledger: ConfirmLedger::default(),
             confirmations: FuturesUnordered::new(),
             sequence: 0,
-            flush_deadline: None,
             permanent_error: None,
             metrics,
             delay_strategy,
@@ -295,23 +290,14 @@ impl ActorState {
         }
     }
 
-    fn flush_interval(&self) -> Duration {
-        if self.config.flush_interval.is_zero() {
-            Duration::from_nanos(1)
-        } else {
-            self.config.flush_interval
-        }
-    }
-
     fn next_deadline(&self) -> Option<time::Instant> {
         match self.phase {
-            Phase::Ready => self.flush_deadline,
+            Phase::Ready | Phase::FailedPermanent => None,
             Phase::Suspended => self
                 .replay
                 .iter()
                 .map(|pending| pending.request.deadline)
                 .min(),
-            Phase::FailedPermanent => None,
         }
     }
 
@@ -321,17 +307,12 @@ impl ActorState {
         }
         self.phase = Phase::Suspended;
         self.channel = None;
-        self.flush_deadline = None;
-        self.replay.extend(self.batch.take());
         self.replay
             .extend(self.ledger.drain().map(|in_flight| in_flight.retained));
         self.confirmations = FuturesUnordered::new();
     }
 
     fn fail_all(&mut self, error: &PublishError) {
-        for retained in self.batch.take() {
-            complete_error(retained, error.clone());
-        }
         for retained in self.replay.drain(..) {
             complete_error(retained, error.clone());
         }
@@ -339,7 +320,6 @@ impl ActorState {
             complete_error(in_flight.retained, error.clone());
         }
         self.confirmations = FuturesUnordered::new();
-        self.flush_deadline = None;
     }
 
     fn expire_replay(&mut self) {
@@ -412,12 +392,8 @@ async fn run_actor(
             },
             () = wait_for_deadline(state.next_deadline()) => {
                 match state.phase {
-                    Phase::Ready => {
-                        flush_batch(&mut state).await;
-                        state.flush_deadline = None;
-                    }
                     Phase::Suspended => state.expire_replay(),
-                    Phase::FailedPermanent => {}
+                    Phase::Ready | Phase::FailedPermanent => {}
                 }
             }
             confirmation = state.confirmations.next(), if !state.confirmations.is_empty() => {
@@ -432,14 +408,8 @@ async fn run_actor(
 async fn accept_publish(state: &mut ActorState, retained: RetainedPublish) {
     match state.phase {
         Phase::Ready => {
-            let payload_len = retained.request.payload.len();
-            if state.batch.is_empty() {
-                state.flush_deadline = Some(time::Instant::now() + state.flush_interval());
-            }
-            if state.batch.push(retained, payload_len) {
-                flush_batch(state).await;
-                state.flush_deadline = None;
-            }
+            let pending = VecDeque::from([retained]);
+            publish_queue(state, pending).await;
         }
         Phase::Suspended => state.replay.push_back(retained),
         Phase::FailedPermanent => complete_error(
@@ -503,11 +473,6 @@ async fn handle_connection_event(
             Ok(())
         }
     }
-}
-
-async fn flush_batch(state: &mut ActorState) {
-    let pending = VecDeque::from(state.batch.take());
-    publish_queue(state, pending).await;
 }
 
 async fn flush_replay(state: &mut ActorState) {

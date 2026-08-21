@@ -102,13 +102,8 @@ pub(crate) fn testing_pool(config: &ZendHashTable, scenario: &ZendHashTable) -> 
     let handle = RuntimeRegistry::global()
         .acquire(key)
         .map_err(|error| testing_exception(error.to_string()))?;
-    let publisher_config = PublisherConfig::new(
-        1,
-        1024 * 1024,
-        Duration::from_millis(1),
-        scenario.publisher_capacity,
-        Duration::from_secs(30),
-    );
+    let publisher_config =
+        PublisherConfig::new(scenario.publisher_capacity, Duration::from_secs(30));
     let client = Arc::new(ClientPool::new_for_tests(
         config,
         Arc::new(transport),

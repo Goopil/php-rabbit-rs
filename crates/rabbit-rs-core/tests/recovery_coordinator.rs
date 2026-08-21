@@ -59,13 +59,7 @@ fn config() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
 }
 
 fn publisher_config() -> PublisherConfig {
-    PublisherConfig::new(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        8,
-        Duration::from_secs(5),
-    )
+    PublisherConfig::new(8, Duration::from_secs(5))
 }
 
 fn publish_request(message_id: &str, deadline: Instant) -> PublishRequest {

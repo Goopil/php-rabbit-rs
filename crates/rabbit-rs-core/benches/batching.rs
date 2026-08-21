@@ -89,9 +89,6 @@ fn bench_batching(c: &mut Criterion) {
                                     .expect("publisher channel");
 
                                 let config = PublisherConfig::with_flags(
-                                    batch_size,
-                                    2 * 1024 * 1024,
-                                    std::time::Duration::from_millis(1),
                                     1024,
                                     std::time::Duration::from_secs(30),
                                     confirms,

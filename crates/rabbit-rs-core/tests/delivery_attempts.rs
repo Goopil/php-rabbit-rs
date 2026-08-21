@@ -238,13 +238,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
         .expect("publisher channel");
     let publisher = PublisherActor::spawn(
         Arc::from(publisher_channel),
-        PublisherConfig::new(
-            1,
-            1_024,
-            Duration::from_millis(1),
-            8,
-            Duration::from_secs(5),
-        ),
+        PublisherConfig::new(8, Duration::from_secs(5)),
     );
     let subscription = Subscription::new(
         "jobs",

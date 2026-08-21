@@ -26,13 +26,7 @@ fn broker() -> BrokerConfig {
 }
 
 fn config(capacity: usize) -> PublisherConfig {
-    PublisherConfig::new(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        capacity,
-        Duration::from_secs(5),
-    )
+    PublisherConfig::new(capacity, Duration::from_secs(5))
 }
 
 fn request(message_id: &str, deadline: Instant) -> PublishRequest {
@@ -189,17 +183,17 @@ async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn message_still_in_batch_is_retained_across_connection_loss() {
+async fn unconfirmed_publish_is_retained_across_connection_loss() {
     let transport = MockTransport::default();
+    transport.push_pending_confirmation();
     let actor = PublisherActor::spawn(
         new_channel(&transport).await,
-        PublisherConfig::new(10, 1_024, Duration::from_secs(1), 8, Duration::from_secs(5)),
+        PublisherConfig::new(8, Duration::from_secs(5)),
     );
     let waiter = actor
-        .try_publish(request("batched", Instant::now() + Duration::from_secs(30)))
-        .expect("batched publish");
-    tokio::task::yield_now().await;
-    assert!(publish_operations(&transport).is_empty());
+        .try_publish(request("pending", Instant::now() + Duration::from_secs(30)))
+        .expect("publish");
+    wait_for_publish_count(&transport, 1).await;
 
     suspend(&actor).await;
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
@@ -213,7 +207,7 @@ async fn message_still_in_batch_is_retained_across_connection_loss() {
         .expect("resume");
 
     assert!(waiter.wait().await.is_ok());
-    assert_eq!(publish_operations(&transport).len(), 1);
+    assert_eq!(publish_operations(&transport).len(), 2);
 }
 
 #[tokio::test(start_paused = true)]

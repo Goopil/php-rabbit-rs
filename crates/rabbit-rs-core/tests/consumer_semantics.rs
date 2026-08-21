@@ -104,13 +104,7 @@ async fn publisher(transport: &MockTransport) -> rabbit_rs_core::publisher::Publ
         .expect("publisher channel");
     PublisherActor::spawn(
         Arc::from(channel),
-        PublisherConfig::new(
-            1,
-            1_024,
-            Duration::from_millis(1),
-            32,
-            Duration::from_secs(5),
-        ),
+        PublisherConfig::new(32, Duration::from_secs(5)),
     )
 }
 
@@ -125,10 +119,7 @@ async fn publisher_handle_exposes_its_confirm_timeout() {
         .await
         .expect("publisher channel");
     let timeout = Duration::from_millis(17);
-    let publisher = PublisherActor::spawn(
-        Arc::from(channel),
-        PublisherConfig::new(1, 1_024, Duration::from_millis(1), 8, timeout),
-    );
+    let publisher = PublisherActor::spawn(Arc::from(channel), PublisherConfig::new(8, timeout));
 
     assert_eq!(publisher.confirm_timeout(), timeout);
 }

@@ -3,7 +3,6 @@ use std::{
     error::Error,
     fmt,
     sync::{Arc, Mutex as StdMutex, MutexGuard},
-    time::Duration,
 };
 
 use tokio::sync::Mutex as AsyncMutex;
@@ -22,8 +21,6 @@ use crate::{
     transport::{Transport, TransportConnection, TransportError, lapin::LapinTransport},
 };
 
-const DEFAULT_MAX_MESSAGES: usize = 256;
-const DEFAULT_MAX_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -619,9 +616,6 @@ fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
 fn publisher_config(config: &ValidatedConfig) -> PublisherConfig {
     let publisher = config.publisher();
     PublisherConfig::with_flags(
-        DEFAULT_MAX_MESSAGES,
-        DEFAULT_MAX_BYTES,
-        Duration::from_millis(1),
         DEFAULT_BUFFER_CAPACITY,
         publisher.confirm_timeout,
         publisher.confirms,

@@ -29,13 +29,7 @@ fn broker() -> BrokerConfig {
 }
 
 fn publisher_config() -> PublisherConfig {
-    PublisherConfig::new(
-        256,
-        1_024 * 1_024,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(30),
-    )
+    PublisherConfig::new(32, Duration::from_secs(30))
 }
 
 fn delayed_request(message_id: &str, delay_ms: u64) -> PublishRequest {

@@ -25,14 +25,8 @@ fn broker() -> BrokerConfig {
     }
 }
 
-fn config(max_messages: usize, max_bytes: usize) -> PublisherConfig {
-    PublisherConfig::new(
-        max_messages,
-        max_bytes,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(5),
-    )
+fn config() -> PublisherConfig {
+    PublisherConfig::new(32, Duration::from_secs(5))
 }
 
 fn request(message_id: &str, payload: &'static [u8]) -> PublishRequest {
@@ -78,7 +72,7 @@ async fn flushes_when_max_messages_is_reached() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor(&transport, config(2, 1_024)).await;
+    let actor = actor(&transport, config()).await;
 
     let first = actor.try_publish(request("one", b"a")).expect("first");
     let second = actor.try_publish(request("two", b"b")).expect("second");
@@ -99,7 +93,7 @@ async fn flushes_when_max_bytes_is_reached() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor(&transport, config(10, 5)).await;
+    let actor = actor(&transport, config()).await;
 
     let _first = actor.try_publish(request("one", b"123")).expect("first");
     let _second = actor.try_publish(request("two", b"45")).expect("second");
@@ -111,7 +105,7 @@ async fn flushes_when_max_bytes_is_reached() {
 async fn flushes_on_the_configured_timer() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor(&transport, config(10, 1_024)).await;
+    let actor = actor(&transport, config()).await;
 
     let waiter = actor.try_publish(request("one", b"a")).expect("publish");
     tokio::task::yield_now().await;
@@ -129,7 +123,7 @@ async fn resolves_acks_for_multiple_sequences() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor(&transport, config(2, 1_024)).await;
+    let actor = actor(&transport, config()).await;
 
     let first = actor.try_publish(request("one", b"a")).expect("first");
     let second = actor.try_publish(request("two", b"b")).expect("second");
@@ -153,7 +147,7 @@ async fn a_nack_only_fails_its_target_sequence() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
-    let actor = actor(&transport, config(2, 1_024)).await;
+    let actor = actor(&transport, config()).await;
 
     let first = actor.try_publish(request("one", b"a")).expect("first");
     let second = actor.try_publish(request("two", b"b")).expect("second");
@@ -175,7 +169,7 @@ async fn mandatory_return_wins_over_the_following_ack() {
         routing_key: "missing".to_owned(),
         payload: Bytes::from_static(b"job"),
     }))));
-    let actor = actor(&transport, config(1, 1_024)).await;
+    let actor = actor(&transport, config()).await;
 
     let waiter = actor
         .try_publish(request("returned", b"job"))
@@ -193,13 +187,7 @@ async fn confirmation_timeout_is_typed() {
     transport.push_pending_confirmation();
     let actor = actor(
         &transport,
-        PublisherConfig::new(
-            1,
-            1_024,
-            Duration::from_millis(1),
-            32,
-            Duration::from_millis(10),
-        ),
+        PublisherConfig::new(32, Duration::from_millis(10)),
     )
     .await;
     let waiter = actor.try_publish(request("slow", b"job")).expect("publish");
@@ -216,17 +204,7 @@ async fn confirmation_timeout_is_typed() {
 #[tokio::test(start_paused = true)]
 async fn a_full_command_buffer_returns_backpressure() {
     let transport = MockTransport::default();
-    let actor = actor(
-        &transport,
-        PublisherConfig::new(
-            256,
-            1_048_576,
-            Duration::from_secs(1),
-            1,
-            Duration::from_secs(5),
-        ),
-    )
-    .await;
+    let actor = actor(&transport, PublisherConfig::new(1, Duration::from_secs(5))).await;
 
     let _first = actor.try_publish(request("one", b"a")).expect("first slot");
     let error = actor
@@ -240,7 +218,7 @@ async fn a_full_command_buffer_returns_backpressure() {
 async fn connection_loss_before_confirm_is_replayed() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();
-    let actor = actor(&transport, config(1, 1_024)).await;
+    let actor = actor(&transport, config()).await;
     let waiter = actor
         .try_publish(request("uncertain", b"job"))
         .expect("publish");
@@ -293,15 +271,7 @@ async fn skips_enable_confirms_when_configured_off() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(5),
-        false,
-        true,
-    );
+    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), false, true);
     let actor = PublisherActor::spawn(Arc::from(publisher), config);
 
     let waiter = actor.try_publish(request("one", b"a")).expect("publish");
@@ -328,15 +298,7 @@ async fn calls_enable_confirms_when_configured_on() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(5),
-        true,
-        true,
-    );
+    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
     let actor = PublisherActor::spawn(Arc::from(publisher), config);
 
     let waiter = actor.try_publish(request("one", b"a")).expect("publish");
@@ -363,15 +325,7 @@ async fn publishes_with_mandatory_false_when_configured_off() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(5),
-        true,
-        false,
-    );
+    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, false);
     let actor = PublisherActor::spawn(Arc::from(publisher), config);
 
     let waiter = actor.try_publish(request("one", b"a")).expect("publish");
@@ -403,15 +357,7 @@ async fn publishes_with_mandatory_true_when_configured_on() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(5),
-        true,
-        true,
-    );
+    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
     let actor = PublisherActor::spawn(Arc::from(publisher), config);
 
     let waiter = actor.try_publish(request("one", b"a")).expect("publish");
@@ -443,15 +389,7 @@ async fn confirm_timeout_from_config_is_applied() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(
-        1,
-        1_024,
-        Duration::from_millis(1),
-        32,
-        Duration::from_secs(5),
-        true,
-        true,
-    );
+    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
     let actor = PublisherActor::spawn(Arc::from(publisher), config);
 
     let waiter = actor.try_publish(request("slow", b"job")).expect("publish");
