@@ -41,11 +41,11 @@ class RabbitRsDriver extends AbstractBenchmark
                     'queue' => self::QUEUE,
                     'weight' => 1,
                     'priority_class' => 0,
-                    'prefetch' => 16,
+                    'prefetch' => 64,
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
+                    'max_in_flight' => 256,
                 ],
             ]],
             'topology_mode' => 'declare',
@@ -94,13 +94,16 @@ class RabbitRsDriver extends AbstractBenchmark
         $consumed = 0;
         $consecutiveNulls = 0;
         while ($consumed < $count) {
-            $delivery = $this->consumer->next(1000);
+            $delivery = $this->consumer->tryNext();
             if ($delivery === null) {
-                $consecutiveNulls++;
-                if ($consecutiveNulls >= 3) {
-                    break;
+                $delivery = $this->consumer->next(1000);
+                if ($delivery === null) {
+                    $consecutiveNulls++;
+                    if ($consecutiveNulls >= 3) {
+                        break;
+                    }
+                    continue;
                 }
-                continue;
             }
             $consecutiveNulls = 0;
 
