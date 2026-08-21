@@ -78,10 +78,10 @@ jobs:
           composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update --dev
           composer update --quiet --ignore-platform-reqs
 
-      - name: Run PHPUnit tests
+      - name: Run Pest tests
         run: |
           cd packages/laravel-queue
-          php vendor/bin/phpunit --testsuite="Rabbit RS Laravel" --testdox
+          php vendor/bin/pest tests/Unit tests/Feature --parallel --testdox
 
   phpt:
     name: PHPT (${{ matrix.php }})
@@ -208,10 +208,10 @@ jobs:
         run: cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
 
       - name: Run smoke benchmark
-        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/smoke.php
+        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/src/run-benchmarks.php --scenario=fire-and-forget --driver=rabbit-rs
 
       - name: Run Laravel smoke test
-        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/laravel-smoke.php
+        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so -r 'require "benchmarks/laravel/LaravelSmokeBenchmark.php"; $b = new \Bench\Laravel\LaravelSmokeBenchmark(); $b->setUp(); $stats = $b->runBenchmark(); $b->tearDown(); echo json_encode($stats, JSON_PRETTY_PRINT) . "\n";'
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

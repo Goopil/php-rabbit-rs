@@ -33,8 +33,7 @@ echo "Lab is ready."
 
 echo ""
 echo "=== Running Rust integration tests ==="
-cargo test -p rabbit-rs-core --features integration --test publish_consume -- --test-threads=1
-cargo test -p rabbit-rs-core --features integration --test topology_modes -- --test-threads=1
+cargo test -p rabbit-rs-core --features integration --test integration -- --test-threads=1
 
 echo ""
 echo "=== Building ext-rabbit_rs ==="
@@ -63,7 +62,7 @@ else
 
     echo ""
     echo "=== Running Laravel integration tests ==="
-    "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/phpunit --testsuite="Rabbit RS Integration" --testdox
+    "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/pest tests/Integration --testdox
 fi
 
 echo ""

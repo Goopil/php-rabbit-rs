@@ -5,6 +5,7 @@
     "require": {
         "php": ">=8.4",
         "php-amqplib/php-amqplib": "^3.7",
+        "bunny/bunny": "^0.5",
         "vladimir-yuldashev/laravel-queue-rabbitmq": "^13.0",
         "illuminate/container": "^12.0",
         "illuminate/events": "^12.0",
@@ -20,8 +21,7 @@
     ],
     "autoload": {
         "psr-4": {
-            "Bench\\": "lib/",
-            "Bench\\Drivers\\": "drivers/"
+            "Bench\\": "src/"
         }
     }
 }
