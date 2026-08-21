@@ -98,7 +98,7 @@ exit($pass ? 0 : 1);
 function liveConfig(string $queueName): array
 {
     return [
-        'topology_mode' => 'declare',
+        'topology_mode' => 'external',
         'brokers' => [
             'default' => [
                 'hosts' => ['127.0.0.1:5672'],
