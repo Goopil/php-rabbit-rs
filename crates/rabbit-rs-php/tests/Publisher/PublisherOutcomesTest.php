@@ -23,7 +23,7 @@ dataset('outcomes', [
 
 it('maps publisher confirmations and transport failures to the PHP contract', function (string $outcome, ?string $exceptionClass, string $messageFragment, ?string $codeFragment) {
     $pool = testingPool(defaultConfig(), [
-        'publication_outcomes' => ['ack', 'returned', 'pending', 'transport_error'],
+        'publication_outcomes' => [$outcome],
     ]);
 
     if ($outcome === 'ack') {
