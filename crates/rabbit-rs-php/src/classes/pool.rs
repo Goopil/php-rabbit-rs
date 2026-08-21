@@ -377,7 +377,12 @@ impl Pool {
             .runtime()
             .block_on(self.client.publish_batch(requests))
         {
-            Ok(_outcomes) => Ok(()),
+            Ok(outcomes) => {
+                for outcome in outcomes {
+                    publish_message_id(outcome)?;
+                }
+                Ok(())
+            }
             Err(error) => client_exception(&error),
         }
     }

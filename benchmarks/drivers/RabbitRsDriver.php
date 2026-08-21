@@ -40,11 +40,11 @@ class RabbitRsDriver implements Driver
                     'queue' => self::QUEUE,
                     'weight' => 1,
                     'priority_class' => 0,
-                    'prefetch' => 16,
+                    'prefetch' => 512,
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
+                    'max_in_flight' => 2048,
                 ],
             ]],
             'topology_mode' => 'declare',
@@ -101,18 +101,7 @@ class RabbitRsDriver implements Driver
         $this->consumeCount = 0;
         $this->losses = 0;
 
-        $consecutiveNulls = 0;
-        while ($this->consumeCount < $count) {
-            $delivery = $this->consumer->next(1000);
-            if ($delivery === null) {
-                $consecutiveNulls++;
-                if ($consecutiveNulls >= 3) {
-                    break;
-                }
-                continue;
-            }
-            $consecutiveNulls = 0;
-
+        $processed = $this->consumer->consume(function ($delivery) {
             $payload = $delivery->payload();
             if (strlen($payload) >= 8) {
                 $ts = unpack('P', substr($payload, 0, 8))[1] ?? null;
@@ -121,11 +110,11 @@ class RabbitRsDriver implements Driver
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-
             $delivery->ack();
-            $this->consumeCount++;
-        }
+            return true;
+        }, $count, 30000);
 
+        $this->consumeCount = $processed;
         $this->losses = max(0, $count - $this->consumeCount);
     }
 

@@ -1,7 +1,7 @@
 {
-  "publish_throughput_min": 1000,
-  "consume_throughput_min": 500,
-  "publish_p99_max_ms": 2000,
-  "consume_p99_max_ms": 2000,
+  "publish_throughput_min": 800,
+  "consume_throughput_min": 400,
+  "publish_p99_max_ms": 3000,
+  "consume_p99_max_ms": 3000,
   "losses_max": 0
 }

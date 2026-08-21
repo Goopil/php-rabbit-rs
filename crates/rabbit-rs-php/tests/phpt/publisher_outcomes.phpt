@@ -28,12 +28,15 @@ $pool = Goopil\RabbitRs\testing_pool([
     'publication_outcomes' => ['ack', 'returned', 'pending', 'transport_error'],
 ]);
 
-if ($pool->publish(message('confirmed')) !== 'confirmed') {
+$messageId = $pool->publish(message('confirmed'));
+$pool->flush();
+if ($messageId !== 'confirmed') {
     throw new Exception('ACK must return the stable message id');
 }
 
 try {
     $pool->publish(message('returned'));
+    $pool->flush();
     throw new Exception('mandatory return must fail');
 } catch (Goopil\RabbitRs\Exception $exception) {
     if (!str_contains($exception->getMessage(), 'returned') || !str_contains($exception->getMessage(), '312')) {
@@ -43,6 +46,7 @@ try {
 
 try {
     $pool->publish(message('timeout', 1));
+    $pool->flush();
     throw new Exception('pending confirmation must time out');
 } catch (Goopil\RabbitRs\Exception $exception) {
     if (!str_contains($exception->getMessage(), 'timed out')) {
@@ -52,6 +56,7 @@ try {
 
 try {
     $pool->publish(message('transport'));
+    $pool->flush();
     throw new Exception('transport failure must fail publication');
 } catch (Goopil\RabbitRs\ConnectionException $exception) {
     if (!str_contains($exception->getMessage(), 'transport failed')) {

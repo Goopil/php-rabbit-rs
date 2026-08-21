@@ -32,6 +32,7 @@ $binaryMessage = [
 ];
 try {
     $pool->publish($binaryMessage);
+    $pool->flush();
     throw new Exception('unknown broker must fail');
 } catch (Goopil\RabbitRs\Exception $exception) {
     expect_true(str_contains($exception->getMessage(), 'brokers.missing'), 'binary payload must pass conversion');
