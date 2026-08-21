@@ -102,7 +102,7 @@ PHP_EXT_DIR="${ROOT_DIR}/crates/rabbit-rs-php"
 
 # --- Pest tests ---
 if [[ ! -d "${PHP_EXT_DIR}/vendor" ]]; then
-    (cd "${PHP_EXT_DIR}" && composer install --no-interaction --no-security-blocking)
+    (cd "${PHP_EXT_DIR}" && composer update --no-interaction --no-security-blocking)
 fi
 
 echo "Running Pest tests..."
