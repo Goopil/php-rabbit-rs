@@ -47,10 +47,13 @@ if (extension_loaded('rabbit_rs')) {
     $drivers['rabbit-rs'] = Drivers\RabbitRsDriver::class;
 }
 if (class_exists(\PhpAmqpLib\Connection\AMQPStreamConnection::class)) {
-    $drivers['amqplib'] = Drivers\PhpAmqplibDriver::class;
+    $drivers['amqplib'] = Drivers\AmqplibDriver::class;
 }
 if (extension_loaded('amqp')) {
     $drivers['amqp-ext'] = Drivers\AmqpExtDriver::class;
+}
+if (class_exists(\Bunny\Client::class)) {
+    $drivers['bunny'] = Drivers\BunnyDriver::class;
 }
 
 $scenarios = [
