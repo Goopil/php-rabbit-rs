@@ -91,18 +91,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Rust and Composer
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+            crates/rabbit-rs-php/vendor
+          key: phpt-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', 'crates/rabbit-rs-php/composer.json') }}
+          restore-keys: |
+            phpt-${{ matrix.php }}-
+
       - name: Build and test in Docker
         run: |
+          mkdir -p .cargo-registry .cargo-git .rustup-home
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
+            -v "${{ github.workspace }}/.cargo-registry:/root/.cargo/registry" \
+            -v "${{ github.workspace }}/.cargo-git:/root/.cargo/git" \
+            -v "${{ github.workspace }}/.rustup-home:/root/.rustup" \
             -w /src \
             php:${{ matrix.php }}-cli \
             sh -c '
               set -e
               apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make unzip git
-              curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+
+              if ! command -v cargo &>/dev/null; then
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              fi
               . "$HOME/.cargo/env"
+
+              if ! command -v composer &>/dev/null; then
+                curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+              fi
+
               cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
@@ -114,18 +138,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Rust and Composer
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+            crates/rabbit-rs-php/vendor
+          key: zts-8.4-${{ hashFiles('**/Cargo.lock', 'crates/rabbit-rs-php/composer.json') }}
+          restore-keys: |
+            zts-8.4-
+
       - name: Build and test in Docker (ZTS)
         run: |
+          mkdir -p .cargo-registry .cargo-git .rustup-home
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
+            -v "${{ github.workspace }}/.cargo-registry:/root/.cargo/registry" \
+            -v "${{ github.workspace }}/.cargo-git:/root/.cargo/git" \
+            -v "${{ github.workspace }}/.rustup-home:/root/.rustup" \
             -w /src \
             php:8.4-zts \
             sh -c '
               set -e
               apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make unzip git
-              curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+
+              if ! command -v cargo &>/dev/null; then
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              fi
               . "$HOME/.cargo/env"
+
+              if ! command -v composer &>/dev/null; then
+                curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+              fi
+
               cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
