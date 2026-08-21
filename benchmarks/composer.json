@@ -21,7 +21,8 @@
     ],
     "autoload": {
         "psr-4": {
-            "Bench\\": "src/"
+            "Bench\\": "src/",
+            "Bench\\Laravel\\": "laravel/"
         }
     }
 }
