@@ -99,17 +99,16 @@ Le publisher natif :
 
 1. valide et copie le payload et les propriétés ;
 2. place la commande dans une file bornée ;
-3. regroupe les commandes par destination et channel ;
-4. publie avec delivery_mode persistant et mandatory=true ;
-5. associe les numéros de séquence aux attentes de confirmation ;
-6. traite basic.return avant les confirmations ;
-7. termine chaque attente seulement après ACK, NACK, retour ou timeout.
+3. publie avec delivery_mode persistant et mandatory=true ;
+4. associe les numéros de séquence aux attentes de confirmation ;
+5. traite basic.return avant les confirmations ;
+6. termine chaque attente seulement après ACK, NACK, retour ou timeout.
 
-Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. Plusieurs requêtes Octane concurrentes peuvent être regroupées par l'acteur. La méthode publishBatch transmet un tableau complet en une seule traversée FFI et constitue le chemin rapide pour Laravel bulk.
+Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. La méthode publishBatch transmet un tableau complet en une seule traversée FFI et constitue le chemin rapide pour Laravel bulk.
 
 Une coupure avant confirmation rend l'état ambigu. Par défaut, la politique at-least-once conserve en mémoire du processus les publications non envoyées et ambiguës, puis les republie automatiquement avec le même message_id lorsque la connexion, la topologie et un channel avec confirms sont de nouveau prêts. La deadline originale continue de s'appliquer pendant la coupure : elle n'est jamais réinitialisée par une reconnexion.
 
-Le publisher passe en état suspendu pendant la recovery mais continue d'accepter des commandes tant que sa capacité globale bornée n'est pas atteinte. Cette capacité couvre les commandes en attente, les batches et les confirms en vol afin qu'un acteur qui draine son canal pendant une longue coupure ne puisse pas accumuler une mémoire non bornée. Une fois la capacité atteinte, les nouvelles publications reçoivent Backpressure.
+Le publisher passe en état suspendu pendant la recovery mais continue d'accepter des commandes tant que sa capacité globale bornée n'est pas atteinte. Cette capacité couvre les commandes en attente et les confirms en vol afin qu'un acteur qui draine son canal pendant une longue coupure ne puisse pas accumuler une mémoire non bornée. Une fois la capacité atteinte, les nouvelles publications reçoivent Backpressure.
 
 Une publication jamais écrite peut être rejouée sans ambiguïté. Une publication écrite mais non confirmée est rejouée automatiquement pour éviter toute perte silencieuse ; cela peut créer un doublon et impose donc des jobs idempotents. ACK, NACK, basic.return, erreur permanente ou expiration de deadline sont terminaux et résolvent l'attente une seule fois. Cette garantie est locale au processus : un crash du processus PHP perd le buffer mémoire ; une garantie au-delà du crash nécessiterait un outbox persistant, hors périmètre de la V1.
 
@@ -237,13 +236,11 @@ Les valeurs initiales saines sont :
 - queue quorum durable ;
 - delivery limit à 20 sauf policy externe ;
 - aucune DLQ applicative sans configuration explicite ;
-- batch maximal à 256 messages ou 1 Mio ;
-- flush à 1 ms ;
 - buffer publisher borné à 8192 commandes ;
 - prefetch initial à 16, borné par max_in_flight ;
 - reconnexion de 100 ms à 30 s, multiplicateur 2 et jitter 20 %.
 
-Les valeurs de batch et prefetch doivent être calibrées par benchmark avant la V1 stable.
+Les valeurs de prefetch doivent être calibrées par benchmark avant la V1 stable.
 
 ## Compatibilité Laravel
 
