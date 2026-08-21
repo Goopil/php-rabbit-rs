@@ -6,6 +6,7 @@ namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
+use Bench\ScenarioMode;
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Pool;
 use RuntimeException;
@@ -60,6 +61,14 @@ class RabbitRsDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        $batchSize = match ($this->scenarioMode) {
+            ScenarioMode::FIRE_AND_FORGET => 256,
+            ScenarioMode::BATCH_CONFIRM => 256,
+            ScenarioMode::AUTO_ACK => 1,
+        };
+
+        $timeoutMs = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET ? 100 : 30000;
+
         $batch = [];
         for ($i = 0; $i < $count; $i++) {
             $ts = hrtime(true);
@@ -69,10 +78,10 @@ class RabbitRsDriver extends AbstractBenchmark
                 'routing_key' => self::QUEUE,
                 'payload' => pack('P', $ts) . $this->createMessage((string) $i),
                 'message_id' => $this->uuid(),
-                'timeout_ms' => 30000,
+                'timeout_ms' => $timeoutMs,
             ];
 
-            if (count($batch) >= 256) {
+            if (count($batch) >= $batchSize) {
                 $this->pool->publishBatch($batch);
                 $batch = [];
             }
@@ -90,6 +99,9 @@ class RabbitRsDriver extends AbstractBenchmark
         }
 
         $this->consumer = $this->pool->consumer('default');
+
+        $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK;
 
         $consumed = 0;
         $consecutiveNulls = 0;
@@ -116,7 +128,9 @@ class RabbitRsDriver extends AbstractBenchmark
                 }
             }
 
-            $delivery->ack();
+            if (!$autoAck) {
+                $delivery->ack();
+            }
             $consumed++;
         }
     }
