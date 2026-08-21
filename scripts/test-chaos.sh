@@ -92,8 +92,11 @@ else
     echo ""
     echo "=== Building ext-rabbit_rs ==="
     EXTENSION_SO=""
-    if cargo build --release --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml --features extension-tests" 2>&1; then
-        EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.so"
+    if cargo build --release --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" --features extension-tests 2>&1; then
+        case "$(uname -s)" in
+            Darwin) EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.dylib" ;;
+            Linux)  EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.so" ;;
+        esac
         echo "ext-rabbit_rs built: ${EXTENSION_SO}"
     else
         echo "WARN: could not build ext-rabbit_rs, skipping Laravel chaos tests"
@@ -103,12 +106,12 @@ else
         echo ""
         echo "=== Installing Laravel package dependencies ==="
         cd "${PROJECT_ROOT}/packages/laravel-queue"
-        composer install --quiet --ignore-platform-reqs 2>/dev/null || true
+        composer update --quiet --ignore-platform-reqs 2>/dev/null || true
 
         echo ""
         echo "=== Running Laravel chaos tests ==="
         curl -sf -X POST http://localhost:8474/reset >/dev/null 2>&1 || true
-        if "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/phpunit --testsuite="Rabbit RS Integration" --filter="AtLeastOnceChaosTest" --testdox 2>&1; then
+        if "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/pest tests/Integration --filter="AtLeastOnceChaosTest" --testdox 2>&1; then
             echo "PASS: Laravel chaos tests"
             LARAVEL_CHAOS_PASSED=$((LARAVEL_CHAOS_PASSED + 1))
         else

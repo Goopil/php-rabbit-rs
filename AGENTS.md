@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-Rabbit RS is a high-performance RabbitMQ transport for PHP and Laravel, powered by Rust. The current workspace contains a runtime-independent Rust core and a native PHP extension scaffold. The Laravel adapter described in the plans is future work and is not yet present.
+Rabbit RS is a high-performance RabbitMQ transport for PHP and Laravel, powered by Rust. The workspace contains a runtime-independent Rust core, a native PHP extension, and a Laravel queue driver package.
 
 The delivery contract is at-least-once: silent loss is unacceptable, while duplicates are permitted and must remain identifiable and measurable.
 
@@ -17,10 +17,14 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 ## Workspace Map
 
 - `crates/rabbit-rs-core/`: runtime-independent configuration, connection pooling, topology, publishing, consuming, recovery, metrics, and transport abstractions.
-- `crates/rabbit-rs-core/tests/`: integration-style Rust tests for delivery semantics, fairness, recovery, topology, metrics, and publisher safety.
-- `crates/rabbit-rs-php/`: `cdylib` scaffold for the native PHP extension; it currently depends only on the core crate.
-- `composer.json`: PIE package metadata for `rabbit-rs/native`, not the future Laravel package.
-- `scripts/check.sh`: full local quality gate.
+- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (6 files: publisher, consumer, recovery, topology, metrics, integration).
+- `crates/rabbit-rs-php/`: `cdylib` for the native PHP extension; depends on the core crate. Pest tests in `tests/`.
+- `packages/laravel-queue/`: Laravel queue driver package (`goopil/rabbit-rs-laravel`). Pest tests in `tests/`.
+- `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.
+- `composer.json`: PIE package metadata for `rabbit-rs/native`.
+- `scripts/check.sh`: Rust quality gate (fmt + clippy + test + composer validate).
+- `scripts/test-laravel.sh`: run Laravel Pest tests (Unit + Feature without extension, Integration with extension).
+- `scripts/test-extension.sh`: build and test the PHP extension (Pest + PHPT).
 
 ## Toolchain and Commands
 
@@ -71,6 +75,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - Follow test-driven development for behavior changes: add a focused failing test, observe the intended failure, implement minimally, and rerun the focused test.
 - Use paused Tokio time and the scriptable mock transport for deterministic asynchronous tests. Do not add real sleeps to unit tests.
 - Add cross-module behavior tests under `crates/rabbit-rs-core/tests/`; keep private unit details next to their modules.
+- PHP tests use Pest (not PHPUnit). Laravel Unit/Feature tests use fake classes (no extension needed). Integration tests require ext-rabbit_rs loaded.
 - Run `rtk cargo fmt --all` after Rust edits, then run focused tests and the full quality gate.
 - Preserve unrelated work in a dirty tree. Never discard or overwrite changes you did not create.
 - Keep commits logical and scoped when the active plan calls for commits. Do not include `.air/`, IDE metadata, build artifacts, or unrelated changes.

@@ -257,32 +257,6 @@ jobs:
       - name: Run Rust integration tests
         run: cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
 
-      - name: Install benchmark dependencies
-        run: |
-          cd benchmarks
-          composer update --quiet --ignore-platform-reqs
-
-      - name: Run smoke benchmark
-        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/src/run-benchmarks.php --scenario=fire-and-forget --driver=rabbit-rs
-
-      - name: Run Laravel smoke test
-        run: |
-          php -d extension=$(pwd)/target/release/librabbit_rs_php.so -r '
-            require "benchmarks/vendor/autoload.php";
-            $b = new \Bench\Laravel\LaravelSmokeBenchmark();
-            $b->setUp();
-            $stats = $b->runBenchmark();
-            $b->tearDown();
-            echo json_encode($stats, JSON_PRETTY_PRINT) . "\n";
-          '
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-results
-          path: benchmarks/results/
-          retention-days: 7
-
       - name: Stop RabbitMQ lab
         if: always()
         run: ./scripts/lab-down.sh

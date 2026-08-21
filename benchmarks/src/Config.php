@@ -8,8 +8,8 @@ class Config
 {
     public const RABBITMQ_HOST = '127.0.0.1';
     public const RABBITMQ_PORT = 5672;
-    public const RABBITMQ_USER = 'guest';
-    public const RABBITMQ_PASSWORD = 'guest';
+    public const RABBITMQ_USER = 'rabbit_rs';
+    public const RABBITMQ_PASSWORD = 'rabbit_rs_lab';
     public const RABBITMQ_VHOST = '/';
 
     public const MESSAGE_COUNT = 10000;
