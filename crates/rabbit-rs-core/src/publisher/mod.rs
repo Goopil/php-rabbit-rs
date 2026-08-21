@@ -1,5 +1,4 @@
 pub mod actor;
-pub mod batcher;
 pub mod confirms;
 pub mod delay;
 
@@ -102,9 +101,6 @@ impl PublishRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublisherConfig {
-    pub max_messages: usize,
-    pub max_bytes: usize,
-    pub flush_interval: Duration,
     pub buffer_capacity: usize,
     pub confirm_timeout: Duration,
     pub confirms: bool,
@@ -113,17 +109,8 @@ pub struct PublisherConfig {
 
 impl PublisherConfig {
     #[must_use]
-    pub const fn new(
-        max_messages: usize,
-        max_bytes: usize,
-        flush_interval: Duration,
-        buffer_capacity: usize,
-        confirm_timeout: Duration,
-    ) -> Self {
+    pub const fn new(buffer_capacity: usize, confirm_timeout: Duration) -> Self {
         Self {
-            max_messages,
-            max_bytes,
-            flush_interval,
             buffer_capacity,
             confirm_timeout,
             confirms: true,
@@ -133,18 +120,12 @@ impl PublisherConfig {
 
     #[must_use]
     pub const fn with_flags(
-        max_messages: usize,
-        max_bytes: usize,
-        flush_interval: Duration,
         buffer_capacity: usize,
         confirm_timeout: Duration,
         confirms: bool,
         mandatory: bool,
     ) -> Self {
         Self {
-            max_messages,
-            max_bytes,
-            flush_interval,
             buffer_capacity,
             confirm_timeout,
             confirms,
