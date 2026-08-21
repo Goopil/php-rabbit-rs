@@ -5,7 +5,7 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
 use Illuminate\Support\Str;
 
-function route(): array
+function mapperRoute(): array
 {
     return [
         'broker' => 'default',
@@ -20,7 +20,7 @@ describe('MessageMapper', function () {
 
         $message = $mapper->map(
             '{"job":"App\\\\Jobs\\\\Example"}',
-            route(),
+            mapperRoute(),
             'orders',
         );
 
@@ -32,7 +32,7 @@ describe('MessageMapper', function () {
 
         $message = $mapper->map(
             '{"job":"App\\\\Jobs\\\\Example"}',
-            route(),
+            mapperRoute(),
             'orders',
             ['timeout_ms' => 12000],
         );
@@ -45,7 +45,7 @@ describe('MessageMapper', function () {
 
         $message = $mapper->map(
             '{"job":"App\\\\Jobs\\\\Example"}',
-            route(),
+            mapperRoute(),
             'orders',
         );
 
@@ -57,7 +57,7 @@ describe('MessageMapper', function () {
 
         $message = $mapper->map(
             'payload',
-            route(),
+            mapperRoute(),
             'orders',
             ['content_type' => 'application/json', 'headers' => ['x-foo' => 'bar']],
             5000,
