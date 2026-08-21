@@ -67,10 +67,10 @@ cp "${RUN_TESTS_SOURCE}" "${RUN_TESTS}"
 
 case "$(uname -s)" in
     Darwin)
-        ARTIFACT="${ROOT_DIR}/target/release/librabbit_rs_php.dylib"
+        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.dylib"
         ;;
     Linux)
-        ARTIFACT="${ROOT_DIR}/target/release/librabbit_rs_php.so"
+        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.so"
         ;;
     *)
         echo "unsupported operating system: $(uname -s)" >&2

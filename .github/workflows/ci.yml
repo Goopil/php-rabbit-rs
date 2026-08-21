@@ -127,7 +127,7 @@ jobs:
                 curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
               fi
 
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+              cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
 
@@ -174,7 +174,7 @@ jobs:
                 curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
               fi
 
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+              cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
 

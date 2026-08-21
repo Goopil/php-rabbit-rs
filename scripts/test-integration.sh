@@ -41,11 +41,11 @@ PHP_BIN="${PHP_BIN:-php}"
 if ! command -v "${PHP_BIN}" >/dev/null 2>&1; then
     echo "SKIP: php not found, cannot run Laravel integration tests"
 else
-    cargo build --release --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" --features extension-tests
+    cargo build --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" --features extension-tests
 
     case "$(uname -s)" in
-        Darwin) EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.dylib" ;;
-        Linux)  EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.so" ;;
+        Darwin) EXTENSION_SO="${PROJECT_ROOT}/target/debug/librabbit_rs_php.dylib" ;;
+        Linux)  EXTENSION_SO="${PROJECT_ROOT}/target/debug/librabbit_rs_php.so" ;;
         *) echo "ERROR: unsupported OS: $(uname -s)" >&2; exit 1 ;;
     esac
 

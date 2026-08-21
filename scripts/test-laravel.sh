@@ -57,10 +57,10 @@ if [[ "${NEED_EXTENSION}" == true ]]; then
     # --- Detect extension artifact path ---
     case "$(uname -s)" in
         Darwin)
-            ARTIFACT="${PROJECT_ROOT}/target/release/librabbit_rs_php.dylib"
+            ARTIFACT="${PROJECT_ROOT}/target/debug/librabbit_rs_php.dylib"
             ;;
         Linux)
-            ARTIFACT="${PROJECT_ROOT}/target/release/librabbit_rs_php.so"
+            ARTIFACT="${PROJECT_ROOT}/target/debug/librabbit_rs_php.so"
             ;;
         *)
             echo "ERROR: unsupported operating system: $(uname -s)" >&2
@@ -71,7 +71,7 @@ if [[ "${NEED_EXTENSION}" == true ]]; then
     # --- Build extension if artifact is missing ---
     if [[ ! -f "${ARTIFACT}" ]]; then
         echo "=== Building ext-rabbit_rs ==="
-        cargo build --release \
+        cargo build \
             --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" \
             --features extension-tests
     fi
