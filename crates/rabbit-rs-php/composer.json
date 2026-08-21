@@ -1,0 +1,17 @@
+{
+    "name": "rabbit-rs/php-extension",
+    "description": "Native PHP extension for rabbit-rs",
+    "type": "extension",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.4"
+    },
+    "require-dev": {
+        "pestphp/pest": "^4.0"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    }
+}

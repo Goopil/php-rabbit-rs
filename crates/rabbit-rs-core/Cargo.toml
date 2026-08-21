@@ -9,7 +9,6 @@ repository.workspace = true
 [features]
 test-support = []
 integration = []
-bench = []
 
 [dependencies]
 async-trait = "0.1"
@@ -25,51 +24,9 @@ tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "ti
 url = "2.5"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.47", features = ["test-util", "process"] }
-
-[[bench]]
-name = "batching"
-path = "benches/batching.rs"
-harness = false
-
-[[bench]]
-name = "confirm_ledger"
-path = "benches/confirm_ledger.rs"
-harness = false
-
-[[bench]]
-name = "ffi_conversion"
-path = "benches/ffi_conversion.rs"
-harness = false
-
-[[bench]]
-name = "lapin_properties"
-path = "benches/lapin_properties.rs"
-harness = false
-required-features = ["bench"]
-
-[[bench]]
-name = "publisher_actor"
-path = "benches/publisher_actor.rs"
-harness = false
-
-[[bench]]
-name = "scheduler"
-path = "benches/scheduler.rs"
-harness = false
-
-[[bench]]
-name = "transport"
-path = "benches/transport.rs"
-harness = false
-
-[[test]]
-name = "chaos_reconnect"
-path = "tests/chaos/reconnect.rs"
 
 [lints]
 workspace = true

@@ -1,0 +1,103 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bench;
+
+abstract class AbstractBenchmark
+{
+    protected array $latencies = [];
+
+    abstract public function getName(): string;
+    abstract public function setUp(): void;
+    abstract public function tearDown(): void;
+    abstract public function publishMessages(int $count): void;
+    abstract public function consumeMessages(int $count): void;
+
+    protected function createMessage(string $body): string
+    {
+        return json_encode([
+            'id' => uniqid('', true),
+            'timestamp' => microtime(true),
+            'data' => $body,
+            'payload' => str_repeat('x', Config::MESSAGE_PAYLOAD_BYTES),
+        ]);
+    }
+
+    public function runBenchmark(): array
+    {
+        $results = [];
+        for ($i = 0; $i < Config::BENCHMARK_ROUNDS; $i++) {
+            $this->latencies = [];
+
+            $start = microtime(true);
+            $this->publishMessages(Config::MESSAGE_COUNT);
+            $publishTime = microtime(true) - $start;
+
+            $start = microtime(true);
+            $this->consumeMessages(Config::MESSAGE_COUNT);
+            $consumeTime = microtime(true) - $start;
+
+            $results[] = [
+                'publish_time' => $publishTime,
+                'consume_time' => $consumeTime,
+                'publish_rate' => Config::MESSAGE_COUNT / $publishTime,
+                'consume_rate' => Config::MESSAGE_COUNT / $consumeTime,
+                'p50' => $this->percentile(0.50),
+                'p95' => $this->percentile(0.95),
+                'p99' => $this->percentile(0.99),
+            ];
+        }
+        return $this->calculateStats($results);
+    }
+
+    protected function recordLatency(float $ms): void
+    {
+        $this->latencies[] = $ms;
+    }
+
+    protected function percentile(float $p): float
+    {
+        if (empty($this->latencies)) {
+            return 0.0;
+        }
+        $sorted = $this->latencies;
+        sort($sorted);
+        $index = (int) floor($p * count($sorted));
+        return $sorted[min($index, count($sorted) - 1)];
+    }
+
+    private function calculateStats(array $results): array
+    {
+        $get = fn(string $key) => array_column($results, $key);
+        $avg = fn(array $vals) => array_sum($vals) / count($vals);
+
+        $publishTimes = $get('publish_time');
+        $consumeTimes = $get('consume_time');
+        $publishRates = $get('publish_rate');
+        $consumeRates = $get('consume_rate');
+
+        return [
+            'name' => $this->getName(),
+            'publish' => [
+                'avg_time' => $avg($publishTimes),
+                'min_time' => min($publishTimes),
+                'max_time' => max($publishTimes),
+                'avg_rate' => $avg($publishRates),
+                'min_rate' => min($publishRates),
+                'max_rate' => max($publishRates),
+                'p99' => $avg($get('p99')),
+            ],
+            'consume' => [
+                'avg_time' => $avg($consumeTimes),
+                'min_time' => min($consumeTimes),
+                'max_time' => max($consumeTimes),
+                'avg_rate' => $avg($consumeRates),
+                'min_rate' => min($consumeRates),
+                'max_rate' => max($consumeRates),
+                'p50' => $avg($get('p50')),
+                'p95' => $avg($get('p95')),
+            ],
+        ];
+    }
+}

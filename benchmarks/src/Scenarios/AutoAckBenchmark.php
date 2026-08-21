@@ -1,0 +1,18 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Bench\Scenarios;
+
+use Bench\AbstractBenchmark;
+
+class AutoAckBenchmark extends AbstractBenchmark
+{
+    public function __construct(private readonly AbstractBenchmark $driver) {}
+
+    public function getName(): string { return $this->driver->getName() . ' (auto-ack)'; }
+    public function setUp(): void { $this->driver->setUp(); }
+    public function tearDown(): void { $this->driver->tearDown(); }
+    public function publishMessages(int $count): void { $this->driver->publishMessages($count); }
+    public function consumeMessages(int $count): void { $this->driver->consumeMessages($count); }
+}

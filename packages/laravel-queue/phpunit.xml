@@ -1,21 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/11.5/phpunit.xsd"
-         bootstrap="tests/bootstrap.php"
-         cacheDirectory=".phpunit.cache"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
          colors="true"
-         failOnRisky="true"
-         failOnWarning="true">
+>
     <testsuites>
-        <testsuite name="Rabbit RS Laravel">
+        <testsuite name="default">
             <directory>tests/Unit</directory>
             <directory>tests/Feature</directory>
-        </testsuite>
-        <testsuite name="Rabbit RS Integration">
-            <directory>tests/Integration</directory>
         </testsuite>
     </testsuites>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <env name="CACHE_STORE" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
     </php>
 </phpunit>

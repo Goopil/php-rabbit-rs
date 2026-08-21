@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVER="${1:-frankenphp}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PACKAGE_DIR="${PROJECT_ROOT}/packages/laravel-queue"
-
-echo "Testing Octane lifecycle with ${SERVER}..."
 
 cd "${PACKAGE_DIR}"
 
@@ -15,6 +12,6 @@ if ! command -v php &> /dev/null; then
     exit 1
 fi
 
-php -d memory_limit=512M vendor/bin/phpunit --testsuite="Rabbit RS Laravel" --filter OctaneLifecycleTest
+php -d memory_limit=512M vendor/bin/pest tests/Feature --filter="Octane" --testdox
 
-echo "Octane lifecycle tests passed for ${SERVER}"
+echo "Octane lifecycle tests passed"

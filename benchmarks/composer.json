@@ -5,11 +5,12 @@
     "require": {
         "php": ">=8.4",
         "php-amqplib/php-amqplib": "^3.7",
-        "vladimir-yuldashev/laravel-queue-rabbitmq": "^13.0",
-        "illuminate/container": "^12.0",
-        "illuminate/events": "^12.0",
-        "illuminate/queue": "^12.0",
-        "illuminate/config": "^12.0"
+        "bunny/bunny": "^0.5",
+        "vladimir-yuldashev/laravel-queue-rabbitmq": "^15.0",
+        "illuminate/container": "^12.0 || ^13.0",
+        "illuminate/events": "^12.0 || ^13.0",
+        "illuminate/queue": "^12.0 || ^13.0",
+        "illuminate/config": "^12.0 || ^13.0"
     },
     "repositories": [
         {
@@ -20,8 +21,8 @@
     ],
     "autoload": {
         "psr-4": {
-            "Bench\\": "lib/",
-            "Bench\\Drivers\\": "drivers/"
+            "Bench\\": "src/",
+            "Bench\\Laravel\\": "laravel/"
         }
     }
 }

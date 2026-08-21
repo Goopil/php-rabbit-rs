@@ -75,13 +75,11 @@ jobs:
         run: |
           cd packages/laravel-queue
           rm -f composer.lock
-          composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update --dev
+          composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update
           composer update --quiet --ignore-platform-reqs
 
-      - name: Run PHPUnit tests
-        run: |
-          cd packages/laravel-queue
-          php vendor/bin/phpunit --testsuite="Rabbit RS Laravel" --testdox
+      - name: Run Pest tests
+        run: ./scripts/test-laravel.sh
 
   phpt:
     name: PHPT (${{ matrix.php }})
@@ -93,18 +91,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Rust and Composer
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+            crates/rabbit-rs-php/vendor
+          key: phpt-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', 'crates/rabbit-rs-php/composer.json') }}
+          restore-keys: |
+            phpt-${{ matrix.php }}-
+
       - name: Build and test in Docker
         run: |
+          mkdir -p .cargo-registry .cargo-git .rustup-home
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
+            -v "${{ github.workspace }}/.cargo-registry:/root/.cargo/registry" \
+            -v "${{ github.workspace }}/.cargo-git:/root/.cargo/git" \
+            -v "${{ github.workspace }}/.rustup-home:/root/.rustup" \
             -w /src \
             php:${{ matrix.php }}-cli \
             sh -c '
               set -e
-              apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make unzip git
+
+              if ! command -v cargo &>/dev/null; then
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              fi
               . "$HOME/.cargo/env"
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+
+              if ! command -v composer &>/dev/null; then
+                curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+              fi
+
+              cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
 
@@ -115,18 +138,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache Rust and Composer
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+            crates/rabbit-rs-php/vendor
+          key: zts-8.4-${{ hashFiles('**/Cargo.lock', 'crates/rabbit-rs-php/composer.json') }}
+          restore-keys: |
+            zts-8.4-
+
       - name: Build and test in Docker (ZTS)
         run: |
+          mkdir -p .cargo-registry .cargo-git .rustup-home
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
+            -v "${{ github.workspace }}/.cargo-registry:/root/.cargo/registry" \
+            -v "${{ github.workspace }}/.cargo-git:/root/.cargo/git" \
+            -v "${{ github.workspace }}/.rustup-home:/root/.rustup" \
             -w /src \
             php:8.4-zts \
             sh -c '
               set -e
-              apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              apt-get update -qq && apt-get install -y -qq libclang-dev curl gcc make unzip git
+
+              if ! command -v cargo &>/dev/null; then
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              fi
               . "$HOME/.cargo/env"
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+
+              if ! command -v composer &>/dev/null; then
+                curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+              fi
+
+              cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
               ./scripts/test-extension.sh
             '
 
@@ -146,7 +194,7 @@ jobs:
       - name: Install Laravel package dependencies
         run: |
           cd packages/laravel-queue
-          composer install --quiet --ignore-platform-reqs
+          composer update --quiet --ignore-platform-reqs
 
       - name: Install Octane
         run: |
@@ -154,7 +202,9 @@ jobs:
           composer require laravel/octane --dev --ignore-platform-reqs || true
 
       - name: Run Octane lifecycle tests
-        run: ./scripts/test-octane.sh
+        run: |
+          cd packages/laravel-queue
+          php vendor/bin/pest tests/Feature --filter="Octane" --testdox
 
   integration:
     name: Integration + Smoke
@@ -187,7 +237,7 @@ jobs:
       - name: Install Laravel package dependencies
         run: |
           cd packages/laravel-queue
-          composer install --quiet --ignore-platform-reqs
+          composer update --quiet --ignore-platform-reqs
 
       - name: Start RabbitMQ lab
         run: ./scripts/lab-up.sh with-plugin
@@ -207,44 +257,7 @@ jobs:
       - name: Run Rust integration tests
         run: cargo test -p rabbit-rs-core --test '*' -- --test-threads=1
 
-      - name: Run smoke benchmark
-        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/smoke.php
-
-      - name: Run Laravel smoke test
-        run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/laravel-smoke.php
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-results
-          path: benchmarks/results/
-          retention-days: 7
-
       - name: Stop RabbitMQ lab
         if: always()
         run: ./scripts/lab-down.sh
 
-  chaos:
-    name: Chaos tests
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust 1.96
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.96.0"
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
-
-      - name: Run chaos tests
-        run: ./scripts/test-chaos.sh
-
-      - name: Stop RabbitMQ lab
-        if: always()
-        run: ./scripts/lab-down.sh

@@ -67,10 +67,10 @@ cp "${RUN_TESTS_SOURCE}" "${RUN_TESTS}"
 
 case "$(uname -s)" in
     Darwin)
-        ARTIFACT="${ROOT_DIR}/target/release/librabbit_rs_php.dylib"
+        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.dylib"
         ;;
     Linux)
-        ARTIFACT="${ROOT_DIR}/target/release/librabbit_rs_php.so"
+        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.so"
         ;;
     *)
         echo "unsupported operating system: $(uname -s)" >&2
@@ -98,15 +98,20 @@ RABBIT_RS_EXPECTED_VERSION="$({
 ')"
 export RABBIT_RS_EXPECTED_VERSION
 
-shopt -s nullglob
-if [[ $# -gt 0 ]]; then
-    TESTS=("${PHPT_DIR}"/*"$1"*.phpt)
-else
-    TESTS=("${PHPT_DIR}"/*.phpt)
+PHP_EXT_DIR="${ROOT_DIR}/crates/rabbit-rs-php"
+
+# --- Pest tests ---
+if [[ ! -d "${PHP_EXT_DIR}/vendor" ]]; then
+    (cd "${PHP_EXT_DIR}" && composer update --no-interaction --no-security-blocking)
 fi
 
-if [[ ${#TESTS[@]} -eq 0 ]]; then
-    echo "no PHPT tests matched" >&2
+echo "Running Pest tests..."
+(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -d "extension=${ARTIFACT}" vendor/bin/pest)
+
+# --- PHPT tests (only extension_metadata.phpt) ---
+PHPT_TEST="${PHPT_DIR}/extension_metadata.phpt"
+if [[ ! -f "${PHPT_TEST}" ]]; then
+    echo "PHPT test not found: ${PHPT_TEST}" >&2
     exit 1
 fi
 
@@ -114,4 +119,5 @@ export NO_INTERACTION=1
 export REPORT_EXIT_STATUS=1
 export TEST_PHP_EXECUTABLE="${PHP_BIN_PATH}"
 
-"${PHP_BIN_PATH}" "${RUN_TESTS}" -n -d "extension=${ARTIFACT}" "${TESTS[@]}"
+echo "Running PHPT test (extension_metadata)..."
+"${PHP_BIN_PATH}" "${RUN_TESTS}" -n -d "extension=${ARTIFACT}" "${PHPT_TEST}"

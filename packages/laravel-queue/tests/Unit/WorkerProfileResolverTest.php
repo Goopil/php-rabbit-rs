@@ -2,19 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Unit;
-
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
-use PHPUnit\Framework\TestCase;
 
-final class WorkerProfileResolverTest extends TestCase
-{
-    /**
-     * @return list<array<string, mixed>>
-     */
-    private function workers(): array
-    {
-        return [
+describe('WorkerProfileResolver', function () {
+    it('returns the profile that subscribes to the queue', function () {
+        $resolver = new WorkerProfileResolver([
             [
                 'name' => 'default',
                 'subscriptions' => [
@@ -28,28 +20,35 @@ final class WorkerProfileResolverTest extends TestCase
                     ['name' => 'urgent', 'queue' => 'urgent-eu'],
                 ],
             ],
-        ];
-    }
+        ]);
 
-    public function testProfileForQueueReturnsTheProfileThatSubscribesToTheQueue(): void
-    {
-        $resolver = new WorkerProfileResolver($this->workers());
+        expect($resolver->profileForQueue('orders-eu'))->toBe('default')
+            ->and($resolver->profileForQueue('billing-eu'))->toBe('default')
+            ->and($resolver->profileForQueue('urgent-eu'))->toBe('high-priority');
+    });
 
-        self::assertSame('default', $resolver->profileForQueue('orders-eu'));
-        self::assertSame('default', $resolver->profileForQueue('billing-eu'));
-        self::assertSame('high-priority', $resolver->profileForQueue('urgent-eu'));
-    }
+    it('returns null when no profile subscribes to the queue', function () {
+        $resolver = new WorkerProfileResolver([
+            [
+                'name' => 'default',
+                'subscriptions' => [
+                    ['name' => 'orders', 'queue' => 'orders-eu'],
+                    ['name' => 'billing', 'queue' => 'billing-eu'],
+                ],
+            ],
+            [
+                'name' => 'high-priority',
+                'subscriptions' => [
+                    ['name' => 'urgent', 'queue' => 'urgent-eu'],
+                ],
+            ],
+        ]);
 
-    public function testProfileForQueueReturnsNullWhenNoProfileSubscribesToTheQueue(): void
-    {
-        $resolver = new WorkerProfileResolver($this->workers());
+        expect($resolver->profileForQueue('unknown-queue'))->toBeNull();
+    });
 
-        self::assertNull($resolver->profileForQueue('unknown-queue'));
-    }
-
-    public function testProfileForQueueReturnsFirstMatchWhenMultipleProfilesSubscribeToTheSameQueue(): void
-    {
-        $workers = [
+    it('returns the first match when multiple profiles subscribe to the same queue', function () {
+        $resolver = new WorkerProfileResolver([
             [
                 'name' => 'first',
                 'subscriptions' => [
@@ -62,9 +61,8 @@ final class WorkerProfileResolverTest extends TestCase
                     ['name' => 'backup', 'queue' => 'shared-queue'],
                 ],
             ],
-        ];
-        $resolver = new WorkerProfileResolver($workers);
+        ]);
 
-        self::assertSame('first', $resolver->profileForQueue('shared-queue'));
-    }
-}
+        expect($resolver->profileForQueue('shared-queue'))->toBe('first');
+    });
+});

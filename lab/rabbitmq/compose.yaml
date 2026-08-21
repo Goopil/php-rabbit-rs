@@ -44,6 +44,7 @@ services:
     hostname: rabbitmq-1
     ports:
       - "15672:15672"
+      - "5672:5672"
     environment:
       <<: *rabbitmq-env
       RABBITMQ_NODENAME: "rabbit@rabbitmq-1"
@@ -54,6 +55,7 @@ services:
     hostname: rabbitmq-2
     ports:
       - "15673:15672"
+      - "5673:5672"
     environment:
       <<: *rabbitmq-env
       RABBITMQ_NODENAME: "rabbit@rabbitmq-2"
@@ -67,6 +69,7 @@ services:
     hostname: rabbitmq-3
     ports:
       - "15674:15672"
+      - "5675:5672"
     environment:
       <<: *rabbitmq-env
       RABBITMQ_NODENAME: "rabbit@rabbitmq-3"
@@ -80,6 +83,7 @@ services:
     hostname: rabbitmq-1
     ports:
       - "15672:15672"
+      - "5672:5672"
     environment:
       <<: *rabbitmq-env
       RABBITMQ_NODENAME: "rabbit@rabbitmq-1"
@@ -90,6 +94,7 @@ services:
     hostname: rabbitmq-2
     ports:
       - "15673:15672"
+      - "5673:5672"
     environment:
       <<: *rabbitmq-env
       RABBITMQ_NODENAME: "rabbit@rabbitmq-2"
@@ -103,50 +108,12 @@ services:
     hostname: rabbitmq-3
     ports:
       - "15674:15672"
+      - "5675:5672"
     environment:
       <<: *rabbitmq-env
       RABBITMQ_NODENAME: "rabbit@rabbitmq-3"
     depends_on:
       rabbitmq-1-np:
-        condition: service_healthy
-
-  toxiproxy:
-    image: ghcr.io/shopify/toxiproxy@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
-    hostname: toxiproxy
-    ports:
-      - "8474:8474"
-      - "5672:5672"
-      - "5673:5673"
-      - "5674:5674"
-    volumes:
-      - toxiproxy_config_vol:/config:ro
-    command: ["-host=0.0.0.0", "-config=/config/config.json"]
-    depends_on:
-      rabbitmq-1:
-        condition: service_healthy
-      rabbitmq-2:
-        condition: service_healthy
-      rabbitmq-3:
-        condition: service_healthy
-
-  toxiproxy-np:
-    image: ghcr.io/shopify/toxiproxy@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
-    hostname: toxiproxy
-    profiles: ["without-plugin"]
-    ports:
-      - "8474:8474"
-      - "5672:5672"
-      - "5673:5673"
-      - "5674:5674"
-    volumes:
-      - toxiproxy_config_vol:/config:ro
-    command: ["-host=0.0.0.0", "-config=/config/config.json"]
-    depends_on:
-      rabbitmq-1-np:
-        condition: service_healthy
-      rabbitmq-2-np:
-        condition: service_healthy
-      rabbitmq-3-np:
         condition: service_healthy
 
   prometheus:
@@ -187,11 +154,3 @@ configs:
     file: ./rabbitmq/rabbitmq-no-plugin.conf
   rabbitmq_definitions:
     file: ./rabbitmq/definitions.json
-
-volumes:
-  toxiproxy_config_vol:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${TOXIPROXY_CONFIG_DIR:-./toxiproxy}

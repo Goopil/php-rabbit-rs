@@ -2,31 +2,22 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Unit;
-
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
-use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
-use RuntimeException;
 
-final class RabbitMqServiceProviderTest extends TestCase
-{
-    public function testQueueResolutionReportsTheMissingNativeExtension(): void
-    {
+describe('RabbitMqServiceProvider', function () {
+    it('reports the missing native extension when resolving the queue', function () {
         $this->app['config']->set('queue.connections.rabbit-rs', [
             'driver' => 'rabbit-rs',
         ]);
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('ext-rabbit_rs');
+        expect(fn () => $this->app['queue']->connection('rabbit-rs'))
+            ->toThrow(RuntimeException::class, 'ext-rabbit_rs');
+    });
 
-        $this->app['queue']->connection('rabbit-rs');
-    }
-
-    public function testNormalizesCommaSeparatedHostsAfterConfigurationIsLoaded(): void
-    {
+    it('normalizes comma-separated hosts after configuration is loaded', function () {
         $this->app['config']->set(
             'rabbit-rs.brokers.default.hosts',
             ' rabbit-a:5672, , rabbit-b:5673 ',
@@ -34,14 +25,11 @@ final class RabbitMqServiceProviderTest extends TestCase
 
         (new RabbitMqServiceProvider($this->app))->register();
 
-        self::assertSame(
-            ['rabbit-a:5672', 'rabbit-b:5673'],
-            $this->app['config']->get('rabbit-rs.brokers.default.hosts'),
-        );
-    }
+        expect($this->app['config']->get('rabbit-rs.brokers.default.hosts'))
+            ->toBe(['rabbit-a:5672', 'rabbit-b:5673']);
+    });
 
-    public function testNormalizesCommaSeparatedHostsWhenConfigurationIsCached(): void
-    {
+    it('normalizes comma-separated hosts when configuration is cached', function () {
         $app = new class extends Container implements CachesConfiguration {
             public function configurationIsCached(): bool
             {
@@ -70,34 +58,26 @@ final class RabbitMqServiceProviderTest extends TestCase
 
         (new RabbitMqServiceProvider($app))->register();
 
-        self::assertSame(
-            ['rabbit-a:5672', 'rabbit-b:5673'],
-            $app->make('config')->get('rabbit-rs.brokers.default.hosts'),
-        );
-    }
+        expect($app->make('config')->get('rabbit-rs.brokers.default.hosts'))
+            ->toBe(['rabbit-a:5672', 'rabbit-b:5673']);
+    });
 
-    public function testPreservesHostsAlreadyConfiguredAsAnArray(): void
-    {
+    it('preserves hosts already configured as an array', function () {
         $hosts = ['rabbit-a:5672', 'rabbit-b:5673'];
         $this->app['config']->set('rabbit-rs.brokers.default.hosts', $hosts);
 
         (new RabbitMqServiceProvider($this->app))->register();
 
-        self::assertSame(
-            $hosts,
-            $this->app['config']->get('rabbit-rs.brokers.default.hosts'),
-        );
-    }
+        expect($this->app['config']->get('rabbit-rs.brokers.default.hosts'))
+            ->toBe($hosts);
+    });
 
-    public function testNormalizesAnEmptyHostsStringToAnEmptyList(): void
-    {
+    it('normalizes an empty hosts string to an empty list', function () {
         $this->app['config']->set('rabbit-rs.brokers.default.hosts', ' , ');
 
         (new RabbitMqServiceProvider($this->app))->register();
 
-        self::assertSame(
-            [],
-            $this->app['config']->get('rabbit-rs.brokers.default.hosts'),
-        );
-    }
-}
+        expect($this->app['config']->get('rabbit-rs.brokers.default.hosts'))
+            ->toBe([]);
+    });
+});

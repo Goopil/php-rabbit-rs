@@ -6,6 +6,22 @@ namespace {
     require dirname(__DIR__).'/vendor/autoload.php';
 }
 
+namespace Laravel\Octane {
+    if (! class_exists(Octane::class, false)) {
+        final class Octane {}
+    }
+}
+
+namespace Laravel\Octane\Events {
+    if (! class_exists(WorkerReload::class, false)) {
+        final class WorkerReload {}
+    }
+
+    if (! class_exists(WorkerStopping::class, false)) {
+        final class WorkerStopping {}
+    }
+}
+
 namespace Goopil\RabbitRs {
     if (! class_exists(Pool::class, false)) {
         class Exception extends \Exception {}

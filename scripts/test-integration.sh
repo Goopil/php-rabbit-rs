@@ -33,8 +33,7 @@ echo "Lab is ready."
 
 echo ""
 echo "=== Running Rust integration tests ==="
-cargo test -p rabbit-rs-core --features integration --test publish_consume -- --test-threads=1
-cargo test -p rabbit-rs-core --features integration --test topology_modes -- --test-threads=1
+cargo test -p rabbit-rs-core --features integration --test integration -- --test-threads=1
 
 echo ""
 echo "=== Building ext-rabbit_rs ==="
@@ -42,13 +41,18 @@ PHP_BIN="${PHP_BIN:-php}"
 if ! command -v "${PHP_BIN}" >/dev/null 2>&1; then
     echo "SKIP: php not found, cannot run Laravel integration tests"
 else
-    cargo build --release --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml --features extension-tests"
+    cargo build --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" --features extension-tests
 
-    EXTENSION_SO="${PROJECT_ROOT}/target/release/librabbit_rs_php.so"
+    case "$(uname -s)" in
+        Darwin) EXTENSION_SO="${PROJECT_ROOT}/target/debug/librabbit_rs_php.dylib" ;;
+        Linux)  EXTENSION_SO="${PROJECT_ROOT}/target/debug/librabbit_rs_php.so" ;;
+        *) echo "ERROR: unsupported OS: $(uname -s)" >&2; exit 1 ;;
+    esac
 
     echo ""
     echo "=== Verifying extension is loaded ==="
-    if ! "${PHP_BIN}" -d "extension=${EXTENSION_SO}" -m 2>/dev/null | grep -q rabbit_rs; then
+    MODULES="$("${PHP_BIN}" -d "extension=${EXTENSION_SO}" -m 2>/dev/null || true)"
+    if ! grep -q rabbit_rs <<< "${MODULES}"; then
         echo "ERROR: ext-rabbit_rs is not loaded" >&2
         echo "  PHP SAPI: $(${PHP_BIN} -r 'echo php_sapi_name();' 2>/dev/null)"
         echo "  PHP version: $(${PHP_BIN} -r 'echo phpversion();' 2>/dev/null)"
@@ -59,11 +63,11 @@ else
     echo ""
     echo "=== Installing Laravel package dependencies ==="
     cd "${PROJECT_ROOT}/packages/laravel-queue"
-    composer install --quiet --ignore-platform-reqs
+    composer update --quiet --ignore-platform-reqs
 
     echo ""
     echo "=== Running Laravel integration tests ==="
-    "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/phpunit --testsuite="Rabbit RS Integration" --testdox
+    "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/pest tests/Integration --testdox
 fi
 
 echo ""

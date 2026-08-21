@@ -2,86 +2,75 @@
 
 declare(strict_types=1);
 
-namespace Goopil\RabbitRs\Laravel\Tests\Unit;
-
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
-use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Illuminate\Support\Str;
 
-final class MessageMapperTest extends TestCase
+function mapperRoute(): array
 {
-    public function testMapIncludesTimeoutMsFromPublisherConfigByDefault(): void
-    {
+    return [
+        'broker' => 'default',
+        'exchange' => 'laravel.jobs',
+        'routing_key' => '{queue}',
+    ];
+}
+
+describe('MessageMapper', function () {
+    it('includes timeout_ms from publisher config by default', function () {
         $mapper = new MessageMapper(['confirm_timeout' => 5000]);
 
         $message = $mapper->map(
             '{"job":"App\\\\Jobs\\\\Example"}',
-            $this->route(),
+            mapperRoute(),
             'orders',
         );
 
-        self::assertSame(5000, $message['timeout_ms']);
-    }
+        expect($message['timeout_ms'])->toBe(5000);
+    });
 
-    public function testMapUsesExplicitTimeoutMsOverConfigDefault(): void
-    {
+    it('uses explicit timeout_ms over the config default', function () {
         $mapper = new MessageMapper(['confirm_timeout' => 5000]);
 
         $message = $mapper->map(
             '{"job":"App\\\\Jobs\\\\Example"}',
-            $this->route(),
+            mapperRoute(),
             'orders',
             ['timeout_ms' => 12000],
         );
 
-        self::assertSame(12000, $message['timeout_ms']);
-    }
+        expect($message['timeout_ms'])->toBe(12000);
+    });
 
-    public function testMapOmitsTimeoutMsWhenConfigHasNoConfirmTimeout(): void
-    {
+    it('omits timeout_ms when config has no confirm_timeout', function () {
         $mapper = new MessageMapper([]);
 
         $message = $mapper->map(
             '{"job":"App\\\\Jobs\\\\Example"}',
-            $this->route(),
+            mapperRoute(),
             'orders',
         );
 
-        self::assertArrayNotHasKey('timeout_ms', $message);
-    }
+        expect($message)->not->toHaveKey('timeout_ms');
+    });
 
-    public function testMapPreservesAllOtherFields(): void
-    {
+    it('preserves all other fields', function () {
         $mapper = new MessageMapper(['confirm_timeout' => 30000]);
 
         $message = $mapper->map(
             'payload',
-            $this->route(),
+            mapperRoute(),
             'orders',
             ['content_type' => 'application/json', 'headers' => ['x-foo' => 'bar']],
             5000,
         );
 
-        self::assertSame('default', $message['broker']);
-        self::assertSame('laravel.jobs', $message['exchange']);
-        self::assertSame('orders', $message['routing_key']);
-        self::assertSame('payload', $message['payload']);
-        self::assertTrue(Str::isUuid($message['message_id']));
-        self::assertSame('application/json', $message['content_type']);
-        self::assertSame(['x-foo' => 'bar'], $message['headers']);
-        self::assertSame(5000, $message['delay_ms']);
-        self::assertSame(30000, $message['timeout_ms']);
-    }
-
-    /**
-     * @return array{broker: string, exchange: string, routing_key: string}
-     */
-    private function route(): array
-    {
-        return [
-            'broker' => 'default',
-            'exchange' => 'laravel.jobs',
-            'routing_key' => '{queue}',
-        ];
-    }
-}
+        expect($message['broker'])->toBe('default')
+            ->and($message['exchange'])->toBe('laravel.jobs')
+            ->and($message['routing_key'])->toBe('orders')
+            ->and($message['payload'])->toBe('payload')
+            ->and(Str::isUuid($message['message_id']))->toBeTrue()
+            ->and($message['content_type'])->toBe('application/json')
+            ->and($message['headers'])->toBe(['x-foo' => 'bar'])
+            ->and($message['delay_ms'])->toBe(5000)
+            ->and($message['timeout_ms'])->toBe(30000);
+    });
+});
