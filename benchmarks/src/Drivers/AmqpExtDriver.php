@@ -6,6 +6,7 @@ namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
+use Bench\ScenarioMode;
 use RuntimeException;
 
 class AmqpExtDriver extends AbstractBenchmark
@@ -64,6 +65,19 @@ class AmqpExtDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET) {
+            for ($i = 0; $i < $count; $i++) {
+                $ts = hrtime(true);
+                $attrs = [
+                    'message_id' => $this->uuid(),
+                    'delivery_mode' => AMQP_DURABLE,
+                ];
+                $this->exchange->publish(pack('P', $ts) . $this->createMessage((string) $i), self::QUEUE, AMQP_NOPARAM, $attrs);
+            }
+            return;
+        }
+
+        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
         $this->channel->confirmSelect();
 
         for ($i = 0; $i < $count; $i++) {
@@ -73,6 +87,10 @@ class AmqpExtDriver extends AbstractBenchmark
                 'delivery_mode' => AMQP_DURABLE,
             ];
             $this->exchange->publish(pack('P', $ts) . $this->createMessage((string) $i), self::QUEUE, AMQP_MANDATORY, $attrs);
+
+            if ($batchSize > 1 && ($i + 1) % $batchSize === 0) {
+                $this->channel->waitForConfirms(5);
+            }
         }
 
         $this->channel->waitForConfirms(5);
@@ -84,10 +102,14 @@ class AmqpExtDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+
         $consumed = 0;
         $consecutiveNulls = 0;
         while ($consumed < $count) {
-            $envelope = $this->queue->get(AMQP_NOPARAM);
+            $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
+            $envelope = $this->queue->get($flags);
             if ($envelope === false) {
                 $consecutiveNulls++;
                 if ($consecutiveNulls >= 3) {
@@ -106,7 +128,10 @@ class AmqpExtDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-            $this->queue->ack($envelope->getDeliveryTag());
+
+            if (!$autoAck) {
+                $this->queue->ack($envelope->getDeliveryTag());
+            }
             $consumed++;
         }
     }
