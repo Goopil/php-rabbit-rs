@@ -260,7 +260,7 @@ jobs:
       - name: Install benchmark dependencies
         run: |
           cd benchmarks
-          composer install --quiet --ignore-platform-reqs
+          composer update --quiet --ignore-platform-reqs
 
       - name: Run smoke benchmark
         run: php -d extension=$(pwd)/target/release/librabbit_rs_php.so benchmarks/src/run-benchmarks.php --scenario=fire-and-forget --driver=rabbit-rs
