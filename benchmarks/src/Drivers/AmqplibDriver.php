@@ -6,6 +6,7 @@ namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
+use Bench\ScenarioMode;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
 use RuntimeException;
@@ -55,6 +56,19 @@ class AmqplibDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET) {
+            for ($i = 0; $i < $count; $i++) {
+                $ts = hrtime(true);
+                $msg = new AMQPMessage(pack('P', $ts) . $this->createMessage((string) $i), [
+                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                    'message_id' => $this->uuid(),
+                ]);
+                $this->pubChannel->basic_publish($msg, self::EXCHANGE, self::QUEUE, false);
+            }
+            return;
+        }
+
+        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
         $this->pubChannel->confirm_select();
 
         for ($i = 0; $i < $count; $i++) {
@@ -64,6 +78,10 @@ class AmqplibDriver extends AbstractBenchmark
                 'message_id' => $this->uuid(),
             ]);
             $this->pubChannel->basic_publish($msg, self::EXCHANGE, self::QUEUE, true);
+
+            if ($batchSize > 1 && ($i + 1) % $batchSize === 0) {
+                $this->pubChannel->wait_for_pending_acks(5);
+            }
         }
 
         $this->pubChannel->wait_for_pending_acks(5);
@@ -76,8 +94,11 @@ class AmqplibDriver extends AbstractBenchmark
         }
 
         $consumed = 0;
+        $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+        $batchAckSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 100 : 1;
 
-        $callback = function (AMQPMessage $msg) use ($count, &$consumed): void {
+        $callback = function (AMQPMessage $msg) use ($count, &$consumed, $autoAck, $batchAckSize): void {
             $body = $msg->getBody();
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
@@ -86,11 +107,14 @@ class AmqplibDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-            $msg->ack();
             $consumed++;
+            if (!$autoAck) {
+                $msg->ack();
+            }
         };
 
-        $this->consChannel->basic_consume(self::QUEUE, '', false, false, false, false, $callback);
+        $noAck = $autoAck;
+        $this->consChannel->basic_consume(self::QUEUE, '', false, $noAck, false, false, $callback);
 
         $consecutiveTimeouts = 0;
         while ($consumed < $count) {
