@@ -7,7 +7,6 @@ LAB_DIR="${PROJECT_ROOT}/lab/rabbitmq"
 
 MGMT_PORT="${RABBIT_RS_LAB_MGMT:-15672}"
 PROM_PORT="${RABBIT_RS_LAB_PROM:-9091}"
-TOXIPROXY_PORT="${RABBIT_RS_LAB_TOXI:-8474}"
 
 ADMIN_USER="${RABBIT_RS_LAB_ADMIN_USER:-admin}"
 ADMIN_PASS="${RABBIT_RS_LAB_ADMIN_PASS:-admin_lab}"
@@ -44,7 +43,7 @@ fi
 SERVICES=$(${DC} --profile with-plugin --profile without-plugin ps --format json 2>/dev/null || true)
 RUNNING_SERVICES=$(echo "${SERVICES}" | jq -r 'if type == "array" then [.[] | .Service] else [.Service] end | .[]' 2>/dev/null || true)
 
-for svc in rabbitmq-1 rabbitmq-2 rabbitmq-3 toxiproxy prometheus; do
+for svc in rabbitmq-1 rabbitmq-2 rabbitmq-3 prometheus; do
     echo "${RUNNING_SERVICES}" | grep -q "^${svc}$" || echo "${RUNNING_SERVICES}" | grep -q "^${svc}-np$" || fail "service ${svc} is not running"
 done
 ok "all compose services present"
@@ -106,20 +105,7 @@ done
 [[ "${PROM_OK}" == true ]] || fail "Prometheus has no active targets"
 ok "Prometheus is scraping"
 
-echo "Checking Toxiproxy..."
-TOXI_OK=false
-for i in $(seq 1 30); do
-    TOXI_RESP=$(curl -sf "http://localhost:${TOXIPROXY_PORT}/proxies" 2>/dev/null || true)
-    if [[ -n "${TOXI_RESP}" ]]; then
-        TOXI_OK=true
-        break
-    fi
-    sleep 1
-done
-[[ "${TOXI_OK}" == true ]] || fail "Toxiproxy API on port ${TOXIPROXY_PORT} is not responding"
-ok "Toxiproxy API responding"
-
-echo "Checking delayed-message-exchange plugin..."
+echo "Cleaning up readiness check queue..."
 CONTAINER_NAME="rabbitrs-rabbitmq-1-1"
 if ! docker exec "${CONTAINER_NAME}" rabbitmq-diagnostics -q ping >/dev/null 2>&1; then
     CONTAINER_NAME="rabbitrs-rabbitmq-1-np-1"
@@ -139,4 +125,4 @@ curl -sf -u "${ADMIN_USER}:${ADMIN_PASS}" \
     "http://localhost:${MGMT_PORT}/api/queues/${VHOST_ORDERS//\//%2f}/readiness-check" >/dev/null 2>&1 || true
 
 echo ""
-echo "LAB READY: 3-node RabbitMQ ${RABBIT_VERSION} cluster, 2 vhosts, Prometheus and Toxiproxy operational."
+echo "LAB READY: 3-node RabbitMQ ${RABBIT_VERSION} cluster, 2 vhosts, Prometheus operational."

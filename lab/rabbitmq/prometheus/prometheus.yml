@@ -11,9 +11,3 @@ scrape_configs:
           - "rabbitmq-3:15692"
         labels:
           cluster: "rabbit_rs_lab"
-  - job_name: "toxiproxy"
-    static_configs:
-      - targets:
-          - "toxiproxy:8474"
-        labels:
-          cluster: "rabbit_rs_lab"

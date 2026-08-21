@@ -48,7 +48,6 @@ fi
 
 echo ""
 echo "Lab starting. Use ./scripts/lab-ready.sh to verify readiness."
-echo "  AMQP (via Toxiproxy): localhost:5672, localhost:5673, localhost:5674"
+echo "  AMQP:                localhost:5672, localhost:5673, localhost:5675"
 echo "  Management UI:        http://localhost:15672  (admin / admin_lab)"
 echo "  Prometheus:          http://localhost:9091"
-echo "  Toxiproxy API:       http://localhost:8474"
