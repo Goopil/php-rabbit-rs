@@ -267,49 +267,7 @@ use helper::*;
 // ---------------------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
-async fn flushes_when_max_messages_is_reached() {
-    let transport = MockTransport::default();
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor_safety(&transport, config_safety()).await;
-
-    let first = actor
-        .try_publish(request_safety("one", b"a"))
-        .expect("first");
-    let second = actor
-        .try_publish(request_safety("two", b"b"))
-        .expect("second");
-    wait_for_publish_count(&transport, 2).await;
-
-    assert!(matches!(
-        first.wait().await,
-        Ok(PublishOutcome::Confirmed { .. })
-    ));
-    assert!(matches!(
-        second.wait().await,
-        Ok(PublishOutcome::Confirmed { .. })
-    ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn flushes_when_max_bytes_is_reached() {
-    let transport = MockTransport::default();
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let actor = actor_safety(&transport, config_safety()).await;
-
-    let _first = actor
-        .try_publish(request_safety("one", b"123"))
-        .expect("first");
-    let _second = actor
-        .try_publish(request_safety("two", b"45"))
-        .expect("second");
-
-    wait_for_publish_count(&transport, 2).await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn flushes_on_the_configured_timer() {
+async fn publishes_immediately_in_ready_phase() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let actor = actor_safety(&transport, config_safety()).await;
@@ -317,8 +275,7 @@ async fn flushes_on_the_configured_timer() {
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
         .expect("publish");
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_millis(1)).await;
+    // No time advance needed — publish is immediate.
     wait_for_publish_count(&transport, 1).await;
 
     assert!(matches!(
@@ -736,20 +693,20 @@ async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn message_still_in_batch_is_retained_across_connection_loss() {
+async fn unconfirmed_publish_is_retained_across_connection_loss() {
     let transport = MockTransport::default();
+    transport.push_pending_confirmation();
     let actor = PublisherActor::spawn(
         new_channel(&transport).await,
         PublisherConfig::new(8, Duration::from_secs(5)),
     );
     let waiter = actor
         .try_publish(request_recovery(
-            "batched",
+            "pending",
             Instant::now() + Duration::from_secs(30),
         ))
-        .expect("batched publish");
-    tokio::task::yield_now().await;
-    assert!(publish_operations(&transport).is_empty());
+        .expect("publish");
+    wait_for_publish_count(&transport, 1).await;
 
     suspend(&actor).await;
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
@@ -763,7 +720,7 @@ async fn message_still_in_batch_is_retained_across_connection_loss() {
         .expect("resume");
 
     assert!(waiter.wait().await.is_ok());
-    assert_eq!(publish_operations(&transport).len(), 1);
+    assert_eq!(publish_operations(&transport).len(), 2);
 }
 
 #[tokio::test(start_paused = true)]
