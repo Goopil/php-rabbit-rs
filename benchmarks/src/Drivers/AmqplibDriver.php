@@ -79,7 +79,7 @@ class AmqplibDriver extends AbstractBenchmark
             ]);
             $this->pubChannel->basic_publish($msg, self::EXCHANGE, self::QUEUE, true);
 
-            if ($batchSize > 1 && ($i + 1) % $batchSize === 0) {
+            if (($i + 1) % $batchSize === 0) {
                 $this->pubChannel->wait_for_pending_acks(5);
             }
         }

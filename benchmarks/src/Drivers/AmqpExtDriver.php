@@ -88,7 +88,7 @@ class AmqpExtDriver extends AbstractBenchmark
             ];
             $this->exchange->publish(pack('P', $ts) . $this->createMessage((string) $i), self::QUEUE, AMQP_MANDATORY, $attrs);
 
-            if ($batchSize > 1 && ($i + 1) % $batchSize === 0) {
+            if (($i + 1) % $batchSize === 0) {
                 $this->channel->waitForConfirms(5);
             }
         }
