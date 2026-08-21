@@ -104,10 +104,11 @@ impl ActorState {
 
     fn dispatch(&mut self) {
         while self.in_flight < self.max_in_flight {
-            if let Some(error) = self.source_errors.pop_front() {
-                if self.buffer_tx.try_send(Err(error)).is_err() {
+            if let Some(error) = self.source_errors.front() {
+                if self.buffer_tx.try_send(Err(error.clone())).is_err() {
                     return;
                 }
+                self.source_errors.pop_front();
                 continue;
             }
             let Some(subscription) = self.scheduler.next(Instant::now()) else {
