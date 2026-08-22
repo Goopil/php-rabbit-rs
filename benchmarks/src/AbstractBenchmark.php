@@ -8,28 +8,57 @@ abstract class AbstractBenchmark
 {
     protected array $latencies = [];
 
+    protected string $scenarioMode = ScenarioMode::BATCH_CONFIRM;
+
+    public function setScenarioMode(string $mode): void
+    {
+        $this->scenarioMode = $mode;
+    }
+
     abstract public function getName(): string;
     abstract public function setUp(): void;
     abstract public function tearDown(): void;
     abstract public function publishMessages(int $count): void;
     abstract public function consumeMessages(int $count): void;
 
+    public function purgeQueue(): void {}
+
+    private ?string $payloadTemplate = null;
+    private int $uuidCounter = 0;
+
     protected function createMessage(string $body): string
     {
+        if ($this->payloadTemplate === null) {
+            $this->payloadTemplate = str_repeat('x', Config::MESSAGE_PAYLOAD_BYTES);
+        }
         return json_encode([
             'id' => uniqid('', true),
             'timestamp' => microtime(true),
             'data' => $body,
-            'payload' => str_repeat('x', Config::MESSAGE_PAYLOAD_BYTES),
+            'payload' => $this->payloadTemplate,
         ]);
+    }
+
+    protected function uuid(): string
+    {
+        return sprintf('00000000-0000-4000-8000-%012d', $this->uuidCounter++);
     }
 
     public function runBenchmark(): array
     {
         $results = [];
+        $gcEnabled = gc_enabled();
+        gc_disable();
+
+        $this->latencies = [];
+        $this->purgeQueue();
+        $this->publishMessages(Config::MESSAGE_COUNT);
+        $this->consumeMessages(Config::MESSAGE_COUNT);
+
         for ($i = 0; $i < Config::BENCHMARK_ROUNDS; $i++) {
             $this->latencies = [];
 
+            $this->purgeQueue();
             $start = microtime(true);
             $this->publishMessages(Config::MESSAGE_COUNT);
             $publishTime = microtime(true) - $start;
@@ -37,6 +66,9 @@ abstract class AbstractBenchmark
             $start = microtime(true);
             $this->consumeMessages(Config::MESSAGE_COUNT);
             $consumeTime = microtime(true) - $start;
+
+            $consumedCount = count($this->latencies);
+            $losses = Config::MESSAGE_COUNT - $consumedCount;
 
             $results[] = [
                 'publish_time' => $publishTime,
@@ -46,7 +78,11 @@ abstract class AbstractBenchmark
                 'p50' => $this->percentile(0.50),
                 'p95' => $this->percentile(0.95),
                 'p99' => $this->percentile(0.99),
+                'losses' => $losses,
             ];
+        }
+        if ($gcEnabled) {
+            gc_enable();
         }
         return $this->calculateStats($results);
     }
@@ -76,6 +112,7 @@ abstract class AbstractBenchmark
         $consumeTimes = $get('consume_time');
         $publishRates = $get('publish_rate');
         $consumeRates = $get('consume_rate');
+        $losses = $get('losses');
 
         return [
             'name' => $this->getName(),
@@ -97,6 +134,8 @@ abstract class AbstractBenchmark
                 'max_rate' => max($consumeRates),
                 'p50' => $avg($get('p50')),
                 'p95' => $avg($get('p95')),
+                'p99' => $avg($get('p99')),
+                'losses' => array_sum($losses),
             ],
         ];
     }

@@ -6,6 +6,7 @@ namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
+use Bench\ScenarioMode;
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Pool;
 use RuntimeException;
@@ -41,11 +42,11 @@ class RabbitRsDriver extends AbstractBenchmark
                     'queue' => self::QUEUE,
                     'weight' => 1,
                     'priority_class' => 0,
-                    'prefetch' => 64,
+                    'prefetch' => Config::PREFETCH_COUNT,
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 256,
+                    'max_in_flight' => 1024,
                 ],
             ]],
             'topology_mode' => 'declare',
@@ -54,11 +55,28 @@ class RabbitRsDriver extends AbstractBenchmark
         $this->pool = new Pool($config);
     }
 
+    public function purgeQueue(): void
+    {
+        if ($this->pool !== null) {
+            try {
+                $this->pool->clear('default', self::QUEUE);
+            } catch (\Throwable) {
+            }
+        }
+    }
+
     public function publishMessages(int $count): void
     {
         if ($this->pool === null) {
             throw new RuntimeException('Driver not set up');
         }
+
+        $batchSize = match ($this->scenarioMode) {
+            ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => 256,
+            ScenarioMode::BATCH_CONFIRM => 256,
+        };
+
+        $timeoutMs = 5000;
 
         $batch = [];
         for ($i = 0; $i < $count; $i++) {
@@ -69,10 +87,10 @@ class RabbitRsDriver extends AbstractBenchmark
                 'routing_key' => self::QUEUE,
                 'payload' => pack('P', $ts) . $this->createMessage((string) $i),
                 'message_id' => $this->uuid(),
-                'timeout_ms' => 30000,
+                'timeout_ms' => $timeoutMs,
             ];
 
-            if (count($batch) >= 256) {
+            if (count($batch) >= $batchSize) {
                 $this->pool->publishBatch($batch);
                 $batch = [];
             }
@@ -89,7 +107,9 @@ class RabbitRsDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
-        $this->consumer = $this->pool->consumer('default');
+        if ($this->consumer === null) {
+            $this->consumer = $this->pool->consumer('default');
+        }
 
         $consumed = 0;
         $consecutiveNulls = 0;
@@ -134,13 +154,5 @@ class RabbitRsDriver extends AbstractBenchmark
             $this->pool->close();
             $this->pool = null;
         }
-    }
-
-    private function uuid(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 }

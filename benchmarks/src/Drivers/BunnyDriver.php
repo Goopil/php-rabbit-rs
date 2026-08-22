@@ -6,6 +6,7 @@ namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
+use Bench\ScenarioMode;
 use Bunny\Channel;
 use Bunny\Client;
 use RuntimeException;
@@ -17,6 +18,7 @@ class BunnyDriver extends AbstractBenchmark
 
     private ?Client $client = null;
     private ?Channel $channel = null;
+    private bool $confirmMode = false;
 
     public function getName(): string
     {
@@ -38,7 +40,18 @@ class BunnyDriver extends AbstractBenchmark
         $this->channel->exchangeDeclare(self::EXCHANGE, 'direct', false, true, false);
         $this->channel->queueDeclare(self::QUEUE, false, true, false, false);
         $this->channel->queueBind(self::QUEUE, self::EXCHANGE, self::QUEUE);
+        $this->channel->qos(0, Config::PREFETCH_COUNT);
         $this->channel->queuePurge(self::QUEUE);
+    }
+
+    public function purgeQueue(): void
+    {
+        if ($this->channel !== null) {
+            try {
+                $this->channel->queuePurge(self::QUEUE);
+            } catch (\Throwable) {
+            }
+        }
     }
 
     public function publishMessages(int $count): void
@@ -47,7 +60,28 @@ class BunnyDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
-        $this->channel->confirmSelect();
+        if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK) {
+            for ($i = 0; $i < $count; $i++) {
+                $ts = hrtime(true);
+                $this->channel->publish(
+                    pack('P', $ts) . $this->createMessage((string) $i),
+                    ['delivery-mode' => 2, 'message-id' => $this->uuid()],
+                    self::EXCHANGE,
+                    self::QUEUE,
+                    false,
+                );
+            }
+            return;
+        }
+
+        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
+        if (!$this->confirmMode) {
+            $this->channel->confirmSelect();
+            $this->confirmMode = true;
+        }
+
+        $pending = 0;
 
         for ($i = 0; $i < $count; $i++) {
             $ts = hrtime(true);
@@ -58,9 +92,34 @@ class BunnyDriver extends AbstractBenchmark
                 self::QUEUE,
                 true,
             );
+            $this->publishSeq++;
+            $pending++;
+
+            if ($pending >= $batchSize) {
+                $this->waitForConfirms($pending);
+                $pending = 0;
+            }
         }
 
-        $this->channel->waitForConfirms();
+        if ($pending > 0) {
+            $this->waitForConfirms($pending);
+        }
+    }
+
+    private int $publishSeq = 0;
+
+    private function waitForConfirms(int $expected): void
+    {
+        $targetSeq = $this->publishSeq;
+        $listener = function ($frame) use ($targetSeq) {
+            if ($frame->deliveryTag >= $targetSeq) {
+                $this->client->stop();
+            }
+        };
+        $this->channel->addAckListener($listener);
+        $this->client->run(10);
+        $this->client->stop();
+        $this->channel->removeAckListener($listener);
     }
 
     public function consumeMessages(int $count): void
@@ -69,9 +128,23 @@ class BunnyDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK;
         $consumed = 0;
+        $consecutiveNulls = 0;
 
-        $this->channel->consume(function ($message, $channel) use ($count, &$consumed) {
+        while ($consumed < $count) {
+            $message = $this->channel->get(self::QUEUE, $autoAck);
+            if ($message === null) {
+                $consecutiveNulls++;
+                if ($consecutiveNulls >= 3) {
+                    break;
+                }
+                usleep(1000);
+                continue;
+            }
+            $consecutiveNulls = 0;
+
             $body = $message->content;
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
@@ -80,24 +153,11 @@ class BunnyDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-            $channel->ack($message);
-            $consumed++;
-            if ($consumed >= $count) {
-                $channel->cancel('');
-            }
-        }, self::QUEUE);
 
-        $consecutiveTimeouts = 0;
-        while ($consumed < $count) {
-            try {
-                $this->client->run(1);
-                $consecutiveTimeouts = 0;
-            } catch (\Throwable) {
-                $consecutiveTimeouts++;
-                if ($consecutiveTimeouts >= 3) {
-                    break;
-                }
+            if (!$autoAck) {
+                $this->channel->ack($message);
             }
+            $consumed++;
         }
     }
 
@@ -111,13 +171,5 @@ class BunnyDriver extends AbstractBenchmark
             $this->client = null;
         }
         $this->channel = null;
-    }
-
-    private function uuid(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 }

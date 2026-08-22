@@ -27,6 +27,7 @@ if (is_file(BASE_DIR . '/vendor/autoload.php')) {
     require BASE_DIR . '/vendor/autoload.php';
 }
 
+use Bench\Budget;
 use Bench\Config;
 use Bench\Drivers;
 
@@ -47,10 +48,13 @@ if (extension_loaded('rabbit_rs')) {
     $drivers['rabbit-rs'] = Drivers\RabbitRsDriver::class;
 }
 if (class_exists(\PhpAmqpLib\Connection\AMQPStreamConnection::class)) {
-    $drivers['amqplib'] = Drivers\PhpAmqplibDriver::class;
+    $drivers['amqplib'] = Drivers\AmqplibDriver::class;
 }
 if (extension_loaded('amqp')) {
     $drivers['amqp-ext'] = Drivers\AmqpExtDriver::class;
+}
+if (class_exists(\Bunny\Client::class)) {
+    $drivers['bunny'] = Drivers\BunnyDriver::class;
 }
 
 $scenarios = [
@@ -58,6 +62,12 @@ $scenarios = [
     'batch-confirm' => \Bench\Scenarios\BatchConfirmBenchmark::class,
     'auto-ack' => \Bench\Scenarios\AutoAckBenchmark::class,
 ];
+
+$budgetPath = __DIR__ . '/../baselines/smoke-budget.json';
+$budget = null;
+if (is_file($budgetPath)) {
+    $budget = new Budget($budgetPath);
+}
 
 $allResults = [];
 
@@ -88,11 +98,34 @@ foreach ($scenarios as $scenarioName => $scenarioClass) {
                 $stats['consume']['avg_rate'], $stats['consume']['min_rate'], $stats['consume']['max_rate']);
             printf("  Latency p50: %.2f ms, p95: %.2f ms, p99: %.2f ms\n",
                 $stats['consume']['p50'], $stats['consume']['p95'], $stats['publish']['p99']);
+            $losses = $stats['consume']['losses'] ?? 0;
+            if ($losses > 0) {
+                printf("  WARNING: %d messages lost (published %d, consumed %d)\n",
+                    $losses, Config::MESSAGE_COUNT, Config::MESSAGE_COUNT - $losses);
+            }
+            if ($budget !== null) {
+                $budgetResult = $budget->check($stats['publish'], $stats['consume']);
+                echo $budget->formatResult($budgetResult);
+            }
         } catch (\Throwable $e) {
             echo "  SKIP: {$e->getMessage()}\n";
         }
     }
 }
+
+echo "\n=== Summary ===\n";
+printf("%-30s | %-15s | %-15s | %-10s | %-10s\n", "Scenario/Driver", "Publish msg/s", "Consume msg/s", "p99 (ms)", "Losses");
+echo str_repeat('-', 90) . "\n";
+foreach ($allResults as $key => $stats) {
+    printf("%-30s | %-15.0f | %-15.0f | %-10.2f | %-10d\n",
+        $key,
+        $stats['publish']['avg_rate'],
+        $stats['consume']['avg_rate'],
+        $stats['publish']['p99'],
+        $stats['consume']['losses'] ?? 0
+    );
+}
+echo "\n";
 
 // Write JSON results
 $resultsFile = __DIR__ . '/../results/benchmark-results.json';
