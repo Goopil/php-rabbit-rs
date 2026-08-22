@@ -263,6 +263,7 @@ impl ConsumerHandle {
     ///
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
+        self.dispatch_notify.notify_one();
         match self.buffer_rx.recv_async().await {
             Ok(Ok(delivery)) => {
                 self.dispatch_notify.notify_one();

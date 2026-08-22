@@ -49,6 +49,8 @@ struct MockState {
     open_publisher_gates: VecDeque<MockOperationGateWait>,
     open_consumer_gates: VecDeque<MockOperationGateWait>,
     close_connection_gates: VecDeque<MockOperationGateWait>,
+    ack_gates: VecDeque<MockOperationGateWait>,
+    delivery_gates: VecDeque<MockOperationGateWait>,
 }
 
 #[derive(Clone, Default)]
@@ -129,6 +131,20 @@ impl MockTransport {
     pub fn push_close_connection_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().close_connection_gates.push_back(wait);
+        gate
+    }
+
+    #[must_use]
+    pub fn push_ack_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().ack_gates.push_back(wait);
+        gate
+    }
+
+    #[must_use]
+    pub fn push_delivery_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().delivery_gates.push_back(wait);
         gate
     }
 
@@ -502,10 +518,22 @@ impl ConsumerChannel for MockConsumerChannel {
     }
 
     async fn ack(&self, delivery_tag: u64, multiple: bool) -> TransportResult<()> {
-        self.record_consumer(TransportOperation::Ack {
-            delivery_tag,
-            multiple,
-        })
+        let (gate, result) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.operations.push(TransportOperation::Ack {
+                delivery_tag,
+                multiple,
+            });
+            (
+                state.ack_gates.pop_front(),
+                state.consumer_results.pop_front().unwrap_or(Ok(())),
+            )
+        };
+        wait_for_gate(gate).await;
+        result
     }
 
     async fn reject(&self, delivery_tag: u64, requeue: bool) -> TransportResult<()> {
@@ -523,16 +551,25 @@ struct MockDeliveryStream {
 #[async_trait]
 impl DeliveryStream for MockDeliveryStream {
     async fn next(&mut self) -> Option<TransportResult<Delivery>> {
-        let keep_open = {
+        let (gate, delivery) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(delivery) = state.deliveries.pop_front() {
-                return Some(delivery);
-            }
-            state.keep_delivery_stream_open
+            (
+                state.delivery_gates.pop_front(),
+                state.deliveries.pop_front(),
+            )
         };
+        wait_for_gate(gate).await;
+        if let Some(delivery) = delivery {
+            return Some(delivery);
+        }
+        let keep_open = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keep_delivery_stream_open;
         if keep_open {
             std::future::pending().await
         } else {

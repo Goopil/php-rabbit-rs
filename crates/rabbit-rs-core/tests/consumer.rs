@@ -201,6 +201,10 @@ async fn scheduler_selects_the_highest_priority_ready_buffer() {
     let high_transport = MockTransport::default();
     low_transport.push_delivery(Ok(delivery(1, b"low")));
     high_transport.push_delivery(Ok(delivery(2, b"high")));
+    // Gate the low delivery so the low pump blocks until the high delivery
+    // has been pushed. This ensures both deliveries are buffered before the
+    // actor dispatches, so the scheduler can select by priority.
+    let low_gate = low_transport.push_delivery_gate();
     let consumer = ConsumerSet::spawn(
         vec![
             subscription(&low_transport, "low", connection_key("low", "/"), 4, 0).await,
@@ -210,6 +214,10 @@ async fn scheduler_selects_the_highest_priority_ready_buffer() {
     )
     .await
     .expect("consumer set");
+    // Let the high pump push its delivery.
+    let_sources_fill().await;
+    // Release the low gate so both deliveries are now buffered.
+    let _ = low_gate.release();
     let_sources_fill().await;
 
     let selected = consumer.next().await.expect("delivery");
@@ -691,8 +699,8 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
         "good delivery must surface after bounded errors"
     );
     assert!(
-        got_errors <= 70,
-        "source errors must be bounded by max_in_flight plus buffer capacity, got {got_errors}"
+        got_errors <= 64,
+        "source errors must be bounded by max_in_flight, got {got_errors}"
     );
 }
 
@@ -905,21 +913,67 @@ async fn settlements_on_same_channel_are_serialized() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"msg1")));
     transport.push_delivery(Ok(delivery(2, b"msg2")));
+    // Gate the first ack so it blocks until we release it.
+    let ack_gate = transport.push_ack_gate();
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
     let consumer = ConsumerSet::spawn(vec![sub], 4).await.expect("consumer");
 
     let d1 = consumer.next().await.expect("d1");
     let d2 = consumer.next().await.expect("d2");
 
-    d1.ack().await.expect("ack1");
-    d2.ack().await.expect("ack2");
+    // Start acking d1 — it will block at the gate.
+    let ack1 = tokio::spawn(async move { d1.ack().await });
+    // Let the settlement lane reach the gate.
+    ack_gate.wait_entered().await;
 
-    let ops = transport.operations();
-    let acks: Vec<_> = ops
+    // The first Ack operation should already be recorded (the mock records
+    // before applying the gate), but the second must NOT have been sent yet
+    // because settlements on the same channel are serialized.
+    let ops_before = transport.operations();
+    let acks_before: Vec<_> = ops_before
         .iter()
         .filter(|op| matches!(op, TransportOperation::Ack { .. }))
         .collect();
-    assert_eq!(acks.len(), 2);
+    assert_eq!(
+        acks_before.len(),
+        1,
+        "only the first ack should be in-flight on the same channel"
+    );
+
+    // Start acking d2 — it should queue behind d1's settlement, not execute.
+    let ack2 = tokio::spawn(async move { d2.ack().await });
+
+    // Give the actor a chance to process the second Settle command.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // The second ack must still not have been sent.
+    let ops_still = transport.operations();
+    let acks_still: Vec<_> = ops_still
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(
+        acks_still.len(),
+        1,
+        "second ack must wait for the first to complete (same-channel serialization)"
+    );
+
+    // Release the gate — d1's ack completes, then d2's ack executes.
+    let _ = ack_gate.release();
+    ack1.await.expect("ack1 join").expect("ack1");
+    ack2.await.expect("ack2 join").expect("ack2");
+
+    // Let the second settlement complete.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let ops_after = transport.operations();
+    let acks_after: Vec<_> = ops_after
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(acks_after.len(), 2, "both acks must complete after release");
     consumer.close().await.expect("close");
 }
 

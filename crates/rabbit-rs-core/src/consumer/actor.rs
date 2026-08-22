@@ -268,11 +268,6 @@ pub(crate) async fn run_actor(
     dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
     let mut state = ActorState::new(subscriptions, max_in_flight, commands, buffer_tx, metrics);
-    // A periodic dispatch timer. In addition to triggering dispatch, this
-    // timer also advances paused Tokio time so that timeout-based tests
-    // using `#[tokio::test(start_paused = true)]` can fire their deadlines.
-    let mut time_timer = tokio::time::interval(std::time::Duration::from_millis(1));
-    time_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
     loop {
@@ -298,6 +293,7 @@ pub(crate) async fn run_actor(
                             buffer.push_back(delivery);
                             state.scheduler.mark_ready(&subscription);
                         }
+                        state.dispatch();
                     }
                     Err(error) => {
                         state.record_source_error(ConsumerError::new(
@@ -358,9 +354,6 @@ pub(crate) async fn run_actor(
                 None => return,
             },
             () = dispatch_notify.notified() => {
-                state.dispatch();
-            }
-            _ = time_timer.tick() => {
                 state.dispatch();
             }
             Some(settlement_result) = state.pending_settlements.next(),
