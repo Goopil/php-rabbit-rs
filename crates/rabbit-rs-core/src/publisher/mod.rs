@@ -142,6 +142,30 @@ pub struct ReturnInfo {
     pub routing_key: String,
 }
 
+/// A per-message indexed report produced by [`ClientPool::publish_batch_detailed`].
+///
+/// Each variant corresponds to the terminal resolution of one publish in the
+/// batch, preserving the input order. `NotAccepted` covers publications that
+/// were never accepted by an actor (e.g., the pool closed mid-batch).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MessageOutcome {
+    /// The broker confirmed the message.
+    Confirmed(PublishOutcome),
+    /// The broker returned the message (mandatory routing failure).
+    Returned(ReturnInfo),
+    /// The publish failed with a typed error.
+    Failed(PublishError),
+    /// The publish was never accepted by an actor.
+    NotAccepted(PublishError),
+}
+
+/// A full per-message indexed report for a batch publish.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchOutcome {
+    /// One entry per input request, in input order.
+    pub results: Vec<MessageOutcome>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublishOutcome {
     Confirmed {

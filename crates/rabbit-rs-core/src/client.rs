@@ -13,8 +13,8 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
-        PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublisherConfig,
-        PublisherHandle,
+        BatchOutcome, MessageOutcome, PublishError, PublishErrorKind, PublishOutcome,
+        PublishRequest, PublishWaiter, PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
     topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
@@ -121,44 +121,135 @@ impl ClientPool {
 
     /// Enqueues a complete batch before awaiting confirmations, preserving input order.
     ///
+    /// The publisher handle is cached per broker so that repeated brokers in the
+    /// batch reuse a single actor instead of performing one lookup per message.
+    /// Outcomes are returned in the original input order regardless of how
+    /// requests are grouped by broker internally.
+    ///
     /// # Errors
     ///
-    /// Returns the first terminal failure after resolving every publication that was
-    /// already accepted by an actor.
+    /// Returns the first terminal failure after resolving every publication that
+    /// was already accepted by an actor.
     pub async fn publish_batch(
         &self,
         requests: Vec<(String, PublishRequest)>,
     ) -> Result<Vec<PublishOutcome>, ClientError> {
         self.ensure_open()?;
-        let mut waiters = Vec::with_capacity(requests.len());
-        let mut immediate_error = None;
+        let total = requests.len();
+        let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
+        for (i, (broker, request)) in requests.into_iter().enumerate() {
+            by_broker.entry(broker).or_default().push((i, request));
+        }
 
-        for (broker, request) in requests {
-            match self.publisher(&broker).await {
-                Ok(publisher) => match publisher.try_publish(request) {
-                    Ok(waiter) => waiters.push(waiter),
+        let mut outcomes: Vec<Option<Result<PublishOutcome, ClientError>>> = vec![None; total];
+        let mut waiters: Vec<(usize, PublishWaiter)> = Vec::new();
+
+        for (broker, msgs) in &by_broker {
+            let publisher = self.publisher(broker).await?;
+            for (original_index, request) in msgs {
+                match publisher.try_publish(request.clone()) {
+                    Ok(waiter) => waiters.push((*original_index, waiter)),
                     Err(error) => {
-                        immediate_error.get_or_insert_with(|| ClientError::publish(&error));
+                        outcomes[*original_index] = Some(Err(ClientError::publish(&error)));
                     }
-                },
-                Err(error) => {
-                    immediate_error.get_or_insert(error);
                 }
             }
         }
 
-        let mut outcomes = Vec::with_capacity(waiters.len());
-        let mut terminal_error = immediate_error;
-        for waiter in waiters {
+        let mut terminal_error = None;
+        for (index, waiter) in waiters {
             match waiter.wait().await {
-                Ok(outcome) => outcomes.push(outcome),
+                Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
                 Err(error) => {
-                    terminal_error.get_or_insert_with(|| ClientError::publish(&error));
+                    let client_err = ClientError::publish(&error);
+                    terminal_error.get_or_insert_with(|| client_err.clone());
+                    outcomes[index] = Some(Err(client_err));
                 }
             }
         }
 
-        terminal_error.map_or(Ok(outcomes), Err)
+        let mut results = Vec::with_capacity(total);
+        for outcome in outcomes {
+            match outcome {
+                Some(Ok(o)) => results.push(o),
+                Some(Err(e)) => {
+                    terminal_error.get_or_insert(e);
+                }
+                None => {}
+            }
+        }
+
+        terminal_error.map_or(Ok(results), Err)
+    }
+
+    /// Enqueues a complete batch and returns a per-message indexed report.
+    ///
+    /// Like [`publish_batch`](Self::publish_batch), the publisher handle is
+    /// cached per broker and the results preserve the original input order.
+    /// Unlike `publish_batch`, every input request yields exactly one
+    /// [`MessageOutcome`] entry — including publications that were never
+    /// accepted by an actor — so callers can correlate per-message status
+    /// without inferring gaps.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ClientError`] only if the pool is closed or an unknown
+    /// broker is referenced before any publication is attempted. Per-message
+    /// failures are reported inside the returned [`BatchOutcome`].
+    pub async fn publish_batch_detailed(
+        &self,
+        requests: Vec<(String, PublishRequest)>,
+    ) -> Result<BatchOutcome, ClientError> {
+        self.ensure_open()?;
+        let total = requests.len();
+        let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
+        for (i, (broker, request)) in requests.into_iter().enumerate() {
+            by_broker.entry(broker).or_default().push((i, request));
+        }
+
+        let mut outcomes: Vec<Option<Result<PublishOutcome, PublishError>>> = vec![None; total];
+        let mut waiters: Vec<(usize, PublishWaiter)> = Vec::new();
+
+        for (broker, msgs) in &by_broker {
+            let publisher = self.publisher(broker).await?;
+            for (original_index, request) in msgs {
+                match publisher.try_publish(request.clone()) {
+                    Ok(waiter) => waiters.push((*original_index, waiter)),
+                    Err(error) => {
+                        outcomes[*original_index] = Some(Err(error));
+                    }
+                }
+            }
+        }
+
+        for (index, waiter) in waiters {
+            match waiter.wait().await {
+                Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
+                Err(error) => {
+                    outcomes[index] = Some(Err(error));
+                }
+            }
+        }
+
+        let results = outcomes
+            .into_iter()
+            .map(|o| match o {
+                Some(Ok(PublishOutcome::Confirmed { message_id })) => {
+                    MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
+                }
+                Some(Ok(PublishOutcome::Returned { reply, .. })) => MessageOutcome::Returned(reply),
+                Some(Ok(PublishOutcome::Ambiguous { .. })) => MessageOutcome::Failed(
+                    PublishError::new(PublishErrorKind::Unconfirmed, "ambiguous confirmation"),
+                ),
+                Some(Err(error)) => MessageOutcome::Failed(error),
+                None => MessageOutcome::NotAccepted(PublishError::new(
+                    PublishErrorKind::Backpressure,
+                    "not accepted",
+                )),
+            })
+            .collect();
+
+        Ok(BatchOutcome { results })
     }
 
     /// Opens or reuses the multiplexed consumer actor for one worker profile.
