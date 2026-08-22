@@ -42,17 +42,27 @@ class RabbitRsDriver extends AbstractBenchmark
                     'queue' => self::QUEUE,
                     'weight' => 1,
                     'priority_class' => 0,
-                    'prefetch' => 64,
+                    'prefetch' => Config::PREFETCH_COUNT,
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 256,
+                    'max_in_flight' => 1024,
                 ],
             ]],
             'topology_mode' => 'declare',
         ];
 
         $this->pool = new Pool($config);
+    }
+
+    public function purgeQueue(): void
+    {
+        if ($this->pool !== null) {
+            try {
+                $this->pool->clear('default', self::QUEUE);
+            } catch (\Throwable) {
+            }
+        }
     }
 
     public function publishMessages(int $count): void
@@ -62,12 +72,11 @@ class RabbitRsDriver extends AbstractBenchmark
         }
 
         $batchSize = match ($this->scenarioMode) {
-            ScenarioMode::FIRE_AND_FORGET => 256,
+            ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => 256,
             ScenarioMode::BATCH_CONFIRM => 256,
-            ScenarioMode::AUTO_ACK => 1,
         };
 
-        $timeoutMs = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET ? 100 : 30000;
+        $timeoutMs = 5000;
 
         $batch = [];
         for ($i = 0; $i < $count; $i++) {
@@ -98,10 +107,9 @@ class RabbitRsDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
-        $this->consumer = $this->pool->consumer('default');
-
-        $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
-            || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+        if ($this->consumer === null) {
+            $this->consumer = $this->pool->consumer('default');
+        }
 
         $consumed = 0;
         $consecutiveNulls = 0;
@@ -128,9 +136,7 @@ class RabbitRsDriver extends AbstractBenchmark
                 }
             }
 
-            if (!$autoAck) {
-                $delivery->ack();
-            }
+            $delivery->ack();
             $consumed++;
         }
     }
@@ -148,13 +154,5 @@ class RabbitRsDriver extends AbstractBenchmark
             $this->pool->close();
             $this->pool = null;
         }
-    }
-
-    private function uuid(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 }

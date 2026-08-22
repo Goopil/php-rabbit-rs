@@ -19,4 +19,6 @@ class FireAndForgetBenchmark extends AbstractBenchmark
     public function tearDown(): void { $this->driver->tearDown(); }
     public function publishMessages(int $count): void { $this->driver->publishMessages($count); }
     public function consumeMessages(int $count): void { $this->driver->consumeMessages($count); }
+    public function purgeQueue(): void { $this->driver->purgeQueue(); }
+    public function runBenchmark(): array { return $this->driver->runBenchmark(); }
 }

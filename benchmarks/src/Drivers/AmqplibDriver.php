@@ -34,6 +34,16 @@ class AmqplibDriver extends AbstractBenchmark
             Config::RABBITMQ_USER,
             Config::RABBITMQ_PASSWORD,
             Config::RABBITMQ_VHOST,
+            false,
+            'AMQPLAIN',
+            null,
+            'en_US',
+            10,
+            60,
+            null,
+            false,
+            0,
+            60,
         );
         $this->consConnection = new AMQPStreamConnection(
             Config::RABBITMQ_HOST,
@@ -41,6 +51,16 @@ class AmqplibDriver extends AbstractBenchmark
             Config::RABBITMQ_USER,
             Config::RABBITMQ_PASSWORD,
             Config::RABBITMQ_VHOST,
+            false,
+            'AMQPLAIN',
+            null,
+            'en_US',
+            10,
+            60,
+            null,
+            false,
+            0,
+            60,
         );
         $this->pubChannel = $this->pubConnection->channel();
         $this->consChannel = $this->consConnection->channel();
@@ -50,13 +70,24 @@ class AmqplibDriver extends AbstractBenchmark
         $this->consChannel->basic_qos(0, 16, false);
     }
 
+    public function purgeQueue(): void
+    {
+        if ($this->pubChannel !== null) {
+            try {
+                $this->pubChannel->queue_purge(self::QUEUE);
+            } catch (\Throwable) {
+            }
+        }
+    }
+
     public function publishMessages(int $count): void
     {
         if ($this->pubChannel === null) {
             throw new RuntimeException('Driver not set up');
         }
 
-        if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET) {
+        if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK) {
             for ($i = 0; $i < $count; $i++) {
                 $ts = hrtime(true);
                 $msg = new AMQPMessage(pack('P', $ts) . $this->createMessage((string) $i), [
@@ -69,6 +100,11 @@ class AmqplibDriver extends AbstractBenchmark
         }
 
         $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
+        try {
+            $this->pubChannel->close();
+        } catch (\Throwable) {
+        }
+        $this->pubChannel = $this->pubConnection->channel();
         $this->pubChannel->confirm_select();
 
         for ($i = 0; $i < $count; $i++) {
@@ -93,12 +129,18 @@ class AmqplibDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        try {
+            $this->consChannel->close();
+        } catch (\Throwable) {
+        }
+        $this->consChannel = $this->consConnection->channel();
+        $this->consChannel->basic_qos(0, Config::PREFETCH_COUNT, false);
+
         $consumed = 0;
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
-        $batchAckSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 100 : 1;
 
-        $callback = function (AMQPMessage $msg) use ($count, &$consumed, $autoAck, $batchAckSize): void {
+        $callback = function (AMQPMessage $msg) use ($count, &$consumed, $autoAck): void {
             $body = $msg->getBody();
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
@@ -111,10 +153,14 @@ class AmqplibDriver extends AbstractBenchmark
             if (!$autoAck) {
                 $msg->ack();
             }
+            if ($consumed >= $count) {
+                $msg->getChannel()->basic_cancel('bench_consumer');
+            }
         };
 
         $noAck = $autoAck;
-        $this->consChannel->basic_consume(self::QUEUE, '', false, $noAck, false, false, $callback);
+        $consumerTag = 'bench_consumer';
+        $this->consChannel->basic_consume(self::QUEUE, $consumerTag, false, $noAck, false, false, $callback);
 
         $consecutiveTimeouts = 0;
         while ($consumed < $count) {
@@ -126,6 +172,12 @@ class AmqplibDriver extends AbstractBenchmark
                 if ($consecutiveTimeouts >= 3) {
                     break;
                 }
+            } catch (\PhpAmqpLib\Exception\AMQPProtocolChannelException) {
+                break;
+            } catch (\PhpAmqpLib\Exception\AMQPChannelClosedException) {
+                break;
+            } catch (\Throwable) {
+                break;
             }
         }
     }
@@ -160,13 +212,5 @@ class AmqplibDriver extends AbstractBenchmark
         $this->consChannel = null;
         $this->pubConnection = null;
         $this->consConnection = null;
-    }
-
-    private function uuid(): string
-    {
-        $bytes = random_bytes(16);
-        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
-        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
-        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 }

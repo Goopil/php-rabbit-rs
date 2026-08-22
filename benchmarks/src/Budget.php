@@ -69,8 +69,8 @@ class Budget
     private function extractMetric(string $key, array $publishMetrics, array $consumeMetrics): ?float
     {
         return match ($key) {
-            'publish_throughput_min' => isset($publishMetrics['throughput']) ? (float) $publishMetrics['throughput'] : null,
-            'consume_throughput_min' => isset($consumeMetrics['throughput']) ? (float) $consumeMetrics['throughput'] : null,
+            'publish_throughput_min' => isset($publishMetrics['min_rate']) ? (float) $publishMetrics['min_rate'] : null,
+            'consume_throughput_min' => isset($consumeMetrics['min_rate']) ? (float) $consumeMetrics['min_rate'] : null,
             'publish_p99_max_ms' => isset($publishMetrics['p99']) ? (float) $publishMetrics['p99'] : null,
             'consume_p99_max_ms' => isset($consumeMetrics['p99']) ? (float) $consumeMetrics['p99'] : null,
             'losses_max' => isset($consumeMetrics['losses']) ? (float) $consumeMetrics['losses'] : null,
