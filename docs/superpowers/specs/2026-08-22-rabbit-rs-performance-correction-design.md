@@ -1,8 +1,8 @@
 # Rabbit-rs Performance Correction Plan
 
 **Date:** 2026-08-22
-**Status:** Approved
-**Scope:** Bugs + API gaps + Performance optimizations
+**Status:** Needs revision
+**Scope:** Bugs + API gaps + Performance optimizations + Stability
 
 ## Context
 
@@ -26,16 +26,28 @@ Root causes identified through source analysis:
 
 5. **3 FFI boundary crossings per delivery** — `tryNext()` + `payload()` + `ack()`. For 10k messages, that's 30k FFI calls.
 
+6. **Benchmark scenario mismatch** — `RabbitRsDriver.php:28-53` does not configure `publisher.confirms` per scenario. `RabbitRsDriver.php:117-140` always acks each message individually. Prefetch is 500 for rabbit-rs but 16 for php-amqplib. The publish p99 measured is actually a consume latency (all messages published before any consumed). Message ID uniqueness is not verified, so losses masked by duplicates are invisible.
+
+7. **Consumer actor blocks on settlement** — `consumer/actor.rs:296-350` runs `channel.ack().await` and `delayed_release().await` (which calls `publisher.publish().await`) directly in the `select!` loop. A slow ACK or a delayed release blocks all subscriptions, recovery, and `close()`.
+
+8. **Memory bounded by message count, not bytes** — `buffer_capacity` (1024) bounds the number of in-flight publishes but 1024 × 1 MiB payloads = ~1 GiB. The `total_prefetch` sum in `consumer/set.rs:155` uses `u16` which can overflow.
+
 ## Decisions
 
 | Decision | Choice |
 |----------|--------|
-| Scope | All (bugs + gaps + performance) |
+| Scope | All (bugs + gaps + performance + stability) |
 | Consume callback | Preserve constraint: no PHP callbacks from Rust threads. Polling only. |
-| no_ack configuration | Per-subscription (`SubscriptionConfig.no_ack`) |
-| Batch ack API | `Consumer::ackMultiple(int $deliveryTag)` |
+| Best-effort mode | **Early-ACK** as primary best-effort (preserves broker QoS). True `no_ack` experimental only. |
+| Best-effort classification | Not at-least-once. Forbidden by default in the Laravel driver. |
+| Batch ack API | `Consumer::ackThrough(Delivery $delivery)` (simple, single channel) + `Consumer::ackBatch(array $deliveries)` (advanced, multi-channel) |
+| Batch consume API | `Consumer::nextBatch(int $max, int $timeoutMs): array` — wait once then drain |
 | Compatibility | Retro-compatible — new fields/methods are optional with current behavior as default |
-| Organization | 3 parallel tracks (config, consume, publish) |
+| Pipeline replay | External `publishing` registry — futures carry sequence only, not `RetainedPublish` |
+| Barrier | **No barrier.** Batch is fully enqueued before awaiting waiters; FIFO ordering is implicit. |
+| Batch failure | Indexed report per message (`confirmed`, `returned`, `failed`, `not_accepted`) |
+| Memory bounds | Byte budgets per subscription and global, `u64` sums with checked arithmetic |
+| Organization | 8-step ordered implementation (benchmark first, early-ACK last) |
 
 ## Design
 
@@ -43,436 +55,595 @@ Root causes identified through source analysis:
 
 **`config.rs`:**
 - Add `no_ack: bool` field to `SubscriptionConfig` (default: `false`)
-- Validation: if `no_ack=true`, `prefetch` is ignored by the broker (no credit tracking). Log a warning if prefetch is set but no_ack is true.
+- Add `early_ack: bool` field to `SubscriptionConfig` (default: `false`)
+- Add `max_message_bytes: Option<u64>` to `SubscriptionConfig` (default: `None` = unlimited per-message, but bounded by global budget)
+- Add `max_buffered_bytes: u64` to `PublisherConfig` (default: 64 MiB)
+- Validation: if `no_ack=true`, log a warning that this mode is best-effort and not at-least-once, and that `early_ack` is recommended instead. The `prefetch` field is still used for buffer sizing in `consumer/set.rs:155-158`.
+- Validation: if `early_ack=true`, log that this mode is best-effort (message ACKed before PHP processes it).
+
+**`consumer/set.rs`:**
+- Fix `total_prefetch` overflow: change from `u16` sum to `u64` with `checked_sum` or `saturating_sum`
+  ```rust
+  let total_prefetch: u64 = subscriptions
+      .iter()
+      .map(|s| s.prefetch as u64)
+      .sum();
+  ```
 
 **`pool/recovery_coordinator.rs`:**
-- Pass `no_ack` from `SubscriptionConfig` into `ConsumerRequest` when opening consumers during recovery
+- Pass `no_ack` and `early_ack` from `SubscriptionConfig` into `ConsumerRequest` when opening consumers during recovery
 
 ### Track 2: Consume
 
-#### 2a: no_ack mode
+#### 2a: Consumer actor unblocking (stability fix, no API change)
 
-**`transport.rs` + `transport/lapin.rs`:**
-- Add `no_ack: bool` field to `ConsumerRequest`
-- `LapinConsumerChannel::consume()` passes `no_ack` to `BasicConsumeOptions`
-
-**`consumer/set.rs`:**
-- `Subscription` carries `no_ack: bool`
-- `ConsumerSet::spawn()` passes `no_ack` to `ConsumerRequest`
+> **Problem:** `consumer/actor.rs:296-350` runs `settle()` directly in the `select!` loop. `channel.ack().await` blocks on network I/O. `delayed_release()` calls `publisher.publish().await` which can take seconds. While a settlement is in progress, the actor cannot process `Incoming`, `Close`, `UpdateGeneration`, or dispatch new deliveries.
 
 **`consumer/actor.rs`:**
-- When `no_ack=true`:
-  - Do not create a `DeliveryToken` (no settlement tracking needed)
-  - Do not increment `in_flight` (no budget tracking — broker auto-acks)
-  - `Delivery` is created without a settlement token
-  - Dispatch continues without waiting for settlements
+
+**Settlement lanes:**
+
+Move settlement execution out of the main `select!` loop. Each settlement runs in a spawned task. The main loop processes the result when the task completes.
+
+```rust
+// New: track pending settlements
+struct ActorState {
+    // ... existing fields ...
+    pending_settlements: FuturesUnordered<Pin<Box<dyn Future<Output = SettlementResult>>>>,
+}
+
+struct SettlementResult {
+    token: Arc<DeliveryTokenInner>,
+    result: Result<DeliveryState, ConsumerError>,
+}
+
+// In the select! loop, the Settle arm spawns instead of awaiting:
+Some(ConsumerCommand::Settle { token, settlement, completed }) => {
+    let channel = state.subscriptions.get(&token.subscription)
+        .map(|r| r.channel.clone());
+    let connection_key = ...;
+    let generation = ...;
+    let channel_id = ...;
+    let delivery_tag = token.delivery_tag;
+
+    state.pending_settlements.push(Box::pin(async move {
+        // Validate identity (same checks as current settle())
+        // Execute settlement (ack/reject/release)
+        SettlementResult { token, result }
+    }));
+    // Store completed sender alongside the token for later resolution
+}
+
+// New select! arm:
+Some(settlement_result) = state.pending_settlements.next(),
+    if !state.pending_settlements.is_empty() => {
+    // Release budget, record metrics, dispatch, resolve oneshot
+    state.release_budget();
+    state.dispatch();
+    // Resolve the completed oneshot sender
+}
+```
+
+Bounded by `max_in_flight` — the number of concurrent settlement lanes is naturally limited by the in-flight budget.
+
+**Event-driven dispatch:**
+
+Remove the 1ms dispatch timer (`actor.rs:203`). Dispatch on:
+- `Incoming` — a new delivery arrived, try to dispatch
+- Settlement completed — budget freed, try to dispatch
+- `dispatch_notify` — pump signaled more deliveries available
+
+```rust
+loop {
+    tokio::select! {
+        // ... command arms ...
+        Some(ConsumerCommand::Incoming { .. }) => {
+            // Push to buffer, mark ready
+            state.dispatch();  // immediate dispatch attempt
+        }
+        Some(settlement_result) = state.pending_settlements.next(), ... => {
+            // Release budget, dispatch
+            state.dispatch();
+        }
+        () = dispatch_notify.notified() => {
+            state.dispatch();
+        }
+        // NO dispatch_timer.tick() arm
+    }
+}
+```
+
+**Reduce clones in `dispatch()`:**
+
+Current `dispatch()` (`actor.rs:117-121`) clones `TransportDelivery` from the buffer front, then clones headers again at line 141. Replace with `pop_front()` and move ownership:
+
+```rust
+// Before: .front().cloned() — clones the delivery
+// After:
+let Some(delivery) = self.buffers.get_mut(&subscription).and_then(VecDeque::pop_front) else {
+    self.scheduler.mark_empty(&subscription);
+    return;
+};
+// Move delivery fields into Delivery::new() — no clone
+```
+
+This eliminates one `TransportDelivery::clone()` and one `headers.clone()` per dispatched delivery.
+
+#### 2b: Early-ACK best-effort mode
+
+> **Classification: best-effort.** The message is ACKed to RabbitMQ before PHP processes it. If PHP crashes, the message is lost. This mode preserves broker QoS (prefetch still works), unlike true `no_ack`.
+
+**`consumer/actor.rs`:**
+
+When `early_ack=true`:
+- On `Incoming`, immediately ACK the delivery via the channel: `channel.ack(delivery_tag, false).await` — but in a settlement lane, not the main loop
+- Do not create a `DeliveryToken` (no settlement tracking needed — already acked)
+- Do not increment `in_flight` (no budget tracking — already acked)
+- Create `Delivery` with settlement state `AutoAcked`
+- Dispatch to the flume buffer immediately after the ACK completes
+- The delivery still carries `delivery_tag` for user-facing API consistency
 
 **`delivery.rs` (PHP):**
-- `Delivery::ack()`, `Delivery::release()`, `Delivery::reject()` check `no_ack` flag and return immediately (no-op, no `block_on`)
-- Add `Delivery::deliveryTag(): int` accessor (needed for batch ack)
+- `Delivery::ack()`, `Delivery::release()`, `Delivery::reject()` on an `AutoAcked` delivery: raise an `InvalidArgumentException` explicitly — do not silently no-op
+- `Delivery::deliveryTag(): int` accessor for all modes
 
 **`consumer.rs` (PHP):**
-- `Consumer` stores `no_ack: bool` from consumer creation
-- Pass `no_ack` to each `Delivery` object
+- `Consumer` stores `early_ack` and `no_ack` per subscription
+- Pass the settlement state to each `Delivery` object
 
-#### 2b: Batch ack
+**True `no_ack` mode (experimental):**
+
+When `no_ack=true` (not `early_ack`):
+- Pass `no_ack: true` to `BasicConsumeOptions` — broker auto-acks, prefetch is ignored
+- Same delivery behavior as `early_ack` (no token, `AutoAcked` state)
+- **Additional bound:** the `VecDeque` buffer per subscription must be capped at `max(total_prefetch, 256)` entries. When full, stop polling that subscription's stream until the buffer drains. This is the only flow control available since the broker will not block.
+- Documented as experimental — only use if benchmarks prove it is necessary and the memory bounds are sufficient
+
+**Laravel driver guard:**
+- `packages/laravel-queue/` rejects `no_ack=true` and `early_ack=true` in the default reliable configuration
+- Only allow when the user explicitly sets a best-effort opt-in
+
+#### 2c: Batch consume and ack APIs
 
 **`consumer.rs` (PHP):**
-- Add `Consumer::ackMultiple(int $deliveryTag): void` — ack all messages up to `$deliveryTag` with `multiple=true`
+
+Add `Consumer::nextBatch(int $max, int $timeoutMs): array`:
+- Wait for the first delivery with `recv_timeout(timeoutMs)` — blocks once
+- Drain remaining buffer with `try_recv()` up to `$max` total deliveries — non-blocking
+- Single FFI call for N deliveries
+- `$max` clamped to `1..=256`
+- Returns empty array if timeout expires with no deliveries
+- Existing `tryNext()`, `next()` remain unchanged
+
+Add `Consumer::ackThrough(Delivery $delivery): void`:
+- ACK all messages up to and including `$delivery` on its originating channel, using `multiple=true`
+- The `Delivery` carries its `DeliveryToken` with full identity: `(subscription_id, connection_key, generation, channel_id, delivery_tag)`
 - Single `block_on` for the entire batch
 
+Add `Consumer::ackBatch(array $deliveries): void`:
+- For multi-channel `ConsumerSet` scenarios
+- Group deliveries by `(subscription_id, channel_id, generation)`
+- For each group, validate the contiguous prefix and send one `channel.ack(highest_tag, multiple=true)`
+- Reject if any delivery is already terminal
+- Reject if the prefix is non-contiguous (gap in delivery tags)
+- The core renders all affected tokens terminal after the ACK
+
 **`consumer/actor.rs`:**
-- Add `ConsumerCommand::SettleMultiple { delivery_tag: u64, settlement: Settlement, generation: u64, completed: oneshot::Sender }`
-- Actor validates generation, then calls `channel.ack(delivery_tag, multiple=true).await` — single network call
-- `release_budget()` for all affected deliveries (count from ledger or track running count)
+
+Add `ConsumerCommand::SettleThrough { token: Arc<DeliveryTokenInner>, completed: oneshot::Sender<Result<DeliveryState, ConsumerError>> }`:
+- Actor validates full identity from the token (connection, generation, channel, tag)
+- Checks the per-channel delivery ledger for a contiguous prefix up to `delivery_tag`
+- Calls `channel.ack(delivery_tag, multiple=true).await` in a settlement lane
+- Releases budget for all affected deliveries (count from ledger)
+- Renders all affected tokens terminal
+
+Add `ConsumerCommand::SettleBatch { tokens: Vec<Arc<DeliveryTokenInner>>, completed: oneshot::Sender<Result<Vec<DeliveryState>, ConsumerError>> }`:
+- Group tokens by `(subscription_id, channel_id, generation)`
+- Validate each group independently
+- Execute one ACK per group
+- Return per-token results
 
 **`transport.rs`:**
 - `ConsumerChannel::ack()` already accepts `multiple: bool` — no change needed
 
 **`delivery.rs` (PHP):**
-- Add `Delivery::deliveryTag(): int` — returns the AMQP delivery tag from the native delivery
-
-#### 2c: tryNextBatch
-
-**`consumer.rs` (PHP):**
-- Add `Consumer::tryNextBatch(int $max): array` — returns up to `$max` `Delivery` objects by draining the flume buffer
-- Single FFI call for N deliveries
-- Existing `tryNext()` and `next()` remain unchanged as the primary API
-
-**`consumer/set.rs` + `consumer.rs` (PHP):**
-- `ConsumerHandle::try_next_batch(max: usize) -> Vec<Delivery>` — loop `try_recv()` up to `max` times or until buffer empty
-- Notify actor once to dispatch more deliveries
-
-**Delivery objects:**
-- Each `Delivery` in the batch is a lazy zval — `payload()` remains an individual FFI call
-- Main gain is eliminating N-1 `tryNext()` FFI calls
+- Add `Delivery::deliveryTag(): int` — returns the AMQP delivery tag
 
 ### Track 3: Publish
 
-#### 3a: Pipeline basic_publish
+#### 3a: Pipeline basic_publish with external `publishing` registry
 
 **`publisher/actor.rs`:**
 - Modify `publish_queue()` to fire `channel.publish()` without awaiting between messages
 - Lapin's `BasicPublish` returns a `PublisherConfirm` handle without blocking — AMQP allows pipelining on a channel
-- Collect all `PublisherConfirm` handles, then push their `wait()` futures to `FuturesUnordered`
 - The `buffer_capacity` semaphore (1024) already limits in-flight publishes — backpressure is preserved
 
-Current behavior: `publish_queue()` awaits each `channel.publish()` sequentially. The actor loop blocks on each `basic_publish` frame before sending the next.
+**Core design — external `publishing` registry:**
 
-Solution: push publish futures to a `FuturesUnordered` and poll them in the actor's `select!` loop alongside confirmations. When a publish completes, insert into the ledger and push the confirm future to the confirmations set.
-
-**Design detail — ledger insertion and replay safety:**
-
-The current code inserts into the ledger *immediately* after the publish completes (`Ok(receipt)` block at line 562). In the pipelined version, the publish future completes asynchronously in the `select!` loop. This creates a window between "publish frame sent to socket" and "ledger entry inserted."
-
-To preserve the at-least-once invariant, the ledger insertion must happen **before** the confirm future is polled. The pipelined `select!` arm does both atomically:
+Keep `RetainedPublish` values in an explicit registry `publishing: HashMap<u64, RetainedPublish>` owned by `ActorState`. The futures pushed to `FuturesUnordered` carry only their `sequence: u64` and the `Result`. On any failure path, the registry is moved to `replay` directly — futures are abandoned.
 
 ```rust
-// In the select! loop:
-Some((sequence, result)) = state.publish_in_flight.next() => {
-    match result {
-        Ok(receipt) => {
-            // Ledger FIRST — guarantees entry exists before any confirm can arrive
-            state.ledger.insert(sequence, InFlightPublish {
-                retained,  // retained was moved into the publish future
-                generation,
-            });
-            state.confirmations.push(Box::pin(async move {
-                let result = match time::timeout_at(deadline, receipt.wait()).await {
-                    Ok(result) => ConfirmationResult::Completed(result),
-                    Err(_) => ConfirmationResult::TimedOut,
-                };
-                (sequence, generation, result)
-            }));
-        }
-        Err(error) if error.is_recoverable() => {
-            // Recover the retained publish from the future for replay
-            // See "Error handling" below
-        }
-        Err(error) => {
-            // Terminal error — complete the waiter immediately
-            complete_error(retained, transport_publish_error(&error));
-        }
-    }
-}
+// In ActorState:
+publishing: HashMap<u64, RetainedPublish>,   // sequence → retained (owned by actor)
+publish_in_flight: FuturesUnordered<PublishFuture>,  // futures carry sequence only
+
+type PublishFuture = Pin<Box<dyn Future<Output = (u64, Result<PublisherConfirm, TransportError>)>>>;
 ```
 
-**Design detail — error handling for recoverable failures:**
-
-When a publish future returns a recoverable error (e.g., connection lost mid-pipeline), ALL in-flight publishes must be recovered for replay, not just the one that errored. The actor must:
-
-1. Drain `publish_in_flight` completely — every future still pending
-2. Extract the `RetainedPublish` from each (the future captures ownership)
-3. Push all recovered retains into `state.replay` in sequence order
-4. Suspend the actor (`state.suspend(generation)`)
-
-To make this possible, the publish future must return its `RetainedPublish` on error, not just the error:
-
+In `publish_queue()`:
 ```rust
-type PublishFuture = Pin<Box<dyn Future<Output = (u64, Option<RetainedPublish>, Result<PublisherConfirm, TransportError>)>>>;
-
-// In publish_queue():
 while let Some(retained) = pending.pop_front() {
-    if retained.request.deadline <= time::Instant::now() {
-        complete_error(retained, PublishError::new(PublishErrorKind::Timeout, "publish deadline expired"));
-        continue;
-    }
-
-    let Some(channel) = state.channel.clone() else {
-        state.replay.push_back(retained);
-        state.replay.extend(pending);
-        return;
-    };
-
-    // ... delay topology check (awaits as before — cold path) ...
+    // 1. Deadline check (unchanged)
+    // 2. Channel availability check (unchanged)
+    // 3. Delay topology (unchanged — awaited, cold path)
+    // 4. Sequence assignment (unchanged)
 
     state.sequence = state.sequence.saturating_add(1);
     let sequence = state.sequence;
     let generation = state.generation;
-    let deadline = retained.request.deadline
-        .min(time::Instant::now() + state.config.confirm_timeout);
-    let request = into_transport_request(&retained.request, ...);
 
+    // 5. Register in publishing BEFORE launching the future
+    state.publishing.insert(sequence, retained);
+
+    // 6. Push publish future — carries sequence only, NOT the retained
     state.publish_in_flight.push(Box::pin(async move {
         let result = channel.publish(request).await;
-        (sequence, Some(retained), result)
+        (sequence, result)
     }));
-}
-```
 
-On recoverable error in the `select!` arm:
-
-```rust
-Err(error) if error.is_recoverable() => {
-    // 1. Recover this publish
-    if let Some(retained) = retained_opt {
-        state.replay.push_back(retained);
-    }
-    // 2. Drain all remaining in-flight publishes and recover them
-    while let Some((_, Some(retained), _)) = state.publish_in_flight.next().await {
-        state.replay.push_back(retained);
-    }
-    // 3. Sort replay by sequence to preserve deterministic order
-    state.replay.make_contiguous().sort_by_key(|r| r.sequence);
-    // 4. Suspend
-    state.suspend(generation);
-    return;
-}
-```
-
-Note: `RetainedPublish` must carry its `sequence` for deterministic replay ordering. If it doesn't already, add a `sequence: u64` field set at enqueue time.
-
-**Design detail — drain after push (non-blocking progress):**
-
-Inspired by the archived `php-ext-rabbit-rs` pump pattern. After pushing a publish future into `FuturesUnordered`, immediately drain any futures that are already ready. This prevents a one-tick latency where a completed publish waits for the next `select!` poll before being processed.
-
-```rust
-// In publish_queue(), after the push loop:
-while state.publish_in_flight.next().now_or_never().flatten().is_some() {
-    // Process completed publishes immediately
-    // (the select! arm logic is extracted into a function — see below)
-}
-```
-
-To avoid duplicating the completion logic, extract the `select!` arm into a shared function:
-
-```rust
-fn handle_publish_completion(state: &mut ActorState, sequence: u64, retained_opt: Option<RetainedPublish>, result: Result<PublisherConfirm, TransportError>) {
-    match result {
-        Ok(receipt) => {
-            state.ledger.insert(sequence, InFlightPublish { retained, generation });
-            state.confirmations.push(...);
-        }
-        Err(error) if error.is_recoverable() => { /* replay + drain */ }
-        Err(error) => { complete_error(retained, ...); }
+    // 7. Non-blocking drain — complete any ready futures immediately
+    while let Some((seq, result)) = state.publish_in_flight.next().now_or_never().flatten() {
+        handle_publish_completion(state, seq, result);
     }
 }
 ```
 
-Both the `select!` arm and the `now_or_never()` drain loop call `handle_publish_completion`.
-
-**Design detail — fire-and-forget when `confirms = false`:**
-
-When publisher confirms are disabled (`config.confirms = false`), the publish future does not need to push anything into `state.confirmations`. The `basic_publish()` frame write to the socket is the terminal event — there is no `PublisherConfirm` to await.
-
-Current behavior: even with `confirms = false`, `publish_queue()` pushes a confirm future that resolves immediately. This adds unnecessary `FuturesUnordered` overhead.
-
-Optimized behavior: when `confirms = false`, the publish future completes on `channel.publish().await` and the waiter is resolved immediately in the `select!` arm — no ledger entry, no confirm future:
-
+The `select!` loop arm:
 ```rust
-// In publish_queue(), branch on confirms:
-if state.config.confirms {
-    // Existing path: push to publish_in_flight, ledger + confirmations
-    state.publish_in_flight.push(Box::pin(async move {
-        let result = channel.publish(request).await;
-        (sequence, Some(retained), result)
-    }));
-} else {
-    // Fire-and-forget: resolve on socket write, no confirm tracking
-    state.publish_in_flight.push(Box::pin(async move {
-        let result = channel.publish(request).await;
-        (sequence, Some(retained), result)
-    }));
-    // The select! arm for this case does NOT push to confirmations
-    // and resolves the waiter immediately with PublishOutcome::Published
+Some((sequence, result)) = state.publish_in_flight.next(),
+    if !state.publish_in_flight.is_empty() => {
+    handle_publish_completion(state, sequence, result);
 }
 ```
 
-The `select!` arm distinguishes via `state.config.confirms`:
-
+Shared completion handler:
 ```rust
-Some((sequence, retained_opt, result)) = state.publish_in_flight.next() => {
+fn handle_publish_completion(
+    state: &mut ActorState,
+    sequence: u64,
+    result: Result<PublisherConfirm, TransportError>,
+) {
+    let Some(retained) = state.publishing.remove(&sequence) else {
+        return; // Already recovered during a previous error
+    };
+
     match result {
         Ok(receipt) => {
             if state.config.confirms {
-                // Ledger + confirm future (existing path)
                 state.ledger.insert(sequence, InFlightPublish { retained, generation });
+                let deadline = retained.request.deadline
+                    .min(time::Instant::now() + state.config.confirm_timeout);
                 state.confirmations.push(Box::pin(async move {
-                    time::timeout_at(deadline, receipt.wait()).await
+                    let result = match time::timeout_at(deadline, receipt.wait()).await {
+                        Ok(result) => ConfirmationResult::Completed(result),
+                        Err(_) => ConfirmationResult::TimedOut,
+                    };
+                    (sequence, generation, result)
                 }));
             } else {
-                // Fire-and-forget: resolve immediately
-                let retained = retained_opt.unwrap();
-                complete_success(retained, PublishOutcome::Published);
+                // Best-effort: resolve waiter immediately
+                // Guarantee: "transport accepted the frame" — NOT at-least-once
+                let _ = retained.completion.send(Ok(PublishOutcome::Published));
             }
         }
-        Err(error) if error.is_recoverable() => { /* replay + drain — same for both modes */ }
-        Err(error) => { complete_error(retained_opt.unwrap(), transport_publish_error(&error)); }
-    }
-}
-```
-
-**Design detail — barrier mechanism for batch completion:**
-
-When `publish_batch()` enqueues N messages, it needs to know when all N publish frames have been written to the socket (and, if confirms are enabled, when all N confirms have arrived) before returning to PHP.
-
-Currently, `publish_batch()` creates `PublishWaiter` objects that resolve on confirm. With pipelining, the publish frame write and the confirm are decoupled. We need a mechanism to signal "all publishes in this batch have been sent."
-
-Inspired by the archived `php-ext-rabbit-rs` barrier pattern (`oneshot::Sender` in `PublishJob`), add a barrier command to the actor:
-
-```rust
-enum Command {
-    Publish(RetainedPublish),
-    ConnectionEvent(PublisherConnectionEvent, oneshot::Sender<...>),
-    Close(oneshot::Sender<()>),
-    // New: barrier — signals when all in-flight publishes are completed
-    FlushBarrier {
-        target_sequence: u64,       // highest sequence in this batch
-        completed: oneshot::Sender<()>,
-    },
-}
-```
-
-`publish_batch()` sends all `Command::Publish` messages, then sends `Command::FlushBarrier`. The actor processes the barrier only when `publish_in_flight` is empty AND `confirmations` has processed everything up to `target_sequence`:
-
-```rust
-// In the select! loop, new arm:
-Some(Command::FlushBarrier { target_sequence, completed }) = ... => {
-    state.pending_barriers.push_back((target_sequence, completed));
-}
-// Check barriers after each confirmation/publish completion:
-fn check_barriers(state: &mut ActorState) {
-    while let Some((target, _)) = state.pending_barriers.front() {
-        if state.last_resolved_sequence >= *target && state.publish_in_flight.is_empty() {
-            let (_, completed) = state.pending_barriers.pop_front().unwrap();
-            let _ = completed.send(());
-        } else {
-            break;
+        Err(error) if error.is_recoverable() => {
+            state.replay.push_back(retained);
+            state.publish_in_flight.clear();
+            // Global sort: merge publishing registry + this element, sort by sequence
+            let mut all: Vec<RetainedPublish> = state.publishing.drain()
+                .map(|(_, r)| r)
+                .collect();
+            // The faulty element is already in replay — merge and sort everything
+            let mut combined = std::mem::take(&mut state.replay)
+                .into_iter()
+                .chain(all)
+                .collect::<Vec<_>>();
+            combined.sort_by_key(|r| r.sequence);
+            state.replay = combined.into_iter().collect();
+            state.suspend(generation);
+        }
+        Err(error) => {
+            let _ = retained.completion.send(Err(transport_publish_error(&error)));
         }
     }
 }
 ```
 
-This allows `publish_batch()` to:
-1. Send N `Command::Publish` messages (non-blocking)
-2. Send one `Command::FlushBarrier`
-3. `await` the barrier oneshot — returns when all N publishes are sent (fire-and-forget) or confirmed (safe mode)
+**Key invariants of the `publishing` registry:**
 
-The barrier is also useful for `flush()` calls, graceful shutdown, and connection events that need to wait for the pipeline to drain.
+1. **Insert before launch:** `publishing.insert(sequence, retained)` happens before the future is pushed.
+2. **Remove on completion:** `publishing.remove(&sequence)` happens in `handle_publish_completion` on success/terminal-error.
+3. **Drain on recoverable error:** `publishing.drain()` recovers ALL retains. Futures are abandoned (`publish_in_flight.clear()`). The faulty element and registry contents are merged and sorted globally by `sequence` for deterministic replay.
+4. **Bounded by semaphore:** the `buffer_capacity` semaphore limits entries in `publishing`. Each `RetainedPublish` holds a `_permit` released on terminal resolution.
 
-**Summary of changes to `publish_queue()`:**
+**Recovery, close, and permanent failure must also drain `publishing`:**
 
-```rust
-async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPublish>) {
-    while let Some(retained) = pending.pop_front() {
-        // 1. Deadline check (unchanged)
-        // 2. Channel availability check (unchanged)
-        // 3. Delay topology (unchanged — awaited, cold path)
-        // 4. Sequence assignment (unchanged)
+- On `ConnectionEvent::Recovering`: merge `publishing` + `replay` + `ledger` (entries not yet confirmed), sort globally by sequence, clear `publish_in_flight`.
+- On `ConnectionEvent::FailedPermanent`: drain `publishing` and fail all waiters with the permanent error.
+- On `Command::Close`: drain `publishing` and fail all waiters with `Closed`.
+- On deadline expiry: check `publishing` for expired entries and fail their waiters.
 
-        // 5. Push publish future — NO await
-        state.publish_in_flight.push(Box::pin(async move {
-            let result = channel.publish(request).await;
-            (sequence, Some(retained), result)
-        }));
+**`RetainedPublish` must carry `sequence`:**
 
-        // 6. Non-blocking drain — complete any ready futures immediately
-        while let Some((seq, ret, result)) = state.publish_in_flight.next().now_or_never().flatten() {
-            handle_publish_completion(state, seq, ret, result);
-        }
-    }
-}
-```
+Add a `sequence: u64` field to `RetainedPublish`, set at the moment `state.sequence` is assigned.
 
-And in the `select!` loop:
-```rust
-// New arm:
-Some((sequence, retained_opt, result)) = state.publish_in_flight.next(),
-    if !state.publish_in_flight.is_empty() => {
-    handle_publish_completion(state, sequence, retained_opt, result);
-    state.check_barriers();
-}
-```
+**AMQP frame ordering:**
 
-#### 3b: Cache publisher handle
+`FuturesUnordered` does not guarantee completion order, but AMQP frame send order is determined by the order `channel.publish()` is called. Since `publish_queue()` calls them sequentially without `await` between publishes, the frame order on the wire is preserved. `FuturesUnordered` only affects when we observe the completion, not the send order.
+
+#### 3b: Cache publisher handle with result ordering
 
 **`client.rs`:**
-- In `publish_batch()`, group messages by broker first, then acquire publisher handle once per broker:
+- In `publish_batch()`, group messages by broker first, then acquire publisher handle once per broker
+- Preserve input order in results: track original positions so `outcomes` is returned in the same order as `requests`
 
 ```rust
-let mut by_broker: HashMap<&str, Vec<PublishRequest>> = group_requests(requests);
+let mut by_broker: HashMap<&str, Vec<(usize, PublishRequest)>> = HashMap::new();
+for (i, (broker, request)) in requests.into_iter().enumerate() {
+    by_broker.entry(broker).or_default().push((i, request));
+}
+
+let mut outcomes: Vec<Option<Result<PublishOutcome, ClientError>>> = vec![None; total_count];
+let mut waiters: Vec<(usize, PublishWaiter)> = Vec::new();
+
 for (broker, msgs) in by_broker {
-    let publisher = self.publisher(broker).await;  // 1 lookup per broker
-    for msg in msgs {
-        waiters.push(publisher.try_publish(msg));
+    let publisher = self.publisher(broker).await?;
+    for (original_index, msg) in msgs {
+        match publisher.try_publish(msg) {
+            Ok(waiter) => waiters.push((original_index, waiter)),
+            Err(error) => {
+                outcomes[original_index] = Some(Err(ClientError::publish(&error)));
+            }
+        }
+    }
+}
+
+for (index, waiter) in waiters {
+    match waiter.wait().await {
+        Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
+        Err(error) => outcomes[index] = Some(Err(ClientError::publish(&error))),
     }
 }
 ```
 
 - Single-message `publish()` already does 1 lookup — no change needed.
 
-#### 3c: Flush barrier for batch completion
+#### 3c: Partial batch failure reporting
+
+> **No barrier needed.** The batch is fully enqueued via `try_publish()` before awaiting any waiters. Waiters resolve in the background via the actor. Awaiting the last waiter guarantees all prior waiters have been enqueued. The barrier from the previous spec revision is unnecessary and has been removed.
+
+**`client.rs`:**
+
+Replace the current "first terminal error wins" semantics (`client.rs:150-161`) with an indexed report:
+
+```rust
+pub struct BatchOutcome {
+    pub results: Vec<MessageOutcome>,
+}
+
+pub enum MessageOutcome {
+    Confirmed(PublishOutcome),   // broker confirmed via publisher confirm
+    Returned(ReturnInfo),        // basic.return — message was unroutable (mandatory)
+    Failed(PublishError),         // terminal error (timeout, channel closed, etc.)
+    NotAccepted(PublishError),    // never enqueued (backpressure, unknown broker)
+}
+
+pub async fn publish_batch(&self, requests: Vec<(String, PublishRequest)>) -> Result<BatchOutcome, ClientError> {
+    // ... grouping and enqueuing (Track 3b) ...
+    // ... awaiting waiters ...
+
+    let results = outcomes.into_iter().map(|o| match o {
+        Some(Ok(outcome)) => MessageOutcome::Confirmed(outcome),
+        Some(Err(error)) => MessageOutcome::Failed(error.into()),
+        None => MessageOutcome::NotAccepted(/* ... */),
+    }).collect();
+
+    Ok(BatchOutcome { results })
+}
+```
+
+- The caller inspects `results[i]` for each message at index `i` in the input
+- A `Returned` result means `basic.return` took precedence over the ACK (preserved invariant)
+- Backward compatibility: a wrapper method `publish_batch_simple()` retains the old `Result<Vec<PublishOutcome>, ClientError>` semantics for callers that don't want per-message detail
+
+### Track 4: Memory budgets and operational stability
+
+#### 4a: Byte budgets
+
+**`consumer/actor.rs`:**
+- Track `buffered_bytes: u64` per subscription and `total_buffered_bytes: u64` global
+- When a delivery arrives, add `delivery.payload.len()` to the subscription and global counters
+- When a delivery is dispatched (popped from buffer), subtract its size
+- If `total_buffered_bytes` exceeds `max_buffered_bytes` (from `SubscriptionConfig` or global config), stop polling streams until bytes drain
+- This bounds memory regardless of payload size
 
 **`publisher/actor.rs`:**
-- Add `Command::FlushBarrier` to the actor protocol (see 3a design detail above)
-- Actor tracks `last_resolved_sequence` and drains pending barriers after each completion
-- `client.rs` `publish_batch()` sends a barrier after the last publish command and awaits it
+- Track `publishing_bytes: u64` — sum of payload sizes in the `publishing` registry + `ledger` + `replay`
+- Add to `publishing` when inserting: `publishing_bytes += retained.request.payload.len()`
+- Subtract when removing (completion, error, drain)
+- If `publishing_bytes` exceeds `max_buffered_bytes` (from `PublisherConfig`, default 64 MiB), apply backpressure: stop accepting new `Command::Publish` until bytes drain
+- The semaphore (message count) and byte budget work together — either can trigger backpressure
 
-**`publisher/handle.rs`:**
-- Add `PublisherHandle::flush_barrier(target_sequence: u64) -> impl Future<Output = ()>` helper
+**`consumer/set.rs`:**
+- Fix `total_prefetch` overflow (Track 1): use `u64` with `saturating_sum`
+- Buffer sizing also considers `max_message_bytes` if set — buffer capacity = `min(message_count_based, byte_budget_based)`
 
-This replaces the current implicit synchronization (all `PublishWaiter` objects resolve) with an explicit pipeline drain signal that works correctly even when publish frames are pipelined asynchronously.
+#### 4b: Bounded shutdown
+
+**`publisher/actor.rs`:**
+- On `Command::Close`, set a deadline (e.g., `config.confirm_timeout` from the close command)
+- Drain `publishing`, `ledger`, `confirmations` — resolve all waiters
+- If the deadline expires before all waiters are resolved, force-resolve remaining with `Err(Closed)` and return
+- No PHP destructor can block indefinitely
+
+**`consumer/actor.rs`:**
+- On `Command::Close`, set a deadline
+- Cancel all pending settlement lanes
+- Drain buffers — close all channels
+- If the deadline expires, force-close channels and return
+- No PHP destructor can block indefinitely
+
+#### 4c: Depth metrics and observability
+
+Add to `Metrics`:
+- `publishing_depth: AtomicU64` — current size of `publishing` registry (high-water mark tracked)
+- `publishing_bytes: AtomicU64` — current bytes in `publishing` + `ledger` + `replay`
+- `replay_depth: AtomicU64` — current size of replay queue
+- `replay_count: AtomicU64` — total number of replays since start
+- `consumer_buffer_depth: AtomicU64` — total deliveries in all `VecDeque` buffers (high-water mark tracked)
+- `consumer_buffer_bytes: AtomicU64` — total bytes in buffers
+- `settlement_lane_depth: AtomicU64` — current pending settlements
+- `backpressure_duration: AtomicU64` — total time spent in backpressure (microseconds)
+- `duplicate_count: AtomicU64` — total duplicate deliveries detected (via `message_id`)
+
+These are read by `stats()` and surfaced in the Laravel status command.
 
 ## Stub updates
 
 `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` — add:
-- `Consumer::tryNextBatch(int $max): array`
-- `Consumer::ackMultiple(int $deliveryTag): void`
+- `Consumer::nextBatch(int $max, int $timeoutMs): array`
+- `Consumer::ackThrough(Delivery $delivery): void`
+- `Consumer::ackBatch(array $deliveries): void`
 - `Delivery::deliveryTag(): int`
 
 ## Testing
 
 **Rust tests** (`crates/rabbit-rs-core/tests/`):
-- Mock transport: `no_ack` mode — verify no settlement tracking, deliveries arrive without tokens
-- Mock transport: `SettleMultiple` command — verify `channel.ack(tag, multiple=true)` called once
-- Mock transport: pipeline publish — verify multiple `basic_publish` frames sent before any confirmation
-- Mock transport: pipeline publish — verify `now_or_never()` drain completes ready futures without waiting for next `select!` tick
-- Mock transport: pipeline publish with recoverable error mid-batch — verify ALL in-flight publishes are recovered into `state.replay` in sequence order, actor suspends
-- Mock transport: fire-and-forget mode (`confirms=false`) — verify no confirm future pushed, waiter resolves immediately on socket write
-- Mock transport: flush barrier — verify `FlushBarrier` oneshot resolves only after all publishes up to `target_sequence` are sent (fire-and-forget) or confirmed (safe mode)
-- Mock transport: flush barrier with pending confirms — verify barrier waits for all confirms, not just publish frame writes
-- Unit tests: `SubscriptionConfig` with `no_ack=true` validation
-- Unit tests: `RetainedPublish` carries `sequence` for deterministic replay ordering
+
+*Consumer actor:*
+- Event-driven dispatch: verify `Incoming` triggers immediate dispatch (no 1ms timer)
+- Settlement lane: verify a slow ACK does not block `Incoming` processing
+- Settlement lane: verify `delayed_release` (which calls `publisher.publish()`) does not block the main loop
+- Settlement lane: verify `Close` is processed even with pending settlements
+- Dispatch clone reduction: verify deliveries are moved, not cloned, from buffers
+- `SettleThrough` — verify `channel.ack(tag, multiple=true)` called once with correct channel
+- `SettleThrough` with stale generation — verify rejection with `StaleGeneration` error
+- `SettleThrough` with already-terminal delivery — verify rejection
+- `SettleThrough` with non-contiguous prefix (gap) — verify rejection
+- `SettleThrough` across multiple subscriptions/channels — verify each channel acked independently
+- `SettleBatch` — verify grouping by channel and one ACK per group
+- `SettleBatch` with mixed terminal/pending — verify rejection of terminal, ACK of pending
+- Early-ACK mode — verify delivery ACKed before dispatch to buffer
+- Early-ACK mode — verify `Delivery::ack()` raises error (not silent no-op)
+- True `no_ack` mode — verify per-subscription buffer cap prevents unbounded growth under broker flood
+- Byte budget — verify streams stop polling when `max_buffered_bytes` exceeded
+- Byte budget — verify publisher backpressure when `publishing_bytes` exceeds limit
+
+*Publisher pipeline:*
+- Pipeline publish — verify multiple `basic_publish` frames sent before any confirmation
+- Pipeline publish — verify `now_or_never()` drain completes ready futures without waiting for next `select!` tick
+- Pipeline publish with recoverable error mid-batch — verify `publishing` registry is drained to `replay`, `publish_in_flight` cleared, actor suspends
+- Pipeline publish with recoverable error — verify futures that never complete do not block recovery
+- Pipeline publish — verify AMQP frame send order is preserved (sequence order on the wire)
+- Pipeline publish — verify in-flight count stays bounded by `buffer_capacity` semaphore
+- Pipeline publish — verify `publishing_bytes` stays bounded by `max_buffered_bytes`
+- Fire-and-forget mode (`confirms=false`) — verify no confirm future pushed, waiter resolves on transport acceptance
+- Global sort on recovery — verify `publishing` + `replay` + `ledger` are merged and sorted by sequence
+- Basic.return precedence over ACK — verify a mandatory return takes precedence over its following ACK
+- `publish_batch()` result ordering — verify outcomes returned in input order after broker grouping
+- Partial batch failure — verify indexed report with `Confirmed`, `Returned`, `Failed`, `NotAccepted`
+- Bounded shutdown — verify `Close` resolves within deadline even with pending confirmations
+- Bounded shutdown — verify remaining waiters get `Err(Closed)` after deadline
+
+*Config:*
+- `SubscriptionConfig` with `no_ack=true` validation and warning
+- `SubscriptionConfig` with `early_ack=true` validation and warning
+- `total_prefetch` overflow — verify `u64` sum does not overflow with large prefetch values
+- `RetainedPublish` carries `sequence` for deterministic replay ordering
 
 **PHP tests** (`crates/rabbit-rs-php/tests/`):
-- PHPT reflection: `Consumer::tryNextBatch`, `Consumer::ackMultiple`, `Delivery::deliveryTag` exist
-- PHPT functional: `ackMultiple()` with mock or real broker
+- PHPT reflection: `Consumer::nextBatch`, `Consumer::ackThrough`, `Consumer::ackBatch`, `Delivery::deliveryTag` exist
+- PHPT functional: `nextBatch()` with `$max` clamping (0 → 1, 999 → 256)
+- PHPT functional: `ackThrough()` with mock or real broker
+- PHPT functional: `ackBatch()` with multi-channel grouping
+- PHPT functional: `Delivery::ack()` on `AutoAcked` delivery raises `InvalidArgumentException`
 
-**Benchmark update:**
-- `RabbitRsDriver`: use `no_ack=true` for auto-ack scenario, `ackMultiple()` for batch-confirm, `tryNextBatch(256)` in consume loop
-- `RabbitRsDriver`: test publish with `confirms=false` (fire-and-forget) separately from `confirms=true` (safe mode) to measure the fire-and-forget gain
+**Laravel tests** (`packages/laravel-queue/tests/`):
+- Unit test: `no_ack=true` and `early_ack=true` rejected in reliable configuration
+- Unit test: best-effort modes allowed only with explicit opt-in
+
+**Benchmark protocol (must precede performance claims):**
+- Record: machine, PHP version, Rust version, RabbitMQ version, payload size, warm-up duration, iteration count, median, p99, dispersion
+- Equalize prefetch across all drivers (same value for all)
+- Fix `RabbitRsDriver.php:28-53`: configure `publisher.confirms` per scenario
+- Fix `RabbitRsDriver.php:117-140`: use `ackThrough()` for batch-confirm, `early_ack=true` for auto-ack
+- Count unique `message_id` — verify `losses=0` AND `duplicates=0` in reliable mode
+- Measure publish latency separately from consume latency (interleaved publish+consume, not all-then-all)
+- Separate scenarios clearly:
+  - **Reliable:** `confirms=true`, manual ack via `ackThrough()`, `losses=0` and `duplicates=0` verified
+  - **Reliable batch:** `confirms=true`, acks grouped via `ackBatch()`, `losses=0` and `duplicates=0` verified
+  - **Best-effort (early-ACK):** `confirms=true`, `early_ack=true`, no at-least-once claim
+  - **Best-effort (fire-and-forget):** `confirms=false`, no at-least-once claim
+
+**Soak and chaos testing:**
+- Soak test: 1M messages, reliable mode, verify `losses=0`, `duplicates=0`, RSS bounded, all waiters resolved
+- Chaos: broker restart mid-publish — verify replay + recovery, no lost messages in reliable mode
+- Chaos: connection drop mid-consume — verify redelivery of unacked messages
+- Chaos: publish future blocked forever — verify recovery is not blocked (futures abandoned, registry drained)
+- Chaos: Octane/FPM reload — verify bounded shutdown, no hung destructors
+- Chaos: backpressure sustained — verify byte budgets enforced, RSS bounded
 
 ## Merge order
 
-1. **Track 1** (config) — small, unblocks Track 2
-2. **Track 3a + 3b** (pipeline + cache) — independent, can merge in parallel with Track 2
-3. **Track 3c** (flush barrier) — depends on 3a, merges after pipeline is validated
-4. **Track 2** (consume) — largest track, merges after Track 1
+1. **Fix benchmark** — correct `RabbitRsDriver` scenario configuration, equalize prefetch, count unique `message_id`, measure publish/consume latency separately, freeze a reproducible baseline
+2. **Byte budgets and metrics** — `max_buffered_bytes`, `max_message_bytes`, fix `u16` overflow, depth metrics
+3. **Consumer actor unblocking** — settlement lanes, event-driven dispatch, remove 1ms timer, reduce clones
+4. **`nextBatch()` + `ackThrough()` + `ackBatch()`** — batch consume and ack APIs
+5. **Publisher pipeline + cache + partial failure** — external `publishing` registry, non-blocking drain, broker grouping, indexed batch report
+6. **Bounded shutdown** — deadline-based close for publisher and consumer actors
+7. **Early-ACK best-effort** — `early_ack` mode, Laravel guard
+8. **True `no_ack`** — experimental only, if benchmarks prove necessity
 
 ## Expected results
 
 | Metric | Current | Target | Improvement |
 |--------|---------|--------|-------------|
-| Publish msg/s (safe mode) | 19k | 40-60k | 2-3x (pipeline + cache + barrier) |
-| Publish msg/s (fire-and-forget) | 19k | 60-80k | 3-4x (no confirm tracking overhead) |
-| Consume msg/s (manual ack) | 16k | 25-30k | 1.5-2x (batch ack + tryNextBatch) |
-| Consume msg/s (no_ack) | 16k | 30-40k | 2-2.5x (no_ack + tryNextBatch) |
-| Consume p99 | 646ms | <300ms | 2x (fewer FFI calls) |
+| Publish msg/s (safe mode) | 19k | 40-60k | 2-3x (pipeline + cache) |
+| Publish msg/s (best-effort) | 19k | 60-80k | 3-4x (no confirm tracking) |
+| Consume msg/s (manual ack) | 16k | 25-30k | 1.5-2x (ackThrough + nextBatch) |
+| Consume msg/s (early-ACK) | 16k | 30-40k | 2-2.5x (early-ACK + nextBatch) |
+| Consume p99 | 646ms | <300ms | 2x (fewer FFI calls + unblocked actor) |
 | Budget check | FAIL | PASS | All scenarios pass |
+| RSS under load | unbounded | bounded | Byte budgets enforced |
+| Shutdown | unbounded | bounded | Deadline-based close |
+
+> Targets are plausible but must be validated against the reproducible benchmark protocol. No at-least-once claim is made for best-effort modes.
 
 ## Constraints preserved
 
 - `#![forbid(unsafe_code)]` — no unsafe Rust
 - Zend values not retained in Rust threads — polling only, no PHP callbacks from async runtime
 - Lapin behind `Transport` abstraction — all changes go through the trait
-- Bounded queues, channels, in-flight work — existing limits preserved
-- Delivery tokens remain connection-generation-aware — `SettleMultiple` validates generation
-- Recovery order remains deterministic — `no_ack` consumers are re-created with same option
+- Bounded queues, channels, in-flight work — existing limits preserved, augmented by byte budgets
+- Delivery tokens remain connection-generation-aware — `SettleThrough` and `SettleBatch` validate full identity
+- Recovery order remains deterministic — `no_ack`/`early_ack` consumers are re-created with same option
+- `basic.return` precedence over ACK — preserved in the confirm resolution path
+- Settlement no longer blocks the consumer actor main loop
 
-## New invariants introduced by Track 3a (pipeline)
+## Invariants introduced by this design
 
-- **Ledger-before-confirm:** a ledger entry is inserted before the confirm future is polled. This guarantees that any confirm arriving asynchronously will find its entry. The `handle_publish_completion` function does insert-then-push atomically within the `select!` arm.
-- **Replay completeness on recoverable error:** when a publish future returns a recoverable error, ALL in-flight publishes are drained from `publish_in_flight` and their `RetainedPublish` values are recovered into `state.replay`. No in-flight publish is silently dropped.
-- **Deterministic replay order:** recovered publishes are sorted by `sequence` before being pushed to the replay queue. `RetainedPublish` carries its `sequence` field for this purpose.
-- **Barrier correctness:** a `FlushBarrier` oneshot resolves only when `last_resolved_sequence >= target_sequence` AND `publish_in_flight.is_empty()`. This guarantees the caller that all publishes (and their confirms, if enabled) have completed before proceeding.
-- **Fire-and-forget waiters resolve on socket write:** when `confirms=false`, the waiter resolves immediately when `channel.publish().await` completes. No confirm future is created. The at-least-once contract for fire-and-forget is "message reached kernel socket buffer" — same guarantee as amqplib's fire-and-forget.
+- **Publishing registry completeness:** every in-flight publish is in the `publishing` registry before its future is launched. On any failure path, the registry is drained — no publish is silently dropped.
+- **Futures are disposable:** publish futures carry only `sequence: u64`. They can be abandoned (`clear()`) on channel death without losing `RetainedPublish` ownership. Recovery is never blocked by pending futures.
+- **Global sort on recovery:** `publishing` + `replay` + `ledger` (unconfirmed) are merged and sorted by `sequence` on any recovery path. Deterministic replay order is preserved.
+- **Ledger-before-confirm:** a ledger entry is inserted before the confirm future is polled.
+- **No barrier needed:** the batch is fully enqueued before awaiting waiters. FIFO ordering is implicit — awaiting the last waiter guarantees all prior waiters are enqueued.
+- **Batch ack full identity:** `ackThrough` and `ackBatch` validate `(connection_key, generation, channel_id, delivery_tag)` from the `DeliveryToken`. Stale generations, wrong channels, already-terminal deliveries, and non-contiguous prefixes are rejected.
+- **Early-ACK is best-effort:** `early_ack=true` ACKs before PHP processing. Not at-least-once. Preserves broker QoS (prefetch still works). `Delivery::ack()` on an `AutoAcked` delivery raises an explicit error.
+- **True `no_ack` is experimental:** `no_ack=true` disables broker prefetch. Per-subscription buffer bounds are the only flow control. Only used if benchmarks prove necessity.
+- **Byte budgets bound memory:** `max_buffered_bytes` limits publisher memory (`publishing` + `ledger` + `replay`) and consumer buffer memory. Either message-count or byte budget can trigger backpressure.
+- **Settlement does not block the actor:** settlements run in spawned lanes. The main `select!` loop processes `Incoming`, `Close`, and dispatch independently.
+- **Event-driven dispatch:** no 1ms timer. Dispatch triggers on `Incoming`, settlement completion, and pump notification.
+- **Bounded shutdown:** `Close` resolves within a deadline. Remaining waiters and settlements are force-resolved after deadline. No PHP destructor blocks indefinitely.
+- **Fire-and-forget guarantee wording:** when `confirms=false`, the guarantee is "transport accepted the frame", not "message reached kernel socket buffer". This mode does not provide at-least-once.
+- **Result ordering preserved:** `publish_batch()` returns outcomes in the same order as input requests, even after grouping by broker.
+- **Partial batch failure is explicit:** `publish_batch()` returns an indexed report per message. Callers inspect `results[i]` rather than getting an opaque global error.
