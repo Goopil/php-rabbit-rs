@@ -104,6 +104,16 @@ abstract class AbstractBenchmark
         $this->latencies[] = $ms;
     }
 
+    protected function recordLatencyFromPayload(string $payload): void
+    {
+        if (strlen($payload) >= 8) {
+            $ts = unpack('P', substr($payload, 0, 8))[1] ?? null;
+            if ($ts !== null) {
+                $this->recordLatency((hrtime(true) - (int) $ts) / 1_000_000);
+            }
+        }
+    }
+
     protected function recordPublishLatency(float $ms): void
     {
         $this->publishLatencies[] = $ms;

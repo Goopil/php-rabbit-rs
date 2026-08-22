@@ -128,36 +128,46 @@ class RabbitRsDriver extends AbstractBenchmark
         $consumed = 0;
         $consecutiveNulls = 0;
         while ($consumed < $count) {
-            $delivery = $this->consumer->tryNext();
-            if ($delivery === null) {
-                $delivery = $this->consumer->next(1000);
-                if ($delivery === null) {
+            if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
+                $batch = $this->consumer->nextBatch(256, 1000);
+                if ($batch === []) {
                     $consecutiveNulls++;
                     if ($consecutiveNulls >= 3) {
                         break;
                     }
                     continue;
                 }
-            }
-            $consecutiveNulls = 0;
+                $consecutiveNulls = 0;
 
-            $payload = $delivery->payload();
-            $metadata = $delivery->metadata();
-            $this->recordReceived($metadata['message_id']);
-
-            if (strlen($payload) >= 8) {
-                $ts = unpack('P', substr($payload, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
+                $last = end($batch);
+                foreach ($batch as $d) {
+                    $this->recordLatencyFromPayload($d->payload());
+                    $this->recordReceived($d->metadata()['message_id']);
                 }
-            }
+                $this->consumer->ackThrough($last);
+                $consumed += count($batch);
+            } else {
+                $delivery = $this->consumer->tryNext();
+                if ($delivery === null) {
+                    $delivery = $this->consumer->next(1000);
+                    if ($delivery === null) {
+                        $consecutiveNulls++;
+                        if ($consecutiveNulls >= 3) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                $consecutiveNulls = 0;
 
-            // Individual ack remains for all scenarios until batch ack APIs
-            // land in Tasks 4 and 9. ackThrough() and early_ack will replace
-            // this per-message call.
-            $delivery->ack();
-            $consumed++;
+                $payload = $delivery->payload();
+                $metadata = $delivery->metadata();
+                $this->recordReceived($metadata['message_id']);
+                $this->recordLatencyFromPayload($payload);
+
+                $delivery->ack();
+                $consumed++;
+            }
         }
     }
 
