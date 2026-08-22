@@ -152,8 +152,9 @@ impl ConsumerSet {
             streams.push((subscription.id.clone(), stream));
         }
 
-        let total_prefetch: u16 = subscriptions.iter().map(|s| s.prefetch).sum();
-        let buffer_size = (total_prefetch as usize) * BUFFER_CAPACITY_FACTOR / 2;
+        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        let buffer_size =
+            usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_FACTOR / 2;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
         let dispatch_notify = Arc::new(Notify::new());

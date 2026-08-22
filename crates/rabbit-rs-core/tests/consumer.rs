@@ -860,3 +860,18 @@ async fn drop_with_pending_delivery_still_closes_channels() {
         "channels must be closed even with an in-flight delivery"
     );
 }
+
+#[tokio::test]
+async fn total_prefetch_does_not_overflow_u16() {
+    let transport = MockTransport::default();
+    let subs = vec![
+        subscription(&transport, "a", connection_key("a", "/"), 60000, 0).await,
+        subscription(&transport, "b", connection_key("b", "/"), 60000, 0).await,
+    ];
+    // 60000 + 60000 = 120000 — overflows u16 (max 65535)
+    // Should not panic; buffer_size should be computed correctly
+    let consumer = ConsumerSet::spawn(subs, 2).await;
+    assert!(consumer.is_ok());
+    let consumer = consumer.unwrap();
+    consumer.close().await.expect("close");
+}
