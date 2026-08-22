@@ -414,8 +414,19 @@ pub(crate) async fn run_actor(
                     let _ = completed.send(result);
                 }
                 Some(ConsumerCommand::Close(completed)) => {
+                    // Cancel pending settlements and clear queued work so close
+                    // cannot block on in-flight broker operations.
+                    state.pending_settlements = futures_util::stream::FuturesUnordered::new();
+                    state.pending_settle_throughs = futures_util::stream::FuturesUnordered::new();
+                    state.settlement_queues.clear();
+                    state.settle_through_queues.clear();
+                    state.settlement_in_flight.clear();
                     for runtime in state.subscriptions.values() {
-                        let _ = runtime.channel.close().await;
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            runtime.channel.close(),
+                        )
+                        .await;
                     }
                     let _ = completed.send(());
                     return;

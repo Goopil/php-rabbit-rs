@@ -389,9 +389,19 @@ async fn run_actor(
                         PublishErrorKind::Closed,
                         "publisher actor was explicitly closed",
                     );
+                    // Drain the publishing registry so pending confirmations
+                    // are resolved with a terminal error before closing.
+                    for (_, retained) in state.publishing.drain() {
+                        complete_error(retained, error.clone());
+                    }
                     state.fail_all(&error);
+                    state.publish_in_flight = FuturesUnordered::new();
                     if let Some(channel) = state.channel.take() {
-                        let _ = channel.close().await;
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(2),
+                            channel.close(),
+                        )
+                        .await;
                     }
                     let _ = completed.send(());
                     return;

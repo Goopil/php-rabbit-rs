@@ -1143,6 +1143,33 @@ async fn explicit_close_wakes_retained_waiters() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn close_resolves_within_deadline_with_pending_confirmations() {
+    let transport = MockTransport::default();
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+    // Gate the channel close so it would hang indefinitely without a deadline.
+    let _close_gate = transport.push_close_channel_gate();
+
+    let actor = actor_safety(&transport, config_safety()).await;
+    let _w1 = actor
+        .try_publish(request_safety("msg1", b"p1"))
+        .expect("publish1");
+    let _w2 = actor
+        .try_publish(request_safety("msg2", b"p2"))
+        .expect("publish2");
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    let close_result = tokio::time::timeout(Duration::from_secs(10), actor.close()).await;
+    assert!(
+        close_result.is_ok(),
+        "close should complete within deadline"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Publisher delay tests (from publisher_delay.rs)
 // ---------------------------------------------------------------------------

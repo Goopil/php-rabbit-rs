@@ -1059,3 +1059,22 @@ async fn close_works_with_pending_settlements() {
     drop(d1);
     consumer.close().await.expect("close should succeed");
 }
+
+#[tokio::test(start_paused = true)]
+async fn close_resolves_within_deadline_with_hanging_channel() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    // Gate the channel close so it would hang indefinitely without a deadline.
+    let _close_gate = transport.push_close_channel_gate();
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 2).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    drop(d1);
+
+    let close_result = tokio::time::timeout(Duration::from_secs(10), consumer.close()).await;
+    assert!(
+        close_result.is_ok(),
+        "close should complete within deadline even if channel close hangs"
+    );
+}

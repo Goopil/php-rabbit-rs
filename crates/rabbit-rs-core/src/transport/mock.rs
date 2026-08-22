@@ -49,6 +49,7 @@ struct MockState {
     open_publisher_gates: VecDeque<MockOperationGateWait>,
     open_consumer_gates: VecDeque<MockOperationGateWait>,
     close_connection_gates: VecDeque<MockOperationGateWait>,
+    close_channel_gates: VecDeque<MockOperationGateWait>,
     ack_gates: VecDeque<MockOperationGateWait>,
     delivery_gates: VecDeque<MockOperationGateWait>,
     publish_gates: VecDeque<MockPublishGateWait>,
@@ -132,6 +133,19 @@ impl MockTransport {
     pub fn push_close_connection_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().close_connection_gates.push_back(wait);
+        gate
+    }
+
+    /// Pushes a gate that makes the next `PublisherChannel::close()` or
+    /// `ConsumerChannel::close()` call pending until the returned gate is
+    /// released.
+    ///
+    /// This simulates a broker or transport that stalls during channel
+    /// shutdown, allowing tests to verify that close deadlines are enforced.
+    #[must_use]
+    pub fn push_close_channel_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().close_channel_gates.push_back(wait);
         gate
     }
 
@@ -406,7 +420,15 @@ impl TopologyChannel for MockPublisherChannel {
     }
 
     async fn close(&self) -> TransportResult<()> {
-        self.record(TransportOperation::CloseChannel);
+        let gate = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.operations.push(TransportOperation::CloseChannel);
+            state.close_channel_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(())
     }
 }
@@ -492,14 +514,6 @@ struct MockConsumerChannel {
 }
 
 impl MockConsumerChannel {
-    fn record(&self, operation: TransportOperation) {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .push(operation);
-    }
-
     fn record_topology(&self, operation: TransportOperation) -> TransportResult<()> {
         let mut state = self
             .state
@@ -560,7 +574,15 @@ impl TopologyChannel for MockConsumerChannel {
     }
 
     async fn close(&self) -> TransportResult<()> {
-        self.record(TransportOperation::CloseChannel);
+        let gate = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.operations.push(TransportOperation::CloseChannel);
+            state.close_channel_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(())
     }
 }
