@@ -1078,3 +1078,108 @@ async fn close_resolves_within_deadline_with_hanging_channel() {
         "close should complete within deadline even if channel close hangs"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Early-ACK best-effort mode tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn early_ack_acks_before_dispatch_to_buffer() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+
+    let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    sub = sub.early_ack(true);
+    let consumer = ConsumerSet::spawn(vec![sub], 2).await.expect("consumer");
+
+    let_sources_fill().await;
+    let d = consumer.next().await.expect("delivery");
+
+    assert_eq!(d.state(), DeliveryState::AutoAcked);
+
+    let ops = transport.operations();
+    let acks: Vec<_> = ops
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(acks.len(), 1, "delivery should have been auto-acked");
+
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn early_ack_does_not_increment_in_flight() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+
+    let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
+    sub = sub.early_ack(true);
+    // max_in_flight=1 — if early-ACK incremented in_flight, the second delivery
+    // would be blocked.
+    let consumer = ConsumerSet::spawn(vec![sub], 1).await.expect("consumer");
+
+    let_sources_fill().await;
+    let d1 = consumer.next().await.expect("delivery 1");
+    let d2 = consumer.next().await.expect("delivery 2");
+
+    assert_eq!(d1.state(), DeliveryState::AutoAcked);
+    assert_eq!(d2.state(), DeliveryState::AutoAcked);
+
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn early_ack_delivery_settle_returns_error() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+
+    let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    sub = sub.early_ack(true);
+    let consumer = ConsumerSet::spawn(vec![sub], 2).await.expect("consumer");
+
+    let_sources_fill().await;
+    let d = consumer.next().await.expect("delivery");
+
+    let err = d
+        .ack()
+        .await
+        .expect_err("ack should fail on auto-acked delivery");
+    assert_eq!(err.kind(), ConsumerErrorKind::AlreadySettled);
+
+    let err = d.reject(false).await.expect_err("reject should fail");
+    assert_eq!(err.kind(), ConsumerErrorKind::AlreadySettled);
+
+    let err = d
+        .release(Duration::ZERO)
+        .await
+        .expect_err("release should fail");
+    assert_eq!(err.kind(), ConsumerErrorKind::AlreadySettled);
+
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn early_ack_preserves_delivery_metadata() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery_with_properties(
+        7,
+        b"payload",
+        "broker-msg-id",
+        "trace-id",
+    )));
+
+    let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    sub = sub.early_ack(true);
+    let consumer = ConsumerSet::spawn(vec![sub], 2).await.expect("consumer");
+
+    let_sources_fill().await;
+    let d = consumer.next().await.expect("delivery");
+
+    assert_eq!(d.id.as_str(), "broker-msg-id");
+    assert_eq!(d.correlation_id.as_deref(), Some("trace-id"));
+    assert_eq!(d.subscription, SubscriptionId::new("s1"));
+    assert_eq!(d.delivery_tag(), 7);
+
+    consumer.close().await.expect("close");
+}

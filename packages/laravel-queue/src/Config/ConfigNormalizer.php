@@ -26,11 +26,12 @@ final class ConfigNormalizer
         $brokerNames = array_fill_keys(array_column($brokers, 'name'), true);
         $topology = self::topology($config['topology'] ?? []);
         $publisher = self::publisher($config['publisher'] ?? []);
+        $bestEffort = self::boolean($config['best_effort'] ?? false, 'best_effort');
 
         return [
             'native' => [
                 'brokers' => $brokers,
-                'workers' => self::workers($config['workers'] ?? [], $brokerNames),
+                'workers' => self::workers($config['workers'] ?? [], $brokerNames, $bestEffort),
                 'topology_mode' => $topologyMode,
                 'delay' => self::delay($config['delay'] ?? []),
                 'dead_letter' => $topology['dead_letter'],
@@ -40,6 +41,7 @@ final class ConfigNormalizer
             'routes' => self::routes($config['routes'] ?? [], $brokerNames),
             'publisher' => $publisher,
             'topology' => $topology,
+            'best_effort' => $bestEffort,
         ];
     }
 
@@ -232,7 +234,7 @@ final class ConfigNormalizer
      * @param array<string, true> $brokerNames
      * @return list<array<string, mixed>>
      */
-    private static function workers(mixed $workers, array $brokerNames): array
+    private static function workers(mixed $workers, array $brokerNames, bool $bestEffort): array
     {
         if (! is_array($workers)) {
             self::invalid('workers', 'must be an array');
@@ -296,6 +298,17 @@ final class ConfigNormalizer
                     );
                 }
 
+                $earlyAck = self::boolean(
+                    $subscription['early_ack'] ?? false,
+                    $subscriptionPath.'.early_ack',
+                );
+                if ($earlyAck && ! $bestEffort) {
+                    self::invalid(
+                        $subscriptionPath.'.early_ack',
+                        'early_ack is not allowed in reliable mode — set best_effort=true to opt in',
+                    );
+                }
+
                 $normalizedSubscriptions[] = [
                     'name' => (string) $subscriptionName,
                     'broker' => $broker,
@@ -316,6 +329,7 @@ final class ConfigNormalizer
                         $subscription['starvation_after'] ?? 30,
                         $subscriptionPath.'.starvation_after',
                     ),
+                    'early_ack' => $earlyAck,
                 ];
             }
             if ($normalizedSubscriptions === []) {

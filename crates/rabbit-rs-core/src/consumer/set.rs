@@ -31,6 +31,7 @@ pub struct Subscription {
     pub(crate) queue: String,
     pub(crate) prefetch: u16,
     pub(crate) policy: SubscriptionPolicy,
+    pub(crate) early_ack: bool,
     pub(crate) channel: Arc<dyn ConsumerChannel>,
     pub(crate) publisher: Option<PublisherHandle>,
     pub(crate) destination: Option<Destination>,
@@ -53,6 +54,7 @@ impl Subscription {
             queue: queue.into(),
             prefetch: 16,
             policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
+            early_ack: false,
             channel,
             publisher: None,
             destination: None,
@@ -75,6 +77,16 @@ impl Subscription {
     #[must_use]
     pub const fn policy(mut self, policy: SubscriptionPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Enables or disables early-ACK best-effort mode.
+    ///
+    /// When `true`, deliveries are auto-acked to the broker before dispatch
+    /// and presented with [`DeliveryState::AutoAcked`].
+    #[must_use]
+    pub const fn early_ack(mut self, early_ack: bool) -> Self {
+        self.early_ack = early_ack;
         self
     }
 

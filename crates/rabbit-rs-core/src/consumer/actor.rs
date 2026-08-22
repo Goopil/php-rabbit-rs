@@ -3,7 +3,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
@@ -98,6 +98,7 @@ struct RuntimeSubscription {
     publisher: Option<crate::publisher::PublisherHandle>,
     destination: Option<crate::publisher::Destination>,
     delay_strategy: Option<DelayStrategy>,
+    early_ack: bool,
 }
 
 struct ActorState {
@@ -149,6 +150,7 @@ impl ActorState {
                     publisher: subscription.publisher,
                     destination: subscription.destination,
                     delay_strategy: subscription.delay_strategy,
+                    early_ack: subscription.early_ack,
                 },
             );
         }
@@ -178,6 +180,7 @@ impl ActorState {
             .map(|runtime| (subscription.clone(), runtime.channel_id, runtime.generation))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self) {
         while self.in_flight < self.max_in_flight {
             if let Some(error) = self.source_errors.front() {
@@ -219,6 +222,45 @@ impl ActorState {
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
             let headers = Arc::new(delivery.headers.clone());
+
+            if runtime.early_ack {
+                let channel = runtime.channel.clone();
+                let tag = delivery.delivery_tag;
+                tokio::spawn(async move {
+                    let _ = channel.ack(tag, false).await;
+                });
+                let item = Delivery::new_auto_acked(
+                    DeliveryIdentity {
+                        subscription: subscription.clone(),
+                        connection_key: runtime.connection_key,
+                        generation: runtime.generation,
+                        channel_id: runtime.channel_id,
+                        delivery_tag: delivery.delivery_tag,
+                    },
+                    message_id,
+                    delivery.correlation_id.clone(),
+                    delivery.payload.clone(),
+                    headers,
+                    attempts,
+                );
+                if self.buffer_tx.try_send(Ok(item)).is_err() {
+                    self.buffers
+                        .entry(subscription.clone())
+                        .or_default()
+                        .push_front(delivery);
+                    self.scheduler.mark_ready(&subscription);
+                    return;
+                }
+                if let Some(buffer) = self.buffers.get_mut(&subscription)
+                    && buffer.is_empty()
+                {
+                    self.scheduler.mark_empty(&subscription);
+                }
+                self.metrics.record_delivery();
+                self.metrics.record_ack(Duration::ZERO);
+                continue;
+            }
+
             let token = DeliveryToken::new(DeliveryTokenInner::pending(
                 DeliveryIdentity {
                     subscription: subscription.clone(),
@@ -451,7 +493,7 @@ pub(crate) async fn run_actor(
                             DeliveryState::Rejected => {
                                 state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
                             }
-                            DeliveryState::Pending | DeliveryState::Lost => {}
+                            DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
                         }
                         state.release_budget();
                         state.dispatch();

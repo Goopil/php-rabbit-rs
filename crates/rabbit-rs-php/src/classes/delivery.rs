@@ -65,6 +65,9 @@ impl Delivery {
     /// Acknowledges the delivery.
     pub fn ack(&self) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::ack")?;
+        if self.inner.state() == DeliveryState::AutoAcked {
+            return rabbit_exception("cannot ack an auto-acked delivery");
+        }
         self.runtime
             .block_on(self.inner.ack())
             .map_err(|error| consumer_php_exception(&error))
@@ -74,6 +77,9 @@ impl Delivery {
     #[php(defaults(delayMs = 0))]
     pub fn release(&self, delayMs: i64) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::release")?;
+        if self.inner.state() == DeliveryState::AutoAcked {
+            return rabbit_exception("cannot release an auto-acked delivery");
+        }
         let delay = u64::try_from(delayMs).map_err(|_| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
                 "delayMs must be a non-negative integer".to_owned(),
@@ -88,6 +94,9 @@ impl Delivery {
     #[php(defaults(requeue = false))]
     pub fn reject(&self, requeue: bool) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::reject")?;
+        if self.inner.state() == DeliveryState::AutoAcked {
+            return rabbit_exception("cannot reject an auto-acked delivery");
+        }
         self.runtime
             .block_on(self.inner.reject(requeue))
             .map_err(|error| consumer_php_exception(&error))
@@ -140,5 +149,6 @@ const fn state_name(state: DeliveryState) -> &'static str {
         DeliveryState::Acked => "acked",
         DeliveryState::Rejected => "rejected",
         DeliveryState::Lost => "lost",
+        DeliveryState::AutoAcked => "auto_acked",
     }
 }
