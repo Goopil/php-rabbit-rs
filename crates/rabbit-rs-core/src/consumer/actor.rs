@@ -27,9 +27,6 @@ use crate::{
 type ChannelKey = (SubscriptionId, u16, u64);
 
 struct ChannelLedgerEntry {
-    #[allow(dead_code)]
-    delivery_tag: u64,
-    #[allow(dead_code)]
     state: DeliveryState,
     token: Option<Arc<DeliveryTokenInner>>,
 }
@@ -37,6 +34,7 @@ struct ChannelLedgerEntry {
 #[derive(Default)]
 struct ChannelLedger {
     pending: std::collections::BTreeMap<u64, ChannelLedgerEntry>,
+    acked_prefix: u64,
 }
 
 struct SettleParams {
@@ -54,6 +52,22 @@ struct SettlementResult {
 
 type SettlementFuture = Pin<Box<dyn Future<Output = SettlementResult> + Send>>;
 
+struct SettleThroughParams {
+    token: Arc<DeliveryTokenInner>,
+    affected_tokens: Vec<Arc<DeliveryTokenInner>>,
+    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
+}
+
+struct SettleThroughResult {
+    channel_key: ChannelKey,
+    target_tag: u64,
+    affected_tokens: Vec<Arc<DeliveryTokenInner>>,
+    result: Result<DeliveryState, ConsumerError>,
+    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
+}
+
+type SettleThroughFuture = Pin<Box<dyn Future<Output = SettleThroughResult> + Send>>;
+
 pub(crate) enum ConsumerCommand {
     Incoming {
         subscription: SubscriptionId,
@@ -62,6 +76,10 @@ pub(crate) enum ConsumerCommand {
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
+        completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
+    },
+    SettleThrough {
+        token: Arc<DeliveryTokenInner>,
         completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
     },
     UpdateGeneration {
@@ -87,8 +105,10 @@ struct ActorState {
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
     pending_settlements: futures_util::stream::FuturesUnordered<SettlementFuture>,
+    pending_settle_throughs: futures_util::stream::FuturesUnordered<SettleThroughFuture>,
     settlement_in_flight: HashSet<ChannelKey>,
     settlement_queues: HashMap<ChannelKey, VecDeque<SettleParams>>,
+    settle_through_queues: HashMap<ChannelKey, VecDeque<SettleThroughParams>>,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
     in_flight: usize,
@@ -138,8 +158,10 @@ impl ActorState {
             buffers,
             channel_ledgers,
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
+            pending_settle_throughs: futures_util::stream::FuturesUnordered::new(),
             settlement_in_flight: HashSet::new(),
             settlement_queues: HashMap::new(),
+            settle_through_queues: HashMap::new(),
             source_errors: VecDeque::new(),
             scheduler,
             in_flight: 0,
@@ -284,7 +306,6 @@ pub(crate) async fn run_actor(
                                 .or_default()
                                 .pending
                                 .insert(delivery.delivery_tag, ChannelLedgerEntry {
-                                    delivery_tag: delivery.delivery_tag,
                                     state: DeliveryState::Pending,
                                     token: None,
                                 });
@@ -323,6 +344,43 @@ pub(crate) async fn run_actor(
                         state.settlement_queues.entry(channel_key).or_default().push_back(params);
                     } else {
                         launch_settlement(&mut state, channel_key, params);
+                    }
+                }
+                Some(ConsumerCommand::SettleThrough { token, completed }) => {
+                    let Some(channel_key) = state.channel_key_for(&token.subscription) else {
+                        let _ = completed.send(Err(ConsumerError::new(
+                            ConsumerErrorKind::InvalidSubscription,
+                            "delivery references an unknown subscription",
+                        )));
+                        continue;
+                    };
+                    if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
+                        let _ = completed.send(Err(ConsumerError::already_settling()));
+                        continue;
+                    }
+                    let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
+                        let _ = completed.send(Err(ConsumerError::new(
+                            ConsumerErrorKind::Transport,
+                            "channel ledger not found",
+                        )));
+                        continue;
+                    };
+                    match validate_contiguous_prefix(ledger, token.delivery_tag) {
+                        Ok(affected_tokens) => {
+                            let params = SettleThroughParams {
+                                token,
+                                affected_tokens,
+                                completed,
+                            };
+                            if state.settlement_in_flight.contains(&channel_key) {
+                                state.settle_through_queues.entry(channel_key).or_default().push_back(params);
+                            } else {
+                                launch_settle_through(&mut state, channel_key, params);
+                            }
+                        }
+                        Err(error) => {
+                            let _ = completed.send(Err(error));
+                        }
                     }
                 }
                 Some(ConsumerCommand::UpdateGeneration {
@@ -394,13 +452,68 @@ pub(crate) async fn run_actor(
                 let _ = (settlement_result.completed).send(settlement_result.result);
 
                 // Launch the next queued settlement for this channel.
-                if let Some(queue) = state.settlement_queues.get_mut(&channel_key) {
-                    if let Some(next) = queue.pop_front() {
-                        launch_settlement(&mut state, channel_key, next);
-                    } else {
-                        state.settlement_queues.remove(&channel_key);
+                drain_settlement_queue(&mut state, channel_key);
+            }
+            Some(settle_through_result) = state.pending_settle_throughs.next(),
+                if !state.pending_settle_throughs.is_empty() => {
+                let channel_key = settle_through_result.channel_key;
+                state.settlement_in_flight.remove(&channel_key);
+
+                let target_tag = settle_through_result.target_tag;
+                let affected_count = settle_through_result.affected_tokens.len();
+
+                match &settle_through_result.result {
+                    Ok(DeliveryState::Acked) => {
+                        // Release budget for every delivery in the contiguous prefix.
+                        for _ in 0..affected_count {
+                            state.release_budget();
+                        }
+                        state.metrics.record_ack(
+                            settle_through_result
+                                .affected_tokens
+                                .last()
+                                .unwrap()
+                                .reserved_at
+                                .elapsed(),
+                        );
+                        state.dispatch();
+                    }
+                    Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
+                        for _ in 0..affected_count {
+                            state.release_budget();
+                        }
+                        state.dispatch();
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+
+                // Render all affected tokens terminal and reset settling flags.
+                for token in &settle_through_result.affected_tokens {
+                    let final_state = match &settle_through_result.result {
+                        Ok(state) => *state,
+                        Err(error) if matches!(error.kind(), ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport) => {
+                            DeliveryState::Lost
+                        }
+                        Err(_) => DeliveryState::Pending,
+                    };
+                    token.state.store(final_state as u8, std::sync::atomic::Ordering::Release);
+                    token.settling.store(false, std::sync::atomic::Ordering::Release);
+                }
+
+                // Remove affected entries from the ledger and update acked_prefix.
+                if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+                    for tag in (ledger.acked_prefix + 1)..=target_tag {
+                        ledger.pending.remove(&tag);
+                    }
+                    if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
+                        ledger.acked_prefix = target_tag;
                     }
                 }
+
+                let _ = (settle_through_result.completed).send(settle_through_result.result);
+
+                // Launch the next queued settlement for this channel.
+                drain_settlement_queue(&mut state, channel_key);
             }
         }
     }
@@ -582,4 +695,123 @@ fn transport_error(error: &crate::transport::TransportError) -> ConsumerError {
 
 fn publish_error(error: &crate::publisher::PublishError) -> ConsumerError {
     ConsumerError::new(ConsumerErrorKind::Publish, error.to_string())
+}
+
+fn validate_contiguous_prefix(
+    ledger: &ChannelLedger,
+    target_tag: u64,
+) -> Result<Vec<Arc<DeliveryTokenInner>>, ConsumerError> {
+    let mut tokens = Vec::new();
+    let mut expected = ledger.acked_prefix + 1;
+    for (&tag, entry) in ledger.pending.range(ledger.acked_prefix + 1..=target_tag) {
+        if tag != expected {
+            return Err(ConsumerError::new(
+                ConsumerErrorKind::Transport,
+                "non-contiguous delivery prefix — gap in delivery tags",
+            ));
+        }
+        if entry.state != DeliveryState::Pending {
+            return Err(ConsumerError::new(
+                ConsumerErrorKind::AlreadySettled,
+                "delivery in prefix is already terminal",
+            ));
+        }
+        if let Some(token) = &entry.token {
+            tokens.push(token.clone());
+        }
+        expected += 1;
+    }
+    if expected <= target_tag {
+        return Err(ConsumerError::new(
+            ConsumerErrorKind::Transport,
+            "delivery tag not found in ledger",
+        ));
+    }
+    Ok(tokens)
+}
+
+fn launch_settle_through(
+    state: &mut ActorState,
+    channel_key: ChannelKey,
+    params: SettleThroughParams,
+) {
+    state.settlement_in_flight.insert(channel_key.clone());
+    let Some(runtime) = state.subscriptions.get(&params.token.subscription) else {
+        state.settlement_in_flight.remove(&channel_key);
+        let _ = params.completed.send(Err(ConsumerError::new(
+            ConsumerErrorKind::InvalidSubscription,
+            "delivery references an unknown subscription",
+        )));
+        return;
+    };
+    let channel = runtime.channel.clone();
+    let connection_key = runtime.connection_key;
+    let generation = runtime.generation;
+    let channel_id = runtime.channel_id;
+    let target_tag = params.token.delivery_tag;
+    let token = params.token.clone();
+    let affected_tokens = params.affected_tokens;
+    let completed = params.completed;
+
+    state.pending_settle_throughs.push(Box::pin(async move {
+        let result = execute_settle_through(
+            &channel,
+            connection_key,
+            generation,
+            channel_id,
+            target_tag,
+            &token,
+        )
+        .await;
+        SettleThroughResult {
+            channel_key,
+            target_tag,
+            affected_tokens,
+            result,
+            completed,
+        }
+    }));
+}
+
+async fn execute_settle_through(
+    channel: &Arc<dyn crate::transport::ConsumerChannel>,
+    connection_key: crate::pool::ConnectionKey,
+    generation: u64,
+    channel_id: u16,
+    target_tag: u64,
+    token: &DeliveryTokenInner,
+) -> Result<DeliveryState, ConsumerError> {
+    if connection_key != token.connection_key
+        || generation != token.generation
+        || channel_id != token.channel_id
+    {
+        return Err(ConsumerError::new(
+            ConsumerErrorKind::StaleGeneration,
+            "delivery belongs to a stale connection generation or channel",
+        ));
+    }
+
+    channel
+        .ack(target_tag, true)
+        .await
+        .map_err(|e| transport_error(&e))?;
+    Ok(DeliveryState::Acked)
+}
+
+fn drain_settlement_queue(state: &mut ActorState, channel_key: ChannelKey) {
+    // Check the regular settlement queue first, then the settle-through queue.
+    if let Some(queue) = state.settlement_queues.get_mut(&channel_key)
+        && let Some(next) = queue.pop_front()
+    {
+        launch_settlement(state, channel_key, next);
+        return;
+    }
+    state.settlement_queues.remove(&channel_key);
+    if let Some(queue) = state.settle_through_queues.get_mut(&channel_key)
+        && let Some(next) = queue.pop_front()
+    {
+        launch_settle_through(state, channel_key, next);
+        return;
+    }
+    state.settle_through_queues.remove(&channel_key);
 }

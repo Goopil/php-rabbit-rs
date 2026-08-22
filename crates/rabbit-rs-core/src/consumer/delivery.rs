@@ -93,6 +93,18 @@ impl Delivery {
         self.token.state()
     }
 
+    /// Returns the AMQP delivery tag for this delivery.
+    #[must_use]
+    pub fn delivery_tag(&self) -> u64 {
+        self.token.inner.delivery_tag
+    }
+
+    /// Returns the inner token for batch settlement operations.
+    #[must_use]
+    pub(crate) fn inner_token(&self) -> &Arc<DeliveryTokenInner> {
+        self.token.inner()
+    }
+
     /// Acknowledges this delivery exactly once.
     ///
     /// # Errors
@@ -222,7 +234,7 @@ pub(crate) struct DeliveryTokenInner {
     pub attempts: u32,
     pub reserved_at: Instant,
     pub commands: mpsc::Sender<ConsumerCommand>,
-    state: AtomicU8,
+    pub(crate) state: AtomicU8,
     pub(crate) settling: AtomicBool,
 }
 

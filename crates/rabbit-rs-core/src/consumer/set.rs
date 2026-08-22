@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
-    ConsumerError, Delivery, SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, DeliveryState, SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
 };
 use crate::{
@@ -257,6 +257,37 @@ impl ConsumerHandle {
         }
     }
 
+    /// Drains up to `max` deliveries from the buffer in a single call.
+    ///
+    /// The requested `max` is clamped to `1..=256`. Returns an empty vector when
+    /// the buffer is empty. Each drained delivery releases dispatch budget so
+    /// the actor can pull more work from the transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the consumer is closed or a source error is
+    /// encountered mid-drain.
+    pub fn try_next_batch(&self, max: usize) -> Result<Vec<Delivery>, ConsumerError> {
+        let max = max.clamp(1, 256);
+        let mut batch = Vec::with_capacity(max);
+        for _ in 0..max {
+            match self.buffer_rx.try_recv() {
+                Ok(Ok(delivery)) => batch.push(delivery),
+                Ok(Err(error)) => {
+                    if !batch.is_empty() {
+                        self.dispatch_notify.notify_one();
+                    }
+                    return Err(error);
+                }
+                Err(_) => break,
+            }
+        }
+        if !batch.is_empty() {
+            self.dispatch_notify.notify_one();
+        }
+        Ok(batch)
+    }
+
     /// Waits for the next scheduled delivery.
     ///
     /// # Errors
@@ -275,6 +306,29 @@ impl ConsumerHandle {
             }
             Err(flume::RecvError::Disconnected) => Err(ConsumerError::closed()),
         }
+    }
+
+    /// Acknowledges a contiguous prefix of deliveries up to and including the
+    /// given delivery, using a single AMQP `basic.ack` with `multiple=true`.
+    ///
+    /// The prefix must be contiguous starting from `acked_prefix + 1`.
+    /// Non-contiguous prefixes or already-terminal deliveries in the range are
+    /// rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for non-contiguous prefixes, stale generations,
+    /// transport failures, or a closed consumer.
+    pub async fn ack_through(&self, delivery: &Delivery) -> Result<DeliveryState, ConsumerError> {
+        let (completed, receiver) = oneshot::channel();
+        self.commands
+            .send(ConsumerCommand::SettleThrough {
+                token: delivery.inner_token().clone(),
+                completed,
+            })
+            .await
+            .map_err(|_| ConsumerError::closed())?;
+        receiver.await.map_err(|_| ConsumerError::closed())?
     }
 
     /// Records a new connection generation for one subscription.

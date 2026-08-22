@@ -20,7 +20,7 @@ use tokio::runtime::Handle;
 #[php(name = "Goopil\\RabbitRs\\Delivery")]
 #[php(flags = ClassFlags::Final)]
 pub struct Delivery {
-    inner: NativeDelivery,
+    pub(crate) inner: NativeDelivery,
     runtime: Handle,
     pid: u32,
 }
@@ -50,6 +50,16 @@ impl Delivery {
         }
         metadata.insert("headers", headers)?;
         Ok(metadata)
+    }
+
+    /// Returns the AMQP delivery tag.
+    pub fn deliveryTag(&self) -> PhpResult<i64> {
+        self.ensure_current_process("Goopil\\RabbitRs\\Delivery::deliveryTag")?;
+        i64::try_from(self.inner.delivery_tag()).map_err(|_| {
+            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
+                "delivery tag exceeds i64 range".to_owned(),
+            )
+        })
     }
 
     /// Acknowledges the delivery.
