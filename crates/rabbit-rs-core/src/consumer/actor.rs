@@ -1,9 +1,12 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
+use futures_util::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
@@ -20,6 +23,36 @@ use crate::{
     topology::delay::DelayStrategy,
     transport::{Delivery as TransportDelivery, TransportResult},
 };
+
+type ChannelKey = (SubscriptionId, u16, u64);
+
+struct ChannelLedgerEntry {
+    #[allow(dead_code)]
+    delivery_tag: u64,
+    #[allow(dead_code)]
+    state: DeliveryState,
+    token: Option<Arc<DeliveryTokenInner>>,
+}
+
+#[derive(Default)]
+struct ChannelLedger {
+    pending: std::collections::BTreeMap<u64, ChannelLedgerEntry>,
+}
+
+struct SettleParams {
+    token: Arc<DeliveryTokenInner>,
+    settlement: Settlement,
+    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
+}
+
+struct SettlementResult {
+    channel_key: ChannelKey,
+    token: Arc<DeliveryTokenInner>,
+    result: Result<DeliveryState, ConsumerError>,
+    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
+}
+
+type SettlementFuture = Pin<Box<dyn Future<Output = SettlementResult> + Send>>;
 
 pub(crate) enum ConsumerCommand {
     Incoming {
@@ -52,6 +85,10 @@ struct RuntimeSubscription {
 struct ActorState {
     subscriptions: HashMap<SubscriptionId, RuntimeSubscription>,
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
+    channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
+    pending_settlements: futures_util::stream::FuturesUnordered<SettlementFuture>,
+    settlement_in_flight: HashSet<ChannelKey>,
+    settlement_queues: HashMap<ChannelKey, VecDeque<SettleParams>>,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
     in_flight: usize,
@@ -72,9 +109,16 @@ impl ActorState {
         let mut scheduler = WeightedFairScheduler::default();
         let mut runtime = HashMap::new();
         let mut buffers = HashMap::new();
+        let mut channel_ledgers = HashMap::new();
         for subscription in subscriptions {
             scheduler.register(subscription.id.clone(), subscription.policy);
             buffers.insert(subscription.id.clone(), VecDeque::new());
+            let channel_key = (
+                subscription.id.clone(),
+                subscription.channel_id,
+                subscription.generation,
+            );
+            channel_ledgers.insert(channel_key, ChannelLedger::default());
             runtime.insert(
                 subscription.id,
                 RuntimeSubscription {
@@ -92,6 +136,10 @@ impl ActorState {
         Self {
             subscriptions: runtime,
             buffers,
+            channel_ledgers,
+            pending_settlements: futures_util::stream::FuturesUnordered::new(),
+            settlement_in_flight: HashSet::new(),
+            settlement_queues: HashMap::new(),
             source_errors: VecDeque::new(),
             scheduler,
             in_flight: 0,
@@ -100,6 +148,12 @@ impl ActorState {
             buffer_tx,
             metrics,
         }
+    }
+
+    fn channel_key_for(&self, subscription: &SubscriptionId) -> Option<ChannelKey> {
+        self.subscriptions
+            .get(subscription)
+            .map(|runtime| (subscription.clone(), runtime.channel_id, runtime.generation))
     }
 
     fn dispatch(&mut self) {
@@ -116,14 +170,18 @@ impl ActorState {
             };
             let Some(delivery) = self
                 .buffers
-                .get(&subscription)
-                .and_then(VecDeque::front)
-                .cloned()
+                .get_mut(&subscription)
+                .and_then(VecDeque::pop_front)
             else {
                 self.scheduler.mark_empty(&subscription);
                 return;
             };
             let Some(runtime) = self.subscriptions.get(&subscription) else {
+                self.buffers
+                    .entry(subscription.clone())
+                    .or_default()
+                    .push_front(delivery);
+                self.scheduler.mark_ready(&subscription);
                 continue;
             };
             let message_id = delivery.message_id.as_ref().map_or_else(
@@ -154,24 +212,33 @@ impl ActorState {
                 attempts,
                 self.commands.clone(),
             ));
+            if let Some(channel_key) = self.channel_key_for(&subscription)
+                && let Some(ledger) = self.channel_ledgers.get_mut(&channel_key)
+                && let Some(entry) = ledger.pending.get_mut(&delivery.delivery_tag)
+            {
+                entry.token = Some(token.inner().clone());
+            }
             let item = Delivery::new(
                 message_id,
-                delivery.correlation_id,
+                delivery.correlation_id.clone(),
                 subscription.clone(),
-                delivery.payload,
+                delivery.payload.clone(),
                 headers,
                 attempts,
                 token,
             );
             if self.buffer_tx.try_send(Ok(item)).is_err() {
+                self.buffers
+                    .entry(subscription.clone())
+                    .or_default()
+                    .push_front(delivery);
                 self.scheduler.mark_ready(&subscription);
                 return;
             }
-            if let Some(buffer) = self.buffers.get_mut(&subscription) {
-                buffer.pop_front();
-                if buffer.is_empty() {
-                    self.scheduler.mark_empty(&subscription);
-                }
+            if let Some(buffer) = self.buffers.get_mut(&subscription)
+                && buffer.is_empty()
+            {
+                self.scheduler.mark_empty(&subscription);
             }
             self.metrics.record_delivery();
             self.in_flight = self.in_flight.saturating_add(1);
@@ -190,6 +257,7 @@ impl ActorState {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
     max_in_flight: usize,
@@ -200,8 +268,11 @@ pub(crate) async fn run_actor(
     dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
     let mut state = ActorState::new(subscriptions, max_in_flight, commands, buffer_tx, metrics);
-    let mut dispatch_timer = tokio::time::interval(Duration::from_millis(1));
-    dispatch_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A periodic dispatch timer. In addition to triggering dispatch, this
+    // timer also advances paused Tokio time so that timeout-based tests
+    // using `#[tokio::test(start_paused = true)]` can fire their deadlines.
+    let mut time_timer = tokio::time::interval(std::time::Duration::from_millis(1));
+    time_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
     loop {
@@ -212,6 +283,17 @@ pub(crate) async fn run_actor(
                     result,
                 }) => match result {
                     Ok(delivery) => {
+                        if let Some(channel_key) = state.channel_key_for(&subscription) {
+                            state.channel_ledgers
+                                .entry(channel_key)
+                                .or_default()
+                                .pending
+                                .insert(delivery.delivery_tag, ChannelLedgerEntry {
+                                    delivery_tag: delivery.delivery_tag,
+                                    state: DeliveryState::Pending,
+                                    token: None,
+                                });
+                        }
                         if let Some(buffer) = state.buffers.get_mut(&subscription) {
                             buffer.push_back(delivery);
                             state.scheduler.mark_ready(&subscription);
@@ -229,30 +311,22 @@ pub(crate) async fn run_actor(
                     settlement,
                     completed,
                 }) => {
-                    let result = settle(&state, &token, settlement).await;
-                    match result {
-                        Ok(terminal) => {
-                            match terminal {
-                                DeliveryState::Acked => {
-                                    state.metrics.record_ack(token.reserved_at.elapsed());
-                                }
-                                DeliveryState::Rejected => {
-                                    state.metrics.record_reject(token.reserved_at.elapsed());
-                                }
-                                DeliveryState::Pending | DeliveryState::Lost => {}
-                            }
-                            state.release_budget();
-                            state.dispatch();
-                            let _ = completed.send(Ok(terminal));
-                        }
-                        Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
-                            state.release_budget();
-                            state.dispatch();
-                            let _ = completed.send(Err(error));
-                        }
-                        Err(error) => {
-                            let _ = completed.send(Err(error));
-                        }
+                    let Some(channel_key) = state.channel_key_for(&token.subscription) else {
+                        let _ = completed.send(Err(ConsumerError::new(
+                            ConsumerErrorKind::InvalidSubscription,
+                            "delivery references an unknown subscription",
+                        )));
+                        continue;
+                    };
+                    if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
+                        let _ = completed.send(Err(ConsumerError::already_settling()));
+                        continue;
+                    }
+                    let params = SettleParams { token, settlement, completed };
+                    if state.settlement_in_flight.contains(&channel_key) {
+                        state.settlement_queues.entry(channel_key).or_default().push_back(params);
+                    } else {
+                        launch_settlement(&mut state, channel_key, params);
                     }
                 }
                 Some(ConsumerCommand::UpdateGeneration {
@@ -286,30 +360,120 @@ pub(crate) async fn run_actor(
             () = dispatch_notify.notified() => {
                 state.dispatch();
             }
-            _ = dispatch_timer.tick() => {
+            _ = time_timer.tick() => {
                 state.dispatch();
+            }
+            Some(settlement_result) = state.pending_settlements.next(),
+                if !state.pending_settlements.is_empty() => {
+                let channel_key = settlement_result.channel_key;
+                state.settlement_in_flight.remove(&channel_key);
+
+                // Record metrics and release budget based on the settlement outcome.
+                match &settlement_result.result {
+                    Ok(terminal) => {
+                        match terminal {
+                            DeliveryState::Acked => {
+                                state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Rejected => {
+                                state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Pending | DeliveryState::Lost => {}
+                        }
+                        state.release_budget();
+                        state.dispatch();
+                    }
+                    Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
+                        state.release_budget();
+                        state.dispatch();
+                    }
+                    Err(_) => {}
+                }
+
+                // Reset the settling flag so a re-issued settlement can retry.
+                settlement_result.token.settling.store(false, std::sync::atomic::Ordering::Release);
+
+                // Remove from ledger.
+                if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+                    ledger.pending.remove(&settlement_result.token.delivery_tag);
+                }
+
+                let _ = (settlement_result.completed).send(settlement_result.result);
+
+                // Launch the next queued settlement for this channel.
+                if let Some(queue) = state.settlement_queues.get_mut(&channel_key) {
+                    if let Some(next) = queue.pop_front() {
+                        launch_settlement(&mut state, channel_key, next);
+                    } else {
+                        state.settlement_queues.remove(&channel_key);
+                    }
+                }
             }
         }
     }
 }
 
-async fn settle(
-    state: &ActorState,
-    token: &DeliveryTokenInner,
+fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: SettleParams) {
+    state.settlement_in_flight.insert(channel_key.clone());
+    let Some(runtime) = state.subscriptions.get(&params.token.subscription) else {
+        state.settlement_in_flight.remove(&channel_key);
+        let _ = params.completed.send(Err(ConsumerError::new(
+            ConsumerErrorKind::InvalidSubscription,
+            "delivery references an unknown subscription",
+        )));
+        return;
+    };
+    let channel = runtime.channel.clone();
+    let connection_key = runtime.connection_key;
+    let generation = runtime.generation;
+    let channel_id = runtime.channel_id;
+    let publisher = runtime.publisher.clone();
+    let destination = runtime.destination.clone();
+    let delay_strategy = runtime.delay_strategy.clone();
+    let delivery_tag = params.token.delivery_tag;
+    let settlement = params.settlement;
+    let token = params.token.clone();
+    let completed = params.completed;
+
+    state.pending_settlements.push(Box::pin(async move {
+        let result = execute_settlement(
+            &channel,
+            connection_key,
+            generation,
+            channel_id,
+            delivery_tag,
+            settlement,
+            &token,
+            publisher.as_ref(),
+            destination.as_ref(),
+            delay_strategy.as_ref(),
+        )
+        .await;
+        SettlementResult {
+            channel_key,
+            token,
+            result,
+            completed,
+        }
+    }));
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_settlement(
+    channel: &Arc<dyn crate::transport::ConsumerChannel>,
+    connection_key: crate::pool::ConnectionKey,
+    generation: u64,
+    channel_id: u16,
+    delivery_tag: u64,
     settlement: Settlement,
+    token: &DeliveryTokenInner,
+    publisher: Option<&crate::publisher::PublisherHandle>,
+    destination: Option<&crate::publisher::Destination>,
+    delay_strategy: Option<&DelayStrategy>,
 ) -> Result<DeliveryState, ConsumerError> {
-    let runtime = state
-        .subscriptions
-        .get(&token.subscription)
-        .ok_or_else(|| {
-            ConsumerError::new(
-                ConsumerErrorKind::InvalidSubscription,
-                "delivery references an unknown subscription",
-            )
-        })?;
-    if runtime.connection_key != token.connection_key
-        || runtime.generation != token.generation
-        || runtime.channel_id != token.channel_id
+    if connection_key != token.connection_key
+        || generation != token.generation
+        || channel_id != token.channel_id
     {
         return Err(ConsumerError::new(
             ConsumerErrorKind::StaleGeneration,
@@ -319,54 +483,64 @@ async fn settle(
 
     match settlement {
         Settlement::Ack => {
-            runtime
-                .channel
-                .ack(token.delivery_tag, false)
+            channel
+                .ack(delivery_tag, false)
                 .await
-                .map_err(|error| transport_error(&error))?;
+                .map_err(|e| transport_error(&e))?;
             Ok(DeliveryState::Acked)
         }
         Settlement::Release(delay) if delay.is_zero() => {
-            runtime
-                .channel
-                .reject(token.delivery_tag, true)
+            channel
+                .reject(delivery_tag, true)
                 .await
-                .map_err(|error| transport_error(&error))?;
+                .map_err(|e| transport_error(&e))?;
             Ok(DeliveryState::Rejected)
         }
         Settlement::Release(delay) => {
-            delayed_release(runtime, token, delay).await?;
+            delayed_release(
+                channel,
+                delivery_tag,
+                token,
+                delay,
+                publisher,
+                destination,
+                delay_strategy,
+            )
+            .await?;
             Ok(DeliveryState::Acked)
         }
         Settlement::Reject(requeue) => {
-            runtime
-                .channel
-                .reject(token.delivery_tag, requeue)
+            channel
+                .reject(delivery_tag, requeue)
                 .await
-                .map_err(|error| transport_error(&error))?;
+                .map_err(|e| transport_error(&e))?;
             Ok(DeliveryState::Rejected)
         }
     }
 }
 
 async fn delayed_release(
-    runtime: &RuntimeSubscription,
+    channel: &Arc<dyn crate::transport::ConsumerChannel>,
+    delivery_tag: u64,
     token: &DeliveryTokenInner,
-    delay: Duration,
+    delay: std::time::Duration,
+    publisher: Option<&crate::publisher::PublisherHandle>,
+    destination: Option<&crate::publisher::Destination>,
+    delay_strategy: Option<&DelayStrategy>,
 ) -> Result<(), ConsumerError> {
-    let publisher = runtime.publisher.as_ref().ok_or_else(|| {
+    let publisher = publisher.ok_or_else(|| {
         ConsumerError::new(
             ConsumerErrorKind::MissingPublisher,
             "delayed release requires a publisher",
         )
     })?;
-    let destination = runtime.destination.as_ref().ok_or_else(|| {
+    let destination = destination.ok_or_else(|| {
         ConsumerError::new(
             ConsumerErrorKind::MissingPublisher,
             "delayed release requires a destination",
         )
     })?;
-    let strategy = runtime.delay_strategy.as_ref().ok_or_else(|| {
+    let strategy = delay_strategy.ok_or_else(|| {
         ConsumerError::new(
             ConsumerErrorKind::MissingPublisher,
             "delayed release requires a resolved delay strategy",
@@ -393,21 +567,20 @@ async fn delayed_release(
     );
     let outcome = publisher
         .try_publish(request)
-        .map_err(|error| publish_error(&error))?
+        .map_err(|e| publish_error(&e))?
         .wait()
         .await
-        .map_err(|error| publish_error(&error))?;
+        .map_err(|e| publish_error(&e))?;
     if !matches!(outcome, PublishOutcome::Confirmed { .. }) {
         return Err(ConsumerError::new(
             ConsumerErrorKind::Publish,
             "delayed release was not confirmed",
         ));
     }
-    runtime
-        .channel
-        .ack(token.delivery_tag, false)
+    channel
+        .ack(delivery_tag, false)
         .await
-        .map_err(|error| transport_error(&error))
+        .map_err(|e| transport_error(&e))
 }
 
 fn transport_error(error: &crate::transport::TransportError) -> ConsumerError {

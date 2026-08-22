@@ -3,7 +3,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -136,6 +136,10 @@ impl DeliveryToken {
         }
     }
 
+    pub(crate) fn inner(&self) -> &Arc<DeliveryTokenInner> {
+        &self.inner
+    }
+
     fn state(&self) -> DeliveryState {
         match self.inner.state.load(Ordering::Acquire) {
             value if value == DeliveryState::Acked as u8 => DeliveryState::Acked,
@@ -219,6 +223,7 @@ pub(crate) struct DeliveryTokenInner {
     pub reserved_at: Instant,
     pub commands: mpsc::Sender<ConsumerCommand>,
     state: AtomicU8,
+    pub(crate) settling: AtomicBool,
 }
 
 pub(crate) struct DeliveryIdentity {
@@ -253,6 +258,7 @@ impl DeliveryTokenInner {
             reserved_at: Instant::now(),
             commands,
             state: AtomicU8::new(DeliveryState::Pending as u8),
+            settling: AtomicBool::new(false),
         }
     }
 }
@@ -269,6 +275,8 @@ pub enum ConsumerErrorKind {
     Closed,
     StaleGeneration,
     AlreadySettled,
+    AlreadySettling,
+    SettlementInProgress,
     Transport,
     Publish,
     MissingPublisher,
@@ -298,6 +306,21 @@ impl ConsumerError {
         Self::new(
             ConsumerErrorKind::AlreadySettled,
             "delivery token is already terminal or transitioning",
+        )
+    }
+
+    pub(crate) fn already_settling() -> Self {
+        Self::new(
+            ConsumerErrorKind::AlreadySettling,
+            "delivery is already being settled",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn settlement_in_progress() -> Self {
+        Self::new(
+            ConsumerErrorKind::SettlementInProgress,
+            "a settlement is already in progress on this channel",
         )
     }
 

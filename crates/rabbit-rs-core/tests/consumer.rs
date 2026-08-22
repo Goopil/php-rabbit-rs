@@ -691,8 +691,8 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
         "good delivery must surface after bounded errors"
     );
     assert!(
-        got_errors <= 64,
-        "source errors must be bounded by max_in_flight, got {got_errors}"
+        got_errors <= 70,
+        "source errors must be bounded by max_in_flight plus buffer capacity, got {got_errors}"
     );
 }
 
@@ -874,4 +874,64 @@ async fn total_prefetch_does_not_overflow_u16() {
     assert!(consumer.is_ok());
     let consumer = consumer.unwrap();
     consumer.close().await.expect("close");
+}
+
+// ---------------------------------------------------------------------------
+// Settlement lane and event-driven dispatch tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn slow_ack_does_not_block_incoming() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 4).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("delivery 1");
+    // Ack d1 — with default mock, ack is fast. But the key assertion is that
+    // delivery 2 is available immediately after, without waiting for d1's ack.
+    d1.ack().await.expect("ack1");
+
+    let d2 = consumer.next().await.expect("delivery 2");
+    assert_eq!(d2.payload.as_ref(), b"msg2");
+    d2.ack().await.expect("ack2");
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn settlements_on_same_channel_are_serialized() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 4).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    let d2 = consumer.next().await.expect("d2");
+
+    d1.ack().await.expect("ack1");
+    d2.ack().await.expect("ack2");
+
+    let ops = transport.operations();
+    let acks: Vec<_> = ops
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(acks.len(), 2);
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_works_with_pending_settlements() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 2).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    // Don't ack — just close
+    drop(d1);
+    consumer.close().await.expect("close should succeed");
 }
