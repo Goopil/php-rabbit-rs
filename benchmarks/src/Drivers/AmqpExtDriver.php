@@ -151,6 +151,7 @@ class AmqpExtDriver extends AbstractBenchmark
             $consecutiveNulls = 0;
 
             $body = $envelope->getBody();
+            $this->recordReceived($envelope->getMessageId() ?? '');
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
                 if ($ts !== null) {

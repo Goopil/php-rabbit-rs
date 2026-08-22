@@ -50,6 +50,14 @@ class RabbitRsDriver extends AbstractBenchmark
                 ],
             ]],
             'topology_mode' => 'declare',
+            'publisher' => [
+                'confirms' => match ($this->scenarioMode) {
+                    ScenarioMode::FIRE_AND_FORGET => false,
+                    ScenarioMode::AUTO_ACK, ScenarioMode::BATCH_CONFIRM => true,
+                },
+                'mandatory' => true,
+                'confirm_timeout' => 30000,
+            ],
         ];
 
         $this->pool = new Pool($config);
@@ -91,13 +99,19 @@ class RabbitRsDriver extends AbstractBenchmark
             ];
 
             if (count($batch) >= $batchSize) {
+                $publishStart = hrtime(true);
                 $this->pool->publishBatch($batch);
+                $publishElapsed = (hrtime(true) - $publishStart) / 1_000_000;
+                $this->recordPublishLatency($publishElapsed / count($batch));
                 $batch = [];
             }
         }
 
         if ($batch !== []) {
+            $publishStart = hrtime(true);
             $this->pool->publishBatch($batch);
+            $publishElapsed = (hrtime(true) - $publishStart) / 1_000_000;
+            $this->recordPublishLatency($publishElapsed / count($batch));
         }
     }
 
@@ -128,6 +142,9 @@ class RabbitRsDriver extends AbstractBenchmark
             $consecutiveNulls = 0;
 
             $payload = $delivery->payload();
+            $metadata = $delivery->metadata();
+            $this->recordReceived($metadata['message_id']);
+
             if (strlen($payload) >= 8) {
                 $ts = unpack('P', substr($payload, 0, 8))[1] ?? null;
                 if ($ts !== null) {
@@ -136,6 +153,9 @@ class RabbitRsDriver extends AbstractBenchmark
                 }
             }
 
+            // Individual ack remains for all scenarios until batch ack APIs
+            // land in Tasks 4 and 9. ackThrough() and early_ack will replace
+            // this per-message call.
             $delivery->ack();
             $consumed++;
         }
