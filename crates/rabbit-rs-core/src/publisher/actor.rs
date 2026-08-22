@@ -314,14 +314,11 @@ impl ActorState {
         }
         self.phase = Phase::Suspended;
         self.channel = None;
-        let mut all: Vec<RetainedPublish> = self
-            .publishing
-            .drain()
-            .map(|(_, retained)| retained)
-            .collect();
+        let mut all: Vec<RetainedPublish> = std::mem::take(&mut self.replay).into_iter().collect();
+        all.extend(self.publishing.drain().map(|(_, retained)| retained));
         all.extend(self.ledger.drain().map(|in_flight| in_flight.retained));
         all.sort_by_key(|retained| retained.sequence);
-        self.replay.extend(all);
+        self.replay = all.into_iter().collect();
         self.confirmations = FuturesUnordered::new();
         self.publish_in_flight = FuturesUnordered::new();
     }
@@ -606,12 +603,6 @@ fn handle_publish_completion(
         Err(error) if error.is_recoverable() => {
             state.replay.push_back(retained);
             state.publish_in_flight.clear();
-            let pending: Vec<RetainedPublish> = state
-                .publishing
-                .drain()
-                .map(|(_, retained)| retained)
-                .collect();
-            state.replay.extend(pending);
             state.suspend(state.generation);
         }
         Err(error) => {
