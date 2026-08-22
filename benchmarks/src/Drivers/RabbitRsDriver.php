@@ -43,6 +43,10 @@ class RabbitRsDriver extends AbstractBenchmark
                     'weight' => 1,
                     'priority_class' => 0,
                     'prefetch' => Config::PREFETCH_COUNT,
+                    'early_ack' => match ($this->scenarioMode) {
+                        ScenarioMode::AUTO_ACK => true,
+                        default => false,
+                    },
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
@@ -165,7 +169,9 @@ class RabbitRsDriver extends AbstractBenchmark
                 $this->recordReceived($metadata['message_id']);
                 $this->recordLatencyFromPayload($payload);
 
-                $delivery->ack();
+                if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
+                    $delivery->ack();
+                }
                 $consumed++;
             }
         }
