@@ -279,7 +279,13 @@ impl ConsumerHandle {
                     }
                     return Err(error);
                 }
-                Err(_) => break,
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    if !batch.is_empty() {
+                        self.dispatch_notify.notify_one();
+                    }
+                    return Err(ConsumerError::closed());
+                }
             }
         }
         if !batch.is_empty() {

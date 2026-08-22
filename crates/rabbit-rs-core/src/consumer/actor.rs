@@ -359,6 +359,7 @@ pub(crate) async fn run_actor(
                         continue;
                     }
                     let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
+                        token.settling.store(false, std::sync::atomic::Ordering::Release);
                         let _ = completed.send(Err(ConsumerError::new(
                             ConsumerErrorKind::Transport,
                             "channel ledger not found",
@@ -367,6 +368,15 @@ pub(crate) async fn run_actor(
                     };
                     match validate_contiguous_prefix(ledger, token.delivery_tag) {
                         Ok(affected_tokens) => {
+                            // Mark all affected tokens as settling to prevent
+                            // concurrent individual acks from racing with the
+                            // batch settlement.
+                            for affected in &affected_tokens {
+                                affected.settling.store(
+                                    true,
+                                    std::sync::atomic::Ordering::Release,
+                                );
+                            }
                             let params = SettleThroughParams {
                                 token,
                                 affected_tokens,
@@ -379,6 +389,7 @@ pub(crate) async fn run_actor(
                             }
                         }
                         Err(error) => {
+                            token.settling.store(false, std::sync::atomic::Ordering::Release);
                             let _ = completed.send(Err(error));
                         }
                     }
@@ -716,9 +727,13 @@ fn validate_contiguous_prefix(
                 "delivery in prefix is already terminal",
             ));
         }
-        if let Some(token) = &entry.token {
-            tokens.push(token.clone());
-        }
+        let Some(token) = &entry.token else {
+            return Err(ConsumerError::new(
+                ConsumerErrorKind::Transport,
+                "delivery in prefix has no token — undelivered message in ledger",
+            ));
+        };
+        tokens.push(token.clone());
         expected += 1;
     }
     if expected <= target_tag {

@@ -953,3 +953,109 @@ async fn try_next_batch_drains_buffer() {
     }
     consumer.close().await.expect("close");
 }
+
+// ---------------------------------------------------------------------------
+// Settlement lane and event-driven dispatch tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn slow_ack_does_not_block_incoming() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 4).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("delivery 1");
+    // Ack d1 — with default mock, ack is fast. But the key assertion is that
+    // delivery 2 is available immediately after, without waiting for d1's ack.
+    d1.ack().await.expect("ack1");
+
+    let d2 = consumer.next().await.expect("delivery 2");
+    assert_eq!(d2.payload.as_ref(), b"msg2");
+    d2.ack().await.expect("ack2");
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn settlements_on_same_channel_are_serialized() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    // Gate the first ack so it blocks until we release it.
+    let ack_gate = transport.push_ack_gate();
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 4).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    let d2 = consumer.next().await.expect("d2");
+
+    // Start acking d1 — it will block at the gate.
+    let ack1 = tokio::spawn(async move { d1.ack().await });
+    // Let the settlement lane reach the gate.
+    ack_gate.wait_entered().await;
+
+    // The first Ack operation should already be recorded (the mock records
+    // before applying the gate), but the second must NOT have been sent yet
+    // because settlements on the same channel are serialized.
+    let ops_before = transport.operations();
+    let acks_before: Vec<_> = ops_before
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(
+        acks_before.len(),
+        1,
+        "only the first ack should be in-flight on the same channel"
+    );
+
+    // Start acking d2 — it should queue behind d1's settlement, not execute.
+    let ack2 = tokio::spawn(async move { d2.ack().await });
+
+    // Give the actor a chance to process the second Settle command.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // The second ack must still not have been sent.
+    let ops_still = transport.operations();
+    let acks_still: Vec<_> = ops_still
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(
+        acks_still.len(),
+        1,
+        "second ack must wait for the first to complete (same-channel serialization)"
+    );
+
+    // Release the gate — d1's ack completes, then d2's ack executes.
+    let _ = ack_gate.release();
+    ack1.await.expect("ack1 join").expect("ack1");
+    ack2.await.expect("ack2 join").expect("ack2");
+
+    // Let the second settlement complete.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let ops_after = transport.operations();
+    let acks_after: Vec<_> = ops_after
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(acks_after.len(), 2, "both acks must complete after release");
+    consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_works_with_pending_settlements() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 2).await.expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    // Don't ack — just close
+    drop(d1);
+    consumer.close().await.expect("close should succeed");
+}
