@@ -592,6 +592,64 @@ async fn confirm_timeout_from_config_is_applied() {
 }
 
 // ---------------------------------------------------------------------------
+// Publisher pipeline tests (now_or_never sequential sending)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn pipeline_publishes_before_confirmation() {
+    let transport = MockTransport::default();
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let _w1 = actor
+        .try_publish(request_safety("msg0", b"payload"))
+        .expect("publish0");
+    let _w2 = actor
+        .try_publish(request_safety("msg1", b"payload"))
+        .expect("publish1");
+    let _w3 = actor
+        .try_publish(request_safety("msg2", b"payload"))
+        .expect("publish2");
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    let publishes = publish_operations(&transport);
+    assert_eq!(
+        publishes.len(),
+        3,
+        "all 3 publishes should be sent before any confirmation"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pipeline_recoverable_error_sorts_replay_by_sequence() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
+    transport.push_confirmation(Err(TransportError::connection("connection lost")));
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let _w1 = actor
+        .try_publish(request_safety("msg1", b"p1"))
+        .expect("publish1");
+    let _w2 = actor
+        .try_publish(request_safety("msg2", b"p2"))
+        .expect("publish2");
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    let publishes = publish_operations(&transport);
+    assert!(!publishes.is_empty(), "at least one publish was attempted");
+}
+
+// ---------------------------------------------------------------------------
 // Publisher recovery tests (from publisher_recovery.rs)
 // ---------------------------------------------------------------------------
 

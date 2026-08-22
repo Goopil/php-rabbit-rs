@@ -1,11 +1,11 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use futures_util::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time,
@@ -15,7 +15,7 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     topology::delay::DelayStrategy,
     transport::{
-        PublishConfirmation, PublishProperties as TransportProperties,
+        PublishConfirmation, PublishProperties as TransportProperties, PublishReceipt,
         PublishRequest as TransportRequest, PublisherChannel, TransportError, TransportResult,
     },
 };
@@ -129,12 +129,13 @@ impl PublisherHandle {
             )
         })?;
         let (completion, receiver) = oneshot::channel();
-        let command = Command::Publish(RetainedPublish {
+        let command = Command::Publish(Box::new(RetainedPublish {
             request,
             completion,
             accepted_at: Instant::now(),
             _permit: permit,
-        });
+            sequence: 0,
+        }));
 
         match self.commands.try_send(command) {
             Ok(()) => {
@@ -218,7 +219,7 @@ impl PublisherHandle {
 }
 
 enum Command {
-    Publish(RetainedPublish),
+    Publish(Box<RetainedPublish>),
     ConnectionEvent(
         PublisherConnectionEvent,
         oneshot::Sender<Result<(), PublishError>>,
@@ -231,6 +232,7 @@ struct RetainedPublish {
     completion: oneshot::Sender<Result<PublishOutcome, PublishError>>,
     accepted_at: Instant,
     _permit: OwnedSemaphorePermit,
+    sequence: u64,
 }
 
 struct InFlightPublish {
@@ -244,6 +246,7 @@ enum ConfirmationResult {
 }
 
 type ConfirmationFuture = BoxFuture<'static, (u64, u64, ConfirmationResult)>;
+type PublishFuture = BoxFuture<'static, (u64, TransportResult<Box<dyn PublishReceipt>>)>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
@@ -258,8 +261,10 @@ struct ActorState {
     generation: u64,
     channel: Option<Arc<dyn PublisherChannel>>,
     replay: VecDeque<RetainedPublish>,
+    publishing: HashMap<u64, RetainedPublish>,
     ledger: ConfirmLedger<InFlightPublish>,
     confirmations: FuturesUnordered<ConfirmationFuture>,
+    publish_in_flight: FuturesUnordered<PublishFuture>,
     sequence: u64,
     permanent_error: Option<PublishError>,
     metrics: Metrics,
@@ -280,8 +285,10 @@ impl ActorState {
             generation: 1,
             channel: Some(channel),
             replay: VecDeque::new(),
+            publishing: HashMap::new(),
             ledger: ConfirmLedger::default(),
             confirmations: FuturesUnordered::new(),
+            publish_in_flight: FuturesUnordered::new(),
             sequence: 0,
             permanent_error: None,
             metrics,
@@ -307,9 +314,16 @@ impl ActorState {
         }
         self.phase = Phase::Suspended;
         self.channel = None;
-        self.replay
-            .extend(self.ledger.drain().map(|in_flight| in_flight.retained));
+        let mut all: Vec<RetainedPublish> = self
+            .publishing
+            .drain()
+            .map(|(_, retained)| retained)
+            .collect();
+        all.extend(self.ledger.drain().map(|in_flight| in_flight.retained));
+        all.sort_by_key(|retained| retained.sequence);
+        self.replay.extend(all);
         self.confirmations = FuturesUnordered::new();
+        self.publish_in_flight = FuturesUnordered::new();
     }
 
     fn fail_all(&mut self, error: &PublishError) {
@@ -319,7 +333,11 @@ impl ActorState {
         for in_flight in self.ledger.drain() {
             complete_error(in_flight.retained, error.clone());
         }
+        for (_, retained) in self.publishing.drain() {
+            complete_error(retained, error.clone());
+        }
         self.confirmations = FuturesUnordered::new();
+        self.publish_in_flight = FuturesUnordered::new();
     }
 
     fn expire_replay(&mut self) {
@@ -363,7 +381,7 @@ async fn run_actor(
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Publish(retained)) => {
-                    accept_publish(&mut state, retained).await;
+                    accept_publish(&mut state, *retained).await;
                 }
                 Some(Command::ConnectionEvent(event, completed)) => {
                     let result = handle_connection_event(&mut state, event).await;
@@ -400,6 +418,9 @@ async fn run_actor(
                 if let Some((sequence, generation, result)) = confirmation {
                     resolve_confirmation(&mut state, sequence, generation, result);
                 }
+            }
+            Some((sequence, result)) = state.publish_in_flight.next(), if !state.publish_in_flight.is_empty() => {
+                handle_publish_completion(&mut state, sequence, result);
             }
         }
     }
@@ -482,7 +503,7 @@ async fn flush_replay(state: &mut ActorState) {
 }
 
 async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPublish>) {
-    while let Some(retained) = pending.pop_front() {
+    while let Some(mut retained) = pending.pop_front() {
         if retained.request.deadline <= time::Instant::now() {
             complete_error(
                 retained,
@@ -513,19 +534,55 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
 
         state.sequence = state.sequence.saturating_add(1);
         let sequence = state.sequence;
-        let generation = state.generation;
-        let deadline = retained
-            .request
-            .deadline
-            .min(time::Instant::now() + state.config.confirm_timeout);
+        retained.sequence = sequence;
+
         let request = into_transport_request(
             &retained.request,
             state.delay_strategy.as_ref(),
             state.config.mandatory,
         );
 
-        match channel.publish(request).await {
-            Ok(receipt) => {
+        state.publishing.insert(sequence, retained);
+
+        let channel_for_pub = Arc::clone(&channel);
+        let mut publish_fut = Box::pin(async move {
+            let result = channel_for_pub.publish(request).await;
+            (sequence, result)
+        });
+
+        match publish_fut.as_mut().now_or_never() {
+            Some((seq, result)) => {
+                drop(publish_fut);
+                handle_publish_completion(state, seq, result);
+                if matches!(state.phase, Phase::Suspended) {
+                    state.replay.extend(pending);
+                    return;
+                }
+            }
+            None => {
+                state.publish_in_flight.push(publish_fut);
+            }
+        }
+    }
+}
+
+fn handle_publish_completion(
+    state: &mut ActorState,
+    sequence: u64,
+    result: TransportResult<Box<dyn PublishReceipt>>,
+) {
+    let Some(retained) = state.publishing.remove(&sequence) else {
+        return;
+    };
+
+    match result {
+        Ok(receipt) => {
+            if state.config.confirms {
+                let generation = state.generation;
+                let deadline = retained
+                    .request
+                    .deadline
+                    .min(time::Instant::now() + state.config.confirm_timeout);
                 state.ledger.insert(
                     sequence,
                     InFlightPublish {
@@ -540,14 +597,25 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
                     };
                     (sequence, generation, result)
                 }));
+            } else {
+                let _ = retained.completion.send(Ok(PublishOutcome::Confirmed {
+                    message_id: retained.request.properties.message_id.clone(),
+                }));
             }
-            Err(error) if error.is_recoverable() => {
-                state.replay.push_back(retained);
-                state.replay.extend(pending);
-                state.suspend(generation);
-                return;
-            }
-            Err(error) => complete_error(retained, transport_publish_error(&error)),
+        }
+        Err(error) if error.is_recoverable() => {
+            state.replay.push_back(retained);
+            state.publish_in_flight.clear();
+            let pending: Vec<RetainedPublish> = state
+                .publishing
+                .drain()
+                .map(|(_, retained)| retained)
+                .collect();
+            state.replay.extend(pending);
+            state.suspend(state.generation);
+        }
+        Err(error) => {
+            complete_error(retained, transport_publish_error(&error));
         }
     }
 }
