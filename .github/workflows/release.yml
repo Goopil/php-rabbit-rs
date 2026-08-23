@@ -188,8 +188,97 @@ jobs:
           subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
           sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
 
+  build-macos:
+    needs: create-release
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-14' || 'macos-13' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.4", "8.5"]
+        arch: ["x86_64", "arm64"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: json
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-macos-${{ matrix.arch }}-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            cargo-release-macos-${{ matrix.arch }}-${{ matrix.php }}-
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
+
+      - name: Build extension
+        run: |
+          cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+          cp target/release/librabbit_rs_php.dylib rabbit_rs.so
+
+      - name: Generate SBOM
+        run: |
+          cargo cyclonedx --manifest-path crates/rabbit-rs-php/Cargo.toml --format json --spec-version 1.5 --quiet
+          cp crates/rabbit-rs-php/rabbit-rs-php.cdx.json rabbit_rs.sbom.json
+
+      - name: Smoke test
+        run: |
+          php -d extension=$(pwd)/rabbit_rs.so -r "
+            if (!extension_loaded('rabbit_rs')) {
+              echo \"ERROR: rabbit_rs extension is not loaded\n\";
+              exit(1);
+            }
+            echo \"OK: rabbit_rs loaded, version \" . phpversion('rabbit_rs') . \"\n\";
+          "
+
+      - name: Package
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-darwin-nts"
+          ASSET_NAME="${ASSET_BASE}.zip"
+          zip "${ASSET_NAME}" rabbit_rs.so
+          shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+          cp rabbit_rs.sbom.json "${ASSET_BASE}.sbom.json"
+          [[ -f "${ASSET_BASE}.sbom.json" ]] || { echo "::error::SBOM not found"; exit 1; }
+
+          echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
+          echo "ASSET_BASE=${ASSET_BASE}" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+
+      - name: Attest SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+          sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
+
   verify-release:
-    needs: [create-release, build-linux]
+    needs: [create-release, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -209,17 +298,17 @@ jobs:
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 48 ]]; then
-            echo "::error::Expected 48 assets (16 ZIP + 16 SHA256 + 16 SBOM), found ${ASSET_COUNT}"
+          if [[ "${ASSET_COUNT}" -ne 60 ]]; then
+            echo "::error::Expected 60 assets (20 ZIP + 20 SHA256 + 20 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
           SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
-          [[ "${ZIP_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 ZIPs, found ${ZIP_COUNT}"; exit 1; }
-          [[ "${SHA_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 SHA256, found ${SHA_COUNT}"; exit 1; }
-          [[ "${SBOM_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 SBOMs, found ${SBOM_COUNT}"; exit 1; }
+          [[ "${ZIP_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
           # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
@@ -247,11 +336,11 @@ jobs:
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
-          echo "OK: 16 ZIPs + 16 SHA256 + 16 SBOMs verified"
-          echo "OK: 16 provenance + 16 SBOM attestations verified"
+          echo "OK: 20 ZIPs + 20 SHA256 + 20 SBOMs verified"
+          echo "OK: 20 provenance + 20 SBOM attestations verified"
 
   publish-release:
-    needs: [create-release, build-linux, verify-release]
+    needs: [create-release, build-linux, build-macos, verify-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
