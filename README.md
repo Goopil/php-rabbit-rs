@@ -103,53 +103,26 @@ These are explicitly out of scope for V1. Use PIE to install the extension in yo
 | Operations | [docs/operations.md](docs/operations.md) |
 | Octane integration | [docs/octane.md](docs/octane.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Development guide | [docs/development.md](docs/development.md) |
 
 ## Contributing
 
-Rabbit RS is a monorepo. The Rust core and PHP extension live in `crates/`, and the Laravel bridge lives in `packages/laravel-queue/`.
-
-### Build from source
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
 
 ```bash
-# Build the extension in release mode
-cargo build --release -p rabbit-rs-php
+# Build the extension
+cargo build -p rabbit-rs-php --features extension-tests
 
-# Install into the current PHP
-./scripts/install.sh --release
+# Run tests
+./scripts/test-laravel.sh          # Laravel Unit + Feature (no extension)
+./scripts/test-extension.sh        # PHP extension (Pest + PHPT)
+cargo test -p rabbit-rs-core       # Rust core
 
-# Verify
-php --ri rabbit_rs
-```
-
-### Run the quality gate
-
-```bash
+# Quality gate
 ./scripts/check.sh
 ```
 
-### Run tests
-
-```bash
-# Rust tests
-cargo test -p rabbit-rs-core
-
-# PHP extension tests (requires the extension built and loaded)
-./scripts/test-extension.sh
-
-# Laravel package tests (Unit + Feature, no extension needed)
-./scripts/test-laravel.sh
-
-# Laravel integration tests (requires extension + RabbitMQ)
-./scripts/test-laravel.sh tests/Integration
-```
-
-### Generate stubs
-
-Stubs are maintained manually at `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`. To regenerate via `cargo php stubs`, you need a PHP build with the embed SAPI (`--enable-embed`).
-
-```bash
-./scripts/stubs.sh --stdout
-```
+For architecture, build system, test strategy, and common pitfalls, see [docs/development.md](docs/development.md).
 
 ## License
 
