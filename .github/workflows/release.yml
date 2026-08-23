@@ -190,12 +190,11 @@ jobs:
 
   build-macos:
     needs: create-release
-    runs-on: ${{ matrix.arch == 'arm64' && 'macos-14' || 'macos-13' }}
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
         php: ["8.4", "8.5"]
-        arch: ["x86_64", "arm64"]
     steps:
       - uses: actions/checkout@v4
 
@@ -218,9 +217,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-release-macos-${{ matrix.arch }}-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          key: cargo-release-macos-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
-            cargo-release-macos-${{ matrix.arch }}-${{ matrix.php }}-
+            cargo-release-macos-${{ matrix.php }}-
 
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
@@ -248,7 +247,7 @@ jobs:
       - name: Package
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
-          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-darwin-nts"
+          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-arm64-darwin-nts"
           ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
           shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
@@ -298,17 +297,17 @@ jobs:
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 60 ]]; then
-            echo "::error::Expected 60 assets (20 ZIP + 20 SHA256 + 20 SBOM), found ${ASSET_COUNT}"
+          if [[ "${ASSET_COUNT}" -ne 54 ]]; then
+            echo "::error::Expected 54 assets (18 ZIP + 18 SHA256 + 18 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
           SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
-          [[ "${ZIP_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 ZIPs, found ${ZIP_COUNT}"; exit 1; }
-          [[ "${SHA_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SHA256, found ${SHA_COUNT}"; exit 1; }
-          [[ "${SBOM_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SBOMs, found ${SBOM_COUNT}"; exit 1; }
+          [[ "${ZIP_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
           # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
@@ -336,8 +335,8 @@ jobs:
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
-          echo "OK: 20 ZIPs + 20 SHA256 + 20 SBOMs verified"
-          echo "OK: 20 provenance + 20 SBOM attestations verified"
+          echo "OK: 18 ZIPs + 18 SHA256 + 18 SBOMs verified"
+          echo "OK: 18 provenance + 18 SBOM attestations verified"
 
   publish-release:
     needs: [create-release, build-linux, build-macos, verify-release]
