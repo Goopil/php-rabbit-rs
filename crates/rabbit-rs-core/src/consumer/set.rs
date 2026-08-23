@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -215,6 +215,7 @@ impl ConsumerSet {
             closed: Arc::new(AtomicBool::new(false)),
             dispatch_notify,
             generation,
+            pending_error: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -254,6 +255,7 @@ pub struct ConsumerHandle {
     closed: Arc<AtomicBool>,
     dispatch_notify: Arc<Notify>,
     generation: u64,
+    pending_error: Arc<Mutex<Option<ConsumerError>>>,
 }
 
 impl ConsumerHandle {
@@ -297,7 +299,17 @@ impl ConsumerHandle {
                 self.dispatch_notify.notify_one();
                 Err(error)
             }
-            Err(flume::TryRecvError::Empty) => Ok(None),
+            Err(flume::TryRecvError::Empty) => {
+                if let Some(error) = self
+                    .pending_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    return Err(error);
+                }
+                Ok(None)
+            }
             Err(flume::TryRecvError::Disconnected) => Err(ConsumerError::closed()),
         }
     }
@@ -319,15 +331,29 @@ impl ConsumerHandle {
             match self.buffer_rx.try_recv() {
                 Ok(Ok(delivery)) => batch.push(delivery),
                 Ok(Err(error)) => {
+                    self.dispatch_notify.notify_one();
                     if !batch.is_empty() {
-                        self.dispatch_notify.notify_one();
+                        // Stash error, return partial batch so deliveries are
+                        // never discarded. The error surfaces on the next call
+                        // when the buffer is empty.
+                        *self
+                            .pending_error
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                        return Ok(batch);
                     }
                     return Err(error);
                 }
                 Err(flume::TryRecvError::Empty) => break,
                 Err(flume::TryRecvError::Disconnected) => {
+                    self.dispatch_notify.notify_one();
                     if !batch.is_empty() {
-                        self.dispatch_notify.notify_one();
+                        *self
+                            .pending_error
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(ConsumerError::closed());
+                        return Ok(batch);
                     }
                     return Err(ConsumerError::closed());
                 }
@@ -335,6 +361,16 @@ impl ConsumerHandle {
         }
         if !batch.is_empty() {
             self.dispatch_notify.notify_one();
+            return Ok(batch);
+        }
+        // Buffer is empty — surface stashed error if any.
+        if let Some(error) = self
+            .pending_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return Err(error);
         }
         Ok(batch)
     }

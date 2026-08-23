@@ -954,6 +954,47 @@ async fn try_next_batch_drains_buffer() {
     consumer.close().await.expect("close");
 }
 
+#[tokio::test(start_paused = true)]
+async fn try_next_batch_returns_partial_batch_on_error() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    // Push an error into the buffer (after the two deliveries)
+    transport.push_delivery(Err(TransportError::connection("test error")));
+    transport.push_delivery(Ok(delivery(3, b"msg3")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 4, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 1024).await.expect("consumer");
+
+    // Let deliveries flow into the buffer
+    tokio::time::advance(Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+
+    // try_next_batch(10) should return 2 deliveries + stash the error
+    let batch = consumer.try_next_batch(10).expect("partial batch");
+    assert_eq!(
+        batch.len(),
+        2,
+        "should return partial batch, not discard it"
+    );
+    assert_eq!(batch[0].delivery_tag(), 1);
+    assert_eq!(batch[1].delivery_tag(), 2);
+
+    // Next call should return delivery 3 (error was stashed, surfaced when batch is empty)
+    let batch2 = consumer.try_next_batch(10).expect("batch with delivery 3");
+    assert_eq!(batch2.len(), 1);
+    assert_eq!(batch2[0].delivery_tag(), 3);
+
+    // Now the stashed error should surface
+    let result = consumer.try_next_batch(10);
+    assert!(
+        result.is_err(),
+        "stashed error should surface on empty batch"
+    );
+
+    let _ = consumer.close().await;
+}
+
 // ---------------------------------------------------------------------------
 // Settlement lane and event-driven dispatch tests
 // ---------------------------------------------------------------------------
