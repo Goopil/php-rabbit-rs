@@ -3,7 +3,7 @@
     reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
 )]
 
-use super::exception::{consumer_exception, rabbit_exception};
+use super::exception::rabbit_exception;
 use ext_php_rs::{
     binary::Binary,
     boxed::ZBox,
@@ -11,7 +11,7 @@ use ext_php_rs::{
     prelude::{PhpResult, php_class, php_impl},
     types::{ZendHashTable, Zval},
 };
-use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState};
+use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState, SettlementErrorKind};
 use rabbit_rs_core::transport::HeaderValue;
 use tokio::runtime::Handle;
 
@@ -21,6 +21,7 @@ use tokio::runtime::Handle;
 #[php(flags = ClassFlags::Final)]
 pub struct Delivery {
     pub(crate) inner: NativeDelivery,
+    #[allow(dead_code)]
     runtime: Handle,
     pid: u32,
 }
@@ -62,18 +63,16 @@ impl Delivery {
         })
     }
 
-    /// Acknowledges the delivery.
+    /// Acknowledges the delivery (fire-and-forget with bounded backpressure).
     pub fn ack(&self) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::ack")?;
         if self.inner.state() == DeliveryState::AutoAcked {
             return rabbit_exception("cannot ack an auto-acked delivery");
         }
-        self.runtime
-            .block_on(self.inner.ack())
-            .map_err(|error| consumer_php_exception(&error))
+        self.settle_with_backpressure(NativeDelivery::try_ack)
     }
 
-    /// Releases the delivery immediately or after a delay.
+    /// Releases the delivery immediately or after a delay (fire-and-forget).
     #[php(defaults(delayMs = 0))]
     pub fn release(&self, delayMs: i64) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::release")?;
@@ -85,21 +84,19 @@ impl Delivery {
                 "delayMs must be a non-negative integer".to_owned(),
             )
         })?;
-        self.runtime
-            .block_on(self.inner.release(std::time::Duration::from_millis(delay)))
-            .map_err(|error| consumer_php_exception(&error))
+        self.settle_with_backpressure(|del| {
+            del.try_release(std::time::Duration::from_millis(delay))
+        })
     }
 
-    /// Rejects the delivery with optional requeueing.
+    /// Rejects the delivery with optional requeueing (fire-and-forget).
     #[php(defaults(requeue = false))]
     pub fn reject(&self, requeue: bool) -> PhpResult<()> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::reject")?;
         if self.inner.state() == DeliveryState::AutoAcked {
             return rabbit_exception("cannot reject an auto-acked delivery");
         }
-        self.runtime
-            .block_on(self.inner.reject(requeue))
-            .map_err(|error| consumer_php_exception(&error))
+        self.settle_with_backpressure(|del| del.try_reject(requeue))
     }
 }
 
@@ -120,6 +117,33 @@ impl Delivery {
         }
         Ok(())
     }
+
+    /// Fire-and-forget settlement with bounded backpressure.
+    ///
+    /// Fast path: `try_settle` uses `try_send` and returns immediately.
+    /// When the command channel is full, spin-yield up to 64 times.
+    /// If all spin-yields fail, returns a PHP exception.
+    pub(crate) fn settle_with_backpressure(
+        &self,
+        try_settle: impl Fn(&NativeDelivery) -> Result<(), SettlementErrorKind>,
+    ) -> PhpResult<()> {
+        match try_settle(&self.inner) {
+            Ok(()) => Ok(()),
+            Err(SettlementErrorKind::AlreadySettled) => {
+                rabbit_exception("delivery token is already terminal or transitioning")
+            }
+            Err(SettlementErrorKind::Closed) => rabbit_exception("consumer set is closed"),
+            Err(SettlementErrorKind::ChannelFull) => {
+                for _ in 0..64 {
+                    std::thread::yield_now();
+                    if try_settle(&self.inner).is_ok() {
+                        return Ok(());
+                    }
+                }
+                rabbit_exception("settlement channel full after backpressure timeout")
+            }
+        }
+    }
 }
 
 fn insert_header(table: &mut ZendHashTable, key: &str, value: &HeaderValue) -> PhpResult<()> {
@@ -132,15 +156,6 @@ fn insert_header(table: &mut ZendHashTable, key: &str, value: &HeaderValue) -> P
         HeaderValue::Array(_) | HeaderValue::Table(_) => {}
     }
     Ok(())
-}
-
-fn consumer_php_exception(
-    error: &rabbit_rs_core::consumer::ConsumerError,
-) -> ext_php_rs::prelude::PhpException {
-    match consumer_exception::<()>(error) {
-        Err(error) => error,
-        Ok(()) => unreachable!("consumer_exception always returns an error"),
-    }
 }
 
 const fn state_name(state: DeliveryState) -> &'static str {

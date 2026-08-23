@@ -103,6 +103,33 @@ describe('Consumer method signatures', function () {
         ], '?' . \Goopil\RabbitRs\Delivery::class);
     });
 
+    it('has correct tryNext', function () {
+        expectMethod(\Goopil\RabbitRs\Consumer::class, 'tryNext', [], '?' . \Goopil\RabbitRs\Delivery::class);
+    });
+
+    it('has correct nextBatch', function () {
+        expectMethod(\Goopil\RabbitRs\Consumer::class, 'nextBatch', [
+            ['name' => 'max', 'type' => 'int', 'optional' => false],
+            ['name' => 'timeoutMs', 'type' => 'int', 'optional' => false],
+        ], 'array');
+    });
+
+    it('has correct ackThrough', function () {
+        expectMethod(\Goopil\RabbitRs\Consumer::class, 'ackThrough', [
+            ['name' => 'delivery', 'type' => \Goopil\RabbitRs\Delivery::class, 'optional' => false],
+        ], 'void');
+    });
+
+    it('has correct ackBatch', function () {
+        expectMethod(\Goopil\RabbitRs\Consumer::class, 'ackBatch', [
+            ['name' => 'deliveries', 'type' => 'array', 'optional' => false],
+        ], 'void');
+    });
+
+    it('has correct drainErrors', function () {
+        expectMethod(\Goopil\RabbitRs\Consumer::class, 'drainErrors', [], 'array');
+    });
+
     it('has correct close', function () {
         expectMethod(\Goopil\RabbitRs\Consumer::class, 'close', [], 'void');
     });

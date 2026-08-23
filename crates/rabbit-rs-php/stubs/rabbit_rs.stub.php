@@ -120,6 +120,7 @@ final class Consumer
     /**
      * Acknowledges a contiguous prefix of deliveries up to and including the
      * given delivery using a single AMQP basic.ack with multiple=true.
+     * Fire-and-forget: enqueues the command and returns immediately.
      */
     public function ackThrough(Delivery $delivery): void
     {
@@ -127,10 +128,23 @@ final class Consumer
 
     /**
      * Acknowledges a batch of deliveries, potentially across different channels.
+     * Fire-and-forget: enqueues each settlement command without blocking.
+     * Bounded to 256 deliveries per call.
      *
      * @param list<Delivery> $deliveries
      */
     public function ackBatch(array $deliveries): void
+    {
+    }
+
+    /**
+     * Drains settlement errors that have surfaced asynchronously since the
+     * last call. Each entry contains delivery_tag, subscription, error_kind,
+     * and message.
+     *
+     * @return list<array{delivery_tag: int, subscription: string, error_kind: string, message: string}>
+     */
+    public function drainErrors(): array
     {
     }
 
@@ -161,14 +175,23 @@ final class Delivery
     {
     }
 
+    /**
+     * Acknowledges the delivery (fire-and-forget with bounded backpressure).
+     */
     public function ack(): void
     {
     }
 
+    /**
+     * Releases the delivery immediately or after a delay (fire-and-forget).
+     */
     public function release(int $delayMs = 0): void
     {
     }
 
+    /**
+     * Rejects the delivery with optional requeueing (fire-and-forget).
+     */
     public function reject(bool $requeue = false): void
     {
     }

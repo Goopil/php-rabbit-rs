@@ -10,6 +10,7 @@ use super::{
     exception::{consumer_exception, rabbit_exception},
 };
 use ext_php_rs::{
+    boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
     types::{ZendClassObject, ZendHashTable},
@@ -133,10 +134,13 @@ impl Consumer {
         }) {
             Ok(Ok(delivery)) => {
                 let mut deliveries = vec![Delivery::new(delivery, self.runtime.clone(), self.pid)];
-                let more = self
-                    .handle
-                    .try_next_batch(max.saturating_sub(1))
-                    .map_err(|error| consumer_php_exception(&error))?;
+                let more = if max > 1 {
+                    self.handle
+                        .try_next_batch(max.saturating_sub(1))
+                        .map_err(|error| consumer_php_exception(&error))?
+                } else {
+                    Vec::new()
+                };
                 deliveries.extend(
                     more.into_iter()
                         .map(|d| Delivery::new(d, self.runtime.clone(), self.pid)),
@@ -150,19 +154,45 @@ impl Consumer {
 
     /// Acknowledges a contiguous prefix of deliveries up to and including the
     /// given delivery using a single AMQP `basic.ack` with `multiple=true`.
+    ///
+    /// Fire-and-forget: enqueues the command and returns immediately.
     pub fn ackThrough(&self, delivery: &Delivery) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::ackThrough")?;
-        self.runtime
-            .block_on(self.handle.ack_through(&delivery.inner))
-            .map_err(|error| consumer_php_exception(&error))?;
-        Ok(())
+        match self
+            .handle
+            .try_settle_through(delivery.inner.inner_token().clone())
+        {
+            Ok(()) => Ok(()),
+            Err(rabbit_rs_core::consumer::SettleError::ChannelFull) => {
+                for _ in 0..64 {
+                    std::thread::yield_now();
+                    if self
+                        .handle
+                        .try_settle_through(delivery.inner.inner_token().clone())
+                        .is_ok()
+                    {
+                        return Ok(());
+                    }
+                }
+                rabbit_exception("settlement channel full after backpressure timeout")
+            }
+            Err(rabbit_rs_core::consumer::SettleError::Closed) => {
+                rabbit_exception("consumer set is closed")
+            }
+        }
     }
 
     /// Acknowledges a batch of deliveries across potentially different channels.
+    ///
+    /// Fire-and-forget: enqueues each settlement command without blocking.
+    /// Bounded to 256 deliveries per call.
     pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::ackBatch")?;
 
-        for (_, value) in deliveries {
+        for (count, (_, value)) in deliveries.into_iter().enumerate() {
+            if count >= 256 {
+                return rabbit_exception("ackBatch: maximum 256 deliveries per call");
+            }
             let zval = value.dereference();
             let object =
                 zval.object().ok_or_else(|| {
@@ -184,11 +214,30 @@ impl Consumer {
                         "ackBatch encountered an uninitialized Delivery object".to_owned()
                     )
                 })?;
-            self.runtime
-                .block_on(delivery.inner.ack())
-                .map_err(|error| consumer_php_exception(&error))?;
+            delivery.settle_with_backpressure(rabbit_rs_core::consumer::Delivery::try_ack)?;
         }
         Ok(())
+    }
+
+    /// Drains settlement errors that have surfaced asynchronously since the
+    /// last call. Returns an array of error hashes, each containing
+    /// `delivery_tag`, `subscription`, `error_kind`, and `message`.
+    pub fn drainErrors(&self) -> PhpResult<ZBox<ZendHashTable>> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::drainErrors")?;
+        let errors = self.handle.drain_errors();
+        let mut table = ZendHashTable::new();
+        for (i, error) in errors.iter().enumerate() {
+            let mut entry = ZendHashTable::new();
+            entry.insert(
+                "delivery_tag",
+                i64::try_from(error.delivery_tag).unwrap_or(i64::MAX),
+            )?;
+            entry.insert("subscription", error.subscription.as_str())?;
+            entry.insert("error_kind", format!("{:?}", error.kind))?;
+            entry.insert("message", error.message.clone())?;
+            table.insert(i, entry)?;
+        }
+        Ok(table)
     }
 
     /// Closes this consumer handle.

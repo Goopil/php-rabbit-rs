@@ -190,6 +190,46 @@ impl Delivery {
             .try_settle(Settlement::Reject(requeue))
             .map_err(map_settle_error)
     }
+
+    /// Synchronous fire-and-forget acknowledgement.
+    ///
+    /// Same as [`Self::ack`] but without the async wrapper, suitable for
+    /// synchronous FFI callers (e.g. PHP extension) that cannot drive a
+    /// future without a runtime. Returns [`SettlementErrorKind`] so the
+    /// caller can distinguish backpressure (`ChannelFull`) from terminal
+    /// errors and retry accordingly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettlementErrorKind::AlreadySettled`], [`SettlementErrorKind::ChannelFull`],
+    /// or [`SettlementErrorKind::Closed`].
+    pub fn try_ack(&self) -> Result<(), SettlementErrorKind> {
+        self.token.try_settle(Settlement::Ack)
+    }
+
+    /// Synchronous fire-and-forget release.
+    ///
+    /// See [`Self::try_ack`] for semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettlementErrorKind::AlreadySettled`], [`SettlementErrorKind::ChannelFull`],
+    /// or [`SettlementErrorKind::Closed`].
+    pub fn try_release(&self, delay: Duration) -> Result<(), SettlementErrorKind> {
+        self.token.try_settle(Settlement::Release(delay))
+    }
+
+    /// Synchronous fire-and-forget reject.
+    ///
+    /// See [`Self::try_ack`] for semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettlementErrorKind::AlreadySettled`], [`SettlementErrorKind::ChannelFull`],
+    /// or [`SettlementErrorKind::Closed`].
+    pub fn try_reject(&self, requeue: bool) -> Result<(), SettlementErrorKind> {
+        self.token.try_settle(Settlement::Reject(requeue))
+    }
 }
 
 /// Maps [`SettlementErrorKind`] to a [`ConsumerError`] for the public API.
