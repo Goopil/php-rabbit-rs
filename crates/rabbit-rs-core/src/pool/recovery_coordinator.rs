@@ -427,6 +427,7 @@ async fn recover_generation(
                 sub_config.starvation_after,
             ))
             .early_ack(sub_config.early_ack)
+            .no_ack(sub_config.no_ack)
             .max_buffered_bytes(sub_config.max_buffered_bytes)
             .delay_strategy(delay_strategy.clone());
 

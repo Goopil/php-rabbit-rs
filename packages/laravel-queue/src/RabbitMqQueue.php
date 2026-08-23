@@ -308,8 +308,35 @@ final class RabbitMqQueue extends Queue implements QueueContract
         return $job->delay ?? null;
     }
 
+    /**
+     * Drains async settlement errors from all cached consumers and surfaces
+     * connection-level failures as {@see ConnectionException}.
+     *
+     * Non-connection errors (e.g. AlreadySettled) are logged at warning level
+     * when a container with a logger is available.  This method is called at
+     * the top of {@see pop()} so that fire-and-forget settlement failures are
+     * visible before the next delivery is fetched.
+     */
+    public function drainSettlementErrors(): void
+    {
+        foreach ($this->consumers as $consumer) {
+            $errors = $consumer->drainErrors();
+            foreach ($errors as $error) {
+                $kind = $error['error_kind'] ?? '';
+                if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
+                    throw new ConnectionException($error['message'] ?? 'settlement error: ' . $kind);
+                }
+                if (isset($this->container)) {
+                    $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+                }
+            }
+        }
+    }
+
     public function pop($queue = null, $index = 0)
     {
+        $this->drainSettlementErrors();
+
         if ($queue === null) {
             $profile = $this->workerProfiles->profileForQueue($this->defaultQueue)
                 ?? $this->defaultQueue;

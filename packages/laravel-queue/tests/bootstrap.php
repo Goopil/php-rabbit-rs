@@ -131,6 +131,9 @@ namespace Goopil\RabbitRs {
             /** @var list<Delivery> */
             private array $deliveries = [];
 
+            /** @var list<array<string, mixed>> */
+            private array $errors = [];
+
             private ?\Throwable $nextException = null;
 
             private bool $closed = false;
@@ -138,6 +141,25 @@ namespace Goopil\RabbitRs {
             public function push(Delivery $delivery): void
             {
                 $this->deliveries[] = $delivery;
+            }
+
+            /**
+             * @param array<string, mixed> $error
+             */
+            public function pushError(array $error): void
+            {
+                $this->errors[] = $error;
+            }
+
+            /**
+             * @return list<array<string, mixed>>
+             */
+            public function drainErrors(): array
+            {
+                $errors = $this->errors;
+                $this->errors = [];
+
+                return $errors;
             }
 
             public function throwOnNext(\Throwable $exception): void
