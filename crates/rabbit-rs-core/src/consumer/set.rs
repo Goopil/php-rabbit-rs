@@ -9,7 +9,8 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
-    ConsumerError, Delivery, DeliveryState, SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, DeliveryTokenInner, SettleError, Settlement, SettlementError,
+    SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
 };
 use crate::{
@@ -193,6 +194,7 @@ impl ConsumerSet {
             usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_FACTOR / 2;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
+        let (error_tx, error_rx) = flume::bounded::<SettlementError>(256);
         let dispatch_notify = Arc::new(Notify::new());
 
         tokio::spawn(run_actor(
@@ -201,6 +203,7 @@ impl ConsumerSet {
             receiver,
             commands.clone(),
             buffer_tx,
+            error_tx,
             metrics.clone(),
             dispatch_notify.clone(),
         ));
@@ -211,6 +214,7 @@ impl ConsumerSet {
         Ok(ConsumerHandle {
             commands,
             buffer_rx,
+            error_rx,
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
             dispatch_notify,
@@ -251,6 +255,7 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_rx: flume::Receiver<Result<Delivery, ConsumerError>>,
+    error_rx: flume::Receiver<SettlementError>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
     dispatch_notify: Arc<Notify>,
@@ -279,6 +284,66 @@ impl ConsumerHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Drains all settlement errors that the actor has recorded since the
+    /// last call. The error buffer is bounded (256); if it fills, the actor
+    /// drops the oldest errors.
+    ///
+    /// Settlement errors surface asynchronously because settlement is
+    /// fire-and-forget: `ack()`, `release()`, and `reject()` enqueue the
+    /// command and return immediately. Transport failures, stale-generation
+    /// errors, and other settlement failures appear here, not in the return
+    /// value of the settlement call.
+    #[must_use]
+    pub fn drain_errors(&self) -> Vec<SettlementError> {
+        let mut errors = Vec::new();
+        while let Ok(error) = self.error_rx.try_recv() {
+            errors.push(error);
+        }
+        errors
+    }
+
+    /// Fire-and-forget settlement via the actor's command channel.
+    ///
+    /// Enqueues a `Settle` command with `try_send` and returns immediately.
+    /// Does not perform the `Pending → Transitioning` CAS — the caller is
+    /// responsible for ensuring the delivery is not double-settled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettleError::ChannelFull`] when the command channel is at
+    /// capacity, or [`SettleError::Closed`] when the actor has stopped.
+    pub fn try_settle(
+        &self,
+        token: Arc<DeliveryTokenInner>,
+        settlement: Settlement,
+    ) -> Result<(), SettleError> {
+        self.commands
+            .try_send(ConsumerCommand::Settle { token, settlement })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
+                mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
+            })
+    }
+
+    /// Fire-and-forget batch settlement via the actor's command channel.
+    ///
+    /// Enqueues a `SettleThrough` command with `try_send` and returns
+    /// immediately. Does not perform the CAS — the caller is responsible for
+    /// ensuring the delivery is not double-settled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettleError::ChannelFull`] when the command channel is at
+    /// capacity, or [`SettleError::Closed`] when the actor has stopped.
+    pub fn try_settle_through(&self, token: Arc<DeliveryTokenInner>) -> Result<(), SettleError> {
+        self.commands
+            .try_send(ConsumerCommand::SettleThrough { token })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
+                mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
+            })
     }
 
     /// Tries to receive the next delivery without blocking.
@@ -400,22 +465,27 @@ impl ConsumerHandle {
     ///
     /// The prefix must be contiguous starting from `acked_prefix + 1`.
     /// Non-contiguous prefixes or already-terminal deliveries in the range are
-    /// rejected.
+    /// rejected asynchronously by the actor and surface via
+    /// [`Self::drain_errors`].
+    ///
+    /// Fire-and-forget: enqueues the command and returns immediately. The
+    /// final state of each affected delivery is updated asynchronously by the
+    /// actor.
     ///
     /// # Errors
     ///
-    /// Returns a typed error for non-contiguous prefixes, stale generations,
-    /// transport failures, or a closed consumer.
-    pub async fn ack_through(&self, delivery: &Delivery) -> Result<DeliveryState, ConsumerError> {
-        let (completed, receiver) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::SettleThrough {
-                token: delivery.inner_token().clone(),
-                completed,
+    /// Returns a typed error when the command channel is full or the consumer
+    /// is closed.
+    #[allow(clippy::unused_async)]
+    pub async fn ack_through(&self, delivery: &Delivery) -> Result<(), ConsumerError> {
+        self.try_settle_through(delivery.inner_token().clone())
+            .map_err(|e| match e {
+                SettleError::ChannelFull => ConsumerError::new(
+                    super::ConsumerErrorKind::SettlementInProgress,
+                    "settlement command channel is full",
+                ),
+                SettleError::Closed => ConsumerError::closed(),
             })
-            .await
-            .map_err(|_| ConsumerError::closed())?;
-        receiver.await.map_err(|_| ConsumerError::closed())?
     }
 
     /// Records a new connection generation for one subscription.

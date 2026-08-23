@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use super::{SubscriptionId, actor::ConsumerCommand};
 use crate::pool::ConnectionKey;
@@ -136,38 +136,71 @@ impl Delivery {
 
     /// Returns the inner token for batch settlement operations.
     #[must_use]
-    pub(crate) fn inner_token(&self) -> &Arc<DeliveryTokenInner> {
+    pub fn inner_token(&self) -> &Arc<DeliveryTokenInner> {
         self.token.inner()
     }
 
     /// Acknowledges this delivery exactly once.
     ///
+    /// Fire-and-forget: enqueues the settlement command and returns
+    /// immediately. The final state is updated asynchronously by the actor.
+    /// Settlement errors surface via [`ConsumerHandle::drain_errors`].
+    ///
     /// # Errors
     ///
-    /// Returns a typed error for stale generations, transport failures, a
-    /// closed consumer, or an already terminal token.
+    /// Returns a typed error if the delivery was already settled, the
+    /// command channel is full, or the consumer is closed.
+    #[allow(clippy::unused_async)]
     pub async fn ack(&self) -> Result<(), ConsumerError> {
-        self.token.settle(Settlement::Ack).await
+        self.token
+            .try_settle(Settlement::Ack)
+            .map_err(map_settle_error)
     }
 
     /// Releases this delivery immediately or through its delayed publisher.
     ///
+    /// Fire-and-forget: enqueues the settlement command and returns
+    /// immediately. The final state is updated asynchronously by the actor.
+    /// Settlement errors surface via [`ConsumerHandle::drain_errors`].
+    ///
     /// # Errors
     ///
-    /// Returns a typed error when reject, delayed publish, confirm, or the
-    /// final acknowledgement fails.
+    /// Returns a typed error when the delivery was already settled, the
+    /// command channel is full, or the consumer is closed.
+    #[allow(clippy::unused_async)]
     pub async fn release(&self, delay: Duration) -> Result<(), ConsumerError> {
-        self.token.settle(Settlement::Release(delay)).await
+        self.token
+            .try_settle(Settlement::Release(delay))
+            .map_err(map_settle_error)
     }
 
     /// Rejects this delivery exactly once with the requested requeue policy.
     ///
+    /// Fire-and-forget: enqueues the settlement command and returns
+    /// immediately. The final state is updated asynchronously by the actor.
+    /// Settlement errors surface via [`ConsumerHandle::drain_errors`].
+    ///
     /// # Errors
     ///
-    /// Returns a typed error for stale generations, transport failures, a
-    /// closed consumer, or an already terminal token.
+    /// Returns a typed error for already settled deliveries, a full command
+    /// channel, or a closed consumer.
+    #[allow(clippy::unused_async)]
     pub async fn reject(&self, requeue: bool) -> Result<(), ConsumerError> {
-        self.token.settle(Settlement::Reject(requeue)).await
+        self.token
+            .try_settle(Settlement::Reject(requeue))
+            .map_err(map_settle_error)
+    }
+}
+
+/// Maps [`SettlementErrorKind`] to a [`ConsumerError`] for the public API.
+fn map_settle_error(kind: SettlementErrorKind) -> ConsumerError {
+    match kind {
+        SettlementErrorKind::AlreadySettled => ConsumerError::already_settled(),
+        SettlementErrorKind::ChannelFull => ConsumerError::new(
+            ConsumerErrorKind::SettlementInProgress,
+            "settlement command channel is full",
+        ),
+        SettlementErrorKind::Closed => ConsumerError::closed(),
     }
 }
 
@@ -197,7 +230,20 @@ impl DeliveryToken {
         }
     }
 
-    async fn settle(&self, settlement: Settlement) -> Result<(), ConsumerError> {
+    /// Fire-and-forget settlement.
+    ///
+    /// Performs the `Pending → Transitioning` CAS, then enqueues the
+    /// settlement command via `try_send`. Returns immediately without
+    /// waiting for the actor to process the settlement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettlementErrorKind::AlreadySettled`] if the CAS fails,
+    /// [`SettlementErrorKind::ChannelFull`] if the command channel is full
+    /// (state reverts to `Pending` so the caller can retry), or
+    /// [`SettlementErrorKind::Closed`] if the command channel is closed
+    /// (state becomes `Lost`).
+    pub(crate) fn try_settle(&self, settlement: Settlement) -> Result<(), SettlementErrorKind> {
         self.inner
             .state
             .compare_exchange(
@@ -206,70 +252,42 @@ impl DeliveryToken {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .map_err(|_| ConsumerError::already_settled())?;
-        let (completed, completion) = oneshot::channel();
-        if self
-            .inner
-            .commands
-            .send(ConsumerCommand::Settle {
-                token: self.inner.clone(),
-                settlement,
-                completed,
-            })
-            .await
-            .is_err()
-        {
-            self.inner
-                .state
-                .store(DeliveryState::Lost as u8, Ordering::Release);
-            return Err(ConsumerError::closed());
-        }
+            .map_err(|_| SettlementErrorKind::AlreadySettled)?;
 
-        match completion.await {
-            Ok(Ok(terminal)) => {
-                self.inner.state.store(terminal as u8, Ordering::Release);
-                Ok(())
-            }
-            Ok(Err(error))
-                if matches!(
-                    error.kind,
-                    ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
-                ) =>
-            {
-                self.inner
-                    .state
-                    .store(DeliveryState::Lost as u8, Ordering::Release);
-                Err(error)
-            }
-            Ok(Err(error)) => {
+        match self.inner.commands.try_send(ConsumerCommand::Settle {
+            token: self.inner.clone(),
+            settlement,
+        }) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
                 self.inner
                     .state
                     .store(DeliveryState::Pending as u8, Ordering::Release);
-                Err(error)
+                Err(SettlementErrorKind::ChannelFull)
             }
-            Err(_) => {
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.inner
                     .state
                     .store(DeliveryState::Lost as u8, Ordering::Release);
-                Err(ConsumerError::closed())
+                Err(SettlementErrorKind::Closed)
             }
         }
     }
 }
 
-pub(crate) struct DeliveryTokenInner {
-    pub subscription: SubscriptionId,
-    pub connection_key: ConnectionKey,
-    pub generation: u64,
-    pub channel_id: u16,
-    pub delivery_tag: u64,
-    pub message_id: MessageId,
-    pub correlation_id: Option<String>,
-    pub payload: Bytes,
-    pub headers: Arc<Headers>,
-    pub attempts: u32,
-    pub reserved_at: Instant,
-    pub commands: mpsc::Sender<ConsumerCommand>,
+pub struct DeliveryTokenInner {
+    pub(crate) subscription: SubscriptionId,
+    pub(crate) connection_key: ConnectionKey,
+    pub(crate) generation: u64,
+    pub(crate) channel_id: u16,
+    pub(crate) delivery_tag: u64,
+    pub(crate) message_id: MessageId,
+    pub(crate) correlation_id: Option<String>,
+    pub(crate) payload: Bytes,
+    pub(crate) headers: Arc<Headers>,
+    pub(crate) attempts: u32,
+    pub(crate) reserved_at: Instant,
+    pub(crate) commands: mpsc::Sender<ConsumerCommand>,
     pub(crate) state: AtomicU8,
     pub(crate) settling: AtomicBool,
 }
@@ -344,7 +362,7 @@ impl DeliveryTokenInner {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Settlement {
+pub enum Settlement {
     Ack,
     Release(Duration),
     Reject(bool),
@@ -389,6 +407,7 @@ impl ConsumerError {
         )
     }
 
+    #[allow(dead_code)]
     pub(crate) fn already_settling() -> Self {
         Self::new(
             ConsumerErrorKind::AlreadySettling,
@@ -417,3 +436,38 @@ impl fmt::Display for ConsumerError {
 }
 
 impl Error for ConsumerError {}
+
+/// Error returned by `try_settle` when the fire-and-forget send fails.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettleError {
+    /// The actor's command channel is full (256 capacity).
+    ChannelFull,
+    /// The actor's command channel is closed.
+    Closed,
+}
+
+/// Classification of a fire-and-forget settlement failure at the token level.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettlementErrorKind {
+    /// The delivery was already settled (CAS failed).
+    AlreadySettled,
+    /// The actor's command channel is full.
+    ChannelFull,
+    /// The actor's command channel is closed.
+    Closed,
+}
+
+/// Error recorded by the actor when a settlement fails asynchronously.
+#[derive(Clone, Debug)]
+pub struct SettlementError {
+    /// The AMQP delivery tag that failed to settle.
+    pub delivery_tag: u64,
+    /// The subscription that owns the delivery.
+    pub subscription: SubscriptionId,
+    /// The kind of consumer error that caused the settlement failure.
+    pub kind: ConsumerErrorKind,
+    /// Human-readable error message.
+    pub message: String,
+    /// When the error was recorded.
+    pub timestamp: Instant,
+}

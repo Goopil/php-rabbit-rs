@@ -389,7 +389,7 @@ async fn batch_enqueues_all_messages_before_waiting_for_confirms() {
     assert_eq!(outcomes.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
     let transport = Arc::new(MockTransport::default());
     transport.push_delivery(Ok(TransportDelivery {
@@ -407,7 +407,10 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
     let consumer = pool.consumer("main").await.expect("consumer");
     let delivery = consumer.next().await.expect("delivery");
     assert_eq!(delivery.payload, Bytes::from_static(b"job-payload"));
-    delivery.ack().await.expect("ack");
+    delivery.ack().await.expect("ack enqueued");
+
+    tokio::time::advance(std::time::Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let operations = transport.operations();
     assert!(

@@ -1030,7 +1030,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn delayed_release_increments_the_application_attempt_header() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(rabbit_rs_core::transport::Delivery {
@@ -1080,7 +1080,10 @@ async fn delayed_release_increments_the_application_attempt_header() {
     delivery
         .release(Duration::from_secs(5))
         .await
-        .expect("delayed release");
+        .expect("delayed release enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let published_request = transport
         .operations()
