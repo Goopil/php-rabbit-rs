@@ -354,9 +354,8 @@ jobs:
           PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
         run: |
           curl -sS -X POST \
-            "https://packagist.org/api/update-package" \
+            "https://packagist.org/api/update-package?username=goopil&apiToken=${PACKAGIST_TOKEN}" \
             -H "Content-Type: application/json" \
-            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
 
   split-laravel:
@@ -419,9 +418,8 @@ jobs:
           PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
         run: |
           curl -sS -X POST \
-            "https://packagist.org/api/update-package" \
+            "https://packagist.org/api/update-package?username=goopil&apiToken=${PACKAGIST_TOKEN}" \
             -H "Content-Type: application/json" \
-            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
 
       - name: Summary
