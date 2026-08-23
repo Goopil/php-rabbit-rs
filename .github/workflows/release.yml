@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       has_packagist: ${{ steps.check-secrets.outputs.has_packagist }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Extract version from tag
         id: version
@@ -67,7 +67,7 @@ jobs:
         ts: ["nts", "zts"]
         libc: ["glibc", "musl"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set Docker image
         id: docker
@@ -196,7 +196,7 @@ jobs:
       matrix:
         php: ["8.4", "8.5"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@v2
@@ -283,7 +283,7 @@ jobs:
       contents: write
       attestations: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify release assets and attestations
         env:
@@ -342,7 +342,7 @@ jobs:
     needs: [create-release, build-linux, build-macos, verify-release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -365,7 +365,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

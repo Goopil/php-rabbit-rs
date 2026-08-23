@@ -19,7 +19,7 @@ jobs:
     name: Rust (fmt + clippy + tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust 1.96
         uses: dtolnay/rust-toolchain@stable
@@ -48,7 +48,7 @@ jobs:
         php: ["8.4", "8.5"]
         laravel: ["12", "13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@v2
@@ -89,7 +89,7 @@ jobs:
       matrix:
         php: ["8.4", "8.5"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache Rust and Composer
         uses: actions/cache@v4
@@ -136,7 +136,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache Rust and Composer
         uses: actions/cache@v4
@@ -182,7 +182,7 @@ jobs:
     name: Octane lifecycle
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup PHP 8.4
         uses: shivammathur/setup-php@v2
@@ -210,7 +210,7 @@ jobs:
     name: Integration + Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust 1.96
         uses: dtolnay/rust-toolchain@stable
