@@ -32,6 +32,9 @@
             ]
         }
     },
+    "suggest": {
+        "laravel/horizon": "Required to use the Horizon dashboard integration (worker=horizon)"
+    },
     "scripts": {
         "test": "pest"
     },

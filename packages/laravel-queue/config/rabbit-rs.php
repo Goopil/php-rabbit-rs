@@ -336,4 +336,23 @@ return [
         ],
         'dead_letter' => null,
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Worker Mode
+    |--------------------------------------------------------------------------
+    |
+    | Controls which queue worker class is used when the connector resolves
+    | a connection.
+    |
+    | - default: Standard RabbitMqQueue. Use this when Horizon is not
+    |           installed or when you don't need Horizon integration.
+    |
+    | - horizon: HorizonRabbitMqQueue. Dispatches Horizon events
+    |           (JobPending, JobPushed, JobReserved, JobDeleted) so Rabbit RS
+    |           jobs appear in the Horizon dashboard. Requires laravel/horizon.
+    |
+    */
+
+    'worker' => env('RABBIT_RS_WORKER', 'default'),
 ];
