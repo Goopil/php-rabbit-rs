@@ -9,9 +9,15 @@ set -euo pipefail
 #   ./scripts/test-laravel.sh --with-extension    # Unit + Feature (with extension)
 #   ./scripts/test-laravel.sh tests/Integration   # specified paths (auto-builds extension)
 #   ./scripts/test-laravel.sh --testdox            # passes extra args to Pest
+#
+# The extension should NOT be installed system-wide on the dev machine.
+# Test scripts load it from target/ via -d extension=<artifact> when needed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib-extension.sh
+source "${SCRIPT_DIR}/lib-extension.sh"
+
+PROJECT_ROOT="$(ext_project_root)"
 PACKAGE_DIR="${PROJECT_ROOT}/packages/laravel-queue"
 
 PHP_BIN="${PHP_BIN:-php}"
@@ -51,48 +57,18 @@ for arg in "${PEST_ARGS[@]:-}"; do
     esac
 done
 
-PHP_CMD=("${PHP_BIN}")
-
+# --- Build the appropriate PHP command ---
+# Unit/Feature tests use plain php (no extension) so the
+# "missing extension" assertion in RabbitMqServiceProviderTest passes.
+# Integration tests use php -d extension=<local artifact>.
 if [[ "${NEED_EXTENSION}" == true ]]; then
-    # --- Detect extension artifact path ---
-    case "$(uname -s)" in
-        Darwin)
-            ARTIFACT="${PROJECT_ROOT}/target/debug/librabbit_rs_php.dylib"
-            ;;
-        Linux)
-            ARTIFACT="${PROJECT_ROOT}/target/debug/librabbit_rs_php.so"
-            ;;
-        *)
-            echo "ERROR: unsupported operating system: $(uname -s)" >&2
-            exit 1
-            ;;
-    esac
-
-    # --- Build extension if artifact is missing ---
-    if [[ ! -f "${ARTIFACT}" ]]; then
-        echo "=== Building ext-rabbit_rs ==="
-        cargo build \
-            --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" \
-            --features extension-tests
-    fi
-
-    if [[ ! -f "${ARTIFACT}" ]]; then
-        echo "ERROR: extension artifact not found after build: ${ARTIFACT}" >&2
-        exit 1
-    fi
-
-    # --- Verify extension loads ---
-    echo "=== Verifying ext-rabbit_rs loads ==="
-    MODULES="$("${PHP_BIN}" -d "extension=${ARTIFACT}" -m 2>/dev/null || true)"
-    if ! grep -q rabbit_rs <<< "${MODULES}"; then
-        echo "ERROR: ext-rabbit_rs failed to load" >&2
-        echo "  PHP SAPI: $(${PHP_BIN} -r 'echo php_sapi_name();' 2>/dev/null)"
-        echo "  PHP version: $(${PHP_BIN} -r 'echo phpversion();' 2>/dev/null)"
-        exit 1
-    fi
-    echo "ext-rabbit_rs is loaded."
-
-    PHP_CMD=("${PHP_BIN}" -d "extension=${ARTIFACT}")
+    ext_ensure_built
+    ext_verify_loads
+    # shellcheck disable=SC2207
+    PHP_CMD=( $(ext_php_cmd) )
+else
+    # shellcheck disable=SC2207
+    PHP_CMD=( $(ext_php_no_ext_cmd) )
 fi
 
 # --- Install Laravel package dependencies if needed ---

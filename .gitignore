@@ -3,6 +3,7 @@
 .worktrees/
 target/
 vendor/
+composer.lock
 .phpunit.cache/
 .pest.cache/
 
