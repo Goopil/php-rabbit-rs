@@ -270,3 +270,74 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
+
+  split-laravel:
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check prerequisites
+        id: check
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          if [[ -z "${MIRROR_TOKEN}" ]]; then
+            echo "::warning::MIRROR_TOKEN secret is not configured — skipping push to mirror"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "${PACKAGIST_TOKEN}" ]]; then
+            echo "has_packagist=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_packagist=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Split Laravel package
+        run: |
+          ./scripts/split-laravel-package.sh --output /tmp/laravel-split
+
+      - name: Push to mirror repository
+        if: steps.check.outputs.skip == 'false'
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          cd /tmp/laravel-split
+          git init
+          git config user.name "rabbit-rs-ci"
+          git config user.email "ci@rabbit-rs.local"
+          git checkout -b main
+          git add -A
+          git commit -m "Release ${GITHUB_REF_NAME}"
+          git remote add origin "https://${MIRROR_TOKEN}@github.com/Goopil/rabbit-rs-laravel.git"
+          git push origin main --force
+
+      - name: Tag the mirror
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          cd /tmp/laravel-split
+          git tag -f "${GITHUB_REF_NAME}"
+          git push origin "${GITHUB_REF_NAME}" --force
+
+      - name: Trigger Packagist update for rabbit-rs-laravel
+        if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
+        env:
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          curl -sS -X POST \
+            "https://packagist.org/api/update-package" \
+            -H "Content-Type: application/json" \
+            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
+            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
+
+      - name: Summary
+        if: steps.check.outputs.skip == 'true'
+        run: |
+          echo "::notice::Split completed locally but push was skipped."
+          echo "::notice::Configure MIRROR_TOKEN and PACKAGIST_TOKEN secrets to enable mirror push."
