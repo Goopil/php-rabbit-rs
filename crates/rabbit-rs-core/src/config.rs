@@ -213,6 +213,18 @@ pub struct SubscriptionConfig {
         deserialize_with = "deserialize_duration_seconds"
     )]
     pub starvation_after: Duration,
+    #[serde(default = "default_max_buffered_bytes")]
+    pub max_buffered_bytes: u64,
+    #[serde(default)]
+    pub max_message_bytes: Option<u64>,
+    /// Best-effort mode: ACK the delivery to the broker before dispatch to PHP.
+    ///
+    /// When `true`, the consumer auto-acks each delivery immediately and
+    /// presents it with [`DeliveryState::AutoAcked`]. Settlement calls
+    /// (`ack`, `release`, `reject`) on such a delivery return
+    /// [`ConsumerErrorKind::AlreadySettled`].
+    #[serde(default)]
+    pub early_ack: bool,
 }
 
 /// Scheduler algorithms supported by the stable configuration format.
@@ -675,6 +687,22 @@ impl ConfigFingerprint {
                 digest.update(subscription.priority_class.to_be_bytes());
                 digest.update(subscription.prefetch.to_be_bytes());
                 digest.update(subscription.starvation_after.as_secs().to_be_bytes());
+                digest.update(subscription.max_buffered_bytes.to_be_bytes());
+                match subscription.max_message_bytes {
+                    Some(bytes) => {
+                        hash_value(&mut digest, "max_message_bytes");
+                        digest.update(bytes.to_be_bytes());
+                    }
+                    None => hash_value(&mut digest, "no_max_message_bytes"),
+                }
+                hash_value(
+                    &mut digest,
+                    if subscription.early_ack {
+                        "early_ack"
+                    } else {
+                        "no_early_ack"
+                    },
+                );
             }
         }
 
@@ -835,6 +863,10 @@ fn default_starvation_after() -> Duration {
     Duration::from_secs(30)
 }
 
+fn default_max_buffered_bytes() -> u64 {
+    64 * 1024 * 1024
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -868,6 +900,9 @@ mod tests {
             priority_class: 0,
             prefetch,
             starvation_after: Duration::from_secs(30),
+            max_buffered_bytes: 64 * 1024 * 1024,
+            max_message_bytes: None,
+            early_ack: false,
         }
     }
 

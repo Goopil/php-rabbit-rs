@@ -104,6 +104,36 @@ final class Consumer
     {
     }
 
+    /**
+     * Drains up to $max deliveries from the buffer in one call.
+     *
+     * When the buffer is empty, blocks up to $timeoutMs for the first delivery,
+     * then drains any remaining deliveries that became available.
+     * $max is clamped to 1..=256.
+     *
+     * @return list<Delivery>
+     */
+    public function nextBatch(int $max, int $timeoutMs): array
+    {
+    }
+
+    /**
+     * Acknowledges a contiguous prefix of deliveries up to and including the
+     * given delivery using a single AMQP basic.ack with multiple=true.
+     */
+    public function ackThrough(Delivery $delivery): void
+    {
+    }
+
+    /**
+     * Acknowledges a batch of deliveries, potentially across different channels.
+     *
+     * @param list<Delivery> $deliveries
+     */
+    public function ackBatch(array $deliveries): void
+    {
+    }
+
     public function close(): void
     {
     }
@@ -121,6 +151,13 @@ final class Delivery
      * Nested broker headers such as x-death are omitted from the flat PHP header model.
      */
     public function metadata(): array
+    {
+    }
+
+    /**
+     * Returns the AMQP delivery tag.
+     */
+    public function deliveryTag(): int
     {
     }
 

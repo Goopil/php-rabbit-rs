@@ -12,6 +12,7 @@ use super::{
 use ext_php_rs::{
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
+    types::{ZendClassObject, ZendHashTable},
 };
 use rabbit_rs_core::consumer::ConsumerHandle;
 use tokio::{runtime::Handle, time};
@@ -88,6 +89,106 @@ impl Consumer {
             Ok(None) => Ok(None),
             Err(error) => consumer_exception(&error),
         }
+    }
+
+    /// Drains up to `max` deliveries from the buffer in one call.
+    ///
+    /// The fast path checks the lock-free buffer without crossing into the
+    /// async runtime. When the buffer is empty, the slow path blocks on the
+    /// async runtime with the specified timeout, then drains whatever is
+    /// available. `max` is clamped to `1..=256`.
+    pub fn nextBatch(&self, max: i64, timeoutMs: i64) -> PhpResult<Vec<Delivery>> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::nextBatch")?;
+
+        let max = usize::try_from(max).map_err(|_| {
+            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
+                "max must be a non-negative integer".to_owned(),
+            )
+        })?;
+
+        // Fast path: drain the flume buffer without block_on.
+        let batch = self
+            .handle
+            .try_next_batch(max)
+            .map_err(|error| consumer_php_exception(&error))?;
+        if !batch.is_empty() {
+            return batch
+                .into_iter()
+                .map(|delivery| Ok(Delivery::new(delivery, self.runtime.clone(), self.pid)))
+                .collect();
+        }
+
+        // Slow path: block on the async runtime with timeout, then drain.
+        let timeout = u64::try_from(timeoutMs).map_err(|_| {
+            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
+                "timeoutMs must be a non-negative integer".to_owned(),
+            )
+        })?;
+        match self.runtime.block_on(async {
+            time::timeout(
+                std::time::Duration::from_millis(timeout),
+                self.handle.next(),
+            )
+            .await
+        }) {
+            Ok(Ok(delivery)) => {
+                let mut deliveries = vec![Delivery::new(delivery, self.runtime.clone(), self.pid)];
+                let more = self
+                    .handle
+                    .try_next_batch(max.saturating_sub(1))
+                    .map_err(|error| consumer_php_exception(&error))?;
+                deliveries.extend(
+                    more.into_iter()
+                        .map(|d| Delivery::new(d, self.runtime.clone(), self.pid)),
+                );
+                Ok(deliveries)
+            }
+            Ok(Err(error)) => consumer_exception(&error),
+            Err(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// Acknowledges a contiguous prefix of deliveries up to and including the
+    /// given delivery using a single AMQP `basic.ack` with `multiple=true`.
+    pub fn ackThrough(&self, delivery: &Delivery) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::ackThrough")?;
+        self.runtime
+            .block_on(self.handle.ack_through(&delivery.inner))
+            .map_err(|error| consumer_php_exception(&error))?;
+        Ok(())
+    }
+
+    /// Acknowledges a batch of deliveries across potentially different channels.
+    pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::ackBatch")?;
+
+        for (_, value) in deliveries {
+            let zval = value.dereference();
+            let object =
+                zval.object().ok_or_else(|| {
+                    ext_php_rs::prelude::PhpException::from_class::<
+                        super::exception::RabbitRsException,
+                    >("ackBatch expects an array of Delivery objects".to_owned())
+                })?;
+            let class_obj: &ZendClassObject<Delivery> =
+                object.extract().map_err(|_| {
+                    ext_php_rs::prelude::PhpException::from_class::<
+                        super::exception::RabbitRsException,
+                    >("ackBatch expects an array of Delivery objects".to_owned())
+                })?;
+            let delivery =
+                class_obj.obj.as_ref().ok_or_else(|| {
+                    ext_php_rs::prelude::PhpException::from_class::<
+                        super::exception::RabbitRsException,
+                    >(
+                        "ackBatch encountered an uninitialized Delivery object".to_owned()
+                    )
+                })?;
+            self.runtime
+                .block_on(delivery.inner.ack())
+                .map_err(|error| consumer_php_exception(&error))?;
+        }
+        Ok(())
     }
 
     /// Closes this consumer handle.

@@ -3,7 +3,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -38,6 +38,9 @@ pub enum DeliveryState {
     Acked = 2,
     Rejected = 3,
     Lost = 4,
+    /// Best-effort: the delivery was auto-acked before dispatch.
+    /// Settlement calls return [`ConsumerErrorKind::AlreadySettled`].
+    AutoAcked = 5,
 }
 
 const TRANSITIONING: u8 = 1;
@@ -88,9 +91,53 @@ impl Delivery {
         }
     }
 
+    /// Creates a delivery that was already auto-acked to the broker.
+    ///
+    /// The token is in a terminal [`DeliveryState::AutoAcked`] state; any
+    /// settlement call returns [`ConsumerErrorKind::AlreadySettled`].
+    #[must_use]
+    pub(crate) fn new_auto_acked(
+        identity: DeliveryIdentity,
+        id: MessageId,
+        correlation_id: Option<String>,
+        payload: Bytes,
+        headers: Arc<Headers>,
+        attempts: u32,
+    ) -> Self {
+        let token = DeliveryToken::new(DeliveryTokenInner::auto_acked(
+            identity.clone(),
+            id.clone(),
+            correlation_id.clone(),
+            payload.clone(),
+            headers.clone(),
+            attempts,
+        ));
+        Self::new(
+            id,
+            correlation_id,
+            identity.subscription,
+            payload,
+            headers,
+            attempts,
+            token,
+        )
+    }
+
     #[must_use]
     pub fn state(&self) -> DeliveryState {
         self.token.state()
+    }
+
+    /// Returns the AMQP delivery tag for this delivery.
+    #[must_use]
+    pub fn delivery_tag(&self) -> u64 {
+        self.token.inner.delivery_tag
+    }
+
+    /// Returns the inner token for batch settlement operations.
+    #[must_use]
+    pub(crate) fn inner_token(&self) -> &Arc<DeliveryTokenInner> {
+        self.token.inner()
     }
 
     /// Acknowledges this delivery exactly once.
@@ -136,11 +183,16 @@ impl DeliveryToken {
         }
     }
 
+    pub(crate) fn inner(&self) -> &Arc<DeliveryTokenInner> {
+        &self.inner
+    }
+
     fn state(&self) -> DeliveryState {
         match self.inner.state.load(Ordering::Acquire) {
             value if value == DeliveryState::Acked as u8 => DeliveryState::Acked,
             value if value == DeliveryState::Rejected as u8 => DeliveryState::Rejected,
             value if value == DeliveryState::Lost as u8 => DeliveryState::Lost,
+            value if value == DeliveryState::AutoAcked as u8 => DeliveryState::AutoAcked,
             _ => DeliveryState::Pending,
         }
     }
@@ -218,9 +270,11 @@ pub(crate) struct DeliveryTokenInner {
     pub attempts: u32,
     pub reserved_at: Instant,
     pub commands: mpsc::Sender<ConsumerCommand>,
-    state: AtomicU8,
+    pub(crate) state: AtomicU8,
+    pub(crate) settling: AtomicBool,
 }
 
+#[derive(Clone)]
 pub(crate) struct DeliveryIdentity {
     pub subscription: SubscriptionId,
     pub connection_key: ConnectionKey,
@@ -253,6 +307,38 @@ impl DeliveryTokenInner {
             reserved_at: Instant::now(),
             commands,
             state: AtomicU8::new(DeliveryState::Pending as u8),
+            settling: AtomicBool::new(false),
+        }
+    }
+
+    /// Creates a terminal token for an auto-acked delivery.
+    ///
+    /// The token starts in [`DeliveryState::AutoAcked`]; any settlement
+    /// attempt returns [`ConsumerErrorKind::AlreadySettled`] because the
+    /// `Pending → Transitioning` compare-exchange in `settle` fails.
+    pub(crate) fn auto_acked(
+        identity: DeliveryIdentity,
+        message_id: MessageId,
+        correlation_id: Option<String>,
+        payload: Bytes,
+        headers: Arc<Headers>,
+        attempts: u32,
+    ) -> Self {
+        Self {
+            subscription: identity.subscription,
+            connection_key: identity.connection_key,
+            generation: identity.generation,
+            channel_id: identity.channel_id,
+            delivery_tag: identity.delivery_tag,
+            message_id,
+            correlation_id,
+            payload,
+            headers,
+            attempts,
+            reserved_at: Instant::now(),
+            commands: mpsc::channel(1).0,
+            state: AtomicU8::new(DeliveryState::AutoAcked as u8),
+            settling: AtomicBool::new(false),
         }
     }
 }
@@ -269,6 +355,8 @@ pub enum ConsumerErrorKind {
     Closed,
     StaleGeneration,
     AlreadySettled,
+    AlreadySettling,
+    SettlementInProgress,
     Transport,
     Publish,
     MissingPublisher,
@@ -298,6 +386,21 @@ impl ConsumerError {
         Self::new(
             ConsumerErrorKind::AlreadySettled,
             "delivery token is already terminal or transitioning",
+        )
+    }
+
+    pub(crate) fn already_settling() -> Self {
+        Self::new(
+            ConsumerErrorKind::AlreadySettling,
+            "delivery is already being settled",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn settlement_in_progress() -> Self {
+        Self::new(
+            ConsumerErrorKind::SettlementInProgress,
+            "a settlement is already in progress on this channel",
         )
     }
 

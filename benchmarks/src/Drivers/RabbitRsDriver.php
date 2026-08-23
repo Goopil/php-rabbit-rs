@@ -43,6 +43,10 @@ class RabbitRsDriver extends AbstractBenchmark
                     'weight' => 1,
                     'priority_class' => 0,
                     'prefetch' => Config::PREFETCH_COUNT,
+                    'early_ack' => match ($this->scenarioMode) {
+                        ScenarioMode::AUTO_ACK => true,
+                        default => false,
+                    },
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
@@ -50,6 +54,14 @@ class RabbitRsDriver extends AbstractBenchmark
                 ],
             ]],
             'topology_mode' => 'declare',
+            'publisher' => [
+                'confirms' => match ($this->scenarioMode) {
+                    ScenarioMode::FIRE_AND_FORGET => false,
+                    ScenarioMode::AUTO_ACK, ScenarioMode::BATCH_CONFIRM => true,
+                },
+                'mandatory' => true,
+                'confirm_timeout' => 30000,
+            ],
         ];
 
         $this->pool = new Pool($config);
@@ -91,13 +103,19 @@ class RabbitRsDriver extends AbstractBenchmark
             ];
 
             if (count($batch) >= $batchSize) {
+                $publishStart = hrtime(true);
                 $this->pool->publishBatch($batch);
+                $publishElapsed = (hrtime(true) - $publishStart) / 1_000_000;
+                $this->recordPublishLatency($publishElapsed / count($batch));
                 $batch = [];
             }
         }
 
         if ($batch !== []) {
+            $publishStart = hrtime(true);
             $this->pool->publishBatch($batch);
+            $publishElapsed = (hrtime(true) - $publishStart) / 1_000_000;
+            $this->recordPublishLatency($publishElapsed / count($batch));
         }
     }
 
@@ -114,30 +132,48 @@ class RabbitRsDriver extends AbstractBenchmark
         $consumed = 0;
         $consecutiveNulls = 0;
         while ($consumed < $count) {
-            $delivery = $this->consumer->tryNext();
-            if ($delivery === null) {
-                $delivery = $this->consumer->next(1000);
-                if ($delivery === null) {
+            if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
+                $batch = $this->consumer->nextBatch(256, 1000);
+                if ($batch === []) {
                     $consecutiveNulls++;
                     if ($consecutiveNulls >= 3) {
                         break;
                     }
                     continue;
                 }
-            }
-            $consecutiveNulls = 0;
+                $consecutiveNulls = 0;
 
-            $payload = $delivery->payload();
-            if (strlen($payload) >= 8) {
-                $ts = unpack('P', substr($payload, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
+                $last = end($batch);
+                foreach ($batch as $d) {
+                    $this->recordLatencyFromPayload($d->payload());
+                    $this->recordReceived($d->metadata()['message_id']);
                 }
-            }
+                $this->consumer->ackThrough($last);
+                $consumed += count($batch);
+            } else {
+                $delivery = $this->consumer->tryNext();
+                if ($delivery === null) {
+                    $delivery = $this->consumer->next(1000);
+                    if ($delivery === null) {
+                        $consecutiveNulls++;
+                        if ($consecutiveNulls >= 3) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                $consecutiveNulls = 0;
 
-            $delivery->ack();
-            $consumed++;
+                $payload = $delivery->payload();
+                $metadata = $delivery->metadata();
+                $this->recordReceived($metadata['message_id']);
+                $this->recordLatencyFromPayload($payload);
+
+                if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
+                    $delivery->ack();
+                }
+                $consumed++;
+            }
         }
     }
 

@@ -4,6 +4,18 @@ declare(strict_types=1);
 
 namespace Bench;
 
+// Benchmark Protocol:
+// - Machine: recorded in output
+// - PHP version: phpversion()
+// - RabbitMQ version: recorded manually
+// - Payload: Config::MESSAGE_PAYLOAD_BYTES bytes
+// - Warm-up: one full publish+consume cycle before measured rounds
+// - Iterations: Config::BENCHMARK_ROUNDS
+// - Metrics: median, p99, dispersion (stdev)
+// - Scenarios: reliable (confirms=true, manual ack),
+//              reliable batch (confirms=true, batch ack),
+//              best-effort (confirms=false and/or early_ack)
+// - Verification: losses=0 AND duplicates=0 for reliable modes
 class Config
 {
     public const RABBITMQ_HOST = '127.0.0.1';
@@ -15,7 +27,7 @@ class Config
     public const MESSAGE_COUNT = 10000;
     public const BENCHMARK_ROUNDS = 10;
     public const MESSAGE_PAYLOAD_BYTES = 256;
-    public const PREFETCH_COUNT = 500;
+    public const PREFETCH_COUNT = 16;
 
     public const EXCHANGE_NAME = 'benchmark_exchange';
     public const EXCHANGE_TYPE = 'direct';

@@ -53,6 +53,8 @@ pub(crate) fn consumer_exception<T>(error: &ConsumerError) -> PhpResult<T> {
         ),
         ConsumerErrorKind::Closed
         | ConsumerErrorKind::AlreadySettled
+        | ConsumerErrorKind::AlreadySettling
+        | ConsumerErrorKind::SettlementInProgress
         | ConsumerErrorKind::Publish
         | ConsumerErrorKind::MissingPublisher
         | ConsumerErrorKind::InvalidSubscription

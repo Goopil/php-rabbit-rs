@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
-    ConsumerError, Delivery, SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, DeliveryState, SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
 };
 use crate::{
@@ -31,6 +31,8 @@ pub struct Subscription {
     pub(crate) queue: String,
     pub(crate) prefetch: u16,
     pub(crate) policy: SubscriptionPolicy,
+    pub(crate) early_ack: bool,
+    pub(crate) max_buffered_bytes: u64,
     pub(crate) channel: Arc<dyn ConsumerChannel>,
     pub(crate) publisher: Option<PublisherHandle>,
     pub(crate) destination: Option<Destination>,
@@ -53,6 +55,8 @@ impl Subscription {
             queue: queue.into(),
             prefetch: 16,
             policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
+            early_ack: false,
+            max_buffered_bytes: 64 * 1024 * 1024,
             channel,
             publisher: None,
             destination: None,
@@ -75,6 +79,22 @@ impl Subscription {
     #[must_use]
     pub const fn policy(mut self, policy: SubscriptionPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Enables or disables early-ACK best-effort mode.
+    ///
+    /// When `true`, deliveries are auto-acked to the broker before dispatch
+    /// and presented with [`DeliveryState::AutoAcked`].
+    #[must_use]
+    pub const fn early_ack(mut self, early_ack: bool) -> Self {
+        self.early_ack = early_ack;
+        self
+    }
+
+    #[must_use]
+    pub const fn max_buffered_bytes(mut self, max: u64) -> Self {
+        self.max_buffered_bytes = max;
         self
     }
 
@@ -152,8 +172,9 @@ impl ConsumerSet {
             streams.push((subscription.id.clone(), stream));
         }
 
-        let total_prefetch: u16 = subscriptions.iter().map(|s| s.prefetch).sum();
-        let buffer_size = (total_prefetch as usize) * BUFFER_CAPACITY_FACTOR / 2;
+        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        let buffer_size =
+            usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_FACTOR / 2;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
         let dispatch_notify = Arc::new(Notify::new());
@@ -256,12 +277,50 @@ impl ConsumerHandle {
         }
     }
 
+    /// Drains up to `max` deliveries from the buffer in a single call.
+    ///
+    /// The requested `max` is clamped to `1..=256`. Returns an empty vector when
+    /// the buffer is empty. Each drained delivery releases dispatch budget so
+    /// the actor can pull more work from the transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the consumer is closed or a source error is
+    /// encountered mid-drain.
+    pub fn try_next_batch(&self, max: usize) -> Result<Vec<Delivery>, ConsumerError> {
+        let max = max.clamp(1, 256);
+        let mut batch = Vec::with_capacity(max);
+        for _ in 0..max {
+            match self.buffer_rx.try_recv() {
+                Ok(Ok(delivery)) => batch.push(delivery),
+                Ok(Err(error)) => {
+                    if !batch.is_empty() {
+                        self.dispatch_notify.notify_one();
+                    }
+                    return Err(error);
+                }
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    if !batch.is_empty() {
+                        self.dispatch_notify.notify_one();
+                    }
+                    return Err(ConsumerError::closed());
+                }
+            }
+        }
+        if !batch.is_empty() {
+            self.dispatch_notify.notify_one();
+        }
+        Ok(batch)
+    }
+
     /// Waits for the next scheduled delivery.
     ///
     /// # Errors
     ///
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
+        self.dispatch_notify.notify_one();
         match self.buffer_rx.recv_async().await {
             Ok(Ok(delivery)) => {
                 self.dispatch_notify.notify_one();
@@ -273,6 +332,29 @@ impl ConsumerHandle {
             }
             Err(flume::RecvError::Disconnected) => Err(ConsumerError::closed()),
         }
+    }
+
+    /// Acknowledges a contiguous prefix of deliveries up to and including the
+    /// given delivery, using a single AMQP `basic.ack` with `multiple=true`.
+    ///
+    /// The prefix must be contiguous starting from `acked_prefix + 1`.
+    /// Non-contiguous prefixes or already-terminal deliveries in the range are
+    /// rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for non-contiguous prefixes, stale generations,
+    /// transport failures, or a closed consumer.
+    pub async fn ack_through(&self, delivery: &Delivery) -> Result<DeliveryState, ConsumerError> {
+        let (completed, receiver) = oneshot::channel();
+        self.commands
+            .send(ConsumerCommand::SettleThrough {
+                token: delivery.inner_token().clone(),
+                completed,
+            })
+            .await
+            .map_err(|_| ConsumerError::closed())?;
+        receiver.await.map_err(|_| ConsumerError::closed())?
     }
 
     /// Records a new connection generation for one subscription.

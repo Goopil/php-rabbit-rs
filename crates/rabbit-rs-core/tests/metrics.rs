@@ -331,3 +331,20 @@ async fn concurrent_snapshots_do_not_prevent_publisher_progress() {
     assert_eq!(publisher.metrics_snapshot().confirmations_total, expected);
     assert!(concurrent_snapshot.confirmations_total <= expected);
 }
+
+#[tokio::test(start_paused = true)]
+async fn depth_metrics_are_recorded() {
+    let metrics = Metrics::default();
+    metrics.record_publishing_depth(10);
+    metrics.record_publishing_depth(5);
+    metrics.record_publishing_bytes(1024);
+    metrics.record_replay();
+    metrics.record_consumer_buffer_depth(3);
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.publishing_depth, 5);
+    assert_eq!(snapshot.publishing_depth_hwm, 10);
+    assert_eq!(snapshot.publishing_bytes, 1024);
+    assert_eq!(snapshot.replay_count, 1);
+    assert_eq!(snapshot.replay_depth, 1);
+    assert_eq!(snapshot.consumer_buffer_depth, 3);
+}

@@ -99,9 +99,13 @@ foreach ($scenarios as $scenarioName => $scenarioClass) {
             printf("  Latency p50: %.2f ms, p95: %.2f ms, p99: %.2f ms\n",
                 $stats['consume']['p50'], $stats['consume']['p95'], $stats['publish']['p99']);
             $losses = $stats['consume']['losses'] ?? 0;
+            $duplicates = $stats['consume']['duplicates'] ?? 0;
             if ($losses > 0) {
                 printf("  WARNING: %d messages lost (published %d, consumed %d)\n",
                     $losses, Config::MESSAGE_COUNT, Config::MESSAGE_COUNT - $losses);
+            }
+            if ($duplicates > 0) {
+                printf("  WARNING: %d duplicate deliveries detected\n", $duplicates);
             }
             if ($budget !== null) {
                 $budgetResult = $budget->check($stats['publish'], $stats['consume']);
@@ -114,15 +118,16 @@ foreach ($scenarios as $scenarioName => $scenarioClass) {
 }
 
 echo "\n=== Summary ===\n";
-printf("%-30s | %-15s | %-15s | %-10s | %-10s\n", "Scenario/Driver", "Publish msg/s", "Consume msg/s", "p99 (ms)", "Losses");
-echo str_repeat('-', 90) . "\n";
+printf("%-30s | %-15s | %-15s | %-10s | %-10s | %-10s\n", "Scenario/Driver", "Publish msg/s", "Consume msg/s", "p99 (ms)", "Losses", "Duplicates");
+echo str_repeat('-', 105) . "\n";
 foreach ($allResults as $key => $stats) {
-    printf("%-30s | %-15.0f | %-15.0f | %-10.2f | %-10d\n",
+    printf("%-30s | %-15.0f | %-15.0f | %-10.2f | %-10d | %-10d\n",
         $key,
         $stats['publish']['avg_rate'],
         $stats['consume']['avg_rate'],
         $stats['publish']['p99'],
-        $stats['consume']['losses'] ?? 0
+        $stats['consume']['losses'] ?? 0,
+        $stats['consume']['duplicates'] ?? 0
     );
 }
 echo "\n";

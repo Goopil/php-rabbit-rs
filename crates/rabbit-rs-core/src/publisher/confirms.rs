@@ -21,6 +21,16 @@ impl<T> ConfirmLedger<T> {
         self.pending.remove(&sequence)
     }
 
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
     pub fn drain(&mut self) -> impl Iterator<Item = T> {
         std::mem::take(&mut self.pending).into_values()
     }

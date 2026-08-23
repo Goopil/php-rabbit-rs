@@ -416,6 +416,8 @@ async fn recover_generation(
                 sub_config.priority_class,
                 sub_config.starvation_after,
             ))
+            .early_ack(sub_config.early_ack)
+            .max_buffered_bytes(sub_config.max_buffered_bytes)
             .delay_strategy(delay_strategy.clone());
 
             if let Some(publisher) = &pub_handle {

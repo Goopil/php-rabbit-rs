@@ -7,6 +7,10 @@ namespace Bench;
 abstract class AbstractBenchmark
 {
     protected array $latencies = [];
+    protected array $publishLatencies = [];
+
+    private array $receivedMessageIds = [];
+    private int $duplicateCount = 0;
 
     protected string $scenarioMode = ScenarioMode::BATCH_CONFIRM;
 
@@ -50,13 +54,13 @@ abstract class AbstractBenchmark
         $gcEnabled = gc_enabled();
         gc_disable();
 
-        $this->latencies = [];
+        $this->resetTracking();
         $this->purgeQueue();
         $this->publishMessages(Config::MESSAGE_COUNT);
         $this->consumeMessages(Config::MESSAGE_COUNT);
 
         for ($i = 0; $i < Config::BENCHMARK_ROUNDS; $i++) {
-            $this->latencies = [];
+            $this->resetTracking();
 
             $this->purgeQueue();
             $start = microtime(true);
@@ -67,8 +71,7 @@ abstract class AbstractBenchmark
             $this->consumeMessages(Config::MESSAGE_COUNT);
             $consumeTime = microtime(true) - $start;
 
-            $consumedCount = count($this->latencies);
-            $losses = Config::MESSAGE_COUNT - $consumedCount;
+            $lossReport = $this->reportLosses();
 
             $results[] = [
                 'publish_time' => $publishTime,
@@ -78,7 +81,8 @@ abstract class AbstractBenchmark
                 'p50' => $this->percentile(0.50),
                 'p95' => $this->percentile(0.95),
                 'p99' => $this->percentile(0.99),
-                'losses' => $losses,
+                'losses' => $lossReport['losses'],
+                'duplicates' => $lossReport['duplicates'],
             ];
         }
         if ($gcEnabled) {
@@ -87,9 +91,53 @@ abstract class AbstractBenchmark
         return $this->calculateStats($results);
     }
 
+    private function resetTracking(): void
+    {
+        $this->latencies = [];
+        $this->publishLatencies = [];
+        $this->receivedMessageIds = [];
+        $this->duplicateCount = 0;
+    }
+
     protected function recordLatency(float $ms): void
     {
         $this->latencies[] = $ms;
+    }
+
+    protected function recordLatencyFromPayload(string $payload): void
+    {
+        if (strlen($payload) >= 8) {
+            $ts = unpack('P', substr($payload, 0, 8))[1] ?? null;
+            if ($ts !== null) {
+                $this->recordLatency((hrtime(true) - (int) $ts) / 1_000_000);
+            }
+        }
+    }
+
+    protected function recordPublishLatency(float $ms): void
+    {
+        $this->publishLatencies[] = $ms;
+    }
+
+    protected function recordReceived(string $messageId): void
+    {
+        if (isset($this->receivedMessageIds[$messageId])) {
+            $this->duplicateCount++;
+        }
+        $this->receivedMessageIds[$messageId] = true;
+    }
+
+    protected function reportLosses(): array
+    {
+        $expected = Config::MESSAGE_COUNT;
+        $received = count($this->receivedMessageIds);
+        $losses = $expected - $received;
+        return [
+            'expected' => $expected,
+            'received' => $received,
+            'losses' => max(0, $losses),
+            'duplicates' => $this->duplicateCount,
+        ];
     }
 
     protected function percentile(float $p): float
@@ -113,6 +161,7 @@ abstract class AbstractBenchmark
         $publishRates = $get('publish_rate');
         $consumeRates = $get('consume_rate');
         $losses = $get('losses');
+        $duplicates = $get('duplicates');
 
         return [
             'name' => $this->getName(),
@@ -136,6 +185,7 @@ abstract class AbstractBenchmark
                 'p95' => $avg($get('p95')),
                 'p99' => $avg($get('p99')),
                 'losses' => array_sum($losses),
+                'duplicates' => array_sum($duplicates),
             ],
         ];
     }

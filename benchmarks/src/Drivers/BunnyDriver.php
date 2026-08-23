@@ -146,6 +146,7 @@ class BunnyDriver extends AbstractBenchmark
             $consecutiveNulls = 0;
 
             $body = $message->content;
+            $this->recordReceived($message->getHeader('message-id', ''));
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
                 if ($ts !== null) {

@@ -592,6 +592,151 @@ async fn confirm_timeout_from_config_is_applied() {
 }
 
 // ---------------------------------------------------------------------------
+// Publisher pipeline tests (now_or_never sequential sending)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn pipeline_publishes_before_confirmation() {
+    let transport = MockTransport::default();
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let _w1 = actor
+        .try_publish(request_safety("msg0", b"payload"))
+        .expect("publish0");
+    let _w2 = actor
+        .try_publish(request_safety("msg1", b"payload"))
+        .expect("publish1");
+    let _w3 = actor
+        .try_publish(request_safety("msg2", b"payload"))
+        .expect("publish2");
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    let publishes = publish_operations(&transport);
+    assert_eq!(
+        publishes.len(),
+        3,
+        "all 3 publishes should be sent before any confirmation"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pipeline_recoverable_error_sorts_replay_by_sequence() {
+    let transport = MockTransport::default();
+    // First publish: succeeds, pending confirmation → stays in ledger.
+    transport.push_pending_confirmation();
+    // Second publish: recoverable error → triggers suspend.
+    transport.push_confirmation(Err(TransportError::connection("connection lost")));
+    // Recovery replays both messages; provide confirmations for the replays.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let w1 = actor
+        .try_publish(request_safety("msg1", b"p1"))
+        .expect("publish1");
+    let w2 = actor
+        .try_publish(request_safety("msg2", b"p2"))
+        .expect("publish2");
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    // After the recoverable error, the actor should be suspended.
+    // Recover with a new channel.
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 2,
+            channel: new_channel(&transport).await,
+            topology_restored: true,
+        })
+        .await
+        .expect("recovery");
+
+    // Both messages should be confirmed after recovery.
+    assert_eq!(
+        w1.wait().await.expect("msg1 confirmed"),
+        PublishOutcome::Confirmed {
+            message_id: "msg1".to_owned()
+        }
+    );
+    assert_eq!(
+        w2.wait().await.expect("msg2 confirmed"),
+        PublishOutcome::Confirmed {
+            message_id: "msg2".to_owned()
+        }
+    );
+
+    // Verify replay order: the first two publishes are the originals (seq 1, seq 2).
+    // The next two are the replays after recovery. They must be in the same order.
+    let publishes = publish_operations(&transport);
+    assert_eq!(publishes.len(), 4, "2 original + 2 replay publishes");
+    assert_eq!(
+        publishes[2].properties.message_id.as_deref(),
+        Some("msg1"),
+        "replay must preserve sequence order: msg1 first"
+    );
+    assert_eq!(
+        publishes[3].properties.message_id.as_deref(),
+        Some("msg2"),
+        "replay must preserve sequence order: msg2 second"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pipeline_slow_path_completes_via_publish_in_flight() {
+    let transport = MockTransport::default();
+    // Gate the first publish so now_or_never() returns None → slow path.
+    let gate = transport.push_publish_gate();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let waiter = actor
+        .try_publish(request_safety("slow-msg", b"payload"))
+        .expect("publish");
+
+    // Let the actor poll. The publish future is pending (gate not released).
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    // The publish was recorded (inside publish() after the gate), but the
+    // future hasn't completed yet — the waiter should not be resolved.
+    // Actually, the gate blocks before recording, so the publish op
+    // should NOT be recorded yet.
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "gated publish must not be recorded until released"
+    );
+
+    // Release the gate so the slow-path future completes.
+    assert!(gate.release(), "gate released");
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    // Now the publish should be recorded and confirmed.
+    assert_eq!(
+        publish_operations(&transport).len(),
+        1,
+        "gated publish completed"
+    );
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Publisher recovery tests (from publisher_recovery.rs)
 // ---------------------------------------------------------------------------
 
@@ -995,6 +1140,33 @@ async fn explicit_close_wakes_retained_waiters() {
     assert_eq!(
         waiter.wait().await.expect_err("closed").kind(),
         PublishErrorKind::Closed
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_resolves_within_deadline_with_pending_confirmations() {
+    let transport = MockTransport::default();
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+    // Gate the channel close so it would hang indefinitely without a deadline.
+    let _close_gate = transport.push_close_channel_gate();
+
+    let actor = actor_safety(&transport, config_safety()).await;
+    let _w1 = actor
+        .try_publish(request_safety("msg1", b"p1"))
+        .expect("publish1");
+    let _w2 = actor
+        .try_publish(request_safety("msg2", b"p2"))
+        .expect("publish2");
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    let close_result = tokio::time::timeout(Duration::from_secs(10), actor.close()).await;
+    assert!(
+        close_result.is_ok(),
+        "close should complete within deadline"
     );
 }
 

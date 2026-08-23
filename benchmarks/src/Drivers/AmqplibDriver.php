@@ -142,6 +142,7 @@ class AmqplibDriver extends AbstractBenchmark
 
         $callback = function (AMQPMessage $msg) use ($count, &$consumed, $autoAck): void {
             $body = $msg->getBody();
+            $this->recordReceived($msg->get('message_id'));
             if (strlen($body) >= 8) {
                 $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
                 if ($ts !== null) {

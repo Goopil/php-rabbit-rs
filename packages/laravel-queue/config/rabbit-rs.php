@@ -125,6 +125,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Best-Effort Mode
+    |--------------------------------------------------------------------------
+    |
+    | When true, the driver allows subscriptions to use early_ack, which
+    | acknowledges deliveries to the broker before PHP processes them. This
+    | improves throughput at the cost of at-least-once: if the PHP process
+    | crashes, in-flight messages are lost.
+    |
+    | When false (default), early_ack is rejected at config validation time.
+    | This preserves the at-least-once delivery contract.
+    |
+    */
+
+    'best_effort' => (bool) env('RABBIT_RS_BEST_EFFORT', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Workers
     |--------------------------------------------------------------------------
     |
@@ -167,6 +184,10 @@ return [
     |   starvation_after:    Seconds without a delivery before the scheduler
     |                       boosts this subscription's weight to prevent
     |                       starvation by heavier-weight subscriptions.
+    |
+    |   early_ack:           When true, deliveries are auto-acked before
+    |                       dispatch to PHP. Requires best_effort=true.
+    |                       If PHP crashes, in-flight messages are lost.
     |
     */
 

@@ -73,6 +73,7 @@ describe('native normalization', function (): void {
                     'priority_class' => 0,
                     'prefetch' => 16,
                     'starvation_after' => 30,
+                    'early_ack' => false,
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
@@ -99,7 +100,8 @@ describe('native normalization', function (): void {
             ->and($normalized['publisher']['confirms'])->toBeTrue()
             ->and($normalized['publisher']['mandatory'])->toBeTrue()
             ->and(30000)->toBe($normalized['publisher']['confirm_timeout'])
-            ->and($normalized['topology']['dead_letter'])->toBeNull();
+            ->and($normalized['topology']['dead_letter'])->toBeNull()
+            ->and($normalized['best_effort'])->toBeFalse();
     });
 });
 
@@ -250,6 +252,35 @@ describe('dead letter', function (): void {
         $this->expectExceptionMessage('topology.dead_letter.queue');
 
         ConfigNormalizer::normalize($config);
+    });
+});
+
+describe('early_ack guard', function (): void {
+    it('rejects early_ack in reliable mode', function (): void {
+        $config = configValidConfig();
+        $config['workers']['main']['subscriptions']['orders']['early_ack'] = true;
+
+        expect(fn (): array => ConfigNormalizer::normalize($config))
+            ->toThrow(InvalidArgumentException::class, 'early_ack');
+    });
+
+    it('allows early_ack when best_effort is true', function (): void {
+        $config = configValidConfig();
+        $config['best_effort'] = true;
+        $config['workers']['main']['subscriptions']['orders']['early_ack'] = true;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['native']['workers'][0]['subscriptions'][0]['early_ack'])->toBeTrue()
+            ->and($normalized['best_effort'])->toBeTrue();
+    });
+
+    it('defaults early_ack to false', function (): void {
+        $config = configValidConfig();
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['native']['workers'][0]['subscriptions'][0]['early_ack'])->toBeFalse();
     });
 });
 
@@ -428,5 +459,11 @@ function configInvalidConfigurations(): iterable
             $config['topology_mode'] = 'managed';
         },
         'topology_mode',
+    ];
+    yield 'early_ack in reliable mode' => [
+        static function (array &$config): void {
+            $config['workers']['main']['subscriptions']['orders']['early_ack'] = true;
+        },
+        'workers.main.subscriptions.orders.early_ack',
     ];
 }
