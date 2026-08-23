@@ -1,6 +1,6 @@
 # Rabbit RS Laravel Queue Driver
 
-A high-performance RabbitMQ queue driver for Laravel, powered by the [Rabbit RS](https://github.com/Goopil/rabbit-rs) native PHP extension built in Rust.
+A high-performance RabbitMQ queue driver for Laravel, powered by the [Rabbit RS](https://github.com/Goopil/php-rabbit-rs) native PHP extension built in Rust.
 
 ## Why?
 
@@ -28,7 +28,7 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 
 ### 1. Install the native extension
 
-The native extension ships as pre-compiled `.so` binaries on the [releases page](https://github.com/Goopil/rabbit-rs/releases).
+The native extension ships as pre-compiled `.so` binaries on the [releases page](https://github.com/Goopil/php-rabbit-rs/releases).
 
 ```bash
 # Download the .so matching your PHP version, architecture, and libc
@@ -477,4 +477,4 @@ The PHP layer maps Laravel jobs to native messages and delegates all I/O to the 
 
 ## License
 
-MIT. See [LICENSE](https://github.com/Goopil/rabbit-rs/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/Goopil/php-rabbit-rs/blob/main/LICENSE).

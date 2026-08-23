@@ -2,9 +2,8 @@
 
 High-performance RabbitMQ transport for PHP and Laravel, powered by Rust.
 
-[![CI](https://github.com/Goopil/rabbit-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/Goopil/rabbit-rs/actions/workflows/rust.yml)
-[![PHP](https://github.com/Goopil/rabbit-rs/actions/workflows/php.yml/badge.svg)](https://github.com/Goopil/rabbit-rs/actions/workflows/php.yml)
-[![Integration](https://github.com/Goopil/rabbit-rs/actions/workflows/integration.yml/badge.svg)](https://github.com/Goopil/rabbit-rs/actions/workflows/integration.yml)
+[![CI](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml)
+[![Release](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ## Quick start
