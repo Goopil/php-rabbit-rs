@@ -537,17 +537,26 @@ pub(crate) async fn run_actor(
                 let channel_key = settlement_result.channel_key;
                 state.settlement_in_flight.remove(&channel_key);
 
-                // Record metrics and release budget based on the settlement outcome.
                 let delivery_bytes = u64::try_from(settlement_result.token.payload.len()).unwrap_or(u64::MAX);
-                if let Ok(terminal) = &settlement_result.result {
-                    match terminal {
-                        DeliveryState::Acked => {
-                            state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
+                let is_terminal = match &settlement_result.result {
+                    Ok(_) => true,
+                    Err(error) => matches!(
+                        error.kind(),
+                        ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                    ),
+                };
+
+                if is_terminal {
+                    if let Ok(terminal) = &settlement_result.result {
+                        match terminal {
+                            DeliveryState::Acked => {
+                                state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Rejected => {
+                                state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
                         }
-                        DeliveryState::Rejected => {
-                            state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
-                        }
-                        DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
                     }
                     if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
                         *bytes = bytes.saturating_sub(delivery_bytes);
@@ -555,26 +564,17 @@ pub(crate) async fn run_actor(
                     state.release_budget();
                     record_consumer_buffer_metrics(&state);
                     state.dispatch();
+                    if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+                        ledger.pending.remove(&settlement_result.token.delivery_tag);
+                    }
                 } else {
-                    if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
-                        *bytes = bytes.saturating_sub(delivery_bytes);
-                    }
-                    state.release_budget();
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
                 }
 
-                // Reset the settling flag so a re-issued settlement can retry.
                 settlement_result.token.settling.store(false, std::sync::atomic::Ordering::Release);
-
-                // Remove from ledger.
-                if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
-                    ledger.pending.remove(&settlement_result.token.delivery_tag);
-                }
 
                 let _ = (settlement_result.completed).send(settlement_result.result);
 
-                // Launch the next queued settlement for this channel.
                 drain_settlement_queue(&mut state, channel_key);
             }
             Some(settle_through_result) = state.pending_settle_throughs.next(),
@@ -583,39 +583,55 @@ pub(crate) async fn run_actor(
                 state.settlement_in_flight.remove(&channel_key);
 
                 let target_tag = settle_through_result.target_tag;
-                let _affected_count = settle_through_result.affected_tokens.len();
 
-                if let Ok(DeliveryState::Acked) = &settle_through_result.result {
-                    for token in &settle_through_result.affected_tokens {
-                        let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
-                        if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
-                            *buf_bytes = buf_bytes.saturating_sub(bytes);
+                let is_terminal = match &settle_through_result.result {
+                    Ok(_) => true,
+                    Err(error) => matches!(
+                        error.kind(),
+                        ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                    ),
+                };
+
+                if is_terminal {
+                    if let Ok(DeliveryState::Acked) = &settle_through_result.result {
+                        for token in &settle_through_result.affected_tokens {
+                            let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                            if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                                *buf_bytes = buf_bytes.saturating_sub(bytes);
+                            }
+                            state.release_budget();
                         }
-                        state.release_budget();
+                        state.metrics.record_ack(
+                            settle_through_result
+                                .affected_tokens
+                                .last()
+                                .unwrap()
+                                .reserved_at
+                                .elapsed(),
+                        );
+                    } else {
+                        for token in &settle_through_result.affected_tokens {
+                            let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                            if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                                *buf_bytes = buf_bytes.saturating_sub(bytes);
+                            }
+                            state.release_budget();
+                        }
                     }
-                    state.metrics.record_ack(
-                        settle_through_result
-                            .affected_tokens
-                            .last()
-                            .unwrap()
-                            .reserved_at
-                            .elapsed(),
-                    );
                     record_consumer_buffer_metrics(&state);
                     state.dispatch();
+                    if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+                        for tag in (ledger.acked_prefix + 1)..=target_tag {
+                            ledger.pending.remove(&tag);
+                        }
+                        if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
+                            ledger.acked_prefix = target_tag;
+                        }
+                    }
                 } else {
-                    for token in &settle_through_result.affected_tokens {
-                        let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
-                        if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
-                            *buf_bytes = buf_bytes.saturating_sub(bytes);
-                        }
-                        state.release_budget();
-                    }
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
                 }
 
-                // Render all affected tokens terminal and reset settling flags.
                 for token in &settle_through_result.affected_tokens {
                     let final_state = match &settle_through_result.result {
                         Ok(state) => *state,
@@ -628,19 +644,8 @@ pub(crate) async fn run_actor(
                     token.settling.store(false, std::sync::atomic::Ordering::Release);
                 }
 
-                // Remove affected entries from the ledger and update acked_prefix.
-                if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
-                    for tag in (ledger.acked_prefix + 1)..=target_tag {
-                        ledger.pending.remove(&tag);
-                    }
-                    if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
-                        ledger.acked_prefix = target_tag;
-                    }
-                }
-
                 let _ = (settle_through_result.completed).send(settle_through_result.result);
 
-                // Launch the next queued settlement for this channel.
                 drain_settlement_queue(&mut state, channel_key);
             }
         }

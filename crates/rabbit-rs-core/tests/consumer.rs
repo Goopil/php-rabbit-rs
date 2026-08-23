@@ -616,6 +616,80 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
     )));
 }
 
+#[tokio::test(start_paused = true)]
+async fn retryable_settlement_failure_preserves_ledger_and_budget() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    // The delayed release will fail with a Nack confirmation (retryable:
+    // ConsumerErrorKind::Publish, NOT StaleGeneration/Transport).
+    transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
+    let publisher = publisher(&transport).await;
+    let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
+        .await
+        .delayed_publisher(publisher, Destination::new("jobs", "high"))
+        .delay_strategy(DelayStrategy::Plugin);
+    // max_in_flight=1 so the budget is observable: if the first delivery's
+    // budget is released on a retryable failure, the second delivery would
+    // be dispatched immediately. If the budget is correctly preserved, the
+    // second delivery stays buffered until the first is retried and acked.
+    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+        .await
+        .expect("consumer set");
+
+    let d1 = consumer.next().await.expect("delivery 1");
+
+    // A second delivery should not be available yet because the budget
+    // is still held by d1 (in_flight=1, max_in_flight=1).
+    assert!(
+        consumer.try_next().expect("buffer empty").is_none(),
+        "budget must not be released while d1 is Pending"
+    );
+
+    // Attempt delayed release — should fail with a retryable error (Publish),
+    // NOT StaleGeneration or Transport.
+    let result = d1.release(Duration::from_secs(5)).await;
+    assert!(result.is_err(), "delayed release should fail");
+    assert!(
+        !matches!(
+            result.unwrap_err().kind(),
+            ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+        ),
+        "failure must be retryable, not terminal"
+    );
+    assert_eq!(
+        d1.state(),
+        DeliveryState::Pending,
+        "delivery stays Pending for retry"
+    );
+
+    // The budget must NOT have been released — the second delivery should
+    // still not be dispatchable.
+    assert!(
+        consumer
+            .try_next()
+            .expect("buffer empty after retryable failure")
+            .is_none(),
+        "budget must not be released on retryable failure"
+    );
+
+    // Retry the release with a zero delay (immediate reject) — should succeed,
+    // proving the ledger entry was preserved for retry.
+    d1.release(Duration::ZERO)
+        .await
+        .expect("retry should succeed");
+    assert_eq!(d1.state(), DeliveryState::Rejected);
+
+    // Now the budget is released — the second delivery can be dispatched.
+    let d2 = consumer
+        .next()
+        .await
+        .expect("delivery 2 after budget release");
+    d2.ack().await.expect("ack d2");
+
+    let _ = consumer.close().await;
+}
+
 #[tokio::test]
 async fn consumer_tag_uses_subscription_name_without_debug_wrapper() {
     let transport = MockTransport::default();
