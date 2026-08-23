@@ -107,25 +107,25 @@ pub enum PublisherConnectionEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Destination {
-    pub exchange: String,
-    pub routing_key: String,
+    pub exchange: Arc<str>,
+    pub routing_key: Arc<str>,
 }
 
 impl Destination {
     #[must_use]
     pub fn new(exchange: impl Into<String>, routing_key: impl Into<String>) -> Self {
         Self {
-            exchange: exchange.into(),
-            routing_key: routing_key.into(),
+            exchange: Arc::from(exchange.into()),
+            routing_key: Arc::from(routing_key.into()),
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageProperties {
-    pub message_id: String,
-    pub content_type: Option<String>,
-    pub correlation_id: Option<String>,
+    pub message_id: Arc<str>,
+    pub content_type: Option<Arc<str>>,
+    pub correlation_id: Option<Arc<str>>,
     pub delay_ms: Option<u64>,
     pub headers: PublishHeaders,
 }
@@ -134,7 +134,7 @@ impl MessageProperties {
     #[must_use]
     pub fn new(message_id: impl Into<String>) -> Self {
         Self {
-            message_id: message_id.into(),
+            message_id: Arc::from(message_id.into()),
             content_type: None,
             correlation_id: None,
             delay_ms: None,

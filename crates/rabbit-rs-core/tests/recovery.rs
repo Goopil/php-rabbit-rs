@@ -76,7 +76,7 @@ mod helper {
 
     pub fn publish_request(message_id: &str, deadline: Instant) -> PublishRequest {
         let mut properties = MessageProperties::new(message_id);
-        properties.content_type = Some("application/json".to_owned());
+        properties.content_type = Some(Arc::from("application/json"));
         PublishRequest::new(
             Destination::new("jobs", "high"),
             Bytes::from_static(b"payload"),

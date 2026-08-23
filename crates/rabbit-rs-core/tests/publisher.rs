@@ -61,8 +61,8 @@ mod helper {
 
     pub fn request_recovery(message_id: &str, deadline: Instant) -> PublishRequest {
         let mut properties = MessageProperties::new(message_id);
-        properties.content_type = Some("application/json".to_owned());
-        properties.correlation_id = Some("correlation".to_owned());
+        properties.content_type = Some(Arc::from("application/json"));
+        properties.correlation_id = Some(Arc::from("correlation"));
         PublishRequest::new(
             Destination::new("jobs", "high"),
             Bytes::from_static(b"payload"),
@@ -434,8 +434,26 @@ fn republication_preserves_the_message_id() {
 
     let retry = original.republish(Instant::now() + Duration::from_secs(30));
 
-    assert_eq!(retry.properties.message_id, "stable-id");
+    assert_eq!(retry.properties.message_id.as_ref(), "stable-id");
     assert_eq!(retry.payload, original.payload);
+}
+
+#[test]
+fn publish_request_clone_is_refcount_bump() {
+    let request = request_safety("msg-1", b"job");
+    let cloned = request.clone();
+    assert!(std::ptr::eq(
+        request.destination.exchange.as_ref(),
+        cloned.destination.exchange.as_ref(),
+    ));
+    assert!(std::ptr::eq(
+        request.destination.routing_key.as_ref(),
+        cloned.destination.routing_key.as_ref(),
+    ));
+    assert!(std::ptr::eq(
+        request.properties.message_id.as_ref(),
+        cloned.properties.message_id.as_ref(),
+    ));
 }
 
 #[tokio::test(start_paused = true)]

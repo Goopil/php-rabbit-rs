@@ -678,7 +678,7 @@ fn handle_publish_completion(
                 state.byte_budget.release(retained.payload_bytes);
                 record_publisher_metrics(state);
                 let _ = retained.completion.send(Ok(PublishOutcome::Confirmed {
-                    message_id: retained.request.properties.message_id.clone(),
+                    message_id: retained.request.properties.message_id.to_string(),
                 }));
             }
         }
@@ -715,9 +715,17 @@ fn into_transport_request(
         )
     {
         let properties = TransportProperties {
-            content_type: request.properties.content_type.clone(),
-            correlation_id: request.properties.correlation_id.clone(),
-            message_id: Some(request.properties.message_id.clone()),
+            content_type: request
+                .properties
+                .content_type
+                .as_ref()
+                .map(ToString::to_string),
+            correlation_id: request
+                .properties
+                .correlation_id
+                .as_ref()
+                .map(ToString::to_string),
+            message_id: Some(request.properties.message_id.to_string()),
             delay_ms: route.queue.is_none().then_some(route.delay_ms),
             headers: request.properties.headers.clone(),
             persistent: true,
@@ -733,14 +741,22 @@ fn into_transport_request(
     }
 
     TransportRequest {
-        exchange: request.destination.exchange.clone(),
-        routing_key: request.destination.routing_key.clone(),
+        exchange: request.destination.exchange.to_string(),
+        routing_key: request.destination.routing_key.to_string(),
         payload: request.payload.clone(),
         mandatory,
         properties: TransportProperties {
-            content_type: request.properties.content_type.clone(),
-            correlation_id: request.properties.correlation_id.clone(),
-            message_id: Some(request.properties.message_id.clone()),
+            content_type: request
+                .properties
+                .content_type
+                .as_ref()
+                .map(ToString::to_string),
+            correlation_id: request
+                .properties
+                .correlation_id
+                .as_ref()
+                .map(ToString::to_string),
+            message_id: Some(request.properties.message_id.to_string()),
             delay_ms: request.properties.delay_ms,
             headers: request.properties.headers.clone(),
             persistent: true,
@@ -804,7 +820,7 @@ fn resolve_confirmation(
             state.byte_budget.release(in_flight.retained.payload_bytes);
             record_publisher_metrics(state);
             state.metrics.record_return();
-            let message_id = in_flight.retained.request.properties.message_id.clone();
+            let message_id = in_flight.retained.request.properties.message_id.to_string();
             complete_outcome(
                 in_flight.retained,
                 PublishOutcome::Returned {
@@ -821,7 +837,7 @@ fn resolve_confirmation(
         ConfirmationResult::Completed(Ok(PublishConfirmation::Ack(None))) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
             record_publisher_metrics(state);
-            let message_id = in_flight.retained.request.properties.message_id.clone();
+            let message_id = in_flight.retained.request.properties.message_id.to_string();
             complete_outcome(in_flight.retained, PublishOutcome::Confirmed { message_id });
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Nack(None))) => {

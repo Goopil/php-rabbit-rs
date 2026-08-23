@@ -30,7 +30,7 @@ impl DelayRouter {
         match strategy {
             DelayStrategy::Plugin => Ok(DelayedRoute {
                 exchange: delayed_exchange_name(&destination.exchange),
-                routing_key: destination.routing_key.clone(),
+                routing_key: destination.routing_key.to_string(),
                 delay_ms,
                 queue: None,
             }),

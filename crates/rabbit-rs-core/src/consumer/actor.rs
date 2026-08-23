@@ -924,7 +924,7 @@ async fn delayed_release(
     let route = DelayRouter::route(strategy, destination, delay_ms)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::Publish, error.to_string()))?;
     let mut properties = MessageProperties::new(token.message_id.as_str());
-    properties.correlation_id.clone_from(&token.correlation_id);
+    properties.correlation_id = token.correlation_id.as_ref().map(|s| Arc::from(s.as_str()));
     properties.headers = AttemptsResolver::default()
         .delayed_headers(&token.headers, token.attempts)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
