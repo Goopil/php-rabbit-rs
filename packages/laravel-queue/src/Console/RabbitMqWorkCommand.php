@@ -16,6 +16,11 @@ class RabbitMqWorkCommand extends Command
         {--workers=1 : Number of child workers}
         {--max-restarts=3 : Maximum restarts per worker}
         {--backoff=1 : Base backoff in seconds}
+        {--timeout=60 : The number of seconds a child process can run}
+        {--tries= : Number of times to attempt a job before failing it}
+        {--memory=128 : The memory limit in megabytes}
+        {--max-jobs= : The number of jobs to process before stopping}
+        {--max-time= : The maximum number of seconds the worker should run}
         {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
     protected $description = 'Supervise multiple Rabbit RS queue workers with automatic restart';
@@ -39,12 +44,21 @@ class RabbitMqWorkCommand extends Command
      */
     protected function createSupervisor(): WorkerSupervisor
     {
+        $options = [
+            'timeout'  => (int) $this->option('timeout'),
+            'tries'    => $this->option('tries') !== null ? (int) $this->option('tries') : null,
+            'memory'   => (int) $this->option('memory'),
+            'max-jobs' => $this->option('max-jobs') !== null ? (int) $this->option('max-jobs') : null,
+            'max-time' => $this->option('max-time') !== null ? (int) $this->option('max-time') : null,
+        ];
+
         return new WorkerSupervisor(
             connection: $this->option('connection'),
             queue: $this->option('queue'),
             workers: (int) $this->option('workers'),
             maxRestarts: (int) $this->option('max-restarts'),
             baseBackoffSeconds: (int) $this->option('backoff'),
+            options: $options,
         );
     }
 

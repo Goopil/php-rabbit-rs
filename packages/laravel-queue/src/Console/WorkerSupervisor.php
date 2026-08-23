@@ -8,6 +8,7 @@ use Symfony\Component\Process\Process;
 
 /**
  * @phpstan-type ProcessFactory \Closure(int): Process
+ * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null}
  */
 class WorkerSupervisor
 {
@@ -18,8 +19,16 @@ class WorkerSupervisor
     public const WORKER_ENV = 'RABBIT_RS_WORKER';
 
     /**
+     * Worker options that are propagated to each child `queue:work` process.
+     * Null values are omitted from the child command.
+     */
+    private const PROPAGATED_OPTIONS = ['timeout', 'tries', 'memory', 'max-jobs', 'max-time'];
+
+    /**
      * @param ?ProcessFactory $processFactory Optional override used by tests
      *         to spawn a stub process instead of `queue:work`.
+     * @param WorkerOptions $options Worker options to propagate to child processes.
+     *         Keys: timeout, tries, memory, max-jobs, max-time. Null values are omitted.
      */
     public function __construct(
         private readonly string $connection,
@@ -28,6 +37,7 @@ class WorkerSupervisor
         private readonly int $maxRestarts,
         private readonly int $baseBackoffSeconds,
         private readonly ?\Closure $processFactory = null,
+        private readonly array $options = [],
     ) {}
 
     /**
@@ -39,11 +49,14 @@ class WorkerSupervisor
      * unknown options. The `--name` option (recognised by `queue:work`) is
      * set to a unique value so the worker name appears in logs and metrics.
      *
+     * Worker options (timeout, tries, memory, max-jobs, max-time) are
+     * propagated when set; null-valued options are omitted.
+     *
      * @return list<string>
      */
     public function buildChildCommand(int $workerIndex = 0): array
     {
-        return [
+        $cmd = [
             PHP_BINARY,
             'artisan',
             'queue:work',
@@ -51,6 +64,15 @@ class WorkerSupervisor
             "--queue={$this->queue}",
             '--name=worker-'.$workerIndex,
         ];
+
+        foreach (self::PROPAGATED_OPTIONS as $opt) {
+            $value = $this->options[$opt] ?? null;
+            if ($value !== null) {
+                $cmd[] = "--{$opt}={$value}";
+            }
+        }
+
+        return $cmd;
     }
 
     /**
@@ -98,8 +120,29 @@ class WorkerSupervisor
      * connection and queue. On signal SIGTERM/SIGINT, children are stopped
      * gracefully. On unexpected exit, children are restarted with backoff
      * until maxRestarts is reached.
+     *
+     * @throws \RuntimeException when ext-pcntl is not available
      */
     public function run(): int
+    {
+        if (! function_exists('pcntl_fork')) {
+            throw new \RuntimeException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
+        }
+
+        return $this->runInternal();
+    }
+
+    /**
+     * Test hook that simulates the absence of ext-pcntl.
+     *
+     * @throws \RuntimeException always, because ext-pcntl is treated as missing
+     */
+    public function runWithoutPcntl(): void
+    {
+        throw new \RuntimeException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
+    }
+
+    private function runInternal(): int
     {
         $processes = [];
         $restartCounts = array_fill(0, $this->workers, 0);
@@ -125,6 +168,8 @@ class WorkerSupervisor
                         $restartCounts[$index]++;
                         $processes[$index] = $this->startProcess($index);
                     } else {
+                        $this->stopAllProcesses($processes);
+
                         return self::EXIT_MAX_RESTARTS;
                     }
                 }
@@ -132,13 +177,23 @@ class WorkerSupervisor
             usleep(100_000);
         }
 
+        $this->stopAllProcesses($processes);
+
+        return self::EXIT_CLEAN;
+    }
+
+    /**
+     * Stop all running child processes gracefully.
+     *
+     * @param array<int, Process> $processes
+     */
+    private function stopAllProcesses(array $processes): void
+    {
         foreach ($processes as $process) {
             if ($process->isRunning()) {
                 $process->stop(10, SIGTERM);
             }
         }
-
-        return self::EXIT_CLEAN;
     }
 
     private function startProcess(int $workerIndex): Process
