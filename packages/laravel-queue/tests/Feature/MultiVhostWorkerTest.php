@@ -170,7 +170,10 @@ function multiVhostQueue($app, int $blockFor = 0): array
 function multiVhostDelivery(string $subscription, int $attempts): Delivery
 {
     return new Delivery(
-        '{"uuid":"018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137","job":"App\\Jobs\\Report"}',
+        json_encode([
+            'uuid' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
+            'job' => 'App\\Jobs\\Report',
+        ], JSON_THROW_ON_ERROR),
         [
             'message_id' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
             'subscription' => $subscription,

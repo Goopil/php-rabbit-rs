@@ -187,3 +187,33 @@ it('uses the Laravel ack callback and event sequence on fail', function (): void
         ->and($job->hasFailed())->toBeTrue()
         ->and($job->isDeleted())->toBeTrue();
 });
+
+it('throws InvalidArgumentException when message_id is missing', function (): void {
+    $delivery = new Delivery(
+        '{"job":"test"}',
+        ['attempts' => 0],
+    );
+
+    expect(fn() => job($delivery))
+        ->toThrow(InvalidArgumentException::class, 'message_id');
+});
+
+it('throws InvalidArgumentException when message_id is empty', function (): void {
+    $delivery = new Delivery(
+        '{"job":"test"}',
+        ['message_id' => '', 'attempts' => 0],
+    );
+
+    expect(fn() => job($delivery))
+        ->toThrow(InvalidArgumentException::class, 'message_id');
+});
+
+it('throws InvalidArgumentException when payload is invalid JSON', function (): void {
+    $delivery = new Delivery(
+        'not-json',
+        ['message_id' => 'abc', 'attempts' => 0],
+    );
+
+    expect(fn() => job($delivery))
+        ->toThrow(InvalidArgumentException::class, 'not valid JSON');
+});
