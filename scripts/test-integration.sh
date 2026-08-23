@@ -49,11 +49,11 @@ if ! command -v "${PHP_BIN}" >/dev/null 2>&1; then
 else
     echo ""
     echo "=== Verifying extension is loaded ==="
-    MODULES="$("${PHP_BIN}" -n -d "extension=${EXTENSION_SO}" -m 2>/dev/null || true)"
+    MODULES="$("${PHP_BIN}" -d "extension=${EXTENSION_SO}" -m 2>/dev/null || true)"
     if ! grep -q rabbit_rs <<< "${MODULES}"; then
         echo "ERROR: ext-rabbit_rs is not loaded" >&2
-        echo "  PHP SAPI: $(${PHP_BIN} -n -r 'echo php_sapi_name();' 2>/dev/null)"
-        echo "  PHP version: $(${PHP_BIN} -n -r 'echo phpversion();' 2>/dev/null)"
+        echo "  PHP SAPI: $(${PHP_BIN} -r 'echo php_sapi_name();' 2>/dev/null)"
+        echo "  PHP version: $(${PHP_BIN} -r 'echo phpversion();' 2>/dev/null)"
         exit 1
     fi
     echo "ext-rabbit_rs is loaded."
@@ -65,7 +65,7 @@ else
 
     echo ""
     echo "=== Running Laravel integration tests ==="
-    "${PHP_BIN}" -n -d "extension=${EXTENSION_SO}" vendor/bin/pest tests/Integration --testdox
+    "${PHP_BIN}" -d "extension=${EXTENSION_SO}" vendor/bin/pest tests/Integration --testdox
 fi
 
 echo ""

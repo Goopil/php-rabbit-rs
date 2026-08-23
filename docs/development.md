@@ -189,23 +189,31 @@ Three tiers:
 
 Unit and Feature tests use **fake classes** defined in `tests/bootstrap.php` and `tests/Pest.php` that simulate the extension's classes. This is why they must run **without** the extension loaded — the "missing extension" assertion in `RabbitMqServiceProviderTest` would fail if the real extension were present.
 
-### Test scripts and `php -n`
+### Test scripts and extension loading
 
-All test scripts use `php -n` to ignore system ini files. This prevents "Module already loaded" warnings when the extension is installed system-wide (e.g. via `./scripts/install.sh`).
+The extension should **not** be installed system-wide on the development machine. Test scripts load it from `target/debug/` (or `target/release/`) via `-d extension=<artifact>` when needed.
 
-- `php -n` = ignore all ini files
-- `php -n -d extension=<artifact>` = ignore ini files, load only the local build
-- Built-in extensions (curl, pcntl, json, etc.) remain available with `-n` because they are compiled into PHP
+- `php` = run without the extension (Unit/Feature tests)
+- `php -d extension=<artifact>` = load the local build (Integration, extension tests)
+- PHPT tests use `php -n` (standard `run-tests.php` isolation, not related to our loading strategy)
 
-The shared helpers in `scripts/lib-extension.sh` encapsulate this:
+If the extension is installed system-wide (e.g. via `./scripts/install.sh`), remove it first:
+
+```bash
+cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes
+# Also remove any ext-rabbit_rs.ini in the PHP conf.d directory
+rm -f $(php --ini | grep conf.d | head -1 | awk '{print $1}')/ext-rabbit_rs.ini
+```
+
+The shared helpers in `scripts/lib-extension.sh` encapsulate the loading:
 
 | Function | What it does |
 |----------|-------------|
 | `ext_artifact_path()` | Resolves `target/debug/` or `target/release/` artifact |
 | `ext_ensure_built()` | Builds with `--features extension-tests` if missing |
-| `ext_verify_loads()` | Verifies the extension loads via `php -n -d extension= -m` |
-| `ext_php_cmd()` | Echoes `php -n -d extension=<artifact>` |
-| `ext_php_no_ext_cmd()` | Echoes `php -n` (no extension at all) |
+| `ext_verify_loads()` | Verifies the extension loads via `php -d extension= -m` |
+| `ext_php_cmd()` | Echoes `php -d extension=<artifact>` |
+| `ext_php_no_ext_cmd()` | Echoes `php` (no extension at all) |
 
 ### "I want to test X" reference
 
@@ -257,17 +265,17 @@ Integration tests need a live RabbitMQ cluster. The lab is a 3-node Docker Compo
 # Build the extension
 cargo build -p rabbit-rs-php --features extension-tests
 
-# Run tests with only the local extension loaded (no system ini)
-php -n -d extension=target/debug/librabbit_rs_php.dylib vendor/bin/pest
+# Run tests with the local extension loaded from target/
+php -d extension=target/debug/librabbit_rs_php.dylib vendor/bin/pest
 ```
 
-The `-n` flag ensures the extension is loaded exactly once. Without it, if the extension is also installed system-wide, PHP emits "Module already loaded" warnings.
+The extension is loaded from `target/` via `-d extension=`. It should not be installed system-wide on the dev machine.
 
 ### Pattern 2: Tests that must run without the extension
 
 ```bash
-# Run with no ini files and no extension
-php -n vendor/bin/pest
+# Run with plain php (no extension loaded)
+php vendor/bin/pest
 ```
 
 This is required for Laravel Unit/Feature tests because:
@@ -275,7 +283,7 @@ This is required for Laravel Unit/Feature tests because:
 2. `RabbitMqServiceProviderTest` asserts that the provider throws when the extension is missing
 3. Loading the real extension would conflict with the fake classes
 
-### Pattern 3: System-wide installation
+### Pattern 3: System-wide installation (not recommended for dev)
 
 ```bash
 # Install the extension into the current PHP
@@ -285,7 +293,11 @@ This is required for Laravel Unit/Feature tests because:
 php -m | grep rabbit_rs
 ```
 
-After installation, the extension is loaded from the system ini directory. Test scripts still use `php -n` to avoid double-loading.
+If the extension is installed system-wide, test scripts will emit "Module already loaded" warnings when they also load it via `-d extension=`. Remove it before running tests:
+
+```bash
+cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes
+```
 
 ## Common pitfalls
 
@@ -305,7 +317,7 @@ After installation, the extension is loaded from the system ini directory. Test 
 
 **Cause:** The extension is installed system-wide and the test script also loads it via `-d extension=`.
 
-**Fix:** Test scripts use `php -n` to ignore system ini files. If you write a new script, source `scripts/lib-extension.sh` and use `ext_php_cmd()` or `ext_php_no_ext_cmd()`.
+**Fix:** Remove the system-wide installation: `cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes`. Also delete any `ext-rabbit_rs.ini` in the PHP conf.d directory. Test scripts load the extension from `target/` only.
 
 ### Laravel Unit tests fail when the extension is loaded
 

@@ -39,8 +39,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Use -n to ignore system ini files, preventing double-loading.
-"${PHP_FPM_PATH}" -n -F -y "${FIXTURE_DIR}/php-fpm.conf" -d "extension=${ARTIFACT}" &
+# Load the extension from target/ via -d extension=<artifact>.
+"${PHP_FPM_PATH}" -F -y "${FIXTURE_DIR}/php-fpm.conf" -d "extension=${ARTIFACT}" &
 FPM_PID=$!
 
 for _ in {1..100}; do

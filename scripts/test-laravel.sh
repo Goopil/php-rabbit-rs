@@ -10,8 +10,8 @@ set -euo pipefail
 #   ./scripts/test-laravel.sh tests/Integration   # specified paths (auto-builds extension)
 #   ./scripts/test-laravel.sh --testdox            # passes extra args to Pest
 #
-# The -n flag is used to ignore system ini files, preventing double-loading
-# of the extension when it is already installed system-wide.
+# The extension should NOT be installed system-wide on the dev machine.
+# Test scripts load it from target/ via -d extension=<artifact> when needed.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-extension.sh
@@ -58,9 +58,9 @@ for arg in "${PEST_ARGS[@]:-}"; do
 done
 
 # --- Build the appropriate PHP command ---
-# Unit/Feature tests use php -n (no ini, no extension) so the
+# Unit/Feature tests use plain php (no extension) so the
 # "missing extension" assertion in RabbitMqServiceProviderTest passes.
-# Integration tests use php -n -d extension=<local artifact>.
+# Integration tests use php -d extension=<local artifact>.
 if [[ "${NEED_EXTENSION}" == true ]]; then
     ext_ensure_built
     ext_verify_loads

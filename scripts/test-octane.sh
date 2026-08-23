@@ -16,7 +16,6 @@ if ! command -v php &> /dev/null; then
 fi
 
 # Octane lifecycle tests use fake classes (no extension needed).
-# Use -n to ignore system ini files, preventing double-loading warnings.
-php -n -d memory_limit=512M vendor/bin/pest tests/Feature --filter="Octane" --testdox
+php -d memory_limit=512M vendor/bin/pest tests/Feature --filter="Octane" --testdox
 
 echo "Octane lifecycle tests passed"

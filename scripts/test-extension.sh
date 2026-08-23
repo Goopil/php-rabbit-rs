@@ -35,7 +35,7 @@ major_minor_version() {
 PHP_BIN_PATH="$(resolve_tool php "${PHP_BIN:-php}")"
 PHP_CONFIG_PATH="$(resolve_tool php-config "${PHP_CONFIG:-php-config}")"
 
-PHP_VERSION="$("${PHP_BIN_PATH}" -n -r 'echo PHP_VERSION;')"
+PHP_VERSION="$("${PHP_BIN_PATH}" -r 'echo PHP_VERSION;')"
 PHP_CONFIG_VERSION="$("${PHP_CONFIG_PATH}" --version)"
 PHP_MAJOR_MINOR="$(major_minor_version php "${PHP_VERSION}")"
 PHP_CONFIG_MAJOR_MINOR="$(major_minor_version php-config "${PHP_CONFIG_VERSION}")"
@@ -75,7 +75,7 @@ ARTIFACT="$(ext_artifact_path)"
 
 RABBIT_RS_EXPECTED_VERSION="$({
     cargo metadata --manifest-path "${ROOT_DIR}/Cargo.toml" --no-deps --format-version=1
-} | "${PHP_BIN_PATH}" -n -r '
+} | "${PHP_BIN_PATH}" -r '
     $metadata = json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR);
     foreach ($metadata["packages"] as $package) {
         if ($package["name"] === "rabbit-rs-php") {
@@ -96,8 +96,7 @@ if [[ ! -d "${PHP_EXT_DIR}/vendor" ]]; then
 fi
 
 echo "Running Pest tests..."
-# Use -n to ignore system ini files, preventing double-loading.
-(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -n -d "extension=${ARTIFACT}" vendor/bin/pest)
+(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -d "extension=${ARTIFACT}" vendor/bin/pest)
 
 # --- PHPT tests (only extension_metadata.phpt) ---
 PHPT_TEST="${PHPT_DIR}/extension_metadata.phpt"

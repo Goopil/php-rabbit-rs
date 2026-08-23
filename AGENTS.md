@@ -56,13 +56,13 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 
 ## Extension Loading in Test Scripts
 
-- Test scripts use `php -n` to ignore all system ini files, preventing "Module already loaded" warnings when the extension is installed system-wide.
+- The extension should NOT be installed system-wide on the development machine. Test scripts load it from `target/debug/` (or `target/release/`) via `-d extension=<artifact>`.
+- If the extension is installed system-wide (e.g. via `./scripts/install.sh`), remove it first: `cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes` and delete any `ext-rabbit_rs.ini` in the PHP conf.d directory.
 - `scripts/lib-extension.sh` provides shared helpers:
   - `ext_artifact_path()`: resolves `target/debug/librabbit_rs_php.{dylib|so}` (falls back to `target/release/`).
   - `ext_ensure_built()`: builds the extension with `--features extension-tests` if the artifact is missing.
-  - `ext_php_cmd()`: echoes `php -n -d extension=<artifact>` for tests that need the extension.
-  - `ext_php_no_ext_cmd()`: echoes `php -n` for Unit/Feature tests that must run without the extension.
-- Built-in extensions (curl, pcntl, json, etc.) remain available with `-n` because they are compiled into PHP.
+  - `ext_php_cmd()`: echoes `php -d extension=<artifact>` for tests that need the extension.
+  - `ext_php_no_ext_cmd()`: echoes `php` for Unit/Feature tests that must run without the extension.
 - Laravel Unit/Feature tests must run without the extension so the "missing extension" assertion in `RabbitMqServiceProviderTest` passes.
 
 ## Rust Conventions

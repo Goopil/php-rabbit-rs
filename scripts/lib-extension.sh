@@ -9,12 +9,12 @@
 #   ext_build_debug        — build the extension in debug mode with --features extension-tests
 #   ext_ensure_built       — build the extension if the artifact is missing
 #   ext_verify_loads       — verify the extension loads correctly
-#   ext_php_cmd            — echo a PHP command that loads only the local extension (php -n -d extension=<artifact>)
-#   ext_php_no_ext_cmd     — echo a PHP command with no ini files and no extension (php -n)
+#   ext_php_cmd            — echo a PHP command that loads the local extension (php -d extension=<artifact>)
+#   ext_php_no_ext_cmd     — echo a plain PHP command (no extension loaded)
 #
-# The -n flag tells PHP to ignore all ini files, preventing double-loading
-# when the extension is already installed system-wide. Built-in extensions
-# (curl, pcntl, json, etc.) remain available because they are compiled in.
+# The extension should NOT be installed system-wide on the development machine.
+# If it is, remove it first: ./scripts/install.sh --remove  (or cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes)
+# Test scripts load the extension from target/debug/ (or target/release/) via -d extension=<artifact>.
 
 set -euo pipefail
 
@@ -91,29 +91,28 @@ ext_verify_loads() {
 
     echo "=== Verifying ext-rabbit_rs loads ==="
     local modules
-    modules="$("${php_bin}" -n -d "extension=${artifact}" -m 2>/dev/null || true)"
+    modules="$("${php_bin}" -d "extension=${artifact}" -m 2>/dev/null || true)"
     if ! grep -q rabbit_rs <<< "${modules}"; then
         echo "ERROR: ext-rabbit_rs failed to load" >&2
-        echo "  PHP SAPI: $(${php_bin} -n -r 'echo php_sapi_name();' 2>/dev/null)"
-        echo "  PHP version: $(${php_bin} -n -r 'echo phpversion();' 2>/dev/null)"
+        echo "  PHP SAPI: $(${php_bin} -r 'echo php_sapi_name();' 2>/dev/null)"
+        echo "  PHP version: $(${php_bin} -r 'echo phpversion();' 2>/dev/null)"
         exit 1
     fi
     echo "ext-rabbit_rs is loaded."
 }
 
-# Echo a PHP command that loads only the local extension.
+# Echo a PHP command that loads the local extension from target/.
 # Usage: PHP_CMD=( $(ext_php_cmd) ); "${PHP_CMD[@]}" vendor/bin/pest
-# All ini files are ignored (-n), so no system extension can double-load.
 ext_php_cmd() {
     local artifact
     artifact="$(ext_artifact_path)"
     local php_bin="${PHP_BIN:-php}"
-    echo "${php_bin}" -n -d "extension=${artifact}"
+    echo "${php_bin}" -d "extension=${artifact}"
 }
 
-# Echo a PHP command with no ini files and no extension at all.
+# Echo a plain PHP command with no extension loaded.
 # Used for Unit/Feature tests that must run without ext-rabbit_rs.
 ext_php_no_ext_cmd() {
     local php_bin="${PHP_BIN:-php}"
-    echo "${php_bin}" -n
+    echo "${php_bin}"
 }
