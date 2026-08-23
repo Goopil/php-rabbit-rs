@@ -293,6 +293,15 @@ async fn run_coordinator(
                         };
                         if let Err(error) = result {
                             eprintln!("recovery generation {generation} failed: {error}");
+                            // Roll back so the next Ready re-attempts recovery.
+                            last_generation = generation.saturating_sub(1);
+                            // Drive the actor back to Recovering so the
+                            // deterministic recovery order is re-attempted.
+                            let _ = actor
+                                .connection_lost(TransportError::connection(format!(
+                                    "recovery failed: {error}"
+                                )))
+                                .await;
                         }
                     }
                     ConnectionState::Recovering { .. } | ConnectionState::Connecting { .. } => {
@@ -445,7 +454,11 @@ async fn recover_generation(
                     CoordinatorError::new(format!("consumer spawn failed: {error}"))
                 })?;
 
-        consumers.lock().await.insert(worker.name.clone(), consumer);
+        let mut guard = consumers.lock().await;
+        if let Some(old) = guard.insert(worker.name.clone(), consumer) {
+            let _ = old.close().await;
+        }
+        drop(guard);
     }
 
     Ok(())

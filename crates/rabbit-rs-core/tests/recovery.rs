@@ -384,6 +384,58 @@ async fn permanent_error_stops_the_recovery_loop() {
     coordinator.close().await.expect("close");
 }
 
+#[tokio::test(start_paused = true)]
+async fn recovery_failure_rolls_back_and_retries() {
+    let transport = Arc::new(MockTransport::default());
+    // First connection succeeds; recovery generation 1 will attempt consumers.
+    transport.push_connect_result(Ok(()));
+    // Make the first consumer-set spawn fail (set_qos consumes this error).
+    transport.push_consumer_result(Err(TransportError::connection("test failure")));
+    // Pre-queue results for the retry: connect succeeds, consumer succeeds.
+    transport.push_connect_result(Ok(()));
+    transport.push_consumer_result(Ok(()));
+
+    let config = config();
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    // Wait for the first Ready generation so recovery runs.  The state may
+    // transition through Ready{1} → Recovering → Connecting → Ready{2} very
+    // quickly, so we wait for Ready with any generation ≥ 1, then for the
+    // consumer to appear.
+    wait_for_state(&coordinator, |s| matches!(s, ConnectionState::Ready { .. })).await;
+
+    // If the first recovery failed, the coordinator drives the actor to
+    // Recovering and rolls back last_generation.  Advance time through the
+    // backoff so the reconnection and second recovery can occur.
+    tokio::time::advance(Duration::from_secs(2)).await;
+
+    // Wait for the second Ready generation (the retry).
+    let ready2 = tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_state(
+            &coordinator,
+            |s| matches!(s, ConnectionState::Ready { generation: g } if *g >= 2),
+        ),
+    )
+    .await;
+    assert!(
+        ready2.is_ok(),
+        "coordinator should reach Ready{{gen>=2}} after rollback+retry, state: {:?}",
+        coordinator.state()
+    );
+
+    // The consumer should be available after the successful retry.
+    let consumer = tokio::time::timeout(Duration::from_secs(5), coordinator.consumer("main"))
+        .await
+        .expect("timed out waiting for consumer")
+        .expect("consumer should become available after retry");
+
+    drop(consumer);
+
+    coordinator.close().await.expect("close");
+}
+
 // ---------------------------------------------------------------------------
 // Recovery state machine tests (from recovery_state_machine.rs)
 // ---------------------------------------------------------------------------
