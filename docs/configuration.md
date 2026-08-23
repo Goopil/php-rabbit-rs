@@ -215,7 +215,7 @@ See [Topology — Delay routing](topology.md#delay-routing) for details.
     'queue' => [
         'type' => 'quorum',
         'durable' => true,
-        'delivery_limit' => 20,
+        'delivery_limit' => null,
     ],
     'dead_letter' => null,
 ],
@@ -225,10 +225,12 @@ See [Topology — Delay routing](topology.md#delay-routing) for details.
 |---------|-------------|---------|
 | `queue.type` | `quorum` or `classic` | `quorum` |
 | `queue.durable` | Queue durability | `true` |
-| `queue.delivery_limit` | Max delivery attempts before dead-letter | `20` |
+| `queue.delivery_limit` | Max delivery attempts before dead-letter; requires `dead_letter` when set | `null` |
 | `dead_letter` | DLQ configuration or `null` | `null` |
 
-By default, no DLQ is created. To enable a DLQ:
+By default, no delivery limit or DLQ is configured. `dead_letter` **must** be configured when `delivery_limit` is set — without a DLX, poison messages are silently dropped after the limit is reached. Set `delivery_limit` to `null` to disable the limit entirely.
+
+To enable a DLQ with a delivery limit:
 
 ```php
 'topology' => [

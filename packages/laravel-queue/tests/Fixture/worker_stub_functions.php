@@ -53,4 +53,27 @@ namespace {
             LOCK_EX,
         );
     }
+
+    /**
+     * Write a marker file indicating that the worker stub has exited.
+     * Tests poll for this file to verify the supervisor stopped a running
+     * worker rather than leaving it as an orphan.
+     */
+    function writeWorkerExitMarker(string $stateDir, int $worker): void
+    {
+        if (! is_dir($stateDir)) {
+            @mkdir($stateDir, 0o777, true);
+        }
+
+        $exitFile = $stateDir . '/worker-' . $worker . '-exited.txt';
+        file_put_contents(
+            $exitFile,
+            json_encode([
+                'worker' => $worker,
+                'pid' => getmypid(),
+                'time' => microtime(true),
+            ]),
+            LOCK_EX,
+        );
+    }
 }

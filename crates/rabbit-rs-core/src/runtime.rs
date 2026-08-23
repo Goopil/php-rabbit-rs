@@ -358,6 +358,8 @@ mod tests {
             dead_letter: None,
             delivery_limit: None,
             publisher: crate::config::PublisherConfigSection::default(),
+            queue_type: crate::transport::QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid client config")

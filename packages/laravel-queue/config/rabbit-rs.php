@@ -304,6 +304,12 @@ return [
     |                       many delivery attempts, the message is dead-lettered
     |                       (if dead_letter is configured) or dropped.
     |
+    |                       dead_letter MUST be configured when delivery_limit is
+    |                       set. Without a DLX, poison messages are silently
+    |                       dropped after the limit is reached — violating the
+    |                       at-least-once delivery contract. Set to null to
+    |                       disable the delivery limit entirely.
+    |
     | dead_letter:          Optional dead-letter exchange + queue config. When
     |                       set, messages that exceed delivery_limit are routed
     |                       here instead of being silently dropped.
@@ -319,7 +325,7 @@ return [
         'queue' => [
             'type' => 'quorum',
             'durable' => true,
-            'delivery_limit' => 20,
+            'delivery_limit' => null,
         ],
         'dead_letter' => null,
     ],

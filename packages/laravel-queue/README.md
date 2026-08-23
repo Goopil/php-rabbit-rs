@@ -328,7 +328,7 @@ Defines the queue and dead-letter topology the driver declares when `topology_mo
     'queue' => [
         'type' => 'quorum',       // quorum (default) or classic
         'durable' => true,
-        'delivery_limit' => 20,
+        'delivery_limit' => null, // null = no limit; requires dead_letter when set
     ],
     'dead_letter' => null,
 ],
@@ -336,7 +336,7 @@ Defines the queue and dead-letter topology the driver declares when `topology_mo
 
 **`queue.type`** — `quorum` (default) for replicated, Raft-based queues with delivery limits. Recommended for production. `classic` for single-node durable queues.
 
-**`queue.delivery_limit`** — Max redelivery count on quorum queues. After this many attempts, the message is dead-lettered (if `dead_letter` is configured) or dropped.
+**`queue.delivery_limit`** — Max redelivery count on quorum queues. After this many attempts, the message is dead-lettered. **`dead_letter` MUST be configured when `delivery_limit` is set** — without a DLX, poison messages are silently dropped after the limit is reached. Set to `null` to disable the delivery limit entirely.
 
 #### Dead-letter exchange
 

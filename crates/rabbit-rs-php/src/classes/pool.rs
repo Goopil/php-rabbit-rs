@@ -311,41 +311,66 @@ impl Pool {
 
     fn invoke_connection_state_callbacks(&self) {
         let states = self.client.connection_states();
-        let mut last_states = self
-            .last_connection_states
-            .lock()
-            .expect("connection state mutex poisoned");
-        for (broker, state) in &states {
-            let (state_name, generation) = connection_state_parts(state);
-            let current = (state_name.clone(), generation);
-            let changed = last_states
-                .get(broker)
-                .is_none_or(|previous| *previous != current);
-            if changed {
-                let _ = self.connection_state_callback.invoke(vec![
-                    &broker.as_str(),
-                    &state_name,
-                    &generation,
-                ]);
-                last_states.insert(broker.clone(), current);
-            }
+
+        // Collect all changed states under the lock, then release before invoking
+        // callbacks to prevent deadlock when a callback re-enters stats().
+        let pending: Vec<(String, String, i64, (String, i64))> = {
+            let mut last_states = self
+                .last_connection_states
+                .lock()
+                .expect("connection state mutex poisoned");
+            states
+                .iter()
+                .filter_map(|(broker, state)| {
+                    let (state_name, generation) = connection_state_parts(state);
+                    let current = (state_name.clone(), generation);
+                    let changed = last_states
+                        .get(broker)
+                        .is_none_or(|previous| *previous != current);
+                    if changed {
+                        last_states.insert(broker.clone(), current.clone());
+                        Some((broker.clone(), state_name, generation, current))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }; // Lock released here
+
+        for (broker, state_name, generation, _) in pending {
+            let _ = self.connection_state_callback.invoke_unlocked(vec![
+                &broker.as_str(),
+                &state_name,
+                &generation,
+            ]);
         }
     }
 
     fn invoke_backpressure_callback(&self, current_backpressure: u64) {
-        let mut last = self
-            .last_backpressure_total
-            .lock()
-            .expect("backpressure mutex poisoned");
-        if current_backpressure > *last {
+        // Determine under lock whether the backpressure metric changed, then
+        // release the lock before invoking the callback to prevent deadlock
+        // when the callback re-enters stats().
+        let should_invoke = {
+            let mut last = self
+                .last_backpressure_total
+                .lock()
+                .expect("backpressure mutex poisoned");
+            if current_backpressure > *last {
+                *last = current_backpressure;
+                true
+            } else {
+                false
+            }
+        }; // Lock released here
+
+        if should_invoke {
             let (in_flight, capacity) = self.client.publisher_utilization();
-            let _ = self.backpressure_callback.invoke(vec![
+            let _ = self.backpressure_callback.invoke_unlocked(vec![
                 &"global".to_string(),
                 &i64::try_from(in_flight).unwrap_or(i64::MAX),
                 &i64::try_from(capacity).unwrap_or(i64::MAX),
             ]);
         }
-        *last = current_backpressure;
     }
 }
 

@@ -130,7 +130,7 @@ Duplicates are expected and normal. They occur in these scenarios:
 
 1. **Make jobs idempotent** — use `message_id` or business keys to detect duplicate work
 2. **Use `attempts()`** — the `RabbitMqJob::attempts()` method returns the delivery count from `x-acquired-count` or `x-delivery-count` headers
-3. **Set `delivery_limit`** — quorum queues dead-letter messages that exceed the limit (default: 20)
+3. **Set `delivery_limit`** — quorum queues dead-letter messages that exceed the limit; `dead_letter` must be configured when `delivery_limit` is set
 4. **Monitor duplicates** — track `reconnects_total` and `deliveries_total` metrics; spikes indicate recovery-induced duplicates
 
 ### Measuring duplicates

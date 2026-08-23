@@ -139,6 +139,22 @@ describe('lifecycle operations', function () {
         expect($poolAfterReload)->not->toBe($pool);
     });
 
+    it('reload calls close on the cached pool', function () {
+        $pool = new Pool();
+        $factory = new NativePoolFactory(
+            createPool: static fn (array $config): Pool => $pool,
+        );
+        $this->app->instance(NativePoolFactory::class, $factory);
+
+        $config = lifecycleNormalizedNativeConfig($this->app);
+        $factory->make($config);
+
+        $lifecycle = new OctaneLifecycle($this->app);
+        $lifecycle->reload();
+
+        expect($pool->closeCalls)->toBe(1);
+    });
+
     it('worker stop drains pools', function () {
         $lifecycle = new OctaneLifecycle($this->app);
 
@@ -150,6 +166,38 @@ describe('lifecycle operations', function () {
 
         $poolAfterStop = $factory->make($config);
         expect($poolAfterStop)->not->toBe($pool);
+    });
+
+    it('worker stop calls close on the cached pool', function () {
+        $pool = new Pool();
+        $factory = new NativePoolFactory(
+            createPool: static fn (array $config): Pool => $pool,
+        );
+        $this->app->instance(NativePoolFactory::class, $factory);
+
+        $config = lifecycleNormalizedNativeConfig($this->app);
+        $factory->make($config);
+
+        $lifecycle = new OctaneLifecycle($this->app);
+        $lifecycle->stop();
+
+        expect($pool->closeCalls)->toBe(1);
+    });
+
+    it('flush does not close pools', function () {
+        $pool = new Pool();
+        $factory = new NativePoolFactory(
+            createPool: static fn (array $config): Pool => $pool,
+        );
+        $this->app->instance(NativePoolFactory::class, $factory);
+
+        $config = lifecycleNormalizedNativeConfig($this->app);
+        $factory->make($config);
+
+        $lifecycle = new OctaneLifecycle($this->app);
+        $lifecycle->flush();
+
+        expect($pool->closeCalls)->toBe(0);
     });
 
     it('flush without queue manager does not throw', function () {

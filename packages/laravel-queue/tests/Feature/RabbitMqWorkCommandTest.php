@@ -28,6 +28,32 @@ describe('rabbit-rs:work command', function () {
             ->and($definition->hasOption('rabbit-rs-worker'))->toBeTrue('--rabbit-rs-worker option should be recognized');
     });
 
+    it('command signature accepts worker propagation options', function () {
+        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $command = $commands['rabbit-rs:work'];
+
+        $definition = $command->getDefinition();
+
+        expect($definition->hasOption('timeout'))->toBeTrue()
+            ->and($definition->hasOption('tries'))->toBeTrue()
+            ->and($definition->hasOption('memory'))->toBeTrue()
+            ->and($definition->hasOption('max-jobs'))->toBeTrue()
+            ->and($definition->hasOption('max-time'))->toBeTrue();
+    });
+
+    it('worker propagation options have expected defaults', function () {
+        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $command = $commands['rabbit-rs:work'];
+
+        $definition = $command->getDefinition();
+
+        expect($definition->getOption('timeout')->getDefault())->toBe('60')
+            ->and($definition->getOption('memory')->getDefault())->toBe('128')
+            ->and($definition->getOption('tries')->getDefault())->toBeNull()
+            ->and($definition->getOption('max-jobs')->getDefault())->toBeNull()
+            ->and($definition->getOption('max-time')->getDefault())->toBeNull();
+    });
+
     it('default worker count is one', function () {
         $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
         $command = $commands['rabbit-rs:work'];
@@ -229,7 +255,7 @@ describe('rabbit-rs:work command', function () {
  */
 function registerTestWorkCommand($app): void
 {
-    $stubSupervisor = new class('rabbit-rs', 'default', 1, 3, 1, null) extends WorkerSupervisor {
+    $stubSupervisor = new class('rabbit-rs', 'default', 1, 3, 1, null, []) extends WorkerSupervisor {
         public function run(): int
         {
             return WorkerSupervisor::EXIT_CLEAN;
@@ -243,6 +269,11 @@ function registerTestWorkCommand($app): void
             {--workers=1 : Number of child workers}
             {--max-restarts=3 : Maximum restarts per worker}
             {--backoff=1 : Base backoff in seconds}
+            {--timeout=60 : The number of seconds a child process can run}
+            {--tries= : Number of times to attempt a job before failing it}
+            {--memory=128 : The memory limit in megabytes}
+            {--max-jobs= : The number of jobs to process before stopping}
+            {--max-time= : The maximum number of seconds the worker should run}
             {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
         protected $description = 'Test command';

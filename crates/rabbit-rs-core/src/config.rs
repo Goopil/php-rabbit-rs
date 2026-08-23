@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
 
 use crate::error::ConfigError;
+use crate::transport::QueueKind;
 
 /// A `RabbitMQ` network endpoint.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -449,6 +450,18 @@ pub struct Config {
     pub delivery_limit: Option<u32>,
     #[serde(default)]
     pub publisher: PublisherConfigSection,
+    #[serde(default = "default_queue_type")]
+    pub queue_type: QueueKind,
+    #[serde(default = "default_true")]
+    pub queue_durable: bool,
+}
+
+fn default_queue_type() -> QueueKind {
+    QueueKind::Quorum
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Config {
@@ -555,6 +568,8 @@ impl Config {
             dead_letter: self.dead_letter,
             delivery_limit: self.delivery_limit,
             publisher: self.publisher,
+            queue_type: self.queue_type,
+            queue_durable: self.queue_durable,
             fingerprint,
         })
     }
@@ -602,6 +617,8 @@ pub struct ValidatedConfig {
     dead_letter: Option<DeadLetterConfig>,
     delivery_limit: Option<u32>,
     publisher: PublisherConfigSection,
+    queue_type: QueueKind,
+    queue_durable: bool,
     fingerprint: ConfigFingerprint,
 }
 
@@ -651,6 +668,16 @@ impl ValidatedConfig {
     #[must_use]
     pub const fn publisher(&self) -> PublisherConfigSection {
         self.publisher
+    }
+
+    #[must_use]
+    pub const fn queue_type(&self) -> QueueKind {
+        self.queue_type
+    }
+
+    #[must_use]
+    pub const fn queue_durable(&self) -> bool {
+        self.queue_durable
     }
 
     #[must_use]
@@ -729,6 +756,22 @@ impl ConfigFingerprint {
         }
 
         hash_publisher(&mut digest, &config.publisher);
+
+        hash_value(
+            &mut digest,
+            match config.queue_type {
+                QueueKind::Classic => "queue_type:classic",
+                QueueKind::Quorum => "queue_type:quorum",
+            },
+        );
+        hash_value(
+            &mut digest,
+            if config.queue_durable {
+                "queue_durable:true"
+            } else {
+                "queue_durable:false"
+            },
+        );
 
         Self(digest.finalize().into())
     }
@@ -878,6 +921,7 @@ mod tests {
         BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
         SchedulerConfig, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
     };
+    use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
 
     fn broker(hosts: Vec<Endpoint>) -> BrokerConfig {
@@ -923,6 +967,8 @@ mod tests {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
     }
 

@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use serde::Deserialize;
 
 use crate::config::BrokerConfig;
 
@@ -114,7 +115,8 @@ impl fmt::Display for TransportError {
 
 impl Error for TransportError {}
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum QueueKind {
     Classic,
     #[default]

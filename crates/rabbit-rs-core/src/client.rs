@@ -576,13 +576,17 @@ impl ClientPool {
     }
 
     fn build_topology_plan(&self) -> TopologyPlan {
+        let queue_type = self.config.queue_type();
+        let queue_durable = self.config.queue_durable();
         let queues: Vec<_> = self
             .config
             .worker_profiles()
             .iter()
             .flat_map(|worker| &worker.subscriptions)
             .map(|sub| {
-                let mut qd = QueueDefinition::new(&sub.queue);
+                let mut qd = QueueDefinition::new(&sub.queue)
+                    .kind(queue_type)
+                    .durable(queue_durable);
                 if let Some(limit) = self.config.delivery_limit() {
                     qd = qd.delivery_limit(limit);
                 }

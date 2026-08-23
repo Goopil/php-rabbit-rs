@@ -18,7 +18,7 @@ use rabbit_rs_core::{
     publisher::{Destination, PublisherActor, PublisherConfig},
     topology::delay::DelayStrategy,
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, Transport, TransportError,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -46,6 +46,8 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid config");
