@@ -299,6 +299,7 @@ pub struct ConsumerRequest {
     pub queue: String,
     pub consumer_tag: String,
     pub exclusive: bool,
+    pub no_ack: bool,
 }
 
 impl ConsumerRequest {
@@ -308,6 +309,7 @@ impl ConsumerRequest {
             queue: queue.into(),
             consumer_tag: consumer_tag.into(),
             exclusive: false,
+            no_ack: false,
         }
     }
 }

@@ -189,6 +189,11 @@ return [
     |                       dispatch to PHP. Requires best_effort=true.
     |                       If PHP crashes, in-flight messages are lost.
     |
+    |   no_ack:              When true + early_ack=true + best_effort=true,
+    |                       the broker auto-acks deliveries internally — no
+    |                       ack frames are sent at all. Eliminates all ack
+    |                       round-trips for maximum throughput.
+    |
     */
 
     'workers' => [
@@ -209,6 +214,8 @@ return [
                         'value' => (int) env('RABBIT_RS_PREFETCH', 64),
                     ],
                     'starvation_after' => 30,
+                    'early_ack' => false,
+                    'no_ack' => false,
                 ],
             ],
         ],

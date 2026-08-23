@@ -1474,3 +1474,65 @@ async fn settlement_error_surfaces_via_drain_errors() {
 
     let _ = handle.close().await;
 }
+
+// ---------------------------------------------------------------------------
+// no_ack mode tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn no_ack_propagates_to_transport_and_skips_ack_frames() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"hello")));
+
+    let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    sub = sub.early_ack(true).no_ack(true);
+    let handle = ConsumerSet::spawn_with_metrics(vec![sub], 1024, Metrics::default())
+        .await
+        .unwrap();
+
+    let delivery = handle.next().await.unwrap();
+    assert_eq!(delivery.state(), DeliveryState::AutoAcked);
+
+    let ops = transport.operations();
+    let consume_op = ops
+        .iter()
+        .find(|op| matches!(op, TransportOperation::Consume(_)));
+    assert!(consume_op.is_some(), "expected Consume operation");
+    if let Some(TransportOperation::Consume(request)) = consume_op {
+        assert!(request.no_ack, "expected no_ack=true in ConsumerRequest");
+    }
+
+    let acks: Vec<_> = ops
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert!(acks.is_empty(), "no_ack must not send ack frames");
+
+    let _ = handle.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_ack_defaults_to_false_in_consume_request() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"hello")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    let handle = ConsumerSet::spawn_with_metrics(vec![sub], 1024, Metrics::default())
+        .await
+        .unwrap();
+
+    let _ = handle.next().await;
+
+    let ops = transport.operations();
+    let consume_op = ops.iter().find_map(|op| match op {
+        TransportOperation::Consume(req) => Some(req),
+        _ => None,
+    });
+    assert!(consume_op.is_some(), "expected Consume operation");
+    assert!(
+        !consume_op.unwrap().no_ack,
+        "no_ack should default to false"
+    );
+
+    let _ = handle.close().await;
+}

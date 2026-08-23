@@ -33,6 +33,7 @@ pub struct Subscription {
     pub(crate) prefetch: u16,
     pub(crate) policy: SubscriptionPolicy,
     pub(crate) early_ack: bool,
+    pub(crate) no_ack: bool,
     pub(crate) max_buffered_bytes: u64,
     pub(crate) channel: Arc<dyn ConsumerChannel>,
     pub(crate) publisher: Option<PublisherHandle>,
@@ -57,6 +58,7 @@ impl Subscription {
             prefetch: 16,
             policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
             early_ack: false,
+            no_ack: false,
             max_buffered_bytes: 64 * 1024 * 1024,
             channel,
             publisher: None,
@@ -96,6 +98,18 @@ impl Subscription {
     #[must_use]
     pub const fn early_ack(mut self, early_ack: bool) -> Self {
         self.early_ack = early_ack;
+        self
+    }
+
+    /// Enables or disables broker-side `no_ack` mode.
+    ///
+    /// When `true`, the broker auto-acks deliveries internally — no ack frames
+    /// are sent from the consumer. Requires `early_ack=true` and
+    /// `best_effort=true` at the configuration layer to preserve at-least-once
+    /// semantics as an opt-in.
+    #[must_use]
+    pub const fn no_ack(mut self, no_ack: bool) -> Self {
+        self.no_ack = no_ack;
         self
     }
 
@@ -171,10 +185,12 @@ impl ConsumerSet {
             }
             let stream = match subscription
                 .channel
-                .consume(ConsumerRequest::new(
-                    subscription.queue.clone(),
-                    format!("rabbit-rs.{}", subscription.id.as_str()),
-                ))
+                .consume(ConsumerRequest {
+                    queue: subscription.queue.clone(),
+                    consumer_tag: format!("rabbit-rs.{}", subscription.id.as_str()),
+                    exclusive: false,
+                    no_ack: subscription.no_ack,
+                })
                 .await
             {
                 Ok(stream) => stream,

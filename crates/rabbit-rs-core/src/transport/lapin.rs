@@ -245,7 +245,7 @@ impl ConsumerChannel for LapinConsumerChannel {
                 request.consumer_tag.into(),
                 BasicConsumeOptions {
                     no_local: false,
-                    no_ack: false,
+                    no_ack: request.no_ack,
                     exclusive: request.exclusive,
                     nowait: false,
                 },

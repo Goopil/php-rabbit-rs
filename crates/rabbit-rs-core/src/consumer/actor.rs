@@ -93,6 +93,7 @@ struct RuntimeSubscription {
     destination: Option<crate::publisher::Destination>,
     delay_strategy: Option<DelayStrategy>,
     early_ack: bool,
+    no_ack: bool,
 }
 
 struct ActorState {
@@ -154,6 +155,7 @@ impl ActorState {
                     destination: subscription.destination,
                     delay_strategy: subscription.delay_strategy,
                     early_ack: subscription.early_ack,
+                    no_ack: subscription.no_ack,
                 },
             );
         }
@@ -232,12 +234,14 @@ impl ActorState {
             let headers = Arc::clone(&delivery.headers);
 
             if runtime.early_ack {
-                let channel = runtime.channel.clone();
-                let tag = delivery.delivery_tag;
                 let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
-                tokio::spawn(async move {
-                    let _ = channel.ack(tag, false).await;
-                });
+                if !runtime.no_ack {
+                    let channel = runtime.channel.clone();
+                    let tag = delivery.delivery_tag;
+                    tokio::spawn(async move {
+                        let _ = channel.ack(tag, false).await;
+                    });
+                }
                 let item = Delivery::new_auto_acked(
                     DeliveryIdentity {
                         subscription: subscription.clone(),
