@@ -180,12 +180,12 @@ fn transport_delivery(tag: u64) -> TransportDelivery {
         redelivered: false,
         message_id: None,
         correlation_id: None,
-        headers: BTreeMap::new(),
+        headers: Arc::new(BTreeMap::new()),
         payload: Bytes::from_static(b"job"),
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn consumer_records_deliveries_acks_rejects_and_settlement_latency() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(transport_delivery(1)));
@@ -204,9 +204,15 @@ async fn consumer_records_deliveries_acks_rejects_and_settlement_latency() {
         .expect("consumer set");
 
     let acknowledged = consumer.next().await.expect("first delivery");
-    acknowledged.ack().await.expect("ACK");
+    acknowledged.ack().await.expect("ACK enqueued");
     let rejected = consumer.next().await.expect("second delivery");
-    rejected.release(Duration::ZERO).await.expect("reject");
+    rejected
+        .release(Duration::ZERO)
+        .await
+        .expect("reject enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let snapshot = consumer.metrics_snapshot();
     assert_eq!(snapshot.deliveries_total, 2);

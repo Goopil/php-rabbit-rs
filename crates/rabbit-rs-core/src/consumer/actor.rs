@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::{
     AttemptsResolver, ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, MessageId,
     Scheduler, SubscriptionId, WeightedFairScheduler,
-    delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner, Settlement},
+    delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner, Settlement, SettlementError},
     set::Subscription,
 };
 use crate::{
@@ -40,14 +40,12 @@ struct ChannelLedger {
 struct SettleParams {
     token: Arc<DeliveryTokenInner>,
     settlement: Settlement,
-    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
 }
 
 struct SettlementResult {
     channel_key: ChannelKey,
     token: Arc<DeliveryTokenInner>,
     result: Result<DeliveryState, ConsumerError>,
-    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
 }
 
 type SettlementFuture = Pin<Box<dyn Future<Output = SettlementResult> + Send>>;
@@ -55,7 +53,6 @@ type SettlementFuture = Pin<Box<dyn Future<Output = SettlementResult> + Send>>;
 struct SettleThroughParams {
     token: Arc<DeliveryTokenInner>,
     affected_tokens: Vec<Arc<DeliveryTokenInner>>,
-    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
 }
 
 struct SettleThroughResult {
@@ -63,7 +60,6 @@ struct SettleThroughResult {
     target_tag: u64,
     affected_tokens: Vec<Arc<DeliveryTokenInner>>,
     result: Result<DeliveryState, ConsumerError>,
-    completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
 }
 
 type SettleThroughFuture = Pin<Box<dyn Future<Output = SettleThroughResult> + Send>>;
@@ -76,11 +72,9 @@ pub(crate) enum ConsumerCommand {
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
-        completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
     },
     SettleThrough {
         token: Arc<DeliveryTokenInner>,
-        completed: oneshot::Sender<Result<DeliveryState, ConsumerError>>,
     },
     UpdateGeneration {
         subscription: SubscriptionId,
@@ -99,6 +93,7 @@ struct RuntimeSubscription {
     destination: Option<crate::publisher::Destination>,
     delay_strategy: Option<DelayStrategy>,
     early_ack: bool,
+    no_ack: bool,
 }
 
 struct ActorState {
@@ -107,6 +102,7 @@ struct ActorState {
     buffered_bytes: HashMap<SubscriptionId, u64>,
     max_buffered_bytes: HashMap<SubscriptionId, u64>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
+    pending_incoming: VecDeque<(SubscriptionId, TransportDelivery)>,
     pending_settlements: futures_util::stream::FuturesUnordered<SettlementFuture>,
     pending_settle_throughs: futures_util::stream::FuturesUnordered<SettleThroughFuture>,
     settlement_in_flight: HashSet<ChannelKey>,
@@ -118,6 +114,7 @@ struct ActorState {
     max_in_flight: usize,
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
+    error_tx: flume::Sender<SettlementError>,
     metrics: Metrics,
 }
 
@@ -127,6 +124,7 @@ impl ActorState {
         max_in_flight: usize,
         commands: mpsc::Sender<ConsumerCommand>,
         buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
+        error_tx: flume::Sender<SettlementError>,
         metrics: Metrics,
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
@@ -157,6 +155,7 @@ impl ActorState {
                     destination: subscription.destination,
                     delay_strategy: subscription.delay_strategy,
                     early_ack: subscription.early_ack,
+                    no_ack: subscription.no_ack,
                 },
             );
         }
@@ -167,6 +166,7 @@ impl ActorState {
             buffered_bytes,
             max_buffered_bytes,
             channel_ledgers,
+            pending_incoming: VecDeque::new(),
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
             pending_settle_throughs: futures_util::stream::FuturesUnordered::new(),
             settlement_in_flight: HashSet::new(),
@@ -178,6 +178,7 @@ impl ActorState {
             max_in_flight,
             commands,
             buffer_tx,
+            error_tx,
             metrics,
         }
     }
@@ -190,6 +191,7 @@ impl ActorState {
 
     #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self) {
+        self.drain_pending();
         while self.in_flight < self.max_in_flight {
             if let Some(error) = self.source_errors.front() {
                 if self.buffer_tx.try_send(Err(error.clone())).is_err() {
@@ -229,15 +231,17 @@ impl ActorState {
             let attempts = AttemptsResolver::default()
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
-            let headers = Arc::new(delivery.headers.clone());
+            let headers = Arc::clone(&delivery.headers);
 
             if runtime.early_ack {
-                let channel = runtime.channel.clone();
-                let tag = delivery.delivery_tag;
                 let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
-                tokio::spawn(async move {
-                    let _ = channel.ack(tag, false).await;
-                });
+                if !runtime.no_ack {
+                    let channel = runtime.channel.clone();
+                    let tag = delivery.delivery_tag;
+                    tokio::spawn(async move {
+                        let _ = channel.ack(tag, false).await;
+                    });
+                }
                 let item = Delivery::new_auto_acked(
                     DeliveryIdentity {
                         subscription: subscription.clone(),
@@ -332,6 +336,38 @@ impl ActorState {
     fn release_budget(&mut self) {
         self.in_flight = self.in_flight.saturating_sub(1);
     }
+
+    fn drain_pending(&mut self) {
+        while let Some((subscription, delivery)) = self.pending_incoming.front() {
+            let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
+            let over_budget = if let Some(max) = self.max_buffered_bytes.get(subscription) {
+                let current = self.buffered_bytes.get(subscription).copied().unwrap_or(0);
+                current.saturating_add(delivery_bytes) > *max
+            } else {
+                false
+            };
+            if over_budget {
+                break;
+            }
+            let (subscription, delivery) = self
+                .pending_incoming
+                .pop_front()
+                .expect("front checked above");
+            if let Some(buffer) = self.buffers.get_mut(&subscription) {
+                buffer.push_back(delivery);
+                self.scheduler.mark_ready(&subscription);
+            }
+            if let Some(bytes) = self.buffered_bytes.get_mut(&subscription) {
+                *bytes = bytes.saturating_add(delivery_bytes);
+            }
+        }
+        record_consumer_buffer_metrics(self);
+    }
+
+    fn try_drain_pending(&mut self) {
+        self.drain_pending();
+        self.dispatch();
+    }
 }
 
 fn record_consumer_buffer_metrics(state: &ActorState) {
@@ -358,17 +394,25 @@ fn record_consumer_buffer_metrics(state: &ActorState) {
     state.metrics.record_settlement_lane_depth(lane_depth);
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
     max_in_flight: usize,
     mut receiver: mpsc::Receiver<ConsumerCommand>,
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
+    error_tx: flume::Sender<SettlementError>,
     metrics: Metrics,
     dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
-    let mut state = ActorState::new(subscriptions, max_in_flight, commands, buffer_tx, metrics);
+    let mut state = ActorState::new(
+        subscriptions,
+        max_in_flight,
+        commands,
+        buffer_tx,
+        error_tx,
+        metrics,
+    );
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
     loop {
@@ -396,15 +440,22 @@ pub(crate) async fn run_actor(
                         } else {
                             false
                         };
-                        if let Some(buffer) = state.buffers.get_mut(&subscription) {
-                            buffer.push_back(delivery);
-                            state.scheduler.mark_ready(&subscription);
-                        }
-                        if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
-                            *bytes = bytes.saturating_add(delivery_bytes);
-                        }
-                        record_consumer_buffer_metrics(&state);
-                        if !over_budget {
+                        if over_budget {
+                            state.pending_incoming.push_back((subscription.clone(), delivery));
+                            state.metrics.record_backpressure();
+                        } else if state.pending_incoming.is_empty() {
+                            if let Some(buffer) = state.buffers.get_mut(&subscription) {
+                                buffer.push_back(delivery);
+                                state.scheduler.mark_ready(&subscription);
+                            }
+                            if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
+                                *bytes = bytes.saturating_add(delivery_bytes);
+                            }
+                            record_consumer_buffer_metrics(&state);
+                            state.dispatch();
+                        } else {
+                            state.pending_incoming.push_back((subscription.clone(), delivery));
+                            state.drain_pending();
                             state.dispatch();
                         }
                     }
@@ -418,20 +469,29 @@ pub(crate) async fn run_actor(
                 Some(ConsumerCommand::Settle {
                     token,
                     settlement,
-                    completed,
                 }) => {
                     let Some(channel_key) = state.channel_key_for(&token.subscription) else {
-                        let _ = completed.send(Err(ConsumerError::new(
-                            ConsumerErrorKind::InvalidSubscription,
-                            "delivery references an unknown subscription",
-                        )));
+                        token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: token.delivery_tag,
+                            subscription: token.subscription.clone(),
+                            kind: ConsumerErrorKind::InvalidSubscription,
+                            message: "delivery references an unknown subscription".to_owned(),
+                            timestamp: Instant::now(),
+                        });
                         continue;
                     };
                     if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        let _ = completed.send(Err(ConsumerError::already_settling()));
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: token.delivery_tag,
+                            subscription: token.subscription.clone(),
+                            kind: ConsumerErrorKind::AlreadySettling,
+                            message: "delivery is already being settled".to_owned(),
+                            timestamp: Instant::now(),
+                        });
                         continue;
                     }
-                    let params = SettleParams { token, settlement, completed };
+                    let params = SettleParams { token, settlement };
                     if state.settlement_in_flight.contains(&channel_key) {
                         state.settlement_queues.entry(channel_key).or_default().push_back(params);
                         record_consumer_buffer_metrics(&state);
@@ -440,31 +500,41 @@ pub(crate) async fn run_actor(
                         record_consumer_buffer_metrics(&state);
                     }
                 }
-                Some(ConsumerCommand::SettleThrough { token, completed }) => {
+                Some(ConsumerCommand::SettleThrough { token }) => {
                     let Some(channel_key) = state.channel_key_for(&token.subscription) else {
-                        let _ = completed.send(Err(ConsumerError::new(
-                            ConsumerErrorKind::InvalidSubscription,
-                            "delivery references an unknown subscription",
-                        )));
+                        token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: token.delivery_tag,
+                            subscription: token.subscription.clone(),
+                            kind: ConsumerErrorKind::InvalidSubscription,
+                            message: "delivery references an unknown subscription".to_owned(),
+                            timestamp: Instant::now(),
+                        });
                         continue;
                     };
                     if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        let _ = completed.send(Err(ConsumerError::already_settling()));
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: token.delivery_tag,
+                            subscription: token.subscription.clone(),
+                            kind: ConsumerErrorKind::AlreadySettling,
+                            message: "delivery is already being settled".to_owned(),
+                            timestamp: Instant::now(),
+                        });
                         continue;
                     }
                     let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
                         token.settling.store(false, std::sync::atomic::Ordering::Release);
-                        let _ = completed.send(Err(ConsumerError::new(
-                            ConsumerErrorKind::Transport,
-                            "channel ledger not found",
-                        )));
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: token.delivery_tag,
+                            subscription: token.subscription.clone(),
+                            kind: ConsumerErrorKind::Transport,
+                            message: "channel ledger not found".to_owned(),
+                            timestamp: Instant::now(),
+                        });
                         continue;
                     };
                     match validate_contiguous_prefix(ledger, token.delivery_tag) {
                         Ok(affected_tokens) => {
-                            // Mark all affected tokens as settling to prevent
-                            // concurrent individual acks from racing with the
-                            // batch settlement.
                             for affected in &affected_tokens {
                                 affected.settling.store(
                                     true,
@@ -474,7 +544,6 @@ pub(crate) async fn run_actor(
                             let params = SettleThroughParams {
                                 token,
                                 affected_tokens,
-                                completed,
                             };
                             if state.settlement_in_flight.contains(&channel_key) {
                                 state.settle_through_queues.entry(channel_key).or_default().push_back(params);
@@ -486,7 +555,13 @@ pub(crate) async fn run_actor(
                         }
                         Err(error) => {
                             token.settling.store(false, std::sync::atomic::Ordering::Release);
-                            let _ = completed.send(Err(error));
+                            let _ = state.error_tx.send(SettlementError {
+                                delivery_tag: token.delivery_tag,
+                                subscription: token.subscription.clone(),
+                                kind: error.kind(),
+                                message: error.to_string(),
+                                timestamp: Instant::now(),
+                            });
                         }
                     }
                 }
@@ -537,44 +612,82 @@ pub(crate) async fn run_actor(
                 let channel_key = settlement_result.channel_key;
                 state.settlement_in_flight.remove(&channel_key);
 
-                // Record metrics and release budget based on the settlement outcome.
                 let delivery_bytes = u64::try_from(settlement_result.token.payload.len()).unwrap_or(u64::MAX);
-                if let Ok(terminal) = &settlement_result.result {
-                    match terminal {
-                        DeliveryState::Acked => {
-                            state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
+                let is_terminal = match &settlement_result.result {
+                    Ok(_) => true,
+                    Err(error) => matches!(
+                        error.kind(),
+                        ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                    ),
+                };
+
+                if is_terminal {
+                    if let Ok(terminal) = &settlement_result.result {
+                        match terminal {
+                            DeliveryState::Acked => {
+                                state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Rejected => {
+                                state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
+                            }
+                            DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
                         }
-                        DeliveryState::Rejected => {
-                            state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
-                        }
-                        DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
                     }
                     if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
                         *bytes = bytes.saturating_sub(delivery_bytes);
                     }
                     state.release_budget();
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
+                    state.try_drain_pending();
+                    if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+                        ledger.pending.remove(&settlement_result.token.delivery_tag);
+                    }
                 } else {
-                    if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
-                        *bytes = bytes.saturating_sub(delivery_bytes);
-                    }
-                    state.release_budget();
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
                 }
 
-                // Reset the settling flag so a re-issued settlement can retry.
                 settlement_result.token.settling.store(false, std::sync::atomic::Ordering::Release);
 
-                // Remove from ledger.
-                if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
-                    ledger.pending.remove(&settlement_result.token.delivery_tag);
+                match &settlement_result.result {
+                    Ok(terminal) => {
+                        settlement_result
+                            .token
+                            .state
+                            .store(*terminal as u8, std::sync::atomic::Ordering::Release);
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                        ) =>
+                    {
+                        settlement_result
+                            .token
+                            .state
+                            .store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: settlement_result.token.delivery_tag,
+                            subscription: settlement_result.token.subscription.clone(),
+                            kind: error.kind(),
+                            message: error.to_string(),
+                            timestamp: Instant::now(),
+                        });
+                    }
+                    Err(error) => {
+                        settlement_result
+                            .token
+                            .state
+                            .store(DeliveryState::Pending as u8, std::sync::atomic::Ordering::Release);
+                        let _ = state.error_tx.send(SettlementError {
+                            delivery_tag: settlement_result.token.delivery_tag,
+                            subscription: settlement_result.token.subscription.clone(),
+                            kind: error.kind(),
+                            message: error.to_string(),
+                            timestamp: Instant::now(),
+                        });
+                    }
                 }
 
-                let _ = (settlement_result.completed).send(settlement_result.result);
-
-                // Launch the next queued settlement for this channel.
                 drain_settlement_queue(&mut state, channel_key);
             }
             Some(settle_through_result) = state.pending_settle_throughs.next(),
@@ -583,39 +696,55 @@ pub(crate) async fn run_actor(
                 state.settlement_in_flight.remove(&channel_key);
 
                 let target_tag = settle_through_result.target_tag;
-                let _affected_count = settle_through_result.affected_tokens.len();
 
-                if let Ok(DeliveryState::Acked) = &settle_through_result.result {
-                    for token in &settle_through_result.affected_tokens {
-                        let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
-                        if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
-                            *buf_bytes = buf_bytes.saturating_sub(bytes);
+                let is_terminal = match &settle_through_result.result {
+                    Ok(_) => true,
+                    Err(error) => matches!(
+                        error.kind(),
+                        ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                    ),
+                };
+
+                if is_terminal {
+                    if let Ok(DeliveryState::Acked) = &settle_through_result.result {
+                        for token in &settle_through_result.affected_tokens {
+                            let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                            if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                                *buf_bytes = buf_bytes.saturating_sub(bytes);
+                            }
+                            state.release_budget();
                         }
-                        state.release_budget();
+                        state.metrics.record_ack(
+                            settle_through_result
+                                .affected_tokens
+                                .last()
+                                .unwrap()
+                                .reserved_at
+                                .elapsed(),
+                        );
+                    } else {
+                        for token in &settle_through_result.affected_tokens {
+                            let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                            if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                                *buf_bytes = buf_bytes.saturating_sub(bytes);
+                            }
+                            state.release_budget();
+                        }
                     }
-                    state.metrics.record_ack(
-                        settle_through_result
-                            .affected_tokens
-                            .last()
-                            .unwrap()
-                            .reserved_at
-                            .elapsed(),
-                    );
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
+                    state.try_drain_pending();
+                    if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+                        for tag in (ledger.acked_prefix + 1)..=target_tag {
+                            ledger.pending.remove(&tag);
+                        }
+                        if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
+                            ledger.acked_prefix = target_tag;
+                        }
+                    }
                 } else {
-                    for token in &settle_through_result.affected_tokens {
-                        let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
-                        if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
-                            *buf_bytes = buf_bytes.saturating_sub(bytes);
-                        }
-                        state.release_budget();
-                    }
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
                 }
 
-                // Render all affected tokens terminal and reset settling flags.
                 for token in &settle_through_result.affected_tokens {
                     let final_state = match &settle_through_result.result {
                         Ok(state) => *state,
@@ -628,33 +757,44 @@ pub(crate) async fn run_actor(
                     token.settling.store(false, std::sync::atomic::Ordering::Release);
                 }
 
-                // Remove affected entries from the ledger and update acked_prefix.
-                if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
-                    for tag in (ledger.acked_prefix + 1)..=target_tag {
-                        ledger.pending.remove(&tag);
-                    }
-                    if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
-                        ledger.acked_prefix = target_tag;
-                    }
+                if let Err(error) = &settle_through_result.result {
+                    let _ = state.error_tx.send(SettlementError {
+                        delivery_tag: settle_through_result.target_tag,
+                        subscription: settle_through_result
+                            .affected_tokens
+                            .last()
+                            .map_or_else(
+                                || SubscriptionId::new("unknown"),
+                                |t| t.subscription.clone(),
+                            ),
+                        kind: error.kind(),
+                        message: error.to_string(),
+                        timestamp: Instant::now(),
+                    });
                 }
 
-                let _ = (settle_through_result.completed).send(settle_through_result.result);
-
-                // Launch the next queued settlement for this channel.
                 drain_settlement_queue(&mut state, channel_key);
             }
         }
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: SettleParams) {
     state.settlement_in_flight.insert(channel_key.clone());
     let Some(runtime) = state.subscriptions.get(&params.token.subscription) else {
         state.settlement_in_flight.remove(&channel_key);
-        let _ = params.completed.send(Err(ConsumerError::new(
-            ConsumerErrorKind::InvalidSubscription,
-            "delivery references an unknown subscription",
-        )));
+        params.token.state.store(
+            DeliveryState::Lost as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        let _ = state.error_tx.send(SettlementError {
+            delivery_tag: params.token.delivery_tag,
+            subscription: params.token.subscription.clone(),
+            kind: ConsumerErrorKind::InvalidSubscription,
+            message: "delivery references an unknown subscription".to_owned(),
+            timestamp: Instant::now(),
+        });
         return;
     };
     let channel = runtime.channel.clone();
@@ -667,7 +807,6 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
     let delivery_tag = params.token.delivery_tag;
     let settlement = params.settlement;
     let token = params.token.clone();
-    let completed = params.completed;
 
     state.pending_settlements.push(Box::pin(async move {
         let result = execute_settlement(
@@ -687,7 +826,6 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
             channel_key,
             token,
             result,
-            completed,
         }
     }));
 }
@@ -786,7 +924,7 @@ async fn delayed_release(
     let route = DelayRouter::route(strategy, destination, delay_ms)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::Publish, error.to_string()))?;
     let mut properties = MessageProperties::new(token.message_id.as_str());
-    properties.correlation_id.clone_from(&token.correlation_id);
+    properties.correlation_id = token.correlation_id.as_ref().map(|s| Arc::from(s.as_str()));
     properties.headers = AttemptsResolver::default()
         .delayed_headers(&token.headers, token.attempts)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
@@ -870,10 +1008,17 @@ fn launch_settle_through(
     state.settlement_in_flight.insert(channel_key.clone());
     let Some(runtime) = state.subscriptions.get(&params.token.subscription) else {
         state.settlement_in_flight.remove(&channel_key);
-        let _ = params.completed.send(Err(ConsumerError::new(
-            ConsumerErrorKind::InvalidSubscription,
-            "delivery references an unknown subscription",
-        )));
+        params.token.state.store(
+            DeliveryState::Lost as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        let _ = state.error_tx.send(SettlementError {
+            delivery_tag: params.token.delivery_tag,
+            subscription: params.token.subscription.clone(),
+            kind: ConsumerErrorKind::InvalidSubscription,
+            message: "delivery references an unknown subscription".to_owned(),
+            timestamp: Instant::now(),
+        });
         return;
     };
     let channel = runtime.channel.clone();
@@ -883,7 +1028,6 @@ fn launch_settle_through(
     let target_tag = params.token.delivery_tag;
     let token = params.token.clone();
     let affected_tokens = params.affected_tokens;
-    let completed = params.completed;
 
     state.pending_settle_throughs.push(Box::pin(async move {
         let result = execute_settle_through(
@@ -900,7 +1044,6 @@ fn launch_settle_through(
             target_tag,
             affected_tokens,
             result,
-            completed,
         }
     }));
 }

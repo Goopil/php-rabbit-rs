@@ -117,6 +117,7 @@ mod helper {
             max_buffered_bytes: 64 * 1024 * 1024,
             max_message_bytes: None,
             early_ack: false,
+            no_ack: false,
         }
     }
 
@@ -1046,7 +1047,7 @@ async fn broker_message_id_is_preserved_as_delivery_id() {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
-        headers: Headers::new(),
+        headers: Arc::new(Headers::new()),
         payload: Bytes::from_static(b"job"),
         message_id: Some("uuid-stable-job-id".to_owned()),
         correlation_id: Some("corr-1".to_owned()),
@@ -1082,7 +1083,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
-        headers: Headers::new(),
+        headers: Arc::new(Headers::new()),
         payload: Bytes::from_static(b"job"),
         message_id: None,
         correlation_id: None,
@@ -1114,7 +1115,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn delayed_release_increments_the_application_attempt_header() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(rabbit_rs_core::transport::Delivery {
@@ -1124,11 +1125,11 @@ async fn delayed_release_increments_the_application_attempt_header() {
         redelivered: false,
         message_id: None,
         correlation_id: None,
-        headers: attempt_headers(&[
+        headers: Arc::new(attempt_headers(&[
             (APPLICATION_ATTEMPTS_HEADER, "2"),
             ("trace-id", "trace-42"),
             ("x-delivery-count", "1"),
-        ]),
+        ])),
         payload: Bytes::from_static(b"job"),
     }));
     transport.push_confirmation(Ok(rabbit_rs_core::transport::PublishConfirmation::Ack(
@@ -1164,7 +1165,10 @@ async fn delayed_release_increments_the_application_attempt_header() {
     delivery
         .release(Duration::from_secs(5))
         .await
-        .expect("delayed release");
+        .expect("delayed release enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let published_request = transport
         .operations()

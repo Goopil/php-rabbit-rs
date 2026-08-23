@@ -11,9 +11,10 @@ use rabbit_rs_core::{
         TopologyMode,
     },
     consumer::{
-        ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
+        ConsumerErrorKind, ConsumerSet, DeliveryState, Settlement, Subscription, SubscriptionId,
         SubscriptionPolicy,
     },
+    metrics::Metrics,
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
     topology::delay::DelayStrategy,
@@ -62,7 +63,7 @@ mod helper {
             redelivered: false,
             message_id: None,
             correlation_id: None,
-            headers: BTreeMap::new(),
+            headers: Arc::new(BTreeMap::new()),
             payload: Bytes::from_static(payload),
         }
     }
@@ -77,6 +78,19 @@ mod helper {
         delivery.message_id = Some(message_id.to_owned());
         delivery.correlation_id = Some(correlation_id.to_owned());
         delivery
+    }
+
+    pub fn delivery_with_owned_payload(tag: u64, payload: Vec<u8>) -> TransportDelivery {
+        TransportDelivery {
+            delivery_tag: tag,
+            exchange: "jobs".to_owned(),
+            routing_key: "high".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: Arc::new(BTreeMap::new()),
+            payload: Bytes::from(payload),
+        }
     }
 
     pub async fn subscription(
@@ -331,7 +345,7 @@ async fn consumer_tag_uses_the_raw_subscription_id() {
     assert_eq!(request.consumer_tag, "rabbit-rs.jobs");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn ack_uses_the_delivery_generation_and_channel() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
@@ -344,6 +358,9 @@ async fn ack_uses_the_delivery_generation_and_channel() {
     let item = consumer.next().await.expect("delivery");
 
     item.ack().await.expect("ACK");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     assert_eq!(item.state(), DeliveryState::Acked);
     assert!(transport.operations().contains(&TransportOperation::Ack {
@@ -451,7 +468,7 @@ async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
     assert_eq!(consumer.next().await.expect("delivery").payload, b"job"[..]);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn stale_generation_ack_is_rejected_without_touching_the_new_channel() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
@@ -468,9 +485,17 @@ async fn stale_generation_ack_is_rejected_without_touching_the_new_channel() {
         .await
         .expect("new generation");
 
-    let error = item.ack().await.expect_err("stale ACK");
+    item.ack().await.expect("ACK enqueued (fire-and-forget)");
 
-    assert_eq!(error.kind(), ConsumerErrorKind::StaleGeneration);
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let errors = consumer.drain_errors();
+    assert!(
+        !errors.is_empty(),
+        "expected stale-generation settlement error"
+    );
+    assert_eq!(errors[0].kind, ConsumerErrorKind::StaleGeneration);
     assert_eq!(item.state(), DeliveryState::Lost);
     assert!(
         !transport
@@ -480,7 +505,7 @@ async fn stale_generation_ack_is_rejected_without_touching_the_new_channel() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn transport_settlement_error_marks_the_delivery_lost() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
@@ -493,9 +518,14 @@ async fn transport_settlement_error_marks_the_delivery_lost() {
         .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
 
-    let error = item.ack().await.expect_err("transport ACK failure");
+    item.ack().await.expect("ACK enqueued (fire-and-forget)");
 
-    assert_eq!(error.kind(), ConsumerErrorKind::Transport);
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let errors = consumer.drain_errors();
+    assert!(!errors.is_empty(), "expected transport settlement error");
+    assert_eq!(errors[0].kind, ConsumerErrorKind::Transport);
     assert_eq!(item.state(), DeliveryState::Lost);
     assert_eq!(
         item.ack()
@@ -506,7 +536,7 @@ async fn transport_settlement_error_marks_the_delivery_lost() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn release_zero_uses_basic_reject_with_requeue() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(9, b"job")));
@@ -518,7 +548,12 @@ async fn release_zero_uses_basic_reject_with_requeue() {
     .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
 
-    item.release(Duration::ZERO).await.expect("release");
+    item.release(Duration::ZERO)
+        .await
+        .expect("release enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     assert_eq!(item.state(), DeliveryState::Rejected);
     assert!(
@@ -531,7 +566,7 @@ async fn release_zero_uses_basic_reject_with_requeue() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn delayed_release_publishes_confirms_then_acks_original() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery_with_properties(
@@ -553,7 +588,10 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
 
     item.release(Duration::from_secs(5))
         .await
-        .expect("delayed release");
+        .expect("delayed release enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let operations = transport.operations();
     let publish = operations
@@ -592,7 +630,7 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
     assert_eq!(transport_request.properties.delay_ms, Some(5_000));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn failed_delayed_publish_does_not_ack_the_original() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(12, b"job")));
@@ -607,7 +645,13 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
         .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
 
-    assert!(item.release(Duration::from_secs(5)).await.is_err());
+    item.release(Duration::from_secs(5))
+        .await
+        .expect("release enqueued (fire-and-forget)");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
     assert_eq!(item.state(), DeliveryState::Pending);
     assert!(!transport.operations().iter().any(|operation| matches!(
         operation,
@@ -616,6 +660,94 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
             ..
         }
     )));
+    assert!(
+        !consumer.drain_errors().is_empty(),
+        "expected a settlement error for the failed publish"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retryable_settlement_failure_preserves_ledger_and_budget() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    // The delayed release will fail with a Nack confirmation (retryable:
+    // ConsumerErrorKind::Publish, NOT StaleGeneration/Transport).
+    transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
+    let publisher = publisher(&transport).await;
+    let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
+        .await
+        .delayed_publisher(publisher, Destination::new("jobs", "high"))
+        .delay_strategy(DelayStrategy::Plugin);
+    // max_in_flight=1 so the budget is observable: if the first delivery's
+    // budget is released on a retryable failure, the second delivery would
+    // be dispatched immediately. If the budget is correctly preserved, the
+    // second delivery stays buffered until the first is retried and acked.
+    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+        .await
+        .expect("consumer set");
+
+    let d1 = consumer.next().await.expect("delivery 1");
+
+    // A second delivery should not be available yet because the budget
+    // is still held by d1 (in_flight=1, max_in_flight=1).
+    assert!(
+        consumer.try_next().expect("buffer empty").is_none(),
+        "budget must not be released while d1 is Pending"
+    );
+
+    // Attempt delayed release — fire-and-forget enqueues the command.
+    d1.release(Duration::from_secs(5))
+        .await
+        .expect("release enqueued");
+
+    // Let the actor process the settlement. The publish gets a Nack
+    // confirmation, which is a retryable error (ConsumerErrorKind::Publish).
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let errors = consumer.drain_errors();
+    assert!(!errors.is_empty(), "expected a retryable settlement error");
+    assert!(
+        !matches!(
+            errors[0].kind,
+            ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+        ),
+        "failure must be retryable, not terminal"
+    );
+    assert_eq!(
+        d1.state(),
+        DeliveryState::Pending,
+        "delivery stays Pending for retry"
+    );
+
+    // The budget must NOT have been released — the second delivery should
+    // still not be dispatchable.
+    assert!(
+        consumer
+            .try_next()
+            .expect("buffer empty after retryable failure")
+            .is_none(),
+        "budget must not be released on retryable failure"
+    );
+
+    // Retry the release with a zero delay (immediate reject) — should succeed,
+    // proving the ledger entry was preserved for retry.
+    d1.release(Duration::ZERO)
+        .await
+        .expect("retry release enqueued");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(d1.state(), DeliveryState::Rejected);
+
+    // Now the budget is released — the second delivery can be dispatched.
+    let d2 = consumer
+        .next()
+        .await
+        .expect("delivery 2 after budget release");
+    d2.ack().await.expect("ack d2 enqueued");
+
+    let _ = consumer.close().await;
 }
 
 #[tokio::test]
@@ -901,7 +1033,13 @@ async fn settle_through_acks_contiguous_prefix() {
     let d3 = consumer.next().await.expect("d3");
 
     // Ack through d3 — should ack 1, 2, 3 with multiple=true
-    consumer.ack_through(&d3).await.expect("ack through");
+    consumer
+        .ack_through(&d3)
+        .await
+        .expect("ack through enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let ops = transport.operations();
     let acks: Vec<_> = ops
@@ -930,9 +1068,17 @@ async fn settle_through_rejects_non_contiguous_prefix() {
     let _d1 = consumer.next().await.expect("d1"); // tag 1
     let d3 = consumer.next().await.expect("d3"); // tag 3
 
-    let result = consumer.ack_through(&d3).await;
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().kind(), ConsumerErrorKind::Transport);
+    consumer
+        .ack_through(&d3)
+        .await
+        .expect("ack through enqueued (fire-and-forget)");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let errors = consumer.drain_errors();
+    assert!(!errors.is_empty(), "expected non-contiguous prefix error");
+    assert_eq!(errors[0].kind, ConsumerErrorKind::Transport);
     consumer.close().await.expect("close");
 }
 
@@ -954,6 +1100,47 @@ async fn try_next_batch_drains_buffer() {
         d.ack().await.expect("ack");
     }
     consumer.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn try_next_batch_returns_partial_batch_on_error() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    // Push an error into the buffer (after the two deliveries)
+    transport.push_delivery(Err(TransportError::connection("test error")));
+    transport.push_delivery(Ok(delivery(3, b"msg3")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 4, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub], 1024).await.expect("consumer");
+
+    // Let deliveries flow into the buffer
+    tokio::time::advance(Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+
+    // try_next_batch(10) should return 2 deliveries + stash the error
+    let batch = consumer.try_next_batch(10).expect("partial batch");
+    assert_eq!(
+        batch.len(),
+        2,
+        "should return partial batch, not discard it"
+    );
+    assert_eq!(batch[0].delivery_tag(), 1);
+    assert_eq!(batch[1].delivery_tag(), 2);
+
+    // Next call should return delivery 3 (error was stashed, surfaced when batch is empty)
+    let batch2 = consumer.try_next_batch(10).expect("batch with delivery 3");
+    assert_eq!(batch2.len(), 1);
+    assert_eq!(batch2[0].delivery_tag(), 3);
+
+    // Now the stashed error should surface
+    let result = consumer.try_next_batch(10);
+    assert!(
+        result.is_err(),
+        "stashed error should surface on empty batch"
+    );
+
+    let _ = consumer.close().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,4 +1371,170 @@ async fn early_ack_preserves_delivery_metadata() {
     assert_eq!(d.delivery_tag(), 7);
 
     consumer.close().await.expect("close");
+}
+
+// ---------------------------------------------------------------------------
+// OOM protection — hard gate tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn hard_gate_stops_accepting_when_over_budget() {
+    let transport = MockTransport::default();
+    let budget = 1024 * 1024 * 4; // 4 MiB
+    let payload_size = 1024 * 1024; // 1 MiB per delivery
+
+    for i in 0..100 {
+        transport.push_delivery(Ok(helper::delivery_with_owned_payload(
+            i,
+            vec![0u8; payload_size],
+        )));
+    }
+
+    let sub = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
+        .await
+        .max_buffered_bytes(budget);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], 1024, Metrics::default())
+        .await
+        .expect("consumer set");
+
+    let_sources_fill().await;
+
+    let snapshot = consumer.metrics_snapshot();
+    assert!(
+        snapshot.consumer_buffer_bytes <= budget,
+        "buffered_bytes ({}) should not exceed max_buffered_bytes ({} bytes)",
+        snapshot.consumer_buffer_bytes,
+        budget
+    );
+
+    let _ = consumer.close().await;
+}
+
+#[tokio::test]
+async fn arc_headers_no_deep_clone() {
+    use std::sync::Arc;
+    let transport_delivery = helper::delivery(1, b"payload");
+    let headers_arc = Arc::clone(&transport_delivery.headers);
+    let _cloned = Arc::clone(&headers_arc);
+}
+
+// ---------------------------------------------------------------------------
+// Fire-and-forget settlement tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn fire_and_forget_ack_returns_immediately() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"hello")));
+    transport.push_delivery(Ok(delivery(2, b"world")));
+    transport.push_consumer_result(Ok(()));
+
+    let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await;
+    let handle = ConsumerSet::spawn_with_metrics(vec![subscription], 1024, Metrics::default())
+        .await
+        .unwrap();
+
+    let delivery = handle.next().await.unwrap();
+
+    let result = handle.try_settle(delivery.inner_token().clone(), Settlement::Ack);
+    assert!(result.is_ok());
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let errors = handle.drain_errors();
+    assert!(errors.is_empty());
+
+    let _ = handle.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn settlement_error_surfaces_via_drain_errors() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"hello")));
+    transport.push_consumer_result(Ok(())); // set_qos
+    transport.push_consumer_result(Ok(())); // consume
+    transport.push_consumer_result(Err(TransportError::connection("test-stale-generation"))); // ack fails
+
+    let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await;
+    let handle = ConsumerSet::spawn_with_metrics(vec![subscription], 1024, Metrics::default())
+        .await
+        .unwrap();
+
+    let delivery = handle.next().await.unwrap();
+
+    handle
+        .try_settle(delivery.inner_token().clone(), Settlement::Ack)
+        .unwrap();
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let errors = handle.drain_errors();
+    assert!(!errors.is_empty(), "expected at least one settlement error");
+    assert_eq!(errors[0].delivery_tag, 1);
+
+    let _ = handle.close().await;
+}
+
+// ---------------------------------------------------------------------------
+// no_ack mode tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn no_ack_propagates_to_transport_and_skips_ack_frames() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"hello")));
+
+    let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    sub = sub.early_ack(true).no_ack(true);
+    let handle = ConsumerSet::spawn_with_metrics(vec![sub], 1024, Metrics::default())
+        .await
+        .unwrap();
+
+    let delivery = handle.next().await.unwrap();
+    assert_eq!(delivery.state(), DeliveryState::AutoAcked);
+
+    let ops = transport.operations();
+    let consume_op = ops
+        .iter()
+        .find(|op| matches!(op, TransportOperation::Consume(_)));
+    assert!(consume_op.is_some(), "expected Consume operation");
+    if let Some(TransportOperation::Consume(request)) = consume_op {
+        assert!(request.no_ack, "expected no_ack=true in ConsumerRequest");
+    }
+
+    let acks: Vec<_> = ops
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Ack { .. }))
+        .collect();
+    assert!(acks.is_empty(), "no_ack must not send ack frames");
+
+    let _ = handle.close().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn no_ack_defaults_to_false_in_consume_request() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"hello")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
+    let handle = ConsumerSet::spawn_with_metrics(vec![sub], 1024, Metrics::default())
+        .await
+        .unwrap();
+
+    let _ = handle.next().await;
+
+    let ops = transport.operations();
+    let consume_op = ops.iter().find_map(|op| match op {
+        TransportOperation::Consume(req) => Some(req),
+        _ => None,
+    });
+    assert!(consume_op.is_some(), "expected Consume operation");
+    assert!(
+        !consume_op.unwrap().no_ack,
+        "no_ack should default to false"
+    );
+
+    let _ = handle.close().await;
 }

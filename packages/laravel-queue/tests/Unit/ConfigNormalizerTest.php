@@ -74,6 +74,7 @@ describe('native normalization', function (): void {
                     'prefetch' => 16,
                     'starvation_after' => 30,
                     'early_ack' => false,
+                    'no_ack' => false,
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
@@ -345,6 +346,46 @@ describe('early_ack guard', function (): void {
         $normalized = ConfigNormalizer::normalize($config);
 
         expect($normalized['native']['workers'][0]['subscriptions'][0]['early_ack'])->toBeFalse();
+    });
+});
+
+describe('no_ack guard', function (): void {
+    it('rejects no_ack without early_ack', function (): void {
+        $config = configValidConfig();
+        $config['best_effort'] = true;
+        $config['workers']['main']['subscriptions']['orders']['no_ack'] = true;
+
+        expect(fn (): array => ConfigNormalizer::normalize($config))
+            ->toThrow(InvalidArgumentException::class, 'no_ack=true requires early_ack=true');
+    });
+
+    it('rejects no_ack without best_effort', function (): void {
+        $config = configValidConfig();
+        $config['workers']['main']['subscriptions']['orders']['early_ack'] = true;
+        $config['workers']['main']['subscriptions']['orders']['no_ack'] = true;
+
+        // early_ack guard fires first when best_effort is false
+        expect(fn (): array => ConfigNormalizer::normalize($config))
+            ->toThrow(InvalidArgumentException::class, 'early_ack');
+    });
+
+    it('allows no_ack when early_ack and best_effort are true', function (): void {
+        $config = configValidConfig();
+        $config['best_effort'] = true;
+        $config['workers']['main']['subscriptions']['orders']['early_ack'] = true;
+        $config['workers']['main']['subscriptions']['orders']['no_ack'] = true;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['native']['workers'][0]['subscriptions'][0]['no_ack'])->toBeTrue();
+    });
+
+    it('defaults no_ack to false', function (): void {
+        $config = configValidConfig();
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['native']['workers'][0]['subscriptions'][0]['no_ack'])->toBeFalse();
     });
 });
 

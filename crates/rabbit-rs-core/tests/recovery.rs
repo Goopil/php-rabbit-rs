@@ -6,6 +6,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use rabbit_rs_core::{
+    client::ClientPool,
     config::{
         BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
         SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
@@ -55,6 +56,7 @@ mod helper {
                         max_buffered_bytes: 64 * 1024 * 1024,
                         max_message_bytes: None,
                         early_ack: false,
+                        no_ack: false,
                     }],
                     scheduler: SchedulerConfig::weighted_fair(16),
                 }],
@@ -77,7 +79,7 @@ mod helper {
 
     pub fn publish_request(message_id: &str, deadline: Instant) -> PublishRequest {
         let mut properties = MessageProperties::new(message_id);
-        properties.content_type = Some("application/json".to_owned());
+        properties.content_type = Some(Arc::from("application/json"));
         PublishRequest::new(
             Destination::new("jobs", "high"),
             Bytes::from_static(b"payload"),
@@ -273,6 +275,57 @@ async fn consumer_generation_updates_after_reconnection_rejects_stale_acks() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn stale_consumer_handle_evicted_after_recovery() {
+    let transport = Arc::new(MockTransport::default());
+    let config = config();
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    let consumer1 = coordinator.consumer("main").await.expect("consumer handle");
+    assert_eq!(
+        consumer1.generation(),
+        1,
+        "first consumer should be generation 1"
+    );
+
+    // Simulate connection drop + recovery.
+    transport.push_connect_result(Ok(()));
+    coordinator
+        .connection_lost(TransportError::connection("socket reset"))
+        .await
+        .expect("loss reported");
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 2 })
+    })
+    .await;
+
+    // The consumer from the coordinator should now be generation 2.
+    let consumer2 = coordinator.consumer("main").await.expect("consumer handle");
+    assert_eq!(
+        consumer2.generation(),
+        2,
+        "second consumer should be generation 2 after recovery"
+    );
+    assert_ne!(
+        consumer1.generation(),
+        consumer2.generation(),
+        "stale handle should be evicted after recovery"
+    );
+
+    drop(consumer1);
+    drop(consumer2);
+
+    coordinator.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
 async fn deterministic_recovery_order_connection_channels_topology_consumers_publisher() {
     let transport = Arc::new(MockTransport::default());
     let config = config();
@@ -382,6 +435,58 @@ async fn permanent_error_stops_the_recovery_loop() {
             ..
         }
     ));
+
+    coordinator.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_failure_rolls_back_and_retries() {
+    let transport = Arc::new(MockTransport::default());
+    // First connection succeeds; recovery generation 1 will attempt consumers.
+    transport.push_connect_result(Ok(()));
+    // Make the first consumer-set spawn fail (set_qos consumes this error).
+    transport.push_consumer_result(Err(TransportError::connection("test failure")));
+    // Pre-queue results for the retry: connect succeeds, consumer succeeds.
+    transport.push_connect_result(Ok(()));
+    transport.push_consumer_result(Ok(()));
+
+    let config = config();
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    // Wait for the first Ready generation so recovery runs.  The state may
+    // transition through Ready{1} → Recovering → Connecting → Ready{2} very
+    // quickly, so we wait for Ready with any generation ≥ 1, then for the
+    // consumer to appear.
+    wait_for_state(&coordinator, |s| matches!(s, ConnectionState::Ready { .. })).await;
+
+    // If the first recovery failed, the coordinator drives the actor to
+    // Recovering and rolls back last_generation.  Advance time through the
+    // backoff so the reconnection and second recovery can occur.
+    tokio::time::advance(Duration::from_secs(2)).await;
+
+    // Wait for the second Ready generation (the retry).
+    let ready2 = tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_state(
+            &coordinator,
+            |s| matches!(s, ConnectionState::Ready { generation: g } if *g >= 2),
+        ),
+    )
+    .await;
+    assert!(
+        ready2.is_ok(),
+        "coordinator should reach Ready{{gen>=2}} after rollback+retry, state: {:?}",
+        coordinator.state()
+    );
+
+    // The consumer should be available after the successful retry.
+    let consumer = tokio::time::timeout(Duration::from_secs(5), coordinator.consumer("main"))
+        .await
+        .expect("timed out waiting for consumer")
+        .expect("consumer should become available after retry");
+
+    drop(consumer);
 
     coordinator.close().await.expect("close");
 }
@@ -615,4 +720,58 @@ async fn generation_increments_after_successful_recovery() {
     .await;
 
     assert_eq!(ready, ConnectionState::Ready { generation: 2 });
+}
+
+#[tokio::test(start_paused = true)]
+async fn pool_evicts_stale_consumer_handle_after_recovery() {
+    let transport = Arc::new(MockTransport::default());
+
+    // Pre-queue results: initial connect + consumer succeed.
+    transport.push_connect_result(Ok(()));
+    transport.push_consumer_result(Ok(()));
+    // Recovery: connect + consumer succeed.
+    transport.push_connect_result(Ok(()));
+    transport.push_consumer_result(Ok(()));
+
+    let pool = ClientPool::new(config(), transport.clone() as Arc<dyn Transport>);
+
+    // Get initial consumer — generation 1.
+    let consumer1 = pool.consumer("main").await.expect("consumer handle");
+    assert_eq!(
+        consumer1.generation(),
+        1,
+        "first pool consumer should be generation 1"
+    );
+
+    // Simulate connection loss + recovery.
+    pool.simulate_connection_loss_for_tests("primary", TransportError::connection("socket reset"))
+        .await
+        .expect("loss reported");
+
+    // Advance time through the backoff and let the recovery complete.
+    for _ in 0..5 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+    }
+
+    // Wait for recovery to complete (generation 2).
+    let consumer2 = tokio::time::timeout(Duration::from_secs(10), pool.consumer("main"))
+        .await
+        .expect("timed out waiting for consumer")
+        .expect("consumer should be available after recovery");
+
+    assert_eq!(
+        consumer2.generation(),
+        2,
+        "pool should return generation 2 consumer after recovery"
+    );
+    assert_ne!(
+        consumer1.generation(),
+        consumer2.generation(),
+        "pool should evict stale handle and return a fresh one"
+    );
+
+    drop(consumer1);
+    drop(consumer2);
+    pool.close().await.expect("close pool");
 }

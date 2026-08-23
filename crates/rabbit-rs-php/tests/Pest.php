@@ -53,11 +53,11 @@ function defaultConfigWithWorkers(): array
                 'queue' => 'jobs',
                 'weight' => 1,
                 'priority_class' => 0,
-                'prefetch' => 1,
+                'prefetch' => 512,
             ]],
             'scheduler' => [
                 'strategy' => 'weighted_fair',
-                'max_in_flight' => 1,
+                'max_in_flight' => 512,
             ],
         ]],
         'topology_mode' => 'external',

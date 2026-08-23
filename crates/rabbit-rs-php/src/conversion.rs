@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 use bytes::Bytes;
 use ext_php_rs::types::{ArrayKey, ZendHashTable, Zval};
@@ -126,8 +126,8 @@ fn publish_with_budget(
         .ok_or_else(|| format!("{path}.timeout_ms: deadline overflow"))?;
 
     let mut properties = MessageProperties::new(message_id);
-    properties.content_type = optional_string(table, "content_type", path)?;
-    properties.correlation_id = optional_string(table, "correlation_id", path)?;
+    properties.content_type = optional_string(table, "content_type", path)?.map(Arc::from);
+    properties.correlation_id = optional_string(table, "correlation_id", path)?.map(Arc::from);
     properties.delay_ms = optional_non_negative_integer(table, "delay_ms", path)?;
     properties.headers = optional_headers(table, path, budget)?;
 

@@ -160,8 +160,9 @@ impl ClientPool {
         }
 
         let mut terminal_error = immediate_error;
-        for (index, waiter) in waiters {
-            match waiter.wait().await {
+        let results = PublishWaiter::wait_all(waiters).await;
+        for (index, result) in results {
+            match result {
                 Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
                 Err(error) => {
                     let client_err = ClientError::publish(&error);
@@ -230,8 +231,9 @@ impl ClientPool {
             }
         }
 
-        for (index, waiter) in waiters {
-            match waiter.wait().await {
+        let results = PublishWaiter::wait_all(waiters).await;
+        for (index, result) in results {
+            match result {
                 Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
                 Err(error) => {
                     outcomes[index] = Some(Err(error));
@@ -260,6 +262,43 @@ impl ClientPool {
         Ok(BatchOutcome { results })
     }
 
+    /// Returns a cached consumer handle if it matches the coordinator's
+    /// current generation, evicting stale handles when the generation has
+    /// advanced. Returns `Ok(None)` when no cached handle exists or it has
+    /// been evicted.
+    fn consumer_if_fresh(
+        &self,
+        generation: u64,
+        worker: &crate::config::WorkerProfile,
+        profile: &str,
+    ) -> Result<Option<ConsumerHandle>, ClientError> {
+        let Some(consumer) = self.ready(generation, &self.consumers, profile)? else {
+            return Ok(None);
+        };
+        let broker = &worker.subscriptions[0].broker;
+        let coord_gen =
+            lock(&self.coordinators)
+                .get(broker)
+                .and_then(|coord| match coord.state() {
+                    crate::recovery::ConnectionState::Ready { generation } => Some(generation),
+                    _ => None,
+                });
+        match coord_gen {
+            Some(coord_gen) if consumer.generation() == coord_gen => Ok(Some(consumer)),
+            Some(_) => {
+                // Stale — evict and fall through to fetch a fresh handle.
+                lock(&self.consumers).remove(profile);
+                Ok(None)
+            }
+            None => {
+                // Coordinator not Ready (Recovering/Connecting/etc.) — don't
+                // return a potentially stale cached handle; fall through so the
+                // loop can wait for Ready and fetch a fresh consumer.
+                Ok(None)
+            }
+        }
+    }
+
     /// Opens or reuses the multiplexed consumer actor for one worker profile.
     ///
     /// # Errors
@@ -274,23 +313,39 @@ impl ClientPool {
                 format!("workers.{profile}: unknown worker profile"),
             )
         })?;
-        if let Some(consumer) = self.ready(generation, &self.consumers, profile)? {
+
+        // Check for a cached consumer handle. If the coordinator has moved to a
+        // newer generation, the cached handle is stale and must be evicted.
+        if let Some(consumer) = self.consumer_if_fresh(generation, &worker, profile)? {
             return Ok(consumer);
         }
+
         let initializer = initializer(&self.consumer_initializers, profile);
         let _initializing = initializer.lock().await;
-        if let Some(consumer) = self.ready(generation, &self.consumers, profile)? {
+
+        // Double-check after acquiring the initializer lock.
+        if let Some(consumer) = self.consumer_if_fresh(generation, &worker, profile)? {
             return Ok(consumer);
         }
 
-        // Ensure the coordinator for the first subscription's broker is started.
-        if let Some(first_sub) = worker.subscriptions.first() {
-            let _ = self.coordinator(&first_sub.broker).await?;
+        // Ensure coordinators for all distinct brokers in the worker profile are
+        // started so that every subscription's broker has a recovery coordinator
+        // running. The coordinator for each broker only creates consumers for
+        // subscriptions that belong to that broker (see `recover_generation`).
+        let mut brokers: Vec<String> = worker
+            .subscriptions
+            .iter()
+            .map(|s| s.broker.clone())
+            .collect();
+        brokers.dedup();
+        for broker in &brokers {
+            self.coordinator(broker).await?;
         }
 
-        // The coordinator creates consumers internally on recovery. Wait for the
-        // consumer to become available from the coordinator.
-        let coordinator = self.coordinator(&worker.subscriptions[0].broker).await?;
+        // The consumer is composed from all coordinators. For now, use the
+        // first coordinator's handle for the primary consumer handle. A future
+        // task may compose a multi-broker consumer that merges handles.
+        let coordinator = self.coordinator(&brokers[0]).await?;
         let consumer = loop {
             if self.is_closed() {
                 return Err(ClientError::closed());
@@ -298,11 +353,15 @@ impl ClientPool {
             if let Ok(consumer) = coordinator.consumer(profile).await {
                 break consumer;
             }
+            // Wait for any state transition (including Ready so we can retry
+            // without blocking when the state hasn't left Ready yet).
             coordinator
                 .wait_for_state(|state| {
                     matches!(
                         state,
                         crate::recovery::ConnectionState::Ready { .. }
+                            | crate::recovery::ConnectionState::Recovering { .. }
+                            | crate::recovery::ConnectionState::Connecting { .. }
                             | crate::recovery::ConnectionState::FailedPermanent { .. }
                             | crate::recovery::ConnectionState::Closed
                     )
@@ -420,6 +479,25 @@ impl ClientPool {
         self.connection(broker).await.map(drop)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub async fn simulate_connection_loss_for_tests(
+        &self,
+        broker: &str,
+        error: TransportError,
+    ) -> Result<(), ClientError> {
+        let coord = lock(&self.coordinators)
+            .get(broker)
+            .cloned()
+            .ok_or_else(|| {
+                ClientError::new(ClientErrorKind::Configuration, "coordinator not found")
+            })?;
+        coord
+            .connection_lost(error)
+            .await
+            .map_err(|_| ClientError::closed())
+    }
+
     /// Returns whether this pool has entered its terminal closed state.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -509,6 +587,8 @@ impl ClientPool {
                     matches!(
                         state,
                         crate::recovery::ConnectionState::Ready { .. }
+                            | crate::recovery::ConnectionState::Recovering { .. }
+                            | crate::recovery::ConnectionState::Connecting { .. }
                             | crate::recovery::ConnectionState::FailedPermanent { .. }
                             | crate::recovery::ConnectionState::Closed
                     )

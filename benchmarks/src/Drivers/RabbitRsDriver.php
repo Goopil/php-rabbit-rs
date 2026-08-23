@@ -47,6 +47,10 @@ class RabbitRsDriver extends AbstractBenchmark
                         ScenarioMode::AUTO_ACK => true,
                         default => false,
                     },
+                    'no_ack' => match ($this->scenarioMode) {
+                        ScenarioMode::AUTO_ACK => true,
+                        default => false,
+                    },
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
@@ -56,8 +60,8 @@ class RabbitRsDriver extends AbstractBenchmark
             'topology_mode' => 'declare',
             'publisher' => [
                 'confirms' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET => false,
-                    ScenarioMode::AUTO_ACK, ScenarioMode::BATCH_CONFIRM => true,
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => false,
+                    ScenarioMode::BATCH_CONFIRM => true,
                 },
                 'mandatory' => true,
                 'confirm_timeout' => 30000,

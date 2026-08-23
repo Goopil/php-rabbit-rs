@@ -93,7 +93,7 @@ pub(crate) fn testing_pool(config: &ZendHashTable, scenario: &ZendHashTable) -> 
             redelivered: false,
             message_id: fixture.message_id,
             correlation_id: fixture.correlation_id,
-            headers: fixture.headers,
+            headers: Arc::new(fixture.headers),
             payload: fixture.payload,
         }));
     }

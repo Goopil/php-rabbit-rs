@@ -27,7 +27,7 @@ class Config
     public const MESSAGE_COUNT = 10000;
     public const BENCHMARK_ROUNDS = 10;
     public const MESSAGE_PAYLOAD_BYTES = 256;
-    public const PREFETCH_COUNT = 16;
+    public const PREFETCH_COUNT = 128;
 
     public const EXCHANGE_NAME = 'benchmark_exchange';
     public const EXCHANGE_TYPE = 'direct';

@@ -311,6 +311,25 @@ final class ConfigNormalizer
                     );
                 }
 
+                $noAck = self::boolean(
+                    $subscription['no_ack'] ?? false,
+                    $subscriptionPath.'.no_ack',
+                );
+                if ($noAck) {
+                    if (! $earlyAck) {
+                        self::invalid(
+                            $subscriptionPath.'.no_ack',
+                            "no_ack=true requires early_ack=true for subscription '{$subscriptionName}'",
+                        );
+                    }
+                    if (! $bestEffort) {
+                        self::invalid(
+                            $subscriptionPath.'.no_ack',
+                            "no_ack=true requires best_effort=true for subscription '{$subscriptionName}'",
+                        );
+                    }
+                }
+
                 $normalizedSubscriptions[] = [
                     'name' => (string) $subscriptionName,
                     'broker' => $broker,
@@ -332,6 +351,7 @@ final class ConfigNormalizer
                         $subscriptionPath.'.starvation_after',
                     ),
                     'early_ack' => $earlyAck,
+                    'no_ack' => $noAck,
                 ];
             }
             if ($normalizedSubscriptions === []) {

@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -9,7 +9,8 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
-    ConsumerError, Delivery, DeliveryState, SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, DeliveryTokenInner, SettleError, Settlement, SettlementError,
+    SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
 };
 use crate::{
@@ -32,6 +33,7 @@ pub struct Subscription {
     pub(crate) prefetch: u16,
     pub(crate) policy: SubscriptionPolicy,
     pub(crate) early_ack: bool,
+    pub(crate) no_ack: bool,
     pub(crate) max_buffered_bytes: u64,
     pub(crate) channel: Arc<dyn ConsumerChannel>,
     pub(crate) publisher: Option<PublisherHandle>,
@@ -56,6 +58,7 @@ impl Subscription {
             prefetch: 16,
             policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
             early_ack: false,
+            no_ack: false,
             max_buffered_bytes: 64 * 1024 * 1024,
             channel,
             publisher: None,
@@ -77,6 +80,12 @@ impl Subscription {
     }
 
     #[must_use]
+    pub const fn generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
+
+    #[must_use]
     pub const fn policy(mut self, policy: SubscriptionPolicy) -> Self {
         self.policy = policy;
         self
@@ -89,6 +98,18 @@ impl Subscription {
     #[must_use]
     pub const fn early_ack(mut self, early_ack: bool) -> Self {
         self.early_ack = early_ack;
+        self
+    }
+
+    /// Enables or disables broker-side `no_ack` mode.
+    ///
+    /// When `true`, the broker auto-acks deliveries internally — no ack frames
+    /// are sent from the consumer. Requires `early_ack=true` and
+    /// `best_effort=true` at the configuration layer to preserve at-least-once
+    /// semantics as an opt-in.
+    #[must_use]
+    pub const fn no_ack(mut self, no_ack: bool) -> Self {
+        self.no_ack = no_ack;
         self
     }
 
@@ -141,6 +162,16 @@ impl ConsumerSet {
         max_in_flight: usize,
         metrics: Metrics,
     ) -> Result<ConsumerHandle, ConsumerError> {
+        let generation = subscriptions.first().map_or(1, |s| s.generation);
+        Self::spawn_with_generation(subscriptions, max_in_flight, metrics, generation).await
+    }
+
+    async fn spawn_with_generation(
+        subscriptions: Vec<Subscription>,
+        max_in_flight: usize,
+        metrics: Metrics,
+        generation: u64,
+    ) -> Result<ConsumerHandle, ConsumerError> {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let mut streams = Vec::with_capacity(subscriptions.len());
 
@@ -154,10 +185,12 @@ impl ConsumerSet {
             }
             let stream = match subscription
                 .channel
-                .consume(ConsumerRequest::new(
-                    subscription.queue.clone(),
-                    format!("rabbit-rs.{}", subscription.id.as_str()),
-                ))
+                .consume(ConsumerRequest {
+                    queue: subscription.queue.clone(),
+                    consumer_tag: format!("rabbit-rs.{}", subscription.id.as_str()),
+                    exclusive: false,
+                    no_ack: subscription.no_ack,
+                })
                 .await
             {
                 Ok(stream) => stream,
@@ -177,6 +210,7 @@ impl ConsumerSet {
             usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_FACTOR / 2;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
+        let (error_tx, error_rx) = flume::bounded::<SettlementError>(256);
         let dispatch_notify = Arc::new(Notify::new());
 
         tokio::spawn(run_actor(
@@ -185,6 +219,7 @@ impl ConsumerSet {
             receiver,
             commands.clone(),
             buffer_tx,
+            error_tx,
             metrics.clone(),
             dispatch_notify.clone(),
         ));
@@ -195,9 +230,12 @@ impl ConsumerSet {
         Ok(ConsumerHandle {
             commands,
             buffer_rx,
+            error_rx,
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
             dispatch_notify,
+            generation,
+            pending_error: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -233,9 +271,19 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
 pub struct ConsumerHandle {
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_rx: flume::Receiver<Result<Delivery, ConsumerError>>,
+    error_rx: flume::Receiver<SettlementError>,
     metrics: Metrics,
     closed: Arc<AtomicBool>,
     dispatch_notify: Arc<Notify>,
+    generation: u64,
+    pending_error: Arc<Mutex<Option<ConsumerError>>>,
+}
+
+impl ConsumerHandle {
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 impl Drop for ConsumerHandle {
@@ -252,6 +300,66 @@ impl ConsumerHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Drains all settlement errors that the actor has recorded since the
+    /// last call. The error buffer is bounded (256); if it fills, the actor
+    /// drops the oldest errors.
+    ///
+    /// Settlement errors surface asynchronously because settlement is
+    /// fire-and-forget: `ack()`, `release()`, and `reject()` enqueue the
+    /// command and return immediately. Transport failures, stale-generation
+    /// errors, and other settlement failures appear here, not in the return
+    /// value of the settlement call.
+    #[must_use]
+    pub fn drain_errors(&self) -> Vec<SettlementError> {
+        let mut errors = Vec::new();
+        while let Ok(error) = self.error_rx.try_recv() {
+            errors.push(error);
+        }
+        errors
+    }
+
+    /// Fire-and-forget settlement via the actor's command channel.
+    ///
+    /// Enqueues a `Settle` command with `try_send` and returns immediately.
+    /// Does not perform the `Pending → Transitioning` CAS — the caller is
+    /// responsible for ensuring the delivery is not double-settled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettleError::ChannelFull`] when the command channel is at
+    /// capacity, or [`SettleError::Closed`] when the actor has stopped.
+    pub fn try_settle(
+        &self,
+        token: Arc<DeliveryTokenInner>,
+        settlement: Settlement,
+    ) -> Result<(), SettleError> {
+        self.commands
+            .try_send(ConsumerCommand::Settle { token, settlement })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
+                mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
+            })
+    }
+
+    /// Fire-and-forget batch settlement via the actor's command channel.
+    ///
+    /// Enqueues a `SettleThrough` command with `try_send` and returns
+    /// immediately. Does not perform the CAS — the caller is responsible for
+    /// ensuring the delivery is not double-settled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettleError::ChannelFull`] when the command channel is at
+    /// capacity, or [`SettleError::Closed`] when the actor has stopped.
+    pub fn try_settle_through(&self, token: Arc<DeliveryTokenInner>) -> Result<(), SettleError> {
+        self.commands
+            .try_send(ConsumerCommand::SettleThrough { token })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
+                mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
+            })
     }
 
     /// Tries to receive the next delivery without blocking.
@@ -272,7 +380,17 @@ impl ConsumerHandle {
                 self.dispatch_notify.notify_one();
                 Err(error)
             }
-            Err(flume::TryRecvError::Empty) => Ok(None),
+            Err(flume::TryRecvError::Empty) => {
+                if let Some(error) = self
+                    .pending_error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    return Err(error);
+                }
+                Ok(None)
+            }
             Err(flume::TryRecvError::Disconnected) => Err(ConsumerError::closed()),
         }
     }
@@ -294,15 +412,29 @@ impl ConsumerHandle {
             match self.buffer_rx.try_recv() {
                 Ok(Ok(delivery)) => batch.push(delivery),
                 Ok(Err(error)) => {
+                    self.dispatch_notify.notify_one();
                     if !batch.is_empty() {
-                        self.dispatch_notify.notify_one();
+                        // Stash error, return partial batch so deliveries are
+                        // never discarded. The error surfaces on the next call
+                        // when the buffer is empty.
+                        *self
+                            .pending_error
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                        return Ok(batch);
                     }
                     return Err(error);
                 }
                 Err(flume::TryRecvError::Empty) => break,
                 Err(flume::TryRecvError::Disconnected) => {
+                    self.dispatch_notify.notify_one();
                     if !batch.is_empty() {
-                        self.dispatch_notify.notify_one();
+                        *self
+                            .pending_error
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(ConsumerError::closed());
+                        return Ok(batch);
                     }
                     return Err(ConsumerError::closed());
                 }
@@ -310,6 +442,16 @@ impl ConsumerHandle {
         }
         if !batch.is_empty() {
             self.dispatch_notify.notify_one();
+            return Ok(batch);
+        }
+        // Buffer is empty — surface stashed error if any.
+        if let Some(error) = self
+            .pending_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return Err(error);
         }
         Ok(batch)
     }
@@ -339,22 +481,27 @@ impl ConsumerHandle {
     ///
     /// The prefix must be contiguous starting from `acked_prefix + 1`.
     /// Non-contiguous prefixes or already-terminal deliveries in the range are
-    /// rejected.
+    /// rejected asynchronously by the actor and surface via
+    /// [`Self::drain_errors`].
+    ///
+    /// Fire-and-forget: enqueues the command and returns immediately. The
+    /// final state of each affected delivery is updated asynchronously by the
+    /// actor.
     ///
     /// # Errors
     ///
-    /// Returns a typed error for non-contiguous prefixes, stale generations,
-    /// transport failures, or a closed consumer.
-    pub async fn ack_through(&self, delivery: &Delivery) -> Result<DeliveryState, ConsumerError> {
-        let (completed, receiver) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::SettleThrough {
-                token: delivery.inner_token().clone(),
-                completed,
+    /// Returns a typed error when the command channel is full or the consumer
+    /// is closed.
+    #[allow(clippy::unused_async)]
+    pub async fn ack_through(&self, delivery: &Delivery) -> Result<(), ConsumerError> {
+        self.try_settle_through(delivery.inner_token().clone())
+            .map_err(|e| match e {
+                SettleError::ChannelFull => ConsumerError::new(
+                    super::ConsumerErrorKind::SettlementInProgress,
+                    "settlement command channel is full",
+                ),
+                SettleError::Closed => ConsumerError::closed(),
             })
-            .await
-            .map_err(|_| ConsumerError::closed())?;
-        receiver.await.map_err(|_| ConsumerError::closed())?
     }
 
     /// Records a new connection generation for one subscription.

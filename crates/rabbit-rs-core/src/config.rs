@@ -226,6 +226,11 @@ pub struct SubscriptionConfig {
     /// [`ConsumerErrorKind::AlreadySettled`].
     #[serde(default)]
     pub early_ack: bool,
+
+    /// Broker-side auto-ack: `RabbitMQ` auto-acks each delivery at the protocol level,
+    /// eliminating all ack frames. Requires `early_ack = true` and `best_effort = true`.
+    #[serde(default)]
+    pub no_ack: bool,
 }
 
 /// Scheduler algorithms supported by the stable configuration format.
@@ -730,6 +735,10 @@ impl ConfigFingerprint {
                         "no_early_ack"
                     },
                 );
+                hash_value(
+                    &mut digest,
+                    if subscription.no_ack { "no_ack" } else { "ack" },
+                );
             }
         }
 
@@ -947,6 +956,7 @@ mod tests {
             max_buffered_bytes: 64 * 1024 * 1024,
             max_message_bytes: None,
             early_ack: false,
+            no_ack: false,
         }
     }
 

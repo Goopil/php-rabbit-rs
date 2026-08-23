@@ -114,11 +114,12 @@ class AmqpExtDriver extends AbstractBenchmark
                 try {
                     $this->pubChannel->waitForConfirm(5);
                 } catch (\Throwable) {
+                    break;
                 }
             }
         }
 
-        if ($count % $batchSize !== 0) {
+        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM && ($count % $batchSize !== 0)) {
             try {
                 $this->pubChannel->waitForConfirm(5);
             } catch (\Throwable) {
@@ -132,24 +133,17 @@ class AmqpExtDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
+        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
+            $this->reconnect();
+        }
+
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
 
         $consumed = 0;
-        $consecutiveNulls = 0;
-        while ($consumed < $count) {
-            $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
-            $envelope = $this->consQueue->get($flags);
-            if (!$envelope) {
-                $consecutiveNulls++;
-                if ($consecutiveNulls >= 3) {
-                    break;
-                }
-                usleep(1000);
-                continue;
-            }
-            $consecutiveNulls = 0;
+        $consumerTag = 'bench_amqpext_consumer';
 
+        $callback = function (\AMQPEnvelope $envelope, \AMQPQueue $q) use ($count, &$consumed, $autoAck, $consumerTag): bool {
             $body = $envelope->getBody();
             $this->recordReceived($envelope->getMessageId() ?? '');
             if (strlen($body) >= 8) {
@@ -159,12 +153,62 @@ class AmqpExtDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-
-            if (!$autoAck) {
-                $this->consQueue->ack($envelope->getDeliveryTag());
-            }
             $consumed++;
+            if (!$autoAck) {
+                $q->ack($envelope->getDeliveryTag());
+            }
+            if ($consumed >= $count) {
+                $q->cancel($consumerTag);
+                return false;
+            }
+            return true;
+        };
+
+        $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
+        $consecutiveTimeouts = 0;
+
+        $this->connection->setReadTimeout(1);
+
+        while ($consumed < $count) {
+            try {
+                $this->consQueue->consume($callback, $flags, $consumerTag);
+                $consecutiveTimeouts = 0;
+            } catch (\AMQPQueueException) {
+                $consecutiveTimeouts++;
+                if ($consecutiveTimeouts >= 3) {
+                    break;
+                }
+            }
         }
+
+        $this->connection->setReadTimeout(0);
+    }
+
+    private function reconnect(): void
+    {
+        try {
+            if ($this->connection !== null && $this->connection->isConnected()) {
+                $this->connection->disconnect();
+            }
+        } catch (\Throwable) {
+        }
+
+        $this->connection = new \AMQPConnection([
+            'host' => Config::RABBITMQ_HOST,
+            'port' => Config::RABBITMQ_PORT,
+            'login' => Config::RABBITMQ_USER,
+            'password' => Config::RABBITMQ_PASSWORD,
+            'vhost' => Config::RABBITMQ_VHOST,
+        ]);
+        $this->connection->connect();
+
+        $this->consChannel = new \AMQPChannel($this->connection);
+        $this->consQueue = new \AMQPQueue($this->consChannel);
+        $this->consQueue->setName(self::QUEUE);
+        $this->consQueue->setFlags(AMQP_DURABLE);
+        $this->consQueue->declareQueue();
+        $this->consQueue->bind(self::EXCHANGE, self::QUEUE);
+        $this->consChannel->setPrefetchCount(Config::PREFETCH_COUNT);
     }
 
     public function tearDown(): void

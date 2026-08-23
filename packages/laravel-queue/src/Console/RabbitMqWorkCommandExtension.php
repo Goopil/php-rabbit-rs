@@ -126,5 +126,17 @@ final class RabbitMqWorkCommandExtension
                 'message' => $event->exception->getMessage(),
             ]);
         });
+
+        if (class_exists(\Illuminate\Queue\Events\WorkerIdle::class)) {
+            $events->listen(
+                \Illuminate\Queue\Events\WorkerIdle::class,
+                static function (\Illuminate\Queue\Events\WorkerIdle $event) use ($logger, $prefix): void {
+                    $logger('debug', [
+                        'worker' => $prefix,
+                        'status' => 'idle',
+                    ]);
+                },
+            );
+        }
     }
 }

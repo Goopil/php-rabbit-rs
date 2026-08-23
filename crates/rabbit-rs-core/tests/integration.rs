@@ -71,6 +71,7 @@ mod helper {
                     max_buffered_bytes: 64 * 1024 * 1024,
                     max_message_bytes: None,
                     early_ack: false,
+                    no_ack: false,
                 }],
                 scheduler: SchedulerConfig::weighted_fair(16),
             }],
@@ -110,6 +111,63 @@ mod helper {
         }
         .validate()
         .expect("valid two-broker config")
+    }
+
+    pub fn multi_broker_config() -> rabbit_rs_core::config::ValidatedConfig {
+        Config {
+            brokers: ["first", "second"]
+                .into_iter()
+                .map(|name| BrokerConfig {
+                    name: name.to_owned(),
+                    hosts: vec![Endpoint::new(format!("{name}.rabbit.local"), 5672)],
+                    vhost: "/".to_owned(),
+                    credentials: Credentials::new("guest", "secret"),
+                    tls: TlsConfig::disabled(),
+                    heartbeat: Duration::from_secs(30),
+                })
+                .collect(),
+            workers: vec![WorkerProfile {
+                name: "multi-broker-worker".to_owned(),
+                subscriptions: vec![
+                    SubscriptionConfig {
+                        name: "jobs-first".to_owned(),
+                        broker: "first".to_owned(),
+                        queue: "jobs-first".to_owned(),
+                        weight: 1,
+                        priority_class: 0,
+                        prefetch: 8,
+                        starvation_after: Duration::from_secs(30),
+                        max_buffered_bytes: 64 * 1024 * 1024,
+                        max_message_bytes: None,
+                        early_ack: false,
+                        no_ack: false,
+                    },
+                    SubscriptionConfig {
+                        name: "jobs-second".to_owned(),
+                        broker: "second".to_owned(),
+                        queue: "jobs-second".to_owned(),
+                        weight: 1,
+                        priority_class: 0,
+                        prefetch: 8,
+                        starvation_after: Duration::from_secs(30),
+                        max_buffered_bytes: 64 * 1024 * 1024,
+                        max_message_bytes: None,
+                        early_ack: false,
+                        no_ack: false,
+                    },
+                ],
+                scheduler: SchedulerConfig::weighted_fair(16),
+            }],
+            topology_mode: TopologyMode::External,
+            delay: rabbit_rs_core::config::DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            queue_type: rabbit_rs_core::transport::QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid multi-broker consumer config")
     }
 
     pub fn request(message_id: &str) -> PublishRequest {
@@ -342,7 +400,7 @@ async fn batch_enqueues_all_messages_before_waiting_for_confirms() {
     assert_eq!(outcomes.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
     let transport = Arc::new(MockTransport::default());
     transport.push_delivery(Ok(TransportDelivery {
@@ -352,7 +410,7 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
         redelivered: false,
         message_id: None,
         correlation_id: None,
-        headers: BTreeMap::default(),
+        headers: Arc::new(BTreeMap::default()),
         payload: Bytes::from_static(b"job-payload"),
     }));
     let pool = ClientPool::new(Arc::new(consumer_config()), transport.clone());
@@ -360,7 +418,10 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
     let consumer = pool.consumer("main").await.expect("consumer");
     let delivery = consumer.next().await.expect("delivery");
     assert_eq!(delivery.payload, Bytes::from_static(b"job-payload"));
-    delivery.ack().await.expect("ack");
+    delivery.ack().await.expect("ack enqueued");
+
+    tokio::time::advance(std::time::Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
 
     let operations = transport.operations();
     assert!(
@@ -776,6 +837,45 @@ async fn publish_batch_detailed_empty_batch_returns_empty_outcome() {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-broker worker profile: all coordinators must be started
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn multi_broker_profile_starts_all_coordinators() {
+    let transport = Arc::new(MockTransport::default());
+    transport.keep_delivery_stream_open();
+    let pool = ClientPool::new(Arc::new(helper::multi_broker_config()), transport.clone());
+
+    let _consumer = pool
+        .consumer("multi-broker-worker")
+        .await
+        .expect("consumer");
+
+    // Both brokers' coordinators must have been started; each coordinator
+    // connects its broker, so both "first" and "second" must appear in the
+    // transport's Connect operations.
+    let operations = transport.operations();
+    let connected_brokers: Vec<String> = operations
+        .iter()
+        .filter_map(|op| {
+            if let TransportOperation::Connect { broker } = op {
+                Some(broker.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        connected_brokers.contains(&"first".to_owned()),
+        "first broker coordinator should be started, got {connected_brokers:?}"
+    );
+    assert!(
+        connected_brokers.contains(&"second".to_owned()),
+        "second broker coordinator should be started, got {connected_brokers:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Integration tests (from publish_consume.rs — integration-gated)
 // ---------------------------------------------------------------------------
 
@@ -811,6 +911,7 @@ mod integration {
                         max_buffered_bytes: 64 * 1024 * 1024,
                         max_message_bytes: None,
                         early_ack: false,
+                        no_ack: false,
                     }],
                     scheduler: SchedulerConfig::weighted_fair(16),
                 }],
@@ -848,6 +949,7 @@ mod integration {
                             max_buffered_bytes: 64 * 1024 * 1024,
                             max_message_bytes: None,
                             early_ack: false,
+                            no_ack: false,
                         },
                         SubscriptionConfig {
                             name: "billing-jobs".to_owned(),
@@ -860,6 +962,7 @@ mod integration {
                             max_buffered_bytes: 64 * 1024 * 1024,
                             max_message_bytes: None,
                             early_ack: false,
+                            no_ack: false,
                         },
                     ],
                     scheduler: SchedulerConfig::weighted_fair(16),

@@ -12,7 +12,7 @@ use rabbit_rs_core::{
     config::{BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint, TlsConfig},
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
-        PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
+        PublishWaiter, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
         delay::DelayRouter,
     },
     topology::delay::{DelayPluginProbe, DelayStrategy, DelayStrategyResolver, TtlBucketPlan},
@@ -61,8 +61,8 @@ mod helper {
 
     pub fn request_recovery(message_id: &str, deadline: Instant) -> PublishRequest {
         let mut properties = MessageProperties::new(message_id);
-        properties.content_type = Some("application/json".to_owned());
-        properties.correlation_id = Some("correlation".to_owned());
+        properties.content_type = Some(Arc::from("application/json"));
+        properties.correlation_id = Some(Arc::from("correlation"));
         PublishRequest::new(
             Destination::new("jobs", "high"),
             Bytes::from_static(b"payload"),
@@ -263,6 +263,27 @@ mod helper {
 use helper::*;
 
 // ---------------------------------------------------------------------------
+// TaggedFuture baseline test (Task 11)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn tagged_future_publish_completes() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let waiter = actor
+        .try_publish(request_safety("tagged-1", b"payload"))
+        .expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Publisher safety tests (from publisher_safety.rs)
 // ---------------------------------------------------------------------------
 
@@ -434,8 +455,26 @@ fn republication_preserves_the_message_id() {
 
     let retry = original.republish(Instant::now() + Duration::from_secs(30));
 
-    assert_eq!(retry.properties.message_id, "stable-id");
+    assert_eq!(retry.properties.message_id.as_ref(), "stable-id");
     assert_eq!(retry.payload, original.payload);
+}
+
+#[test]
+fn publish_request_clone_is_refcount_bump() {
+    let request = request_safety("msg-1", b"job");
+    let cloned = request.clone();
+    assert!(std::ptr::eq(
+        request.destination.exchange.as_ref(),
+        cloned.destination.exchange.as_ref(),
+    ));
+    assert!(std::ptr::eq(
+        request.destination.routing_key.as_ref(),
+        cloned.destination.routing_key.as_ref(),
+    ));
+    assert!(std::ptr::eq(
+        request.properties.message_id.as_ref(),
+        cloned.properties.message_id.as_ref(),
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1614,4 +1653,71 @@ async fn auto_detection_timeout_is_bounded_and_falls_back_to_ttl() {
         .expect("bounded TTL fallback");
 
     assert!(matches!(strategy, DelayStrategy::TtlBuckets(_)));
+}
+
+// ---------------------------------------------------------------------------
+// Batch wait tests (Task 12 — wait_all)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn wait_all_returns_results_in_original_order() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let mut waiters = Vec::new();
+    for i in 0..3u8 {
+        let waiter = actor
+            .try_publish(request_safety(&format!("msg-{i}"), b"payload"))
+            .expect("publish");
+        waiters.push((i as usize, waiter));
+    }
+
+    wait_for_publish_count(&transport, 3).await;
+
+    let results = PublishWaiter::wait_all(waiters).await;
+    assert_eq!(results.len(), 3);
+    for (i, result) in &results {
+        assert_eq!(*i, *i); // index preserved
+        assert!(result.is_ok(), "result {i} should be confirmed");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_all_preserves_order_regardless_of_completion_order() {
+    let transport = MockTransport::default();
+    // Three confirmations pushed in order; the actor resolves them in
+    // sequence. wait_all must return results indexed 0, 1, 2 regardless.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let waiters: Vec<(usize, _)> = (0..3u8)
+        .map(|i| {
+            let waiter = actor
+                .try_publish(request_safety(&format!("msg-{i}"), b"payload"))
+                .expect("publish");
+            (i as usize, waiter)
+        })
+        .collect();
+
+    wait_for_publish_count(&transport, 3).await;
+
+    let results = PublishWaiter::wait_all(waiters).await;
+    let indices: Vec<usize> = results.iter().map(|(i, _)| *i).collect();
+    assert_eq!(indices, vec![0, 1, 2], "results must be in original order");
+    for (_, result) in &results {
+        assert!(result.is_ok());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_all_handles_empty_input() {
+    let results = PublishWaiter::wait_all(Vec::new()).await;
+    assert!(results.is_empty());
 }

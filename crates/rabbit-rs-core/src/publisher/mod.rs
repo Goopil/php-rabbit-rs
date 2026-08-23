@@ -13,6 +13,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::{sync::oneshot, time::Instant};
 
 use crate::transport::{PublishHeaders, PublisherChannel, TransportError};
@@ -107,25 +108,25 @@ pub enum PublisherConnectionEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Destination {
-    pub exchange: String,
-    pub routing_key: String,
+    pub exchange: Arc<str>,
+    pub routing_key: Arc<str>,
 }
 
 impl Destination {
     #[must_use]
     pub fn new(exchange: impl Into<String>, routing_key: impl Into<String>) -> Self {
         Self {
-            exchange: exchange.into(),
-            routing_key: routing_key.into(),
+            exchange: Arc::from(exchange.into()),
+            routing_key: Arc::from(routing_key.into()),
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageProperties {
-    pub message_id: String,
-    pub content_type: Option<String>,
-    pub correlation_id: Option<String>,
+    pub message_id: Arc<str>,
+    pub content_type: Option<Arc<str>>,
+    pub correlation_id: Option<Arc<str>>,
     pub delay_ms: Option<u64>,
     pub headers: PublishHeaders,
 }
@@ -134,7 +135,7 @@ impl MessageProperties {
     #[must_use]
     pub fn new(message_id: impl Into<String>) -> Self {
         Self {
-            message_id: message_id.into(),
+            message_id: Arc::from(message_id.into()),
             content_type: None,
             correlation_id: None,
             delay_ms: None,
@@ -331,5 +332,27 @@ impl PublishWaiter {
                 "publisher actor closed before resolving the command",
             ))
         })
+    }
+
+    /// Collectively awaits all waiters with a single drain cycle.
+    ///
+    /// Results are returned in the original order identified by each waiter's
+    /// index. `FuturesUnordered` yields futures in completion order; we sort
+    /// by index so callers always receive results in submission order.
+    pub async fn wait_all(
+        waiters: Vec<(usize, PublishWaiter)>,
+    ) -> Vec<(usize, Result<PublishOutcome, PublishError>)> {
+        let mut futures: FuturesUnordered<_> = waiters
+            .into_iter()
+            .map(|(index, waiter)| async move { (index, waiter.wait().await) })
+            .collect();
+
+        let mut results = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            results.push(result);
+        }
+
+        results.sort_by_key(|(index, _)| *index);
+        results
     }
 }
