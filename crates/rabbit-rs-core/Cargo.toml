@@ -13,14 +13,14 @@ integration = []
 [dependencies]
 async-trait = "0.1"
 bytes = "1.10"
-flume = "0.11"
+flume = "0.12"
 fastrand = "2.3"
 futures-lite = "2.6"
 futures-util = "0.3"
 lapin = { version = "4.10", default-features = false, features = ["rustls--ring", "rustls-platform-verifier", "tokio"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2.5"
 
