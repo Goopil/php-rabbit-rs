@@ -27,9 +27,9 @@
 
 ## Avancement
 
-**Dernière mise à jour :** 16 août 2026
+**Dernière mise à jour :** 23 août 2026
 
-**Branche d'implémentation :** main
+**Branche d'implémentation :** Goopil/feat-horizon
 
 **Prochaine étape :** Milestone F — Distribution et documentation.
 
@@ -79,6 +79,19 @@
 - [x] Task 43 — Documenter installation, configuration et exploitation (`0712948`, `aa14daf`).
 
 **Toutes les tasks (1–43) sont complètes.** Le plan d'implémentation est terminé.
+
+## Milestone H — Support Laravel Horizon
+
+Ce jalon ajoute l'intégration Laravel Horizon au package `goopil/rabbit-rs-laravel` pour que les jobs Rabbit RS apparaissent dans le dashboard Horizon aux côtés des jobs Redis. RabbitMQ reste le transport ; Redis est utilisé par Horizon pour le tracking et le dashboard. Aucun changement au Rust core ou à l'extension PHP.
+
+- [x] Task H1 — Retirer `final` de `RabbitMqQueue` et `RabbitMqJob` (`feec698`).
+- [x] Task H2 — Ajouter les fakes Horizon (events + JobPayload) au bootstrap de test (`feec698`).
+- [x] Task H3 — Créer `Horizon\RabbitMqQueue` avec event dispatching (`feb50f5`).
+- [x] Task H4 — Créer `Horizon\RabbitMqJob` avec `deleteReserved()` (`92d7742`).
+- [x] Task H5 — Câbler la résolution dynamique dans le connector par `worker` config (`ddb75a0`).
+- [x] Task H6 — Ajouter la clé `worker` à la config et `suggest laravel/horizon` (`9b75901`).
+
+**Toutes les tasks (H1–H6) sont complètes.** 207 tests PHP passent (545 assertions), 193 tests Rust passent.
 
 ## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
 

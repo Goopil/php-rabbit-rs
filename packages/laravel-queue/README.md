@@ -17,12 +17,14 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 - **Backpressure events** — `BackpressureDetected` fires when in-flight messages exceed capacity
 - **Octane support** — consumers are flushed per-request and pools reloaded on worker restart
 - **Quorum queues by default** — durable, delivery-limit-aware topology out of the box
+- **Laravel Horizon support** — Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs; coexists with existing Redis queues
 
 ## Requirements
 
 - PHP **8.4** or **8.5**
 - Laravel **12** or **13**
 - `ext-rabbit_rs` — the native extension (see [installation](#installation))
+- `laravel/horizon` — **optional**, only needed for Horizon dashboard integration (see [Horizon](#laravel-horizon))
 
 ## Installation
 
@@ -121,6 +123,7 @@ The full configuration lives in `config/rabbit-rs.php`. Every option is document
 | `RABBIT_RS_TLS_CLIENT_KEY` | Path to client key (mTLS) | — |
 | `RABBIT_RS_TLS_SERVER_NAME` | Expected server name for SNI | — |
 | `RABBIT_RS_TLS_VERIFY` | `peer` or `none` | `peer` |
+| `RABBIT_RS_WORKER` | Worker mode: `default` or `horizon` | `default` |
 
 ### Brokers
 
@@ -425,12 +428,86 @@ When Laravel Octane is detected, the driver automatically:
 
 No configuration needed — the lifecycle hooks are registered by the service provider.
 
+## Laravel Horizon
+
+Rabbit RS integrates with [Laravel Horizon](https://laravel.com/docs/horizon) so jobs processed via RabbitMQ appear in the Horizon dashboard alongside Redis jobs. RabbitMQ remains the transport; Redis is used by Horizon for job tracking, metrics, and dashboard state.
+
+### Setup
+
+1. Install Horizon:
+
+```bash
+composer require laravel/horizon
+php artisan horizon:install
+```
+
+2. Set the worker mode to `horizon`:
+
+```bash
+# .env
+RABBIT_RS_WORKER=horizon
+```
+
+Or per-connection in `config/queue.php`:
+
+```php
+'connections' => [
+    'rabbit-rs' => [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+        'worker' => 'horizon',
+    ],
+],
+```
+
+3. Configure Horizon supervisors for both Redis and Rabbit RS in `config/horizon.php`:
+
+```php
+'environments' => [
+    'production' => [
+        'supervisor-redis' => [
+            'connection' => 'redis',
+            'queue' => ['default', 'notifications'],
+            'maxProcesses' => 5,
+        ],
+        'supervisor-rabbit' => [
+            'connection' => 'rabbit-rs',
+            'queue' => ['orders', 'billing'],
+            'maxProcesses' => 3,
+        ],
+    ],
+],
+```
+
+### How it works
+
+When `worker=horizon`, the driver uses `Horizon\RabbitMqQueue` which dispatches Horizon events at each job lifecycle stage:
+
+| Stage | Event | When |
+|-------|-------|------|
+| Before push | `JobPending` | `push()` before sending to RabbitMQ |
+| After push | `JobPushed` | `push()` after the broker accepts the message |
+| After pop | `JobReserved` | `pop()` returns a job to the worker |
+| After delete | `JobDeleted` | `delete()` acknowledges the job |
+
+Horizon stores this metadata in Redis and displays it in the dashboard. The RabbitMQ message itself is the source of truth for delivery — Horizon's Redis state is for observability only.
+
+### Coexistence with Redis queues
+
+Both Redis and Rabbit RS connections can run in the same Horizon instance. Redis queues use Horizon's native Redis backend; Rabbit RS queues dispatch events that Horizon tracks in Redis while using RabbitMQ as the actual transport.
+
+### Without Horizon
+
+If Horizon is not installed, set `RABBIT_RS_WORKER=default` (the default). The `horizon` mode requires `laravel/horizon` to be installed.
+
 ## Events
 
 | Event | Fired when | Payload |
 | ----- | ---------- | ------- |
 | `BackpressureDetected` | In-flight messages exceed `max_in_flight` | `broker`, `inFlight`, `capacity` |
 | `ConnectionStateChanged` | A broker connection changes state | `broker`, `state`, `generation` |
+
+When `worker=horizon`, Horizon's own events (`JobPending`, `JobPushed`, `JobReserved`, `JobDeleted`) are also dispatched. See [Laravel Horizon](#laravel-horizon).
 
 Listen in your `EventServiceProvider`:
 
@@ -463,6 +540,7 @@ php vendor/bin/phpunit --testsuite="Rabbit RS Integration"
 │  Job::dispatch() → Queue::push()             │
 ├─────────────────────────────────────────────┤
 │  RabbitMqQueue (PHP driver layer)           │
+│  Horizon\RabbitMqQueue (when worker=horizon) │
 │  MessageMapper · WorkerProfileResolver      │
 ├─────────────────────────────────────────────┤
 │  NativePoolFactory → Pool (Rust)            │
