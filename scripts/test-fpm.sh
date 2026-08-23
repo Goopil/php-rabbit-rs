@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-extension.sh
+source "${SCRIPT_DIR}/lib-extension.sh"
+
+ROOT_DIR="$(ext_project_root)"
 FIXTURE_DIR="${ROOT_DIR}/crates/rabbit-rs-php/tests/fixtures/fpm"
 PHP_BIN_PATH="$(command -v "${PHP_BIN:-php}")"
 PHP_FPM_PATH="$(command -v "${PHP_FPM_BIN:-php-fpm}")"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rabbit-rs-fpm.XXXXXX")"
 
-case "$(uname -s)" in
-    Darwin) ARTIFACT="${ROOT_DIR}/target/release/librabbit_rs_php.dylib" ;;
-    Linux) ARTIFACT="${ROOT_DIR}/target/release/librabbit_rs_php.so" ;;
-    *) echo "unsupported operating system: $(uname -s)" >&2; exit 1 ;;
-esac
+ARTIFACT="$(ext_artifact_path)"
 
 if [[ ! -f "${ARTIFACT}" ]]; then
     echo "extension artifact not found: ${ARTIFACT}" >&2
+    echo "Build the extension first: cargo build --manifest-path ${ROOT_DIR}/crates/rabbit-rs-php/Cargo.toml --features extension-tests" >&2
     exit 1
 fi
 
@@ -38,7 +39,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"${PHP_FPM_PATH}" -F -y "${FIXTURE_DIR}/php-fpm.conf" -d "extension=${ARTIFACT}" &
+# Use -n to ignore system ini files, preventing double-loading.
+"${PHP_FPM_PATH}" -n -F -y "${FIXTURE_DIR}/php-fpm.conf" -d "extension=${ARTIFACT}" &
 FPM_PID=$!
 
 for _ in {1..100}; do

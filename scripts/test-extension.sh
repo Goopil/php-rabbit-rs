@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-extension.sh
+source "${SCRIPT_DIR}/lib-extension.sh"
+
+ROOT_DIR="$(ext_project_root)"
 PHPT_DIR="${ROOT_DIR}/crates/rabbit-rs-php/tests/phpt"
 
 resolve_tool() {
@@ -31,7 +35,7 @@ major_minor_version() {
 PHP_BIN_PATH="$(resolve_tool php "${PHP_BIN:-php}")"
 PHP_CONFIG_PATH="$(resolve_tool php-config "${PHP_CONFIG:-php-config}")"
 
-PHP_VERSION="$("${PHP_BIN_PATH}" -r 'echo PHP_VERSION;')"
+PHP_VERSION="$("${PHP_BIN_PATH}" -n -r 'echo PHP_VERSION;')"
 PHP_CONFIG_VERSION="$("${PHP_CONFIG_PATH}" --version)"
 PHP_MAJOR_MINOR="$(major_minor_version php "${PHP_VERSION}")"
 PHP_CONFIG_MAJOR_MINOR="$(major_minor_version php-config "${PHP_CONFIG_VERSION}")"
@@ -65,27 +69,13 @@ trap 'rm -rf "${RUN_TESTS_DIR}"' EXIT
 RUN_TESTS="${RUN_TESTS_DIR}/run-tests.php"
 cp "${RUN_TESTS_SOURCE}" "${RUN_TESTS}"
 
-case "$(uname -s)" in
-    Darwin)
-        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.dylib"
-        ;;
-    Linux)
-        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.so"
-        ;;
-    *)
-        echo "unsupported operating system: $(uname -s)" >&2
-        exit 1
-        ;;
-esac
-
-if [[ ! -f "${ARTIFACT}" ]]; then
-    echo "extension artifact not found: ${ARTIFACT}" >&2
-    exit 1
-fi
+# --- Extension artifact (via shared helper) ---
+ext_ensure_built
+ARTIFACT="$(ext_artifact_path)"
 
 RABBIT_RS_EXPECTED_VERSION="$({
     cargo metadata --manifest-path "${ROOT_DIR}/Cargo.toml" --no-deps --format-version=1
-} | "${PHP_BIN_PATH}" -r '
+} | "${PHP_BIN_PATH}" -n -r '
     $metadata = json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR);
     foreach ($metadata["packages"] as $package) {
         if ($package["name"] === "rabbit-rs-php") {
@@ -106,7 +96,8 @@ if [[ ! -d "${PHP_EXT_DIR}/vendor" ]]; then
 fi
 
 echo "Running Pest tests..."
-(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -d "extension=${ARTIFACT}" vendor/bin/pest)
+# Use -n to ignore system ini files, preventing double-loading.
+(cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -n -d "extension=${ARTIFACT}" vendor/bin/pest)
 
 # --- PHPT tests (only extension_metadata.phpt) ---
 PHPT_TEST="${PHPT_DIR}/extension_metadata.phpt"

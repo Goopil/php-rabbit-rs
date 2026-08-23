@@ -23,8 +23,12 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.
 - `composer.json`: PIE package metadata for `rabbit-rs/native`.
 - `scripts/check.sh`: Rust quality gate (fmt + clippy + test + composer validate).
+- `scripts/lib-extension.sh`: shared helpers for building and loading ext-rabbit_rs in test scripts.
 - `scripts/test-laravel.sh`: run Laravel Pest tests (Unit + Feature without extension, Integration with extension).
 - `scripts/test-extension.sh`: build and test the PHP extension (Pest + PHPT).
+- `scripts/test-integration.sh`: run integration tests with RabbitMQ lab (Rust + Laravel Integration).
+- `scripts/test-fpm.sh`: FPM multi-worker pool handle isolation test.
+- `scripts/test-octane.sh`: Octane lifecycle tests (fake classes, no extension).
 
 ## Toolchain and Commands
 
@@ -49,6 +53,17 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - Both scripts pass `--manifest crates/rabbit-rs-php/Cargo.toml` to `cargo-php` under the hood.
 - `cargo php stubs` requires the PHP embed SAPI to introspect the extension. Homebrew PHP (`php@8.4`) does not include embed by default, so `./scripts/stubs.sh` may abort with SIGABRT (exit 134) on macOS. The authoritative stub is `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, maintained manually and validated by `php -l` and PHPT reflection tests.
 - To regenerate stubs via `cargo php stubs`, build PHP with `--enable-embed` or use a Docker image that ships the embed SAPI.
+
+## Extension Loading in Test Scripts
+
+- Test scripts use `php -n` to ignore all system ini files, preventing "Module already loaded" warnings when the extension is installed system-wide.
+- `scripts/lib-extension.sh` provides shared helpers:
+  - `ext_artifact_path()`: resolves `target/debug/librabbit_rs_php.{dylib|so}` (falls back to `target/release/`).
+  - `ext_ensure_built()`: builds the extension with `--features extension-tests` if the artifact is missing.
+  - `ext_php_cmd()`: echoes `php -n -d extension=<artifact>` for tests that need the extension.
+  - `ext_php_no_ext_cmd()`: echoes `php -n` for Unit/Feature tests that must run without the extension.
+- Built-in extensions (curl, pcntl, json, etc.) remain available with `-n` because they are compiled into PHP.
+- Laravel Unit/Feature tests must run without the extension so the "missing extension" assertion in `RabbitMqServiceProviderTest` passes.
 
 ## Rust Conventions
 
