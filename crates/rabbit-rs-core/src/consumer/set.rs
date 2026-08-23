@@ -77,6 +77,12 @@ impl Subscription {
     }
 
     #[must_use]
+    pub const fn generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
+
+    #[must_use]
     pub const fn policy(mut self, policy: SubscriptionPolicy) -> Self {
         self.policy = policy;
         self
@@ -141,6 +147,16 @@ impl ConsumerSet {
         max_in_flight: usize,
         metrics: Metrics,
     ) -> Result<ConsumerHandle, ConsumerError> {
+        let generation = subscriptions.first().map_or(1, |s| s.generation);
+        Self::spawn_with_generation(subscriptions, max_in_flight, metrics, generation).await
+    }
+
+    async fn spawn_with_generation(
+        subscriptions: Vec<Subscription>,
+        max_in_flight: usize,
+        metrics: Metrics,
+        generation: u64,
+    ) -> Result<ConsumerHandle, ConsumerError> {
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let mut streams = Vec::with_capacity(subscriptions.len());
 
@@ -198,6 +214,7 @@ impl ConsumerSet {
             metrics,
             closed: Arc::new(AtomicBool::new(false)),
             dispatch_notify,
+            generation,
         })
     }
 }
@@ -236,6 +253,14 @@ pub struct ConsumerHandle {
     metrics: Metrics,
     closed: Arc<AtomicBool>,
     dispatch_notify: Arc<Notify>,
+    generation: u64,
+}
+
+impl ConsumerHandle {
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 impl Drop for ConsumerHandle {

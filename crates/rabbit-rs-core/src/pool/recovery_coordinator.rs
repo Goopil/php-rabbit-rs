@@ -418,6 +418,7 @@ async fn recover_generation(
                 sub_config.queue.clone(),
                 consumer_channel,
             )
+            .generation(generation)
             .prefetch(sub_config.prefetch)
             .channel_id(channel_id)
             .policy(SubscriptionPolicy::new(
