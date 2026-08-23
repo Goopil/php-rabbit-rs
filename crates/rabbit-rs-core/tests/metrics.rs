@@ -178,7 +178,7 @@ fn transport_delivery(tag: u64) -> TransportDelivery {
         redelivered: false,
         message_id: None,
         correlation_id: None,
-        headers: BTreeMap::new(),
+        headers: Arc::new(BTreeMap::new()),
         payload: Bytes::from_static(b"job"),
     }
 }

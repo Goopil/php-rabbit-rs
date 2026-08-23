@@ -61,7 +61,7 @@ mod helper {
             redelivered: false,
             message_id: None,
             correlation_id: None,
-            headers: BTreeMap::new(),
+            headers: Arc::new(BTreeMap::new()),
             payload: Bytes::from_static(payload),
         }
     }
@@ -86,7 +86,7 @@ mod helper {
             redelivered: false,
             message_id: None,
             correlation_id: None,
-            headers: BTreeMap::new(),
+            headers: Arc::new(BTreeMap::new()),
             payload: Bytes::from(payload),
         }
     }
@@ -1348,4 +1348,12 @@ async fn hard_gate_stops_accepting_when_over_budget() {
     );
 
     let _ = consumer.close().await;
+}
+
+#[tokio::test]
+async fn arc_headers_no_deep_clone() {
+    use std::sync::Arc;
+    let transport_delivery = helper::delivery(1, b"payload");
+    let headers_arc = Arc::clone(&transport_delivery.headers);
+    let _cloned = Arc::clone(&headers_arc);
 }

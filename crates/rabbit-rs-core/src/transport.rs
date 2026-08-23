@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, fmt, time::Duration};
+use std::{collections::BTreeMap, error::Error, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -320,7 +320,7 @@ pub struct Delivery {
     pub redelivered: bool,
     pub message_id: Option<String>,
     pub correlation_id: Option<String>,
-    pub headers: Headers,
+    pub headers: Arc<Headers>,
     pub payload: Bytes,
 }
 
@@ -453,7 +453,7 @@ pub trait DeliveryStream: Send {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use bytes::Bytes;
 
@@ -545,7 +545,7 @@ mod tests {
             redelivered: false,
             message_id: None,
             correlation_id: None,
-            headers: super::Headers::new(),
+            headers: Arc::new(super::Headers::new()),
             payload: Bytes::from_static(b"job"),
         }));
 

@@ -962,7 +962,7 @@ async fn broker_message_id_is_preserved_as_delivery_id() {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
-        headers: Headers::new(),
+        headers: Arc::new(Headers::new()),
         payload: Bytes::from_static(b"job"),
         message_id: Some("uuid-stable-job-id".to_owned()),
         correlation_id: Some("corr-1".to_owned()),
@@ -998,7 +998,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
         exchange: "jobs".to_owned(),
         routing_key: "high".to_owned(),
         redelivered: false,
-        headers: Headers::new(),
+        headers: Arc::new(Headers::new()),
         payload: Bytes::from_static(b"job"),
         message_id: None,
         correlation_id: None,
@@ -1040,11 +1040,11 @@ async fn delayed_release_increments_the_application_attempt_header() {
         redelivered: false,
         message_id: None,
         correlation_id: None,
-        headers: attempt_headers(&[
+        headers: Arc::new(attempt_headers(&[
             (APPLICATION_ATTEMPTS_HEADER, "2"),
             ("trace-id", "trace-42"),
             ("x-delivery-count", "1"),
-        ]),
+        ])),
         payload: Bytes::from_static(b"job"),
     }));
     transport.push_confirmation(Ok(rabbit_rs_core::transport::PublishConfirmation::Ack(

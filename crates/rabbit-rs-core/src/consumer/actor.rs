@@ -232,7 +232,7 @@ impl ActorState {
             let attempts = AttemptsResolver::default()
                 .resolve(&delivery.headers, delivery.redelivered)
                 .unwrap_or(if delivery.redelivered { 2 } else { 1 });
-            let headers = Arc::new(delivery.headers.clone());
+            let headers = Arc::clone(&delivery.headers);
 
             if runtime.early_ack {
                 let channel = runtime.channel.clone();

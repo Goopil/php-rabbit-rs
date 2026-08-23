@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_lite::StreamExt;
@@ -296,7 +298,7 @@ impl DeliveryStream for LapinDeliveryStream {
                             .correlation_id()
                             .as_ref()
                             .map(ToString::to_string),
-                        headers: map_headers(delivery.properties.headers().as_ref()),
+                        headers: Arc::new(map_headers(delivery.properties.headers().as_ref())),
                         payload: Bytes::from(delivery.data),
                     })
                 },

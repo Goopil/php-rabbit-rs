@@ -399,7 +399,7 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
         redelivered: false,
         message_id: None,
         correlation_id: None,
-        headers: BTreeMap::default(),
+        headers: Arc::new(BTreeMap::default()),
         payload: Bytes::from_static(b"job-payload"),
     }));
     let pool = ClientPool::new(Arc::new(consumer_config()), transport.clone());
