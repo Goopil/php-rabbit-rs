@@ -180,6 +180,20 @@ class RabbitMqQueue extends Queue implements QueueContract
         );
     }
 
+    /**
+     * Publish a raw payload with a delay, bypassing enqueueUsing.
+     * Used by Horizon subclass to dispatch with an already-prepared payload.
+     */
+    protected function laterRawFromPayload($delay, string $payload, $queue = null): string
+    {
+        return $this->publish(
+            $payload,
+            $queue,
+            ['content_type' => 'application/json'],
+            $this->delayMilliseconds($delay),
+        );
+    }
+
     public function bulk($jobs, $data = '', $queue = null)
     {
         $jobs = array_values((array) $jobs);
@@ -400,7 +414,7 @@ class RabbitMqQueue extends Queue implements QueueContract
         }
     }
 
-    private function queueName(mixed $queue): string
+    protected function queueName(mixed $queue): string
     {
         $queue ??= $this->defaultQueue;
         if (! is_string($queue) || $queue === '') {
