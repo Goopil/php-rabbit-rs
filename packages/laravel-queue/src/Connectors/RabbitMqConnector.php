@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Connectors;
 
+use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
@@ -51,7 +52,12 @@ final class RabbitMqConnector implements ConnectorInterface
             throw new InvalidArgumentException('block_for exceeds the supported millisecond range');
         }
 
-        return new RabbitMqQueue(
+        $worker = $config['worker'] ?? 'default';
+        $class = $worker === 'horizon'
+            ? HorizonRabbitMqQueue::class
+            : RabbitMqQueue::class;
+
+        return new $class(
             $this->pools->make($this->normalizedConfig['native']),
             $this->normalizedConfig['routes'],
             $defaultQueue,
