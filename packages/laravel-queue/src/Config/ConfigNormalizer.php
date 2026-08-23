@@ -37,6 +37,8 @@ final class ConfigNormalizer
                 'dead_letter' => $topology['dead_letter'],
                 'delivery_limit' => $topology['queue']['delivery_limit'],
                 'publisher' => $publisher,
+                'queue_type' => $topology['queue']['type'],
+                'queue_durable' => $topology['queue']['durable'],
             ],
             'routes' => self::routes($config['routes'] ?? [], $brokerNames),
             'publisher' => $publisher,

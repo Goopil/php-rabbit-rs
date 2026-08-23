@@ -97,6 +97,8 @@ mod helper {
                 dead_letter: None,
                 delivery_limit: None,
                 publisher: PublisherConfigSection::default(),
+                queue_type: QueueKind::Quorum,
+                queue_durable: true,
             }
             .validate()
             .expect("valid config"),
@@ -131,6 +133,8 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
     }
 
@@ -151,13 +155,29 @@ mod helper {
         config
     }
 
+    pub fn config_with_queue_type(queue: &str, kind: QueueKind) -> Config {
+        let mut config = base_config(queue);
+        config.queue_type = kind;
+        config
+    }
+
+    pub fn config_with_queue_durable(queue: &str, durable: bool) -> Config {
+        let mut config = base_config(queue);
+        config.queue_durable = durable;
+        config
+    }
+
     pub fn build_plan_from_config(config: &ValidatedConfig) -> TopologyPlan {
+        let queue_type = config.queue_type();
+        let queue_durable = config.queue_durable();
         let queues: Vec<_> = config
             .worker_profiles()
             .iter()
             .flat_map(|worker| &worker.subscriptions)
             .map(|sub| {
-                let mut qd = QueueDefinition::new(&sub.queue);
+                let mut qd = QueueDefinition::new(&sub.queue)
+                    .kind(queue_type)
+                    .durable(queue_durable);
                 if let Some(limit) = config.delivery_limit() {
                     qd = qd.delivery_limit(limit);
                 }
@@ -852,6 +872,70 @@ fn dead_letter_applies_to_all_worker_queues() {
         1,
         "DLQ should be declared exactly once"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Queue type and durable from config tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_type_classic_from_config() {
+    let config = config_with_queue_type("jobs.high", QueueKind::Classic);
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert_eq!(
+        plan.queues()[0].kind,
+        QueueKind::Classic,
+        "queue kind should come from config.queue_type"
+    );
+}
+
+#[test]
+fn queue_type_quorum_from_config() {
+    let config = config_with_queue_type("jobs.high", QueueKind::Quorum);
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert_eq!(
+        plan.queues()[0].kind,
+        QueueKind::Quorum,
+        "quorum queue kind should be preserved from config"
+    );
+}
+
+#[test]
+fn queue_durable_false_from_config() {
+    let config = config_with_queue_durable("jobs.high", false);
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert!(
+        !plan.queues()[0].durable,
+        "durable flag should come from config.queue_durable"
+    );
+}
+
+#[test]
+fn queue_durable_true_from_config() {
+    let config = config_with_queue_durable("jobs.high", true);
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert!(
+        plan.queues()[0].durable,
+        "durable=true should be preserved from config"
+    );
+}
+
+#[test]
+fn queue_defaults_to_quorum_and_durable() {
+    let config = base_config("jobs.high");
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert_eq!(plan.queues()[0].kind, QueueKind::Quorum);
+    assert!(plan.queues()[0].durable);
 }
 
 // ---------------------------------------------------------------------------

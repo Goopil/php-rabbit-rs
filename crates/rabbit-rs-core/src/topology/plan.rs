@@ -37,6 +37,18 @@ impl QueueDefinition {
     }
 
     #[must_use]
+    pub const fn kind(mut self, kind: QueueKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    #[must_use]
+    pub const fn durable(mut self, durable: bool) -> Self {
+        self.durable = durable;
+        self
+    }
+
+    #[must_use]
     pub const fn exclusive(mut self, exclusive: bool) -> Self {
         self.exclusive = exclusive;
         self

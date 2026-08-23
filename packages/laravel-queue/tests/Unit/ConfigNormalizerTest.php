@@ -95,6 +95,8 @@ describe('native normalization', function (): void {
                 'mandatory' => true,
                 'confirm_timeout' => 30000,
             ],
+            'queue_type' => 'quorum',
+            'queue_durable' => true,
         ])->toBe($normalized['native'])
             ->and('default')->toBe($normalized['routes']['orders']['broker'])
             ->and($normalized['publisher']['confirms'])->toBeTrue()
@@ -285,6 +287,35 @@ describe('delivery_limit DLX guard', function (): void {
 
         expect($normalized)->toBeArray()
             ->and($normalized['native']['delivery_limit'])->toBeNull();
+    });
+});
+
+describe('queue type and durable', function (): void {
+    it('passes queue type to native config', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['type'] = 'classic';
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect('classic')->toBe($normalized['native']['queue_type']);
+    });
+
+    it('passes queue durable to native config', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['durable'] = false;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['native']['queue_durable'])->toBeFalse();
+    });
+
+    it('defaults queue type to quorum and durable to true', function (): void {
+        $config = configValidConfig();
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect('quorum')->toBe($normalized['native']['queue_type'])
+            ->and($normalized['native']['queue_durable'])->toBeTrue();
     });
 });
 
