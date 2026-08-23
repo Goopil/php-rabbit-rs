@@ -2249,9 +2249,53 @@ pub fn ackThrough(&self, delivery: &Delivery) -> PhpResult<()> {
 }
 ```
 
-- [ ] **Step 4: Modify `ackBatch()` to fire-and-forget**
+- [ ] **Step 4: Modify `ackBatch()` to fire-and-forget + bound to 256**
 
 In `crates/rabbit-rs-php/src/classes/consumer.rs`, lines 162-192: replace each `block_on(delivery.inner.ack())` with `delivery.inner.try_ack()` (or the backpressure fallback). The loop becomes non-blocking.
+
+Additionally, bound the loop to 256 deliveries to prevent unbounded iteration:
+
+```rust
+pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
+    self.ensure_open("Goopil\\RabbitRs\\Consumer::ackBatch")?;
+
+    let mut count = 0usize;
+    for (_, value) in deliveries {
+        if count >= 256 {
+            return rabbit_exception("ackBatch: maximum 256 deliveries per call");
+        }
+        count += 1;
+        // ... extract delivery object (existing code) ...
+        // Fire-and-forget ack (from Step 2):
+        delivery.inner.try_ack()
+            .map_err(|e| /* same backpressure pattern as ack() */)?;
+    }
+    Ok(())
+}
+```
+
+- [ ] **Step 4a: Fix `nextBatch()` off-by-one in slow path**
+
+In `crates/rabbit-rs-php/src/classes/consumer.rs:138`, the slow path calls `try_next_batch(max.saturating_sub(1))`. When `max=1`, `saturating_sub(1)` = 0, which the core clamps to 1 (via `max.clamp(1, 256)` at `set.rs:291`). This returns up to 1 additional delivery, totaling 2 when the caller requested `max=1`.
+
+Fix: do not drain when `max <= 1`:
+
+```rust
+// Before (line 138):
+let more = self
+    .handle
+    .try_next_batch(max.saturating_sub(1))
+    .map_err(|error| consumer_php_exception(&error))?;
+
+// After:
+let more = if max > 1 {
+    self.handle
+        .try_next_batch(max.saturating_sub(1))
+        .map_err(|error| consumer_php_exception(&error))?
+} else {
+    Vec::new()
+};
+```
 
 - [ ] **Step 5: Add `drainErrors()` method to `Consumer`**
 
@@ -2452,6 +2496,9 @@ git commit -m "feat: drainSettlementErrors in pop() surfaces async ack errors"
 **Files:**
 - Modify: `benchmarks/src/Config.php:30` — `PREFETCH_COUNT = 128`
 - Modify: `benchmarks/src/Drivers/RabbitRsDriver.php:57-64` — AUTO_ACK confirms=false
+- Modify: `benchmarks/src/Drivers/BunnyDriver.php:125-163` — migrate from `basic_get` to `basic_consume`
+- Modify: `benchmarks/src/Drivers/AmqpExtDriver.php:129-168` — migrate from `basic_get` to `basic_consume`
+- Modify: `benchmarks/laravel/LaravelCompareBenchmark.php:146` — fix `' prefetch_count'` leading space
 - Investigate: `scripts/run-benchmarks.php` — SKIP error
 - Investigate: `crates/rabbit-rs-core/src/publisher/actor.rs:381-401` — `expire_replay()`
 
@@ -2500,7 +2547,138 @@ Also, set `no_ack=true` in the subscription config for AUTO_ACK:
 
 And set `early_ack=true` for AUTO_ACK (already done at lines 46-49).
 
-- [ ] **Step 3: Run benchmark to verify AUTO_ACK fairness**
+- [ ] **Step 2a: Migrate `BunnyDriver` from `basic_get` to `basic_consume`**
+
+`BunnyDriver.php:125-163` uses `basic.get` (polling) via `$this->channel->get(self::QUEUE, $autoAck)`.
+`basic.get` sends a request-response round-trip per message, while `basic_consume` has the broker
+push messages continuously. This is an unfair disadvantage.
+
+Replace the polling loop with a callback-based `basic_consume` pattern (following `AmqplibDriver` as
+reference):
+
+```php
+public function consumeMessages(int $count): void
+{
+    if ($this->channel === null) {
+        throw new RuntimeException('Driver not set up');
+    }
+
+    $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+        || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+    $consumed = 0;
+
+    $consumerTag = 'bench_bunny_consumer';
+    $channel = $this->channel;
+    $queue = self::QUEUE;
+
+    $callback = function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag): void {
+        $body = $message->content;
+        $this->recordReceived($message->getHeader('message-id', ''));
+        if (strlen($body) >= 8) {
+            $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
+            if ($ts !== null) {
+                $elapsedNs = hrtime(true) - (int) $ts;
+                $this->recordLatency($elapsedNs / 1_000_000);
+            }
+        }
+        $consumed++;
+        if (!$autoAck) {
+            $channel->ack($message);
+        }
+        if ($consumed >= $count) {
+            $channel->basicCancel($consumerTag);
+        }
+    };
+
+    $this->channel->consume($queue, $callback, $consumerTag, $autoAck);
+
+    $consecutiveTimeouts = 0;
+    while ($consumed < $count) {
+        try {
+            $this->channel->wait(null, 1);
+            $consecutiveTimeouts = 0;
+        } catch (\Throwable) {
+            $consecutiveTimeouts++;
+            if ($consecutiveTimeouts >= 3) {
+                break;
+            }
+        }
+    }
+}
+```
+
+Note: The exact Bunny API may differ — `Bunny\Channel` uses `consume()`, `wait()`, `basicCancel()`.
+Verify the exact method names during implementation by checking the Bunny PHP package source.
+
+- [ ] **Step 2b: Migrate `AmqpExtDriver` from `basic_get` to `basic_consume`**
+
+`AmqpExtDriver.php:129-168` uses `basic.get` (polling) via `$this->consQueue->get($flags)`.
+Same fairness issue as BunnyDriver.
+
+Replace the polling loop with `basic_consume` using the amqp extension's callback API:
+
+```php
+public function consumeMessages(int $count): void
+{
+    if ($this->consQueue === null) {
+        throw new RuntimeException('Driver not set up');
+    }
+
+    $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
+        || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+    $consumed = 0;
+
+    $consumerTag = 'bench_amqpext_consumer';
+    $queue = $this->consQueue;
+
+    $callback = function (\AMQPEnvelope $envelope, \AMQPQueue $q) use ($count, &$consumed, $autoAck, $consumerTag): bool {
+        $body = $envelope->getBody();
+        $this->recordReceived($envelope->getMessageId() ?? '');
+        if (strlen($body) >= 8) {
+            $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
+            if ($ts !== null) {
+                $elapsedNs = hrtime(true) - (int) $ts;
+                $this->recordLatency($elapsedNs / 1_000_000);
+            }
+        }
+        $consumed++;
+        if (!$autoAck) {
+            $q->ack($envelope->getDeliveryTag());
+        }
+        if ($consumed >= $count) {
+            $q->cancel($consumerTag);
+            return false;
+        }
+        return true;
+    };
+
+    $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
+    $this->consQueue->consume($callback, $flags, $consumerTag);
+
+    // The amqp extension's consume() blocks until the consumer is cancelled.
+    // No explicit wait loop needed — consume() returns when cancel() is called.
+}
+```
+
+Note: The amqp extension's `AMQPQueue::consume()` blocks until the consumer is cancelled or the
+connection closes. The callback returns `false` to stop consuming when `$consumed >= $count`.
+Verify the exact callback return convention during implementation.
+
+- [ ] **Step 2c: Fix `' prefetch_count'` leading space in LaravelCompareBenchmark**
+
+In `benchmarks/laravel/LaravelCompareBenchmark.php`, line 146:
+
+```php
+// Before:
+' prefetch_count' => 16,
+
+// After:
+'prefetch_count' => 16,
+```
+
+This fixes the php-amqplib driver config key so the prefetch count is actually applied.
+
+- [ ] **Step 3: Run benchmark to verify fairness**
 
 Run: `rtk php benchmarks/src/run-benchmarks.php`
 Expected: AUTO_ACK scenario runs without SKIP, and rabbit-rs performance is closer to amqplib.
@@ -2562,8 +2740,8 @@ Expected: No SKIP. AUTO_ACK scenario completes for all drivers.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add benchmarks/src/Config.php benchmarks/src/Drivers/RabbitRsDriver.php benchmarks/src/run-benchmarks.php
-git commit -m "fix: benchmark AUTO_ACK fairness (confirms=false + no_ack=true) and prefetch 128 global"
+git add benchmarks/src/Config.php benchmarks/src/Drivers/RabbitRsDriver.php benchmarks/src/Drivers/BunnyDriver.php benchmarks/src/Drivers/AmqpExtDriver.php benchmarks/laravel/LaravelCompareBenchmark.php benchmarks/src/run-benchmarks.php
+git commit -m "fix: benchmark fairness — AUTO_ACK, basic_consume migration, prefetch 128, fix prefetch_count key"
 ```
 
 ---
@@ -2587,7 +2765,7 @@ After writing the complete plan, verify:
 | Section 6: TaggedFuture (eliminate double BoxFuture) | Task 11 | ✅ |
 | Section 7: Batch wait `wait_all()` | Task 12 | ✅ |
 | Section 8: Multi-channel publish | Deferred | ✅ (out of scope) |
-| Section 9: Benchmark AUTO_ACK + SKIP | Task 15 | ✅ |
+| Section 9: Benchmark AUTO_ACK + SKIP + basic_consume fairness | Task 15 | ✅ |
 
 ### Placeholder Scan
 
@@ -2630,4 +2808,21 @@ immediately — the backpressure logic is in the PHP layer. ✅
 The spec requires `drainSettlementErrors()` on `WorkerIdle`. This is addressed in Task 14 Step 5. The `pop()`
 drain runs every iteration. The `WorkerIdle` listener is a best-effort addition. ✅
 
-The spec requires `drainSettlementErrors()` on `WorkerIdle`. This is addressed in Task 8 Step 5 with a note that the simplest approach may be to rely on the `pop()` drain (which runs every iteration). The `WorkerIdle` listener is a best-effort addition. ✅
+### Benchmark Fairness (PHP extension audit)
+
+- `nextBatch()` off-by-one: `max=1` returns 2 in slow path. Fixed in Task 13 Step 4a. ✅
+- `ackBatch()` unbounded + `block_on` per message: bounded to 256 + fire-and-forget in Task 13 Step 4. ✅
+- `BunnyDriver` and `AmqpExtDriver` use `basic_get` (poll) instead of `basic_consume` (push): migrated in
+  Task 15 Steps 2a and 2b. ✅
+- `LaravelCompareBenchmark.php:146` has `' prefetch_count'` with leading space: fixed in Task 15 Step 2c. ✅
+
+### Out of Scope (7 bugs from PHP extension audit — separate plan)
+
+The following bugs are confirmed but not in this plan. They will be addressed in a separate spec/plan:
+1. Deadlock réentrant des callbacks (`pool.rs:312-348`, `callbacks.rs:55-68`)
+2. Perte silencieuse après 20 redeliveries sans DLX (`config/rabbit-rs.php:318-325`)
+3. Pools abandonnés sans fermeture (`NativePoolFactory.php:58-72`, `OctaneLifecycle.php:31-44`)
+4. Payload poison non validé (`RabbitMqJob.php:29-37`)
+5. Config topology partiellement morte (`ConfigNormalizer.php:31-40,468-478`)
+6. Supervisor laissant des workers orphelins (`WorkerSupervisor.php:120-128`)
+7. Monitoring mensonger (`RabbitMqStatusCommand.php:46-70`)

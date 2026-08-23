@@ -46,6 +46,10 @@ sequential waiter polling, and benchmark unfairness.
 | Laravel `pop()`             | One-at-a-time, optimized. No custom worker, no batch pop. `drainErrors()` called at top of `pop()`. |
 | At-least-once               | Preserved. If ack fails or process crashes, RabbitMQ redelivers. Duplicates identified by `message_id`. |
 | `unsafe_code`               | Remains `#![forbid(unsafe_code)]`. No changes.                                      |
+| `nextBatch()` off-by-one    | Fix slow path: `max=1` returns 2 instead of 1. Skip `try_next_batch` when `max <= 1`. |
+| `ackBatch()` bound          | Bound to 256 deliveries. Combined with fire-and-forget (no `block_on` per message). |
+| Benchmark `basic_consume`   | Migrate BunnyDriver and AmqpExtDriver from `basic_get` (poll) to `basic_consume` (push) for fair comparison. |
+| Benchmark `prefetch_count`  | Fix `' prefetch_count'` leading space in `LaravelCompareBenchmark.php:146`. |
 
 ## Section A — Recovery: Generation Rollback, Handle Invalidation, Multi-Broker
 
@@ -206,6 +210,30 @@ outcome:
 - Settlement failure (retryable): budget NOT released, ledger entry NOT removed, token reset to `Pending`
 - Settlement failure (terminal): budget released, ledger removed, token set to `Lost`
 - `ack_through` retry after retryable failure: succeeds (ledger entry preserved)
+
+#### B.2 — `nextBatch()` PHP off-by-one
+
+`consumer.rs:138` (PHP extension) slow path calls `try_next_batch(max.saturating_sub(1))`. When `max=1`,
+`saturating_sub(1)` = 0, which the core clamps to 1 (`set.rs:291`: `max.clamp(1, 256)`). This returns up to
+1 additional delivery, totaling 2 when the caller requested `max=1`.
+
+Fix: skip `try_next_batch` when `max <= 1`:
+
+```rust
+let more = if max > 1 {
+    self.handle.try_next_batch(max.saturating_sub(1))
+        .map_err(|error| consumer_php_exception(&error))?
+} else {
+    Vec::new()
+};
+```
+
+#### B.3 — `ackBatch()` bound + fire-and-forget
+
+`consumer.rs:162-192` (PHP extension) iterates over all deliveries without a bound and calls `block_on`
+per delivery. Two fixes:
+1. Bound the loop to 256 deliveries (matching the core `try_next_batch` clamp)
+2. Replace `block_on(ack())` with fire-and-forget `try_ack()` (from Section 1)
 
 ## Section C — OOM Protection: Hard Gate + Permit-Based Backpressure
 
@@ -1008,6 +1036,31 @@ catches the exception and prints SKIP.
 - AUTO_ACK scenario: rabbit-rs uses `confirms=false` + `no_ack=true`, matching amqplib
 - Benchmark runs without SKIP when broker is healthy
 - `confirm_timeout` is configurable and documented
+
+### 9.3 `basic_consume` Fairness — BunnyDriver + AmqpExtDriver Migration
+
+#### Problem
+
+`BunnyDriver.php:137` and `AmqpExtDriver.php:142` use `basic.get` (poll) to consume messages, while
+`AmqplibDriver.php:164` and `RabbitRsDriver.php:136` use `basic_consume` (push). `basic.get` sends a
+request-response round-trip per message; `basic_consume` has the broker push messages continuously. This
+makes the benchmark results incomparable across drivers.
+
+Additionally, `LaravelCompareBenchmark.php:146` has `' prefetch_count'` (leading space) instead of
+`'prefetch_count'`, so the prefetch setting is silently ignored for the php-amqplib driver.
+
+#### Fix
+
+1. Migrate `BunnyDriver` from `basic.get` to `basic_consume` with a callback + `wait()` loop, following
+   the `AmqplibDriver` pattern
+2. Migrate `AmqpExtDriver` from `basic.get` to `AMQPQueue::consume()` with a callback, using the amqp
+   extension's native consume API
+3. Fix `' prefetch_count'` → `'prefetch_count'` in `LaravelCompareBenchmark.php:146`
+
+#### Tests
+
+- All four drivers use `basic_consume` (push) for consumption
+- `LaravelCompareBenchmark` php-amqplib config has `'prefetch_count'` (no leading space)
 
 ## Architecture: How It Fits Together
 
