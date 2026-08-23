@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Console;
 
+use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Console\Command;
 
@@ -18,6 +19,10 @@ final class RabbitMqStatusCommand extends Command
         $format = $this->option('format');
 
         $stats = $this->collectStats($pools);
+
+        if ($stats === false) {
+            return self::FAILURE;
+        }
 
         if ($format === 'json') {
             $json = json_encode($stats, JSON_PRETTY_PRINT);
@@ -34,9 +39,9 @@ final class RabbitMqStatusCommand extends Command
     }
 
     /**
-     * @return array<string, mixed>
+     * @return array<string, mixed>|false
      */
-    private function collectStats(NativePoolFactory $pools): array
+    private function collectStats(NativePoolFactory $pools): array|false
     {
         $config = $this->laravel->make('config')->get('rabbit-rs');
         if (! is_array($config)) {
@@ -44,29 +49,13 @@ final class RabbitMqStatusCommand extends Command
         }
 
         try {
-            $normalized = \Goopil\RabbitRs\Laravel\Config\ConfigNormalizer::normalize($config);
+            $normalized = ConfigNormalizer::normalize($config);
             $pool = $pools->make($normalized['native']);
             $stats = $pool->stats();
         } catch (\Throwable $e) {
-            $stats = [
-                'closed' => true,
-                'pid' => 0,
-                'handle' => 'unavailable',
-                'publishes_total' => 0,
-                'confirmations_total' => 0,
-                'returns_total' => 0,
-                'backpressure_total' => 0,
-                'reconnects_total' => 0,
-                'deliveries_total' => 0,
-                'acks_total' => 0,
-                'rejects_total' => 0,
-                'confirmation_latency_p50' => 0,
-                'confirmation_latency_p95' => 0,
-                'confirmation_latency_p99' => 0,
-                'settlement_latency_p50' => 0,
-                'settlement_latency_p95' => 0,
-                'settlement_latency_p99' => 0,
-            ];
+            $this->error('Failed to collect stats: '.$e->getMessage());
+
+            return false;
         }
 
         return $stats;
