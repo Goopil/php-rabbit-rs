@@ -114,11 +114,12 @@ class AmqpExtDriver extends AbstractBenchmark
                 try {
                     $this->pubChannel->waitForConfirm(5);
                 } catch (\Throwable) {
+                    break;
                 }
             }
         }
 
-        if ($count % $batchSize !== 0) {
+        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM && ($count % $batchSize !== 0)) {
             try {
                 $this->pubChannel->waitForConfirm(5);
             } catch (\Throwable) {
@@ -130,6 +131,10 @@ class AmqpExtDriver extends AbstractBenchmark
     {
         if ($this->consQueue === null) {
             throw new RuntimeException('Driver not set up');
+        }
+
+        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
+            $this->reconnect();
         }
 
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
@@ -162,9 +167,11 @@ class AmqpExtDriver extends AbstractBenchmark
         $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
         $consecutiveTimeouts = 0;
 
+        $this->connection->setReadTimeout(1);
+
         while ($consumed < $count) {
             try {
-                $this->consQueue->consume($callback, $flags, $consumerTag, 1);
+                $this->consQueue->consume($callback, $flags, $consumerTag);
                 $consecutiveTimeouts = 0;
             } catch (\AMQPQueueException) {
                 $consecutiveTimeouts++;
@@ -173,6 +180,35 @@ class AmqpExtDriver extends AbstractBenchmark
                 }
             }
         }
+
+        $this->connection->setReadTimeout(0);
+    }
+
+    private function reconnect(): void
+    {
+        try {
+            if ($this->connection !== null && $this->connection->isConnected()) {
+                $this->connection->disconnect();
+            }
+        } catch (\Throwable) {
+        }
+
+        $this->connection = new \AMQPConnection([
+            'host' => Config::RABBITMQ_HOST,
+            'port' => Config::RABBITMQ_PORT,
+            'login' => Config::RABBITMQ_USER,
+            'password' => Config::RABBITMQ_PASSWORD,
+            'vhost' => Config::RABBITMQ_VHOST,
+        ]);
+        $this->connection->connect();
+
+        $this->consChannel = new \AMQPChannel($this->connection);
+        $this->consQueue = new \AMQPQueue($this->consChannel);
+        $this->consQueue->setName(self::QUEUE);
+        $this->consQueue->setFlags(AMQP_DURABLE);
+        $this->consQueue->declareQueue();
+        $this->consQueue->bind(self::EXCHANGE, self::QUEUE);
+        $this->consChannel->setPrefetchCount(Config::PREFETCH_COUNT);
     }
 
     public function tearDown(): void
