@@ -136,20 +136,9 @@ class AmqpExtDriver extends AbstractBenchmark
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
 
         $consumed = 0;
-        $consecutiveNulls = 0;
-        while ($consumed < $count) {
-            $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
-            $envelope = $this->consQueue->get($flags);
-            if (!$envelope) {
-                $consecutiveNulls++;
-                if ($consecutiveNulls >= 3) {
-                    break;
-                }
-                usleep(1000);
-                continue;
-            }
-            $consecutiveNulls = 0;
+        $consumerTag = 'bench_amqpext_consumer';
 
+        $callback = function (\AMQPEnvelope $envelope, \AMQPQueue $q) use ($count, &$consumed, $autoAck, $consumerTag): bool {
             $body = $envelope->getBody();
             $this->recordReceived($envelope->getMessageId() ?? '');
             if (strlen($body) >= 8) {
@@ -159,11 +148,30 @@ class AmqpExtDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-
-            if (!$autoAck) {
-                $this->consQueue->ack($envelope->getDeliveryTag());
-            }
             $consumed++;
+            if (!$autoAck) {
+                $q->ack($envelope->getDeliveryTag());
+            }
+            if ($consumed >= $count) {
+                $q->cancel($consumerTag);
+                return false;
+            }
+            return true;
+        };
+
+        $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
+        $consecutiveTimeouts = 0;
+
+        while ($consumed < $count) {
+            try {
+                $this->consQueue->consume($callback, $flags, $consumerTag, 1);
+                $consecutiveTimeouts = 0;
+            } catch (\AMQPQueueException) {
+                $consecutiveTimeouts++;
+                if ($consecutiveTimeouts >= 3) {
+                    break;
+                }
+            }
         }
     }
 

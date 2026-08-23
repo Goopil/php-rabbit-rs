@@ -131,20 +131,15 @@ class BunnyDriver extends AbstractBenchmark
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
         $consumed = 0;
-        $consecutiveNulls = 0;
+        $consecutiveTimeouts = 0;
 
-        while ($consumed < $count) {
-            $message = $this->channel->get(self::QUEUE, $autoAck);
-            if ($message === null) {
-                $consecutiveNulls++;
-                if ($consecutiveNulls >= 3) {
-                    break;
-                }
-                usleep(1000);
-                continue;
-            }
-            $consecutiveNulls = 0;
+        $consumerTag = 'bench_bunny_consumer';
+        $channel = $this->channel;
+        $queue = self::QUEUE;
 
+        $client = $this->client;
+
+        $callback = function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag, $client): void {
             $body = $message->content;
             $this->recordReceived($message->getHeader('message-id', ''));
             if (strlen($body) >= 8) {
@@ -154,11 +149,30 @@ class BunnyDriver extends AbstractBenchmark
                     $this->recordLatency($elapsedNs / 1_000_000);
                 }
             }
-
-            if (!$autoAck) {
-                $this->channel->ack($message);
-            }
             $consumed++;
+            if (!$autoAck) {
+                $channel->ack($message);
+            }
+            if ($consumed >= $count) {
+                $channel->cancel($consumerTag);
+                $client->stop();
+            }
+        };
+
+        $this->channel->consume($callback, $queue, $consumerTag, false, $autoAck);
+
+        while ($consumed < $count) {
+            try {
+                $this->client->run(1);
+                $consecutiveTimeouts = 0;
+            } catch (\Bunny\Exception\ClientException) {
+                $consecutiveTimeouts++;
+                if ($consecutiveTimeouts >= 3) {
+                    break;
+                }
+            } catch (\Throwable) {
+                break;
+            }
         }
     }
 

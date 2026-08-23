@@ -71,6 +71,28 @@ if (is_file($budgetPath)) {
 
 $allResults = [];
 
+$brokerReady = false;
+for ($i = 0; $i < 30; $i++) {
+    try {
+        $connection = new \PhpAmqpLib\Connection\AMQPStreamConnection(
+            Config::RABBITMQ_HOST,
+            Config::RABBITMQ_PORT,
+            Config::RABBITMQ_USER,
+            Config::RABBITMQ_PASSWORD,
+            Config::RABBITMQ_VHOST,
+        );
+        $connection->close();
+        $brokerReady = true;
+        break;
+    } catch (\Throwable) {
+        sleep(1);
+    }
+}
+if (!$brokerReady) {
+    echo "Broker not ready after 30s\n";
+    exit(1);
+}
+
 foreach ($scenarios as $scenarioName => $scenarioClass) {
     if ($scenarioFilter !== null && $scenarioName !== $scenarioFilter) {
         continue;

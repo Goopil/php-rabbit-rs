@@ -143,7 +143,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
                 'user' => 'rabbit_rs',
                 'password' => 'rabbit_rs_lab',
                 'vhost' => '/orders-eu',
-                ' prefetch_count' => 16,
+                'prefetch_count' => 16,
             ],
             default => throw new \RuntimeException("Unknown driver: {$this->driver}"),
         };
