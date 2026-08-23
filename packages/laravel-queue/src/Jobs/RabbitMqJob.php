@@ -10,7 +10,7 @@ use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Queue\Jobs\Job;
 use InvalidArgumentException;
 
-final class RabbitMqJob extends Job implements JobContract
+class RabbitMqJob extends Job implements JobContract
 {
     private ?Delivery $delivery;
 

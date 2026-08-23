@@ -21,7 +21,7 @@ use Illuminate\Queue\Attributes\Delay;
 use Illuminate\Queue\Queue;
 use InvalidArgumentException;
 
-final class RabbitMqQueue extends Queue implements QueueContract
+class RabbitMqQueue extends Queue implements QueueContract
 {
     /** @var array<string, Consumer> */
     private array $consumers = [];

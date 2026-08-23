@@ -22,6 +22,96 @@ namespace Laravel\Octane\Events {
     }
 }
 
+namespace Laravel\Horizon {
+    if (! class_exists(JobPayload::class, false)) {
+        class JobPayload
+        {
+            public string $value;
+
+            public array $decoded;
+
+            public function __construct(string $value)
+            {
+                $this->value = $value;
+                $this->decoded = json_decode($value, true) ?: [];
+            }
+
+            public function prepare(mixed $job = null): self
+            {
+                $this->decoded['type'] = 'job';
+                $this->decoded['tags'] = $this->decoded['tags'] ?? [];
+                $this->decoded['silenced'] = false;
+                $this->decoded['pushedAt'] = '1234567890.1234';
+                $this->value = json_encode($this->decoded);
+
+                return $this;
+            }
+
+            public function id(): string
+            {
+                return $this->decoded['uuid'] ?? $this->decoded['id'] ?? '';
+            }
+        }
+    }
+}
+
+namespace Laravel\Horizon\Events {
+    if (! class_exists(RedisEvent::class, false)) {
+        class RedisEvent
+        {
+            public ?string $connectionName = null;
+
+            public ?string $queue = null;
+
+            public \Laravel\Horizon\JobPayload $payload;
+
+            public function __construct(string $payload)
+            {
+                $this->payload = new \Laravel\Horizon\JobPayload($payload);
+            }
+
+            public function connection(string $connectionName): self
+            {
+                $this->connectionName = $connectionName;
+
+                return $this;
+            }
+
+            public function queue(string $queue): self
+            {
+                $this->queue = $queue;
+
+                return $this;
+            }
+        }
+    }
+
+    if (! class_exists(JobPending::class, false)) {
+        class JobPending extends RedisEvent {}
+    }
+
+    if (! class_exists(JobPushed::class, false)) {
+        class JobPushed extends RedisEvent {}
+    }
+
+    if (! class_exists(JobReserved::class, false)) {
+        class JobReserved extends RedisEvent {}
+    }
+
+    if (! class_exists(JobDeleted::class, false)) {
+        class JobDeleted extends RedisEvent
+        {
+            public mixed $job;
+
+            public function __construct(mixed $job, string $payload)
+            {
+                parent::__construct($payload);
+                $this->job = $job;
+            }
+        }
+    }
+}
+
 namespace Goopil\RabbitRs {
     if (! class_exists(Pool::class, false)) {
         class Exception extends \Exception {}
