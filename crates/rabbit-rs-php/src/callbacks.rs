@@ -46,18 +46,22 @@ impl CallbackSlot {
         Ok(())
     }
 
-    /// Invokes the stored callback with the given arguments if one is registered.
+    /// Invokes the stored callback without holding the internal mutex.
     ///
-    /// This method is called on the PHP thread. It does not send the callable
-    /// across any async boundary. The mutex is held for the duration of the
-    /// PHP callback invocation, which is safe because the callback runs on the
-    /// same thread and cannot re-enter `invoke` recursively.
-    pub fn invoke(&self, params: Vec<&dyn IntoZvalDyn>) -> PhpResult<()> {
-        let slot = self.0.lock().expect("callback mutex poisoned");
-        let Some(ref callable) = *slot else {
-            return Ok(());
+    /// The callable `Zval` is shallow-cloned under the mutex, the mutex is
+    /// released, and only then is the PHP callback invoked. This prevents
+    /// deadlocks when the callback re-enters the pool (e.g., calling
+    /// `stats()` which needs to acquire other mutexes that the caller may
+    /// hold).
+    pub fn invoke_unlocked(&self, params: Vec<&dyn IntoZvalDyn>) -> PhpResult<()> {
+        let callable_zval = {
+            let slot = self.0.lock().expect("callback mutex poisoned");
+            match &*slot {
+                Some(zv) => zv.shallow_clone(),
+                None => return Ok(()),
+            }
         };
-        let callback = ZendCallable::new(callable).map_err(|_| {
+        let callback = ZendCallable::new(&callable_zval).map_err(|_| {
             PhpException::from_class::<RabbitRsException>(
                 "stored callback is no longer callable".to_owned(),
             )
