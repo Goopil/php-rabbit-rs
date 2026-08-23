@@ -104,6 +104,8 @@ struct RuntimeSubscription {
 struct ActorState {
     subscriptions: HashMap<SubscriptionId, RuntimeSubscription>,
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
+    buffered_bytes: HashMap<SubscriptionId, u64>,
+    max_buffered_bytes: HashMap<SubscriptionId, u64>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
     pending_settlements: futures_util::stream::FuturesUnordered<SettlementFuture>,
     pending_settle_throughs: futures_util::stream::FuturesUnordered<SettleThroughFuture>,
@@ -130,10 +132,14 @@ impl ActorState {
         let mut scheduler = WeightedFairScheduler::default();
         let mut runtime = HashMap::new();
         let mut buffers = HashMap::new();
+        let mut buffered_bytes = HashMap::new();
+        let mut max_buffered_bytes = HashMap::new();
         let mut channel_ledgers = HashMap::new();
         for subscription in subscriptions {
             scheduler.register(subscription.id.clone(), subscription.policy);
             buffers.insert(subscription.id.clone(), VecDeque::new());
+            buffered_bytes.insert(subscription.id.clone(), 0);
+            max_buffered_bytes.insert(subscription.id.clone(), subscription.max_buffered_bytes);
             let channel_key = (
                 subscription.id.clone(),
                 subscription.channel_id,
@@ -158,6 +164,8 @@ impl ActorState {
         Self {
             subscriptions: runtime,
             buffers,
+            buffered_bytes,
+            max_buffered_bytes,
             channel_ledgers,
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
             pending_settle_throughs: futures_util::stream::FuturesUnordered::new(),
@@ -226,6 +234,7 @@ impl ActorState {
             if runtime.early_ack {
                 let channel = runtime.channel.clone();
                 let tag = delivery.delivery_tag;
+                let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
                 tokio::spawn(async move {
                     let _ = channel.ack(tag, false).await;
                 });
@@ -255,6 +264,9 @@ impl ActorState {
                     && buffer.is_empty()
                 {
                     self.scheduler.mark_empty(&subscription);
+                }
+                if let Some(bytes) = self.buffered_bytes.get_mut(&subscription) {
+                    *bytes = bytes.saturating_sub(delivery_bytes);
                 }
                 self.metrics.record_delivery();
                 self.metrics.record_ack(Duration::ZERO);
@@ -307,6 +319,7 @@ impl ActorState {
             self.metrics.record_delivery();
             self.in_flight = self.in_flight.saturating_add(1);
         }
+        record_consumer_buffer_metrics(self);
     }
 
     fn record_source_error(&mut self, error: ConsumerError) {
@@ -319,6 +332,30 @@ impl ActorState {
     fn release_budget(&mut self) {
         self.in_flight = self.in_flight.saturating_sub(1);
     }
+}
+
+fn record_consumer_buffer_metrics(state: &ActorState) {
+    let total_depth: u64 = state
+        .buffers
+        .values()
+        .map(|b| u64::try_from(b.len()).unwrap_or(u64::MAX))
+        .sum();
+    state.metrics.record_consumer_buffer_depth(total_depth);
+
+    let total_bytes: u64 = state.buffered_bytes.values().sum();
+    state.metrics.record_consumer_buffer_bytes(total_bytes);
+
+    let lane_depth = state
+        .settlement_queues
+        .values()
+        .map(|q| u64::try_from(q.len()).unwrap_or(u64::MAX))
+        .sum::<u64>()
+        + state
+            .settle_through_queues
+            .values()
+            .map(|q| u64::try_from(q.len()).unwrap_or(u64::MAX))
+            .sum::<u64>();
+    state.metrics.record_settlement_lane_depth(lane_depth);
 }
 
 #[allow(clippy::too_many_lines)]
@@ -342,6 +379,7 @@ pub(crate) async fn run_actor(
                     result,
                 }) => match result {
                     Ok(delivery) => {
+                        let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
                         if let Some(channel_key) = state.channel_key_for(&subscription) {
                             state.channel_ledgers
                                 .entry(channel_key)
@@ -352,11 +390,23 @@ pub(crate) async fn run_actor(
                                     token: None,
                                 });
                         }
+                        let over_budget = if let Some(max) = state.max_buffered_bytes.get(&subscription) {
+                            let current = state.buffered_bytes.get(&subscription).copied().unwrap_or(0);
+                            current.saturating_add(delivery_bytes) > *max
+                        } else {
+                            false
+                        };
                         if let Some(buffer) = state.buffers.get_mut(&subscription) {
                             buffer.push_back(delivery);
                             state.scheduler.mark_ready(&subscription);
                         }
-                        state.dispatch();
+                        if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
+                            *bytes = bytes.saturating_add(delivery_bytes);
+                        }
+                        record_consumer_buffer_metrics(&state);
+                        if !over_budget {
+                            state.dispatch();
+                        }
                     }
                     Err(error) => {
                         state.record_source_error(ConsumerError::new(
@@ -384,8 +434,10 @@ pub(crate) async fn run_actor(
                     let params = SettleParams { token, settlement, completed };
                     if state.settlement_in_flight.contains(&channel_key) {
                         state.settlement_queues.entry(channel_key).or_default().push_back(params);
+                        record_consumer_buffer_metrics(&state);
                     } else {
                         launch_settlement(&mut state, channel_key, params);
+                        record_consumer_buffer_metrics(&state);
                     }
                 }
                 Some(ConsumerCommand::SettleThrough { token, completed }) => {
@@ -426,8 +478,10 @@ pub(crate) async fn run_actor(
                             };
                             if state.settlement_in_flight.contains(&channel_key) {
                                 state.settle_through_queues.entry(channel_key).or_default().push_back(params);
+                                record_consumer_buffer_metrics(&state);
                             } else {
                                 launch_settle_through(&mut state, channel_key, params);
+                                record_consumer_buffer_metrics(&state);
                             }
                         }
                         Err(error) => {
@@ -484,25 +538,30 @@ pub(crate) async fn run_actor(
                 state.settlement_in_flight.remove(&channel_key);
 
                 // Record metrics and release budget based on the settlement outcome.
-                match &settlement_result.result {
-                    Ok(terminal) => {
-                        match terminal {
-                            DeliveryState::Acked => {
-                                state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
-                            }
-                            DeliveryState::Rejected => {
-                                state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
-                            }
-                            DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
+                let delivery_bytes = u64::try_from(settlement_result.token.payload.len()).unwrap_or(u64::MAX);
+                if let Ok(terminal) = &settlement_result.result {
+                    match terminal {
+                        DeliveryState::Acked => {
+                            state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
                         }
-                        state.release_budget();
-                        state.dispatch();
+                        DeliveryState::Rejected => {
+                            state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
+                        }
+                        DeliveryState::Pending | DeliveryState::Lost | DeliveryState::AutoAcked => {}
                     }
-                    Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
-                        state.release_budget();
-                        state.dispatch();
+                    if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
+                        *bytes = bytes.saturating_sub(delivery_bytes);
                     }
-                    Err(_) => {}
+                    state.release_budget();
+                    record_consumer_buffer_metrics(&state);
+                    state.dispatch();
+                } else {
+                    if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
+                        *bytes = bytes.saturating_sub(delivery_bytes);
+                    }
+                    state.release_budget();
+                    record_consumer_buffer_metrics(&state);
+                    state.dispatch();
                 }
 
                 // Reset the settling flag so a re-issued settlement can retry.
@@ -524,31 +583,36 @@ pub(crate) async fn run_actor(
                 state.settlement_in_flight.remove(&channel_key);
 
                 let target_tag = settle_through_result.target_tag;
-                let affected_count = settle_through_result.affected_tokens.len();
+                let _affected_count = settle_through_result.affected_tokens.len();
 
-                match &settle_through_result.result {
-                    Ok(DeliveryState::Acked) => {
-                        // Release budget for every delivery in the contiguous prefix.
-                        for _ in 0..affected_count {
-                            state.release_budget();
+                if let Ok(DeliveryState::Acked) = &settle_through_result.result {
+                    for token in &settle_through_result.affected_tokens {
+                        let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                        if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                            *buf_bytes = buf_bytes.saturating_sub(bytes);
                         }
-                        state.metrics.record_ack(
-                            settle_through_result
-                                .affected_tokens
-                                .last()
-                                .unwrap()
-                                .reserved_at
-                                .elapsed(),
-                        );
-                        state.dispatch();
+                        state.release_budget();
                     }
-                    Err(error) if error.kind() == ConsumerErrorKind::StaleGeneration => {
-                        for _ in 0..affected_count {
-                            state.release_budget();
+                    state.metrics.record_ack(
+                        settle_through_result
+                            .affected_tokens
+                            .last()
+                            .unwrap()
+                            .reserved_at
+                            .elapsed(),
+                    );
+                    record_consumer_buffer_metrics(&state);
+                    state.dispatch();
+                } else {
+                    for token in &settle_through_result.affected_tokens {
+                        let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                        if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                            *buf_bytes = buf_bytes.saturating_sub(bytes);
                         }
-                        state.dispatch();
+                        state.release_budget();
                     }
-                    Ok(_) | Err(_) => {}
+                    record_consumer_buffer_metrics(&state);
+                    state.dispatch();
                 }
 
                 // Render all affected tokens terminal and reset settling flags.
@@ -872,6 +936,7 @@ fn drain_settlement_queue(state: &mut ActorState, channel_key: ChannelKey) {
         && let Some(next) = queue.pop_front()
     {
         launch_settlement(state, channel_key, next);
+        record_consumer_buffer_metrics(state);
         return;
     }
     state.settlement_queues.remove(&channel_key);
@@ -879,7 +944,9 @@ fn drain_settlement_queue(state: &mut ActorState, channel_key: ChannelKey) {
         && let Some(next) = queue.pop_front()
     {
         launch_settle_through(state, channel_key, next);
+        record_consumer_buffer_metrics(state);
         return;
     }
     state.settle_through_queues.remove(&channel_key);
+    record_consumer_buffer_metrics(state);
 }

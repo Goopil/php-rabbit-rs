@@ -32,6 +32,7 @@ pub struct Subscription {
     pub(crate) prefetch: u16,
     pub(crate) policy: SubscriptionPolicy,
     pub(crate) early_ack: bool,
+    pub(crate) max_buffered_bytes: u64,
     pub(crate) channel: Arc<dyn ConsumerChannel>,
     pub(crate) publisher: Option<PublisherHandle>,
     pub(crate) destination: Option<Destination>,
@@ -55,6 +56,7 @@ impl Subscription {
             prefetch: 16,
             policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
             early_ack: false,
+            max_buffered_bytes: 64 * 1024 * 1024,
             channel,
             publisher: None,
             destination: None,
@@ -87,6 +89,12 @@ impl Subscription {
     #[must_use]
     pub const fn early_ack(mut self, early_ack: bool) -> Self {
         self.early_ack = early_ack;
+        self
+    }
+
+    #[must_use]
+    pub const fn max_buffered_bytes(mut self, max: u64) -> Self {
+        self.max_buffered_bytes = max;
         self
     }
 

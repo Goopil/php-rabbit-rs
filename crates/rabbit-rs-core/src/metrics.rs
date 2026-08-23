@@ -109,6 +109,10 @@ impl Metrics {
         self.inner.replay_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn record_replay_depth(&self, depth: u64) {
+        self.inner.replay_depth.store(depth, Ordering::Relaxed);
+    }
+
     pub fn record_consumer_buffer_depth(&self, depth: u64) {
         self.inner
             .consumer_buffer_depth
@@ -135,6 +139,9 @@ impl Metrics {
             .fetch_add(micros, Ordering::Relaxed);
     }
 
+    /// Records a duplicate delivery detected by message-id tracking.
+    ///
+    /// TODO: Wire this once consumer message-id deduplication is implemented.
     pub fn record_duplicate(&self) {
         increment(&self.inner.duplicate_count);
     }

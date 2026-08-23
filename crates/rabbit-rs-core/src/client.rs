@@ -175,7 +175,12 @@ impl ClientPool {
                 Some(Err(e)) => {
                     terminal_error.get_or_insert(e);
                 }
-                None => {}
+                None => {
+                    terminal_error.get_or_insert(ClientError::publish(&PublishError::new(
+                        PublishErrorKind::Backpressure,
+                        "publication was not accepted by the actor",
+                    )));
+                }
             }
         }
 
