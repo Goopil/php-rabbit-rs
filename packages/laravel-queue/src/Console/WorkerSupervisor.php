@@ -125,7 +125,7 @@ class WorkerSupervisor
      */
     public function run(): int
     {
-        if (! function_exists('pcntl_fork')) {
+        if (! $this->canFork()) {
             throw new \RuntimeException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
         }
 
@@ -133,13 +133,13 @@ class WorkerSupervisor
     }
 
     /**
-     * Test hook that simulates the absence of ext-pcntl.
+     * Whether ext-pcntl is available for forking child processes.
      *
-     * @throws \RuntimeException always, because ext-pcntl is treated as missing
+     * Overridden by test subclasses to simulate the absence of pcntl.
      */
-    public function runWithoutPcntl(): void
+    protected function canFork(): bool
     {
-        throw new \RuntimeException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
+        return function_exists('pcntl_fork');
     }
 
     private function runInternal(): int

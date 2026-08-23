@@ -282,17 +282,22 @@ describe('backoff', function (): void {
 
 describe('pcntl availability', function (): void {
     it('throws RuntimeException when ext-pcntl is not available', function (): void {
-        $supervisor = new WorkerSupervisor(
+        $supervisor = new class(
             connection: 'rabbit-rs',
             queue: 'default',
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
-        );
+        ) extends WorkerSupervisor {
+            protected function canFork(): bool
+            {
+                return false;
+            }
+        };
 
         try {
-            $supervisor->runWithoutPcntl();
-            expect(false)->toBeTrue('runWithoutPcntl should have thrown');
+            $supervisor->run();
+            expect(false)->toBeTrue('run() should have thrown');
         } catch (\RuntimeException $e) {
             expect(str_contains($e->getMessage(), 'ext-pcntl is required'))->toBeTrue();
         }
