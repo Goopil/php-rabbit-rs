@@ -17,7 +17,7 @@ describe('package defaults', function (): void {
             ->and(30000)->toBe($publishedConfig['publisher']['confirm_timeout'])
             ->and('quorum')->toBe($publishedConfig['topology']['queue']['type'])
             ->and($publishedConfig['topology']['queue']['durable'])->toBeTrue()
-            ->and(20)->toBe($publishedConfig['topology']['queue']['delivery_limit'])
+            ->and($publishedConfig['topology']['queue']['delivery_limit'])->toBeNull()
             ->and($publishedConfig['topology']['dead_letter'])->toBeNull();
 
         $config = $this->app['config']->get('rabbit-rs');
@@ -90,12 +90,14 @@ describe('native normalization', function (): void {
                 'detection_timeout' => 5,
             ],
             'dead_letter' => null,
-            'delivery_limit' => 20,
+            'delivery_limit' => null,
             'publisher' => [
                 'confirms' => true,
                 'mandatory' => true,
                 'confirm_timeout' => 30000,
             ],
+            'queue_type' => 'quorum',
+            'queue_durable' => true,
         ])->toBe($normalized['native'])
             ->and('default')->toBe($normalized['routes']['orders']['broker'])
             ->and($normalized['publisher']['confirms'])->toBeTrue()
@@ -196,7 +198,7 @@ describe('dead letter', function (): void {
             'queue' => 'orders.failed',
             'routing_key' => 'failed',
         ])->toBe($normalized['native']['dead_letter'])
-            ->and(20)->toBe($normalized['native']['delivery_limit'])
+            ->and($normalized['native']['delivery_limit'])->toBeNull()
             ->and([
                 'enabled' => true,
                 'exchange' => 'orders.dlx',
@@ -211,7 +213,7 @@ describe('dead letter', function (): void {
         $normalized = ConfigNormalizer::normalize($config);
 
         expect($normalized['native']['dead_letter'])->toBeNull()
-            ->and(20)->toBe($normalized['native']['delivery_limit']);
+            ->and($normalized['native']['delivery_limit'])->toBeNull();
     });
 
     it('produces a null routing key when dead letter has no routing key', function (): void {
@@ -253,6 +255,68 @@ describe('dead letter', function (): void {
         $this->expectExceptionMessage('topology.dead_letter.queue');
 
         ConfigNormalizer::normalize($config);
+    });
+});
+
+describe('delivery_limit DLX guard', function (): void {
+    it('rejects delivery_limit without dead_letter', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['delivery_limit'] = 20;
+        $config['topology']['dead_letter'] = null;
+
+        expect(fn (): array => ConfigNormalizer::normalize($config))
+            ->toThrow(InvalidArgumentException::class, 'dead_letter must be configured');
+    });
+
+    it('accepts delivery_limit with dead_letter', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['delivery_limit'] = 20;
+        $config['topology']['dead_letter'] = ['exchange' => 'dlx', 'queue' => 'dlq'];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized)->toBeArray()
+            ->and(20)->toBe($normalized['native']['delivery_limit']);
+    });
+
+    it('accepts null delivery_limit with null dead_letter', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['delivery_limit'] = null;
+        $config['topology']['dead_letter'] = null;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized)->toBeArray()
+            ->and($normalized['native']['delivery_limit'])->toBeNull();
+    });
+});
+
+describe('queue type and durable', function (): void {
+    it('passes queue type to native config', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['type'] = 'classic';
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect('classic')->toBe($normalized['native']['queue_type']);
+    });
+
+    it('passes queue durable to native config', function (): void {
+        $config = configValidConfig();
+        $config['topology']['queue']['durable'] = false;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['native']['queue_durable'])->toBeFalse();
+    });
+
+    it('defaults queue type to quorum and durable to true', function (): void {
+        $config = configValidConfig();
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect('quorum')->toBe($normalized['native']['queue_type'])
+            ->and($normalized['native']['queue_durable'])->toBeTrue();
     });
 });
 
@@ -441,7 +505,7 @@ function configValidConfig(): array
             'queue' => [
                 'type' => 'quorum',
                 'durable' => true,
-                'delivery_limit' => 20,
+                'delivery_limit' => null,
             ],
             'dead_letter' => null,
         ],
@@ -506,5 +570,11 @@ function configInvalidConfigurations(): iterable
             $config['workers']['main']['subscriptions']['orders']['early_ack'] = true;
         },
         'workers.main.subscriptions.orders.early_ack',
+    ];
+    yield 'delivery_limit without dead_letter' => [
+        static function (array &$config): void {
+            $config['topology']['queue']['delivery_limit'] = 20;
+        },
+        'topology.dead_letter',
     ];
 }

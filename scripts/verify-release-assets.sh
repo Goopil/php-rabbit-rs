@@ -146,8 +146,8 @@ for i in $(seq 0 $((matrix_count - 1))); do
         *) fail "unsupported thread_safety in matrix entry ${i}: ${entry_ts}" ;;
     esac
 
-    # Build expected archive name: php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}{ts_suffix}.zip
-    expected_name="php_${php_ext_name}-${VERSION}_php${entry_php}-${entry_arch}-linux-${entry_libc}${entry_ts_suffix}.zip"
+    # Build expected archive name: php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}{ts_suffix}.zip
+    expected_name="php_${php_ext_name}-v${VERSION}_php${entry_php}-${entry_arch}-linux-${entry_libc}${entry_ts_suffix}.zip"
     expected_archives+=("${expected_name}")
 done
 

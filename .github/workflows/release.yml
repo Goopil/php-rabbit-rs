@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       has_packagist: ${{ steps.check-secrets.outputs.has_packagist }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Extract version from tag
         id: version
@@ -54,7 +54,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --draft --title "Rabbit RS $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "Rabbit RS $GITHUB_REF_NAME" --generate-notes --repo "${GITHUB_REPOSITORY}"
 
   build-linux:
     needs: create-release
@@ -67,7 +67,7 @@ jobs:
         ts: ["nts", "zts"]
         libc: ["glibc", "musl"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set Docker image
         id: docker
@@ -88,7 +88,7 @@ jobs:
           fi
 
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -157,7 +157,7 @@ jobs:
           if [[ "${{ matrix.ts }}" == "zts" ]]; then
             TS_SUFFIX="-zts"
           fi
-          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}"
+          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}"
           ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
           sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
@@ -175,7 +175,95 @@ jobs:
         run: |
           gh release upload "$GITHUB_REF_NAME" \
             "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
-            --clobber
+            --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+
+      - name: Attest SBOM
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+          sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
+
+  build-macos:
+    needs: create-release
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.4", "8.5"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          extensions: json
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-macos-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            cargo-release-macos-${{ matrix.php }}-
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
+
+      - name: Build extension
+        run: |
+          cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+          cp target/release/librabbit_rs_php.dylib rabbit_rs.so
+
+      - name: Generate SBOM
+        run: |
+          cargo cyclonedx --manifest-path crates/rabbit-rs-php/Cargo.toml --format json --spec-version 1.5 --quiet
+          cp crates/rabbit-rs-php/rabbit-rs-php.cdx.json rabbit_rs.sbom.json
+
+      - name: Smoke test
+        run: |
+          php -d extension=$(pwd)/rabbit_rs.so -r "
+            if (!extension_loaded('rabbit_rs')) {
+              echo \"ERROR: rabbit_rs extension is not loaded\n\";
+              exit(1);
+            }
+            echo \"OK: rabbit_rs loaded, version \" . phpversion('rabbit_rs') . \"\n\";
+          "
+
+      - name: Package
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-arm64-darwin-nts"
+          ASSET_NAME="${ASSET_BASE}.zip"
+          zip "${ASSET_NAME}" rabbit_rs.so
+          shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+          cp rabbit_rs.sbom.json "${ASSET_BASE}.sbom.json"
+          [[ -f "${ASSET_BASE}.sbom.json" ]] || { echo "::error::SBOM not found"; exit 1; }
+
+          echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
+          echo "ASSET_BASE=${ASSET_BASE}" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
+            --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: Attest build provenance
         uses: actions/attest@v4
@@ -189,13 +277,13 @@ jobs:
           sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
 
   verify-release:
-    needs: [create-release, build-linux]
+    needs: [create-release, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       attestations: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify release assets and attestations
         env:
@@ -203,23 +291,23 @@ jobs:
           VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -e
-          ASSETS_JSON="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          ASSETS_JSON="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' --repo "${GITHUB_REPOSITORY}")"
           ASSET_COUNT="$(echo "${ASSETS_JSON}" | wc -l | tr -d ' ')"
 
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 48 ]]; then
-            echo "::error::Expected 48 assets (16 ZIP + 16 SHA256 + 16 SBOM), found ${ASSET_COUNT}"
+          if [[ "${ASSET_COUNT}" -ne 54 ]]; then
+            echo "::error::Expected 54 assets (18 ZIP + 18 SHA256 + 18 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
           SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
-          [[ "${ZIP_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 ZIPs, found ${ZIP_COUNT}"; exit 1; }
-          [[ "${SHA_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 SHA256, found ${SHA_COUNT}"; exit 1; }
-          [[ "${SBOM_COUNT}" -eq 16 ]] || { echo "::error::Expected 16 SBOMs, found ${SBOM_COUNT}"; exit 1; }
+          [[ "${ZIP_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
           # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
@@ -233,7 +321,7 @@ jobs:
           # Download each ZIP to verify attestations (gh attestation verify needs the file)
           mkdir -p /tmp/assets
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
-            gh release download "$GITHUB_REF_NAME" --pattern "${zip}" --dir /tmp/assets --clobber
+            gh release download "$GITHUB_REF_NAME" --pattern "${zip}" --dir /tmp/assets --clobber --repo "${GITHUB_REPOSITORY}"
           done
 
           # Verify all attestations (provenance + SBOM) for each ZIP subject.
@@ -247,18 +335,18 @@ jobs:
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
-          echo "OK: 16 ZIPs + 16 SHA256 + 16 SBOMs verified"
-          echo "OK: 16 provenance + 16 SBOM attestations verified"
+          echo "OK: 18 ZIPs + 18 SHA256 + 18 SBOMs verified"
+          echo "OK: 18 provenance + 18 SBOM attestations verified"
 
   publish-release:
-    needs: [create-release, build-linux, verify-release]
+    needs: [create-release, build-linux, build-macos, verify-release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest --repo "${GITHUB_REPOSITORY}"
 
       - name: Trigger Packagist update
         if: needs.create-release.outputs.has_packagist == 'true'
@@ -266,7 +354,76 @@ jobs:
           PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
         run: |
           curl -sS -X POST \
-            "https://packagist.org/api/update-package" \
+            "https://packagist.org/api/update-package?username=goopil&apiToken=${PACKAGIST_TOKEN}" \
             -H "Content-Type: application/json" \
-            -H "X-Packagist-Token: ${PACKAGIST_TOKEN}" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
+
+  split-laravel:
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check prerequisites
+        id: check
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          if [[ -z "${MIRROR_TOKEN}" ]]; then
+            echo "::warning::MIRROR_TOKEN secret is not configured — skipping push to mirror"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "${PACKAGIST_TOKEN}" ]]; then
+            echo "has_packagist=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_packagist=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Split Laravel package
+        run: |
+          ./scripts/split-laravel-package.sh --output /tmp/laravel-split
+
+      - name: Push to mirror repository
+        if: steps.check.outputs.skip == 'false'
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          cd /tmp/laravel-split
+          git init
+          git config user.name "rabbit-rs-ci"
+          git config user.email "ci@rabbit-rs.local"
+          git checkout -b main
+          git add -A
+          git commit -m "Release ${GITHUB_REF_NAME}"
+          git remote add origin "https://${MIRROR_TOKEN}@github.com/Goopil/rabbit-rs-laravel.git"
+          git push origin main --force
+
+      - name: Tag the mirror
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          cd /tmp/laravel-split
+          git tag -f "${GITHUB_REF_NAME}"
+          git push origin "${GITHUB_REF_NAME}" --force
+
+      - name: Trigger Packagist update for rabbit-rs-laravel
+        if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
+        env:
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          curl -sS -X POST \
+            "https://packagist.org/api/update-package?username=goopil&apiToken=${PACKAGIST_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
+
+      - name: Summary
+        if: steps.check.outputs.skip == 'true'
+        run: |
+          echo "::notice::Split completed locally but push was skipped."
+          echo "::notice::Configure MIRROR_TOKEN and PACKAGIST_TOKEN secrets to enable mirror push."

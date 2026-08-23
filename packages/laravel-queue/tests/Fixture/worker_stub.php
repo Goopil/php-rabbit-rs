@@ -68,5 +68,7 @@ namespace {
         usleep(50_000);
     }
 
+    writeWorkerExitMarker($stateDir, (int) $worker);
+
     exit(0);
 }

@@ -84,7 +84,7 @@ function liveConfig(string $queueName): array
             'queue' => [
                 'type' => 'quorum',
                 'durable' => true,
-                'delivery_limit' => 20,
+                'delivery_limit' => null,
             ],
             'dead_letter' => null,
         ],

@@ -19,7 +19,7 @@ use rabbit_rs_core::{
     recovery::{Clock, ConnectionState, IdentityJitter, JitterSource, RecoveryPolicy},
     topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{
-        PublishConfirmation, Transport, TransportError, TransportErrorKind,
+        PublishConfirmation, QueueKind, Transport, TransportError, TransportErrorKind,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -65,6 +65,8 @@ mod helper {
                 dead_letter: None,
                 delivery_limit: None,
                 publisher: PublisherConfigSection::default(),
+                queue_type: QueueKind::Quorum,
+                queue_durable: true,
             }
             .validate()
             .expect("valid config"),

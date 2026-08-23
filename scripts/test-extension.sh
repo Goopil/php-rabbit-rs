@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-extension.sh
+source "${SCRIPT_DIR}/lib-extension.sh"
+
+ROOT_DIR="$(ext_project_root)"
 PHPT_DIR="${ROOT_DIR}/crates/rabbit-rs-php/tests/phpt"
 
 resolve_tool() {
@@ -65,23 +69,9 @@ trap 'rm -rf "${RUN_TESTS_DIR}"' EXIT
 RUN_TESTS="${RUN_TESTS_DIR}/run-tests.php"
 cp "${RUN_TESTS_SOURCE}" "${RUN_TESTS}"
 
-case "$(uname -s)" in
-    Darwin)
-        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.dylib"
-        ;;
-    Linux)
-        ARTIFACT="${ROOT_DIR}/target/debug/librabbit_rs_php.so"
-        ;;
-    *)
-        echo "unsupported operating system: $(uname -s)" >&2
-        exit 1
-        ;;
-esac
-
-if [[ ! -f "${ARTIFACT}" ]]; then
-    echo "extension artifact not found: ${ARTIFACT}" >&2
-    exit 1
-fi
+# --- Extension artifact (via shared helper) ---
+ext_ensure_built
+ARTIFACT="$(ext_artifact_path)"
 
 RABBIT_RS_EXPECTED_VERSION="$({
     cargo metadata --manifest-path "${ROOT_DIR}/Cargo.toml" --no-deps --format-version=1

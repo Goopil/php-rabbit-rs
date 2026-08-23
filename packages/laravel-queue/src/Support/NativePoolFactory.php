@@ -54,9 +54,13 @@ final class NativePoolFactory
 
     /**
      * Clears all cached pools so the next make() creates fresh instances.
+     *
+     * Each cached pool is closed before being dropped so underlying AMQP
+     * connections, channels, and file descriptors are released promptly.
      */
     public function flush(): void
     {
+        $this->closePools();
         $this->pools = [];
         $this->processId = ($this->resolveProcessId)();
     }
@@ -68,7 +72,19 @@ final class NativePoolFactory
             return;
         }
 
+        $this->closePools();
         $this->pools = [];
         $this->processId = $processId;
+    }
+
+    private function closePools(): void
+    {
+        foreach ($this->pools as $pool) {
+            try {
+                $pool->close();
+            } catch (\Throwable) {
+                // Best-effort close — the pool may already be disconnected.
+            }
+        }
     }
 }

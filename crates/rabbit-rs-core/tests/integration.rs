@@ -17,7 +17,7 @@ use rabbit_rs_core::{
         PublishRequest,
     },
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, ReturnedMessage,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind, ReturnedMessage,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -41,6 +41,8 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid config")
@@ -78,6 +80,8 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid consumer config")
@@ -102,6 +106,8 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid two-broker config")
@@ -912,6 +918,8 @@ mod integration {
                 dead_letter: None,
                 delivery_limit: None,
                 publisher: PublisherConfigSection::default(),
+                queue_type: QueueKind::Quorum,
+                queue_durable: true,
             }
             .validate()
             .expect("valid config"),
@@ -962,6 +970,8 @@ mod integration {
                 dead_letter: None,
                 delivery_limit: None,
                 publisher: PublisherConfigSection::default(),
+                queue_type: QueueKind::Quorum,
+                queue_durable: true,
             }
             .validate()
             .expect("valid config"),

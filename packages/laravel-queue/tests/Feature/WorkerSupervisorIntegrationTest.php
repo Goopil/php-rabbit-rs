@@ -73,6 +73,57 @@ describe('WorkerSupervisor integration', function () {
         expect(supervisorInvocationCount(0))->toBe(1 + 2);
     });
 
+    it('stops all children when one worker exceeds max restarts', function () {
+        // Worker 0 crashes immediately (exhausting max-restarts quickly).
+        // Worker 1 runs until signaled ("run" mode).
+        // The supervisor must stop worker 1 before returning EXIT_MAX_RESTARTS.
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__) . '/Fixture/worker_stub.php';
+
+        $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
+            $cmd = [PHP_BINARY, $stubPath];
+            $mode = $workerIndex === 0 ? 'crash' : 'run';
+            $envForChild = [
+                'RABBIT_RS_WORKER'           => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE'        => $mode,
+                'RABBIT_RS_STUB_STATE_DIR'   => $stateDir,
+            ];
+
+            return new Process($cmd, null, $envForChild);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 2,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS);
+
+        // Worker 0 should have been started and crashed.
+        expect(supervisorInvocationCount(0))->toBeGreaterThanOrEqual(1);
+
+        // Worker 1 should have been started and then stopped (not still running).
+        // The marker file proves it started; the exit file proves it was stopped.
+        $marker = supervisorWaitForMarker(1, timeoutMs: 1000);
+        expect($marker)->not->toBeNull('Worker 1 should have started');
+
+        $exitFile = $stateDir . '/worker-1-exited.txt';
+        $deadline = microtime(true) + 2.0;
+        while (microtime(true) < $deadline) {
+            if (is_file($exitFile)) {
+                break;
+            }
+            usleep(20_000);
+        }
+        expect(is_file($exitFile))->toBeTrue('Worker 1 should have been stopped by the supervisor, not left as an orphan');
+    });
+
     it('run mode worker then signal returns clean exit', function () {
         // Run the supervisor in a subprocess so we can send it a signal.
         $script = writeSupervisorScript();

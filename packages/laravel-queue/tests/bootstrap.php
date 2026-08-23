@@ -217,11 +217,17 @@ namespace Goopil\RabbitRs {
             /** @var array<string, mixed>|null */
             public ?array $statsResult = null;
 
+            public int $closeCalls = 0;
+
+            private bool $closed = false;
+
             private ?\Throwable $nextPublishException = null;
 
             private ?\Throwable $nextSizeException = null;
 
             private ?\Throwable $nextClearException = null;
+
+            private ?\Throwable $nextCloseException = null;
 
             /** @var array<string, Consumer> */
             private array $consumers = [];
@@ -250,6 +256,11 @@ namespace Goopil\RabbitRs {
             public function throwOnNextClear(\Throwable $exception): void
             {
                 $this->nextClearException = $exception;
+            }
+
+            public function throwOnNextClose(\Throwable $exception): void
+            {
+                $this->nextCloseException = $exception;
             }
 
             /**
@@ -366,7 +377,7 @@ namespace Goopil\RabbitRs {
             public function stats(): array
             {
                 return $this->statsResult ?? [
-                    'closed' => false,
+                    'closed' => $this->closed,
                     'pid' => 12345,
                     'handle' => 'conn:019f8f1a',
                     'publishes_total' => 100,
@@ -384,6 +395,19 @@ namespace Goopil\RabbitRs {
                     'settlement_latency_p95' => 30,
                     'settlement_latency_p99' => 85,
                 ];
+            }
+
+            public function close(): void
+            {
+                $this->closeCalls++;
+                $this->closed = true;
+
+                if ($this->nextCloseException !== null) {
+                    $exception = $this->nextCloseException;
+                    $this->nextCloseException = null;
+
+                    throw $exception;
+                }
             }
 
             private function throwPendingException(): void

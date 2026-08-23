@@ -1,4 +1,9 @@
-use std::{error::Error, fmt, sync::Arc, time::Duration};
+use std::{
+    error::Error,
+    fmt::{self, Write as _},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -202,6 +207,12 @@ fn stable_queue_name(destination: &Destination, bucket: Duration) -> String {
     digest.update(destination.exchange.as_bytes());
     digest.update([0]);
     digest.update(destination.routing_key.as_bytes());
-    let hash = format!("{:x}", digest.finalize());
+    let hash: String = digest
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, b| {
+            write!(acc, "{b:02x}").expect("writing to String is infallible");
+            acc
+        });
     format!("rabbit-rs.delay.{}.{}", &hash[..16], bucket.as_millis())
 }

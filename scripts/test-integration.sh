@@ -2,7 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib-extension.sh
+source "${SCRIPT_DIR}/lib-extension.sh"
+
+PROJECT_ROOT="$(ext_project_root)"
 
 command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required" >&2; exit 1; }
 
@@ -37,18 +40,13 @@ cargo test -p rabbit-rs-core --features integration --test integration -- --test
 
 echo ""
 echo "=== Building ext-rabbit_rs ==="
+ext_ensure_built
+EXTENSION_SO="$(ext_artifact_path)"
+
 PHP_BIN="${PHP_BIN:-php}"
 if ! command -v "${PHP_BIN}" >/dev/null 2>&1; then
     echo "SKIP: php not found, cannot run Laravel integration tests"
 else
-    cargo build --manifest-path "${PROJECT_ROOT}/crates/rabbit-rs-php/Cargo.toml" --features extension-tests
-
-    case "$(uname -s)" in
-        Darwin) EXTENSION_SO="${PROJECT_ROOT}/target/debug/librabbit_rs_php.dylib" ;;
-        Linux)  EXTENSION_SO="${PROJECT_ROOT}/target/debug/librabbit_rs_php.so" ;;
-        *) echo "ERROR: unsupported OS: $(uname -s)" >&2; exit 1 ;;
-    esac
-
     echo ""
     echo "=== Verifying extension is loaded ==="
     MODULES="$("${PHP_BIN}" -d "extension=${EXTENSION_SO}" -m 2>/dev/null || true)"

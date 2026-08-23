@@ -16,9 +16,9 @@ set -euo pipefail
 #   ./scripts/package-pie-binary.sh --self-test
 #
 # Produces:
-#   php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
-#   php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.zip.sha256
-#   php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.sbom.json
+#   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
+#   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip.sha256
+#   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.sbom.json
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXTENSION_NAME="rabbit_rs"
@@ -92,8 +92,8 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
             for lc in ${VALID_LIBC}; do
                 for ts in ${VALID_TS}; do
                     V="1.2.3"
-                    archive="php_${EXTENSION_NAME}-${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
-                    expected_prefix="php_${EXTENSION_NAME}-${V}_php${pv}-${ar}-linux-${lc}-${ts}"
+                    archive="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
+                    expected_prefix="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}"
                     if [[ "${archive}" != "${expected_prefix}.zip" ]]; then
                         fail "naming logic broken for ${pv}/${ar}/${lc}/${ts}: got ${archive}"
                     fi
@@ -157,8 +157,8 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
             for lc in ${VALID_LIBC}; do
                 for ts in ${VALID_TS}; do
                     V="1.2.3"
-                    archive="php_${EXTENSION_NAME}-${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
-                    expected_sbom="php_${EXTENSION_NAME}-${V}_php${pv}-${ar}-linux-${lc}-${ts}.sbom.json"
+                    archive="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
+                    expected_sbom="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}.sbom.json"
                     sbom_name="${archive%.zip}.sbom.json"
                     [[ "${sbom_name}" == "${expected_sbom}" ]] \
                         || fail "SBOM naming broken for ${pv}/${ar}/${lc}/${ts}: got ${sbom_name} expected ${expected_sbom}"
@@ -270,11 +270,11 @@ fi
 
 # --- build archive name -------------------------------------------------------
 
-ARCHIVE_NAME="php_${EXTENSION_NAME}-${VERSION}_php${PHP_VER}-${ARCH}-linux-${LIBC}-${TS}.zip"
+ARCHIVE_NAME="php_${EXTENSION_NAME}-v${VERSION}_php${PHP_VER}-${ARCH}-linux-${LIBC}-${TS}.zip"
 ARCHIVE_BASE="${ARCHIVE_NAME%.zip}"
 
 # Refuse incoherent name: the basename must exactly match the template
-expected_base="php_${EXTENSION_NAME}-${VERSION}_php${PHP_VER}-${ARCH}-linux-${LIBC}-${TS}"
+expected_base="php_${EXTENSION_NAME}-v${VERSION}_php${PHP_VER}-${ARCH}-linux-${LIBC}-${TS}"
 if [[ "${ARCHIVE_BASE}" != "${expected_base}" ]]; then
     fail "archive base '${ARCHIVE_BASE}' does not match expected '${expected_base}'"
 fi

@@ -3,6 +3,7 @@
 .worktrees/
 target/
 vendor/
+composer.lock
 .phpunit.cache/
 .pest.cache/
 
@@ -14,3 +15,5 @@ crates/rabbit-rs-php/tests/phpt/*.out
 crates/rabbit-rs-php/tests/phpt/*.php
 crates/rabbit-rs-php/tests/phpt/*.sh
 /benchmarks/results/
+
+/packages/laravel-queue/composer.lock

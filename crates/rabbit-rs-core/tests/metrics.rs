@@ -15,7 +15,7 @@ use rabbit_rs_core::{
     },
     recovery::{ConnectionState, IdentityJitter, RecoveryPolicy, TokioClock},
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, ReturnedMessage, Transport,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind, ReturnedMessage, Transport,
         TransportError,
         mock::{MockTransport, TransportOperation},
     },
@@ -43,6 +43,8 @@ fn connection_key() -> ConnectionKey {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid config"),

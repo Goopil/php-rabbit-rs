@@ -34,16 +34,16 @@ The matrix is defined in [`release/pie-matrix.json`](../release/pie-matrix.json)
 
 ## How pre-packaged binaries work
 
-Each artifact is a ZIP archive containing a single `rabbit_rs.so` compiled for the exact combination of PHP version, architecture, libc, and thread-safety mode. The naming convention follows PIE's expected format:
+Each artifact is a ZIP archive containing a single `rabbit_rs.so` compiled for the exact combination of PHP version, architecture, libc, and thread-safety mode. The naming convention follows PIE's expected format, which includes the `v` prefix from the git tag:
 
 ```
-php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
+php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
 ```
 
 For example:
 
 ```
-php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip
+php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 ```
 
 Each release archive is accompanied by:

@@ -37,6 +37,8 @@ final class ConfigNormalizer
                 'dead_letter' => $topology['dead_letter'],
                 'delivery_limit' => $topology['queue']['delivery_limit'],
                 'publisher' => $publisher,
+                'queue_type' => $topology['queue']['type'],
+                'queue_durable' => $topology['queue']['durable'],
             ],
             'routes' => self::routes($config['routes'] ?? [], $brokerNames),
             'publisher' => $publisher,
@@ -485,14 +487,24 @@ final class ConfigNormalizer
             ];
         }
 
+        $deliveryLimit = $queue['delivery_limit'] ?? null;
+        if ($deliveryLimit !== null) {
+            $deliveryLimit = self::positiveInt($deliveryLimit, 'topology.queue.delivery_limit');
+        }
+
+        if ($deliveryLimit !== null && $normalizedDeadLetter === null) {
+            self::invalid(
+                'topology.dead_letter',
+                'dead_letter must be configured when delivery_limit is set — '
+                .'without it, poison messages are silently dropped by the quorum queue',
+            );
+        }
+
         return [
             'queue' => [
                 'type' => $type,
                 'durable' => self::boolean($queue['durable'] ?? true, 'topology.queue.durable'),
-                'delivery_limit' => self::positiveInt(
-                    $queue['delivery_limit'] ?? 20,
-                    'topology.queue.delivery_limit',
-                ),
+                'delivery_limit' => $deliveryLimit,
             ],
             'dead_letter' => $normalizedDeadLetter,
         ];

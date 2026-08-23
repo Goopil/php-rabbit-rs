@@ -67,7 +67,8 @@ Key features:
 - **PHP** 8.4 or 8.5
 - **Laravel** 12 or 13 (for the Laravel bridge)
 - **RabbitMQ** 4.3.x
-- **Linux** x86_64 or ARM64 (glibc or musl)
+- **Linux** x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE
+- **macOS** ARM64 (Apple Silicon) — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases)
 - **Rust** 1.96.0 (contributors only — see [Contributing](#contributing))
 
 ## Distribution channels
@@ -76,10 +77,32 @@ Rabbit RS is distributed via two channels:
 
 | Package | Channel | Purpose |
 |---------|---------|---------|
-| `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (binary) |
+| `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (Linux binary) |
 | `goopil/rabbit-rs-laravel` | [Packagist](https://packagist.org) | Laravel queue driver (PHP source) |
 
 PIE selects the correct pre-compiled binary for your PHP version, architecture, libc, and thread-safety mode. Composer installs the Laravel bridge and verifies that `ext-rabbit_rs` is loaded, but does **not** install or modify system PHP binaries.
+
+### macOS
+
+PIE does not support macOS. On Apple Silicon (ARM64), download the pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and load it manually:
+
+```bash
+# Download the matching asset for your PHP version
+unzip php_rabbit_rs-*_php8.4-arm64-darwin-nts.zip
+cp rabbit_rs.so $(php-config --extension-dir)/rabbit_rs.so
+echo "extension=rabbit_rs" > $(php-config --ini-dir)/ext-rabbit_rs.ini
+php -m | grep rabbit_rs
+```
+
+Alternatively, build from source:
+
+```bash
+git clone https://github.com/Goopil/php-rabbit-rs.git
+cd php-rabbit-rs
+./scripts/install.sh --release
+```
+
+Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from source with `./scripts/install.sh --release`.
 
 **Not V1 distribution channels:**
 
@@ -103,53 +126,26 @@ These are explicitly out of scope for V1. Use PIE to install the extension in yo
 | Operations | [docs/operations.md](docs/operations.md) |
 | Octane integration | [docs/octane.md](docs/octane.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Development guide | [docs/development.md](docs/development.md) |
 
 ## Contributing
 
-Rabbit RS is a monorepo. The Rust core and PHP extension live in `crates/`, and the Laravel bridge lives in `packages/laravel-queue/`.
-
-### Build from source
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
 
 ```bash
-# Build the extension in release mode
-cargo build --release -p rabbit-rs-php
+# Build the extension
+cargo build -p rabbit-rs-php --features extension-tests
 
-# Install into the current PHP
-./scripts/install.sh --release
+# Run tests
+./scripts/test-laravel.sh          # Laravel Unit + Feature (no extension)
+./scripts/test-extension.sh        # PHP extension (Pest + PHPT)
+cargo test -p rabbit-rs-core       # Rust core
 
-# Verify
-php --ri rabbit_rs
-```
-
-### Run the quality gate
-
-```bash
+# Quality gate
 ./scripts/check.sh
 ```
 
-### Run tests
-
-```bash
-# Rust tests
-cargo test -p rabbit-rs-core
-
-# PHP extension tests (requires the extension built and loaded)
-./scripts/test-extension.sh
-
-# Laravel package tests (Unit + Feature, no extension needed)
-./scripts/test-laravel.sh
-
-# Laravel integration tests (requires extension + RabbitMQ)
-./scripts/test-laravel.sh tests/Integration
-```
-
-### Generate stubs
-
-Stubs are maintained manually at `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`. To regenerate via `cargo php stubs`, you need a PHP build with the embed SAPI (`--enable-embed`).
-
-```bash
-./scripts/stubs.sh --stdout
-```
+For architecture, build system, test strategy, and common pitfalls, see [docs/development.md](docs/development.md).
 
 ## License
 
