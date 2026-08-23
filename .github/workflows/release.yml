@@ -192,7 +192,7 @@ jobs:
     needs: [create-release, build-linux]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       attestations: read
     steps:
       - uses: actions/checkout@v4
