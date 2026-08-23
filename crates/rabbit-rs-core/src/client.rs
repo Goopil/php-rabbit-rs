@@ -160,8 +160,9 @@ impl ClientPool {
         }
 
         let mut terminal_error = immediate_error;
-        for (index, waiter) in waiters {
-            match waiter.wait().await {
+        let results = PublishWaiter::wait_all(waiters).await;
+        for (index, result) in results {
+            match result {
                 Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
                 Err(error) => {
                     let client_err = ClientError::publish(&error);
@@ -230,8 +231,9 @@ impl ClientPool {
             }
         }
 
-        for (index, waiter) in waiters {
-            match waiter.wait().await {
+        let results = PublishWaiter::wait_all(waiters).await;
+        for (index, result) in results {
+            match result {
                 Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
                 Err(error) => {
                     outcomes[index] = Some(Err(error));

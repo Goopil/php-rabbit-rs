@@ -13,6 +13,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::{sync::oneshot, time::Instant};
 
 use crate::transport::{PublishHeaders, PublisherChannel, TransportError};
@@ -331,5 +332,27 @@ impl PublishWaiter {
                 "publisher actor closed before resolving the command",
             ))
         })
+    }
+
+    /// Collectively awaits all waiters with a single drain cycle.
+    ///
+    /// Results are returned in the original order identified by each waiter's
+    /// index. `FuturesUnordered` yields futures in completion order; we sort
+    /// by index so callers always receive results in submission order.
+    pub async fn wait_all(
+        waiters: Vec<(usize, PublishWaiter)>,
+    ) -> Vec<(usize, Result<PublishOutcome, PublishError>)> {
+        let mut futures: FuturesUnordered<_> = waiters
+            .into_iter()
+            .map(|(index, waiter)| async move { (index, waiter.wait().await) })
+            .collect();
+
+        let mut results = Vec::with_capacity(futures.len());
+        while let Some(result) = futures.next().await {
+            results.push(result);
+        }
+
+        results.sort_by_key(|(index, _)| *index);
+        results
     }
 }
