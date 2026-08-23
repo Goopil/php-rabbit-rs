@@ -45,13 +45,13 @@ Quorum queues are the default and recommended queue type. They provide replicate
     'queue' => [
         'type' => 'quorum',
         'durable' => true,
-        'delivery_limit' => 20,
+        'delivery_limit' => null,
     ],
 ],
 ```
 
 Quorum queues support:
-- `delivery_limit` — max delivery attempts before dead-lettering (emitted as `x-delivery-limit`)
+- `delivery_limit` — max delivery attempts before dead-lettering (emitted as `x-delivery-limit`); requires `dead_letter` to be configured when set
 - Automatic replication across cluster nodes
 - Crash recovery without message loss
 
@@ -64,7 +64,7 @@ Classic queues are non-replicated and suitable for workloads where durability is
     'queue' => [
         'type' => 'classic',
         'durable' => true,
-        'delivery_limit' => 20,
+        'delivery_limit' => null,
     ],
 ],
 ```
@@ -126,7 +126,7 @@ The `routing_key` is optional. If set to `null`, the queue name is used as the r
 
 ### How dead-lettering works
 
-When a message exceeds `delivery_limit` (default: 20), RabbitMQ dead-letters it to the configured exchange. The message arrives in the DLQ with `x-death` headers recording the original queue, reason, and count.
+When a message exceeds `delivery_limit`, RabbitMQ dead-letters it to the configured exchange. The message arrives in the DLQ with `x-death` headers recording the original queue, reason, and count.
 
 > **Note:** The `delivery_limit` is enforced by quorum queues. Classic queues rely on application-level attempt tracking.
 
