@@ -326,14 +326,24 @@ impl ClientPool {
             return Ok(consumer);
         }
 
-        // Ensure the coordinator for the first subscription's broker is started.
-        if let Some(first_sub) = worker.subscriptions.first() {
-            let _ = self.coordinator(&first_sub.broker).await?;
+        // Ensure coordinators for all distinct brokers in the worker profile are
+        // started so that every subscription's broker has a recovery coordinator
+        // running. The coordinator for each broker only creates consumers for
+        // subscriptions that belong to that broker (see `recover_generation`).
+        let mut brokers: Vec<String> = worker
+            .subscriptions
+            .iter()
+            .map(|s| s.broker.clone())
+            .collect();
+        brokers.dedup();
+        for broker in &brokers {
+            self.coordinator(broker).await?;
         }
 
-        // The coordinator creates consumers internally on recovery. Wait for the
-        // consumer to become available from the coordinator.
-        let coordinator = self.coordinator(&worker.subscriptions[0].broker).await?;
+        // The consumer is composed from all coordinators. For now, use the
+        // first coordinator's handle for the primary consumer handle. A future
+        // task may compose a multi-broker consumer that merges handles.
+        let coordinator = self.coordinator(&brokers[0]).await?;
         let consumer = loop {
             if self.is_closed() {
                 return Err(ClientError::closed());
