@@ -14,6 +14,7 @@ use rabbit_rs_core::{
         ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
         SubscriptionPolicy,
     },
+    metrics::Metrics,
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
     topology::delay::DelayStrategy,
@@ -75,6 +76,19 @@ mod helper {
         delivery.message_id = Some(message_id.to_owned());
         delivery.correlation_id = Some(correlation_id.to_owned());
         delivery
+    }
+
+    pub fn delivery_with_owned_payload(tag: u64, payload: Vec<u8>) -> TransportDelivery {
+        TransportDelivery {
+            delivery_tag: tag,
+            exchange: "jobs".to_owned(),
+            routing_key: "high".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: BTreeMap::new(),
+            payload: Bytes::from(payload),
+        }
     }
 
     pub async fn subscription(
@@ -1297,4 +1311,41 @@ async fn early_ack_preserves_delivery_metadata() {
     assert_eq!(d.delivery_tag(), 7);
 
     consumer.close().await.expect("close");
+}
+
+// ---------------------------------------------------------------------------
+// OOM protection — hard gate tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn hard_gate_stops_accepting_when_over_budget() {
+    let transport = MockTransport::default();
+    let budget = 1024 * 1024 * 4; // 4 MiB
+    let payload_size = 1024 * 1024; // 1 MiB per delivery
+
+    for i in 0..100 {
+        transport.push_delivery(Ok(helper::delivery_with_owned_payload(
+            i,
+            vec![0u8; payload_size],
+        )));
+    }
+
+    let sub = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
+        .await
+        .max_buffered_bytes(budget);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], 1024, Metrics::default())
+        .await
+        .expect("consumer set");
+
+    let_sources_fill().await;
+
+    let snapshot = consumer.metrics_snapshot();
+    assert!(
+        snapshot.consumer_buffer_bytes <= budget,
+        "buffered_bytes ({}) should not exceed max_buffered_bytes ({} bytes)",
+        snapshot.consumer_buffer_bytes,
+        budget
+    );
+
+    let _ = consumer.close().await;
 }

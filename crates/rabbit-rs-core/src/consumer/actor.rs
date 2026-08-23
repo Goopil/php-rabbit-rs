@@ -107,6 +107,7 @@ struct ActorState {
     buffered_bytes: HashMap<SubscriptionId, u64>,
     max_buffered_bytes: HashMap<SubscriptionId, u64>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
+    pending_incoming: VecDeque<(SubscriptionId, TransportDelivery)>,
     pending_settlements: futures_util::stream::FuturesUnordered<SettlementFuture>,
     pending_settle_throughs: futures_util::stream::FuturesUnordered<SettleThroughFuture>,
     settlement_in_flight: HashSet<ChannelKey>,
@@ -167,6 +168,7 @@ impl ActorState {
             buffered_bytes,
             max_buffered_bytes,
             channel_ledgers,
+            pending_incoming: VecDeque::new(),
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
             pending_settle_throughs: futures_util::stream::FuturesUnordered::new(),
             settlement_in_flight: HashSet::new(),
@@ -190,6 +192,7 @@ impl ActorState {
 
     #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self) {
+        self.drain_pending();
         while self.in_flight < self.max_in_flight {
             if let Some(error) = self.source_errors.front() {
                 if self.buffer_tx.try_send(Err(error.clone())).is_err() {
@@ -332,6 +335,38 @@ impl ActorState {
     fn release_budget(&mut self) {
         self.in_flight = self.in_flight.saturating_sub(1);
     }
+
+    fn drain_pending(&mut self) {
+        while let Some((subscription, delivery)) = self.pending_incoming.front() {
+            let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
+            let over_budget = if let Some(max) = self.max_buffered_bytes.get(subscription) {
+                let current = self.buffered_bytes.get(subscription).copied().unwrap_or(0);
+                current.saturating_add(delivery_bytes) > *max
+            } else {
+                false
+            };
+            if over_budget {
+                break;
+            }
+            let (subscription, delivery) = self
+                .pending_incoming
+                .pop_front()
+                .expect("front checked above");
+            if let Some(buffer) = self.buffers.get_mut(&subscription) {
+                buffer.push_back(delivery);
+                self.scheduler.mark_ready(&subscription);
+            }
+            if let Some(bytes) = self.buffered_bytes.get_mut(&subscription) {
+                *bytes = bytes.saturating_add(delivery_bytes);
+            }
+        }
+        record_consumer_buffer_metrics(self);
+    }
+
+    fn try_drain_pending(&mut self) {
+        self.drain_pending();
+        self.dispatch();
+    }
 }
 
 fn record_consumer_buffer_metrics(state: &ActorState) {
@@ -396,15 +431,22 @@ pub(crate) async fn run_actor(
                         } else {
                             false
                         };
-                        if let Some(buffer) = state.buffers.get_mut(&subscription) {
-                            buffer.push_back(delivery);
-                            state.scheduler.mark_ready(&subscription);
-                        }
-                        if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
-                            *bytes = bytes.saturating_add(delivery_bytes);
-                        }
-                        record_consumer_buffer_metrics(&state);
-                        if !over_budget {
+                        if over_budget {
+                            state.pending_incoming.push_back((subscription.clone(), delivery));
+                            state.metrics.record_backpressure();
+                        } else if state.pending_incoming.is_empty() {
+                            if let Some(buffer) = state.buffers.get_mut(&subscription) {
+                                buffer.push_back(delivery);
+                                state.scheduler.mark_ready(&subscription);
+                            }
+                            if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
+                                *bytes = bytes.saturating_add(delivery_bytes);
+                            }
+                            record_consumer_buffer_metrics(&state);
+                            state.dispatch();
+                        } else {
+                            state.pending_incoming.push_back((subscription.clone(), delivery));
+                            state.drain_pending();
                             state.dispatch();
                         }
                     }
@@ -563,7 +605,7 @@ pub(crate) async fn run_actor(
                     }
                     state.release_budget();
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
+                    state.try_drain_pending();
                     if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
                         ledger.pending.remove(&settlement_result.token.delivery_tag);
                     }
@@ -619,7 +661,7 @@ pub(crate) async fn run_actor(
                         }
                     }
                     record_consumer_buffer_metrics(&state);
-                    state.dispatch();
+                    state.try_drain_pending();
                     if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
                         for tag in (ledger.acked_prefix + 1)..=target_tag {
                             ledger.pending.remove(&tag);
