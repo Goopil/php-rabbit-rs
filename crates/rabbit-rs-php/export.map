@@ -1,6 +1,0 @@
-RABBIT_RS_1.0 {
-  global:
-    get_module;
-  local:
-    *;
-};
