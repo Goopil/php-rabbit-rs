@@ -1,11 +1,13 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    future,
+    future::{self, Future},
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
-use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time,
@@ -273,8 +275,31 @@ enum ConfirmationResult {
     TimedOut,
 }
 
-type ConfirmationFuture = BoxFuture<'static, (u64, u64, ConfirmationResult)>;
-type PublishFuture = BoxFuture<'static, (u64, TransportResult<Box<dyn PublishReceipt>>)>;
+type ConfirmationFuture = Pin<Box<dyn Future<Output = (u64, u64, ConfirmationResult)> + Send>>;
+
+/// The boxed future returned by [`PublisherChannel::publish`].
+type PublishResultFuture =
+    Pin<Box<dyn Future<Output = TransportResult<Box<dyn PublishReceipt>>> + Send>>;
+
+/// Wraps a publish future and attaches its sequence number, separating the
+/// sequence-tagging concern from the future boxing.
+struct TaggedFuture {
+    fut: PublishResultFuture,
+    sequence: u64,
+}
+
+impl Future for TaggedFuture {
+    type Output = (u64, TransportResult<Box<dyn PublishReceipt>>);
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.fut.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready((self.sequence, result)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+type PublishFuture = TaggedFuture;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
@@ -620,14 +645,14 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         record_publisher_metrics(state);
 
         let channel_for_pub = Arc::clone(&channel);
-        let mut publish_fut = Box::pin(async move {
-            let result = channel_for_pub.publish(request).await;
-            (sequence, result)
-        });
+        let mut tagged = TaggedFuture {
+            fut: Box::pin(async move { channel_for_pub.publish(request).await }),
+            sequence,
+        };
 
-        match publish_fut.as_mut().now_or_never() {
+        match Pin::new(&mut tagged).now_or_never() {
             Some((seq, result)) => {
-                drop(publish_fut);
+                drop(tagged);
                 handle_publish_completion(state, seq, result);
                 if matches!(state.phase, Phase::Suspended) {
                     state.replay.extend(pending);
@@ -635,7 +660,7 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
                 }
             }
             None => {
-                state.publish_in_flight.push(publish_fut);
+                state.publish_in_flight.push(tagged);
             }
         }
     }

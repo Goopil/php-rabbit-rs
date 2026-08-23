@@ -263,6 +263,27 @@ mod helper {
 use helper::*;
 
 // ---------------------------------------------------------------------------
+// TaggedFuture baseline test (Task 11)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn tagged_future_publish_completes() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let waiter = actor
+        .try_publish(request_safety("tagged-1", b"payload"))
+        .expect("publish");
+    wait_for_publish_count(&transport, 1).await;
+
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Publisher safety tests (from publisher_safety.rs)
 // ---------------------------------------------------------------------------
 
