@@ -143,6 +143,7 @@ impl ClientPool {
 
         let mut outcomes: Vec<Option<Result<PublishOutcome, ClientError>>> = vec![None; total];
         let mut waiters: Vec<(usize, PublishWaiter)> = Vec::new();
+        let mut immediate_error = None;
 
         for (broker, msgs) in &by_broker {
             let publisher = self.publisher(broker).await?;
@@ -150,13 +151,15 @@ impl ClientPool {
                 match publisher.try_publish(request.clone()) {
                     Ok(waiter) => waiters.push((*original_index, waiter)),
                     Err(error) => {
-                        outcomes[*original_index] = Some(Err(ClientError::publish(&error)));
+                        let client_err = ClientError::publish(&error);
+                        immediate_error.get_or_insert_with(|| client_err.clone());
+                        outcomes[*original_index] = Some(Err(client_err));
                     }
                 }
             }
         }
 
-        let mut terminal_error = None;
+        let mut terminal_error = immediate_error;
         for (index, waiter) in waiters {
             match waiter.wait().await {
                 Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
