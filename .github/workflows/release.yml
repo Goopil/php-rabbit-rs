@@ -157,7 +157,7 @@ jobs:
           if [[ "${{ matrix.ts }}" == "zts" ]]; then
             TS_SUFFIX="-zts"
           fi
-          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}"
+          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}"
           ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
           sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
@@ -247,7 +247,7 @@ jobs:
       - name: Package
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
-          ASSET_BASE="php_rabbit_rs-${VERSION}_php${{ matrix.php }}-arm64-darwin-nts"
+          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-arm64-darwin-nts"
           ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
           shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"

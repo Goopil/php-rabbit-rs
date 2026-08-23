@@ -5,7 +5,7 @@
   "libre_ssl_required": false,
   "rust_toolchain": "1.96.0",
   "php_extension_name": "rabbit_rs",
-  "artifact_name_template": "php_rabbit_rs-{version}_php{php}-{arch}-linux-{libc}{ts_suffix}.zip",
+  "artifact_name_template": "php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}{ts_suffix}.zip",
   "matrix": [
     {
       "php": "8.4",
