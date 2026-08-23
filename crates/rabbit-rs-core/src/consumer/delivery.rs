@@ -43,8 +43,6 @@ pub enum DeliveryState {
     AutoAcked = 5,
 }
 
-const TRANSITIONING: u8 = 1;
-
 pub struct Delivery {
     pub id: MessageId,
     pub correlation_id: Option<String>,
@@ -272,9 +270,14 @@ impl DeliveryToken {
 
     /// Fire-and-forget settlement.
     ///
-    /// Performs the `Pending → Transitioning` CAS, then enqueues the
-    /// settlement command via `try_send`. Returns immediately without
-    /// waiting for the actor to process the settlement.
+    /// Performs the `Pending → terminal` CAS directly (Acked/Rejected),
+    /// then enqueues the settlement command via `try_send`. Returns
+    /// immediately without waiting for the actor to process the settlement.
+    ///
+    /// The terminal state is set synchronously so that `state()` reflects
+    /// the outcome instantly. If the command channel is full, the state
+    /// reverts to `Pending` so the caller can retry. If the channel is
+    /// closed, the state becomes `Lost`.
     ///
     /// # Errors
     ///
@@ -284,11 +287,17 @@ impl DeliveryToken {
     /// [`SettlementErrorKind::Closed`] if the command channel is closed
     /// (state becomes `Lost`).
     pub(crate) fn try_settle(&self, settlement: Settlement) -> Result<(), SettlementErrorKind> {
+        let terminal = match &settlement {
+            Settlement::Release(delay) if delay.is_zero() => DeliveryState::Rejected as u8,
+            Settlement::Ack | Settlement::Release(_) => DeliveryState::Acked as u8,
+            Settlement::Reject(_) => DeliveryState::Rejected as u8,
+        };
+
         self.inner
             .state
             .compare_exchange(
                 DeliveryState::Pending as u8,
-                TRANSITIONING,
+                terminal,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )

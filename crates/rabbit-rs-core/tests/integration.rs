@@ -163,6 +163,8 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            queue_type: rabbit_rs_core::transport::QueueKind::Quorum,
+            queue_durable: true,
         }
         .validate()
         .expect("valid multi-broker consumer config")
