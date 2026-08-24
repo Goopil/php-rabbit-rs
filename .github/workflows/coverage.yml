@@ -38,6 +38,7 @@ jobs:
 
       - name: Run coverage
         run: |
+          mkdir -p target/coverage
           cargo llvm-cov nextest --workspace --all-targets --no-fail-fast --profile ci --lcov --output-path target/coverage/rust.lcov
 
       - name: Upload LCOV to Codecov
@@ -110,8 +111,7 @@ jobs:
         run: |
           mkdir -p target/coverage
           cd crates/rabbit-rs-php
-          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest \
-            --log-junit=${{ github.workspace }}/target/coverage/php-ext-junit.xml
+          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest
 
       - name: Merge profraw files
         run: |
@@ -131,15 +131,6 @@ jobs:
         with:
           files: target/coverage/php-ext.lcov
           flags: php-ext
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
-      - name: Upload JUnit to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: target/coverage/php-ext-junit.xml
-          flags: php-ext-tests
-          disable_search: true
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
@@ -172,11 +163,7 @@ jobs:
         run: |
           mkdir -p packages/laravel-queue/build
           cd packages/laravel-queue
-          php vendor/bin/pest \
-            --coverage \
-            --coverage-clover=build/clover.xml \
-            --log-junit=build/junit.xml \
-            --testdox
+          php vendor/bin/pest --coverage --log-junit=build/junit.xml
 
       - name: Upload Clover to Codecov
         uses: codecov/codecov-action@v5
