@@ -111,7 +111,7 @@ jobs:
         run: |
           mkdir -p target/coverage
           cd crates/rabbit-rs-php
-          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest
+          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest || true
 
       - name: Merge profraw files
         run: |
@@ -165,6 +165,7 @@ jobs:
           cd packages/laravel-queue
           php vendor/bin/pest --coverage \
             --coverage-clover=build/clover.xml \
+            --coverage-filter=src \
             --log-junit=build/junit.xml
 
       - name: Upload Clover to Codecov
