@@ -1,0 +1,50 @@
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 2%
+        only_pulls: false
+    patch:
+      default:
+        target: 70%
+        threshold: 5%
+
+ignore:
+  - "crates/rabbit-rs-core/tests"
+  - "crates/rabbit-rs-php/tests"
+  - "packages/laravel-queue/tests"
+  - "benchmarks"
+  - "target"
+  - "scripts"
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+flags:
+  rust:
+    paths:
+      - "crates/rabbit-rs-core/src/"
+      - "crates/rabbit-rs-php/src/"
+    carryforward: false
+  php-ext:
+    paths:
+      - "crates/rabbit-rs-php/src/"
+    carryforward: false
+  laravel:
+    paths:
+      - "packages/laravel-queue/src/"
+    carryforward: false
+  rust-tests:
+    carryforward: false
+  php-ext-tests:
+    carryforward: false
+  laravel-tests:
+    carryforward: false

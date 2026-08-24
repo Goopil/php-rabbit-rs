@@ -1,0 +1,256 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage-rust:
+    name: Coverage (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked --quiet || true
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked --quiet || true
+
+      - name: Run coverage
+        run: |
+          cargo llvm-cov nextest --workspace --all-targets --no-fail-fast --profile ci --lcov --output-path target/coverage/rust.lcov
+
+      - name: Upload LCOV to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: target/coverage/rust.lcov
+          flags: rust
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload JUnit to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: target/nextest/junit.xml
+          flags: rust-tests
+          disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-rust
+          path: |
+            target/coverage/rust.lcov
+            target/nextest/junit.xml
+          retention-days: 7
+
+  coverage-php-ext:
+    name: Coverage (PHP Extension)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.96
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked --quiet || true
+
+      - name: Build extension with coverage
+        run: |
+          RUSTFLAGS="-Cinstrument-coverage -Clink-dead-code" \
+            cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+
+      - name: Install PHP extension deps
+        run: |
+          cd crates/rabbit-rs-php
+          composer update --no-interaction --no-security-blocking
+
+      - name: Run Pest tests
+        env:
+          LLVM_PROFILE_FILE: "${{ github.workspace }}/target/debug/rabbit-rs-php-%p.profraw"
+        run: |
+          mkdir -p target/coverage
+          cd crates/rabbit-rs-php
+          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest \
+            --log-junit=${{ github.workspace }}/target/coverage/php-ext-junit.xml
+
+      - name: Merge profraw files
+        run: |
+          llvm-profdata merge -sparse target/debug/rabbit-rs-php-*.profraw -o target/coverage/php-ext.profdata
+
+      - name: Export LCOV
+        run: |
+          llvm-cov export \
+            target/debug/librabbit_rs_php.so \
+            -instr-profile=target/coverage/php-ext.profdata \
+            --format lcov \
+            --ignore-filename-regex='rabbit-rs-core' \
+            > target/coverage/php-ext.lcov
+
+      - name: Upload LCOV to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: target/coverage/php-ext.lcov
+          flags: php-ext
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload JUnit to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: target/coverage/php-ext-junit.xml
+          flags: php-ext-tests
+          disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-php-ext
+          path: target/coverage/
+          retention-days: 7
+
+  coverage-laravel:
+    name: Coverage (Laravel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: pcov
+          extensions: json
+
+      - name: Install Laravel deps
+        run: |
+          cd packages/laravel-queue
+          composer update --quiet --ignore-platform-reqs
+
+      - name: Run Pest with coverage
+        run: |
+          mkdir -p packages/laravel-queue/build
+          cd packages/laravel-queue
+          php vendor/bin/pest \
+            --coverage \
+            --coverage-clover=build/clover.xml \
+            --log-junit=build/junit.xml \
+            --testdox
+
+      - name: Upload Clover to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: packages/laravel-queue/build/clover.xml
+          flags: laravel
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload JUnit to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: packages/laravel-queue/build/junit.xml
+          flags: laravel-tests
+          disable_search: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-laravel
+          path: packages/laravel-queue/build/
+          retention-days: 7
+
+  sonarcloud:
+    name: SonarCloud
+    needs: [coverage-rust, coverage-php-ext, coverage-laravel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage-rust
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-rust
+          path: artifacts/coverage-rust
+
+      - name: Download coverage-php-ext
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-php-ext
+          path: artifacts/coverage-php-ext
+
+      - name: Download coverage-laravel
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-laravel
+          path: artifacts/coverage-laravel
+
+      - name: Place artifacts
+        run: |
+          mkdir -p target/coverage target/nextest packages/laravel-queue/build
+          if [ -f artifacts/coverage-rust/rust.lcov ]; then
+            cp artifacts/coverage-rust/rust.lcov target/coverage/
+            cp artifacts/coverage-rust/junit.xml target/nextest/
+          fi
+          if [ -f artifacts/coverage-php-ext/php-ext.lcov ]; then
+            cp artifacts/coverage-php-ext/php-ext.lcov target/coverage/
+          fi
+          if [ -f artifacts/coverage-laravel/clover.xml ]; then
+            cp artifacts/coverage-laravel/clover.xml packages/laravel-queue/build/
+          fi
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        with:
+          args: >
+            -Dsonar.organization=goopil
+            -Dsonar.projectKey=Goopil_rabbit-rs
+            -Dsonar.coverage.lcovReportPaths=target/coverage/rust.lcov,target/coverage/php-ext.lcov
+            -Dsonar.php.coverage.reportPaths=packages/laravel-queue/build/clover.xml
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
