@@ -163,7 +163,9 @@ jobs:
         run: |
           mkdir -p packages/laravel-queue/build
           cd packages/laravel-queue
-          php vendor/bin/pest --coverage --log-junit=build/junit.xml
+          php vendor/bin/pest --coverage \
+            --coverage-clover=build/clover.xml \
+            --log-junit=build/junit.xml
 
       - name: Upload Clover to Codecov
         uses: codecov/codecov-action@v5
