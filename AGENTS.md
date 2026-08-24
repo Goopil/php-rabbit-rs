@@ -22,7 +22,8 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - `packages/laravel-queue/`: Laravel queue driver package (`goopil/rabbit-rs-laravel`). Pest tests in `tests/`.
 - `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.
 - `composer.json`: PIE package metadata for `rabbit-rs/native`.
-- `scripts/check.sh`: Rust quality gate (fmt + clippy + test + composer validate).
+- `scripts/check.sh`: Rust quality gate (fmt + clippy + nextest + composer validate).
+- `scripts/coverage.sh`: local coverage orchestrator (Rust + PHP ext + Laravel).
 - `scripts/lib-extension.sh`: shared helpers for building and loading ext-rabbit_rs in test scripts.
 - `scripts/test-laravel.sh`: run Laravel Pest tests (Unit + Feature without extension, Integration with extension).
 - `scripts/test-extension.sh`: build and test the PHP extension (Pest + PHPT).
@@ -41,8 +42,11 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
   - `rtk cargo fmt --all -- --check`
   - `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings`
   - `rtk cargo test --workspace --all-targets`
+  - `rtk cargo nextest run --workspace --all-targets --no-fail-fast` (preferred when nextest is installed)
+  - `rtk cargo deny check` (supply chain: advisories, licenses, bans)
   - `rtk composer validate --strict`
 - Before claiming completion, run the complete gate: `rtk ./scripts/check.sh`.
+- Clippy SARIF is generated in CI via `clippy-sarif` crate and uploaded to GitHub Code Scanning. No local action needed.
 
 ## PHP Extension Tooling
 
@@ -95,3 +99,16 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - Preserve unrelated work in a dirty tree. Never discard or overwrite changes you did not create.
 - Keep commits logical and scoped when the active plan calls for commits. Do not include `.air/`, IDE metadata, build artifacts, or unrelated changes.
 - Update the implementation plan when completing a planned task so its progress and next step stay accurate.
+
+## Coverage and Analytics Pipeline
+
+- `cargo-nextest` replaces `cargo test` in CI and `scripts/check.sh` (with fallback to `cargo test` if not installed). Config in `.config/nextest.toml` (profile `ci` emits JUnit XML to `target/nextest/junit.xml`).
+- `cargo-llvm-cov` collects Rust coverage as LCOV. Local: `./scripts/coverage-rust.sh`.
+- PHP extension coverage uses `-Cinstrument-coverage` on the cdylib + PHP tests, then `llvm-profdata`/`llvm-cov` from the rustup toolchain (not system LLVM — version must match Rust 1.96). Local: `./scripts/coverage-php-ext.sh`.
+- Laravel coverage uses PCOV + Pest `--coverage-clover`. Local: `./scripts/coverage-laravel.sh`.
+- `./scripts/coverage.sh` runs all three locally and prints a summary.
+- CI workflow `.github/workflows/coverage.yml` has 4 jobs: `coverage-rust`, `coverage-php-ext`, `coverage-laravel`, `sonarcloud` (aggregates all artifacts).
+- Codecov receives LCOV + JUnit from each coverage job. SonarCloud receives LCOV + Clover via `sonar-project.properties`.
+- `cargo-deny` runs in CI (`deny` job) with config in `deny.toml`. Checks advisories (RUSTSEC), licenses, bans, and sources.
+- Clippy SARIF is generated in CI (`clippy-sarif` job) via the `clippy-sarif` crate and uploaded to GitHub Code Scanning.
+- Required GitHub secrets: `CODECOV_TOKEN`, `SONAR_TOKEN`.
