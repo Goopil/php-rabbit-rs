@@ -60,23 +60,11 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install SARIF converter
-        run: |
-          npm install -g @microsoft/sarif-multitool
-
-      - name: Run clippy
-        run: |
-          cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings > clippy.json
-
-      - name: Convert to SARIF
-        run: |
-          npx @microsoft/sarif-multitool convert clippy.json -o results.sarif
-
-      - name: Upload SARIF
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Run clippy SARIF
+        uses: actions-rust-lang/clippy-action@v1
         with:
-          sarif_file: results.sarif
-          category: clippy
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --workspace --all-targets --all-features -- -D warnings
 
   deny:
     name: cargo-deny
