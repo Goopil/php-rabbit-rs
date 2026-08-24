@@ -90,7 +90,7 @@ jobs:
           extensions: json
 
       - name: Install system deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev llvm
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked --quiet || true
@@ -115,11 +115,16 @@ jobs:
 
       - name: Merge profraw files
         run: |
-          llvm-profdata merge -sparse target/debug/rabbit-rs-php-*.profraw -o target/coverage/php-ext.profdata
+          cargo llvm-cov --no-run --lcov --output-path /dev/null 2>/dev/null || true
+          LLVM_PROFDATA="$(dirname "$(find ~/.rustup -name llvm-profdata -type f | head -1)")"
+          "${LLVM_PROFDATA}/llvm-profdata" merge -sparse \
+            target/debug/rabbit-rs-php-*.profraw \
+            -o target/coverage/php-ext.profdata
 
       - name: Export LCOV
         run: |
-          llvm-cov export \
+          LLVM_COV="$(dirname "$(find ~/.rustup -name llvm-cov -type f | head -1)")"
+          "${LLVM_COV}/llvm-cov" export \
             target/debug/librabbit_rs_php.so \
             -instr-profile=target/coverage/php-ext.profdata \
             --format lcov \
