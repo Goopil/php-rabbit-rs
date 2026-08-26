@@ -83,6 +83,17 @@ PIE selects the correct pre-compiled binary for your PHP version, architecture, 
 
 ### macOS
 
+**Homebrew (Apple Silicon):**
+
+```bash
+brew tap goopil/rabbit-rs
+brew install rabbit-rs
+```
+
+Requires PHP 8.4 or 8.5 installed via Homebrew.
+
+**Manual install (Apple Silicon):**
+
 PIE does not support macOS. On Apple Silicon (ARM64), download the pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and load it manually:
 
 ```bash
