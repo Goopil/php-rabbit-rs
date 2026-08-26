@@ -32,8 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install formula
-        run: brew install rabbit-rs
+      - name: Tap and install formula
+        run: |
+          brew tap goopil/rabbit-rs
+          brew install rabbit-rs
 
       - name: Verify extension loads
         run: |
