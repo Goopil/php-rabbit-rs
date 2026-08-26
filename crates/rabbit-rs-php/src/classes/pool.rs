@@ -368,9 +368,21 @@ impl Pool {
                 .runtime()
                 .block_on(self.client.publish(&publish.broker, publish.request));
             match outcome {
-                Ok(outcome) => {
-                    let _ = publish_message_id(outcome)?;
-                }
+                Ok(outcome) => match publish_message_id(outcome) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // A returned/ambiguous outcome resolves this waiter with an
+                        // error. Re-buffer the un-attempted messages so the next
+                        // flush() can retry them, upholding the at-least-once
+                        // invariant: silent loss is unacceptable.
+                        let mut buffer = self
+                            .publish_buffer
+                            .lock()
+                            .expect("publish buffer mutex poisoned");
+                        buffer.extend(remaining);
+                        return Err(e);
+                    }
+                },
                 Err(error) => {
                     // Re-buffer unpublished messages so the next flush() can retry
                     // them. The failed message's request was consumed by publish();
