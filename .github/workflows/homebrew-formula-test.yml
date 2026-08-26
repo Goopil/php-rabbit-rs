@@ -1,0 +1,45 @@
+name: Homebrew Formula Test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/update-homebrew-formula.sh"
+      - ".github/workflows/homebrew-formula-test.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-formula:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Tap and install
+        run: |
+          brew tap goopil/rabbit-rs
+          brew install rabbit-rs
+
+      - name: Verify extension loads
+        run: |
+          php -m | grep -q "rabbit_rs" || { echo "ERROR: rabbit_rs extension not loaded"; exit 1; }
+          echo "OK: rabbit_rs loaded, version $(php -r 'echo phpversion("rabbit_rs");')"
+
+      - name: Uninstall and verify cleanup
+        run: |
+          brew uninstall rabbit-rs
+          if php -m 2>/dev/null | grep -q "rabbit_rs"; then
+            echo "ERROR: rabbit_rs still loaded after uninstall"
+            exit 1
+          fi
+          echo "OK: rabbit_rs uninstalled cleanly"
