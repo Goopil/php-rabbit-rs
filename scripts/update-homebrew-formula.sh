@@ -12,7 +12,6 @@ set -euo pipefail
 # Environment:
 #   MIRROR_TOKEN  GitHub token with write access to Goopil/homebrew-rabbit-rs
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TAP_REPO="Goopil/homebrew-rabbit-rs"
 RELEASE_BASE="https://github.com/Goopil/rabbit-rs/releases/download"
 FORMULA_PATH="Formula/rabbit-rs.rb"
