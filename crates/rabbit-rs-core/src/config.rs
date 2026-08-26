@@ -408,12 +408,29 @@ pub struct DeadLetterConfig {
     pub routing_key: Option<String>,
 }
 
+/// Publisher safety mode determining the delivery guarantee level.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SafetyMode {
+    /// Fire-and-forget: async pump, no socket wait, no confirms. Messages
+    /// may be lost if the socket drops between pump send and TCP write.
+    Blind,
+    /// Synchronous socket write, no confirms. Message reached kernel socket buffer.
+    Unsafe,
+    /// Confirm mode + mandatory routing. At-least-once delivery guarantee.
+    #[default]
+    Safe,
+}
+
 /// Publisher configuration section controlling confirms, mandatory routing,
 /// and confirmation timeout.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct PublisherConfigSection {
+    pub safety: SafetyMode,
+    /// Deprecated: use `safety = "safe"` instead. Defaults to true for backward compat.
     pub confirms: bool,
+    /// Deprecated: use `safety = "safe"` instead. Defaults to true for backward compat.
     pub mandatory: bool,
     #[serde(deserialize_with = "deserialize_duration_millis")]
     pub confirm_timeout: Duration,
@@ -423,9 +440,32 @@ impl PublisherConfigSection {
     #[must_use]
     pub const fn new(confirms: bool, mandatory: bool, confirm_timeout: Duration) -> Self {
         Self {
+            safety: if confirms {
+                SafetyMode::Safe
+            } else {
+                SafetyMode::Unsafe
+            },
             confirms,
             mandatory,
             confirm_timeout,
+        }
+    }
+
+    /// Returns the effective safety mode, deriving from legacy `confirms`/`mandatory`
+    /// flags when `safety` was not explicitly set.
+    ///
+    /// - `safety != Safe` → returned as-is (explicitly chosen).
+    /// - `safety == Safe` (default) + `confirms=false` → `Unsafe`.
+    /// - `safety == Safe` (default) + `confirms=true` → `Safe`.
+    #[must_use]
+    pub fn effective_safety(&self) -> SafetyMode {
+        if !matches!(self.safety, SafetyMode::Safe) {
+            return self.safety;
+        }
+        if self.confirms {
+            SafetyMode::Safe
+        } else {
+            SafetyMode::Unsafe
         }
     }
 }
@@ -433,6 +473,7 @@ impl PublisherConfigSection {
 impl Default for PublisherConfigSection {
     fn default() -> Self {
         Self {
+            safety: SafetyMode::Safe,
             confirms: true,
             mandatory: true,
             confirm_timeout: Duration::from_secs(30),
@@ -836,6 +877,7 @@ fn hash_broker(digest: &mut Sha256, broker: &BrokerConfig) {
 
 fn hash_publisher(digest: &mut Sha256, publisher: &PublisherConfigSection) {
     hash_value(digest, "publisher");
+    hash_value(digest, safety_mode_name(publisher.safety));
     hash_value(
         digest,
         if publisher.confirms {
@@ -889,6 +931,14 @@ const fn tls_verify_name(verify: TlsVerify) -> &'static str {
     }
 }
 
+const fn safety_mode_name(mode: SafetyMode) -> &'static str {
+    match mode {
+        SafetyMode::Blind => "blind",
+        SafetyMode::Unsafe => "unsafe",
+        SafetyMode::Safe => "safe",
+    }
+}
+
 fn deserialize_duration_seconds<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
@@ -928,7 +978,8 @@ mod tests {
 
     use super::{
         BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
-        SchedulerConfig, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
+        SafetyMode, SchedulerConfig, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode,
+        WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -1558,5 +1609,86 @@ mod tests {
             none.fingerprint(),
             "different verify modes must produce different fingerprints"
         );
+    }
+
+    #[test]
+    fn safety_mode_defaults_to_safe() {
+        assert_eq!(SafetyMode::default(), SafetyMode::Safe);
+    }
+
+    #[test]
+    fn publisher_section_defaults_safety_to_safe() {
+        let publisher = PublisherConfigSection::default();
+        assert_eq!(publisher.safety, SafetyMode::Safe);
+    }
+
+    #[test]
+    fn effective_safety_returns_explicit_non_safe_mode() {
+        let publisher = PublisherConfigSection {
+            safety: SafetyMode::Blind,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Blind);
+
+        let publisher = PublisherConfigSection {
+            safety: SafetyMode::Unsafe,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Unsafe);
+    }
+
+    #[test]
+    fn effective_safety_derives_from_legacy_confirms_when_safe() {
+        let publisher = PublisherConfigSection {
+            confirms: false,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Unsafe);
+
+        let publisher = PublisherConfigSection {
+            confirms: true,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Safe);
+    }
+
+    #[test]
+    fn deserializes_safety_blind() {
+        let candidate = serde_json::from_value::<Config>(serde_json::json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external",
+            "publisher": {
+                "safety": "blind",
+                "confirm_timeout": 5000
+            }
+        }))
+        .expect("publisher section with safety=blind deserializes");
+
+        let validated = candidate.validate().expect("valid config");
+        let publisher = validated.publisher();
+        assert_eq!(publisher.safety, SafetyMode::Blind);
+        assert_eq!(publisher.effective_safety(), SafetyMode::Blind);
     }
 }
