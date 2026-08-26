@@ -21,6 +21,7 @@ describe('callback deadlock', function () {
         // Publishing starts the coordinator, which reaches Ready.
         // The next stats() call sees the state change and fires the callback.
         $pool->publish(pubMessage('deadlock-test'));
+        $pool->flush();
 
         // This call must complete without hanging.
         $stats = $pool->stats();

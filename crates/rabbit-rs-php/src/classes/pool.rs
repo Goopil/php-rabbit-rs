@@ -25,6 +25,11 @@ use rabbit_rs_core::{
     runtime::RuntimeRegistry,
 };
 
+/// Buffer threshold: flush when this many messages are buffered.
+const BUFFER_THRESHOLD: usize = 64;
+/// Maximum time to wait before flushing the buffer.
+const BUFFER_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+
 /// Native `RabbitMQ` connection and operation pool.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Pool")]
@@ -37,6 +42,8 @@ pub struct Pool {
     backpressure_callback: CallbackSlot,
     last_connection_states: std::sync::Mutex<HashMap<String, (String, i64)>>,
     last_backpressure_total: std::sync::Mutex<u64>,
+    publish_buffer: std::sync::Mutex<Vec<conversion::NativePublish>>,
+    last_flush: std::sync::Mutex<std::time::Instant>,
 }
 
 #[php_impl]
@@ -67,6 +74,8 @@ impl Pool {
             backpressure_callback: CallbackSlot::new(),
             last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
+            publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
+            last_flush: std::sync::Mutex::new(std::time::Instant::now()),
         })
     }
 
@@ -97,18 +106,51 @@ impl Pool {
                 message,
             )
         })?;
-        let outcome = self
-            .handle
-            .runtime()
-            .block_on(self.client.publish(&publish.broker, publish.request));
-        match outcome {
-            Ok(outcome) => publish_message_id(outcome),
-            Err(error) => client_exception(&error),
+
+        let message_id = publish.request.properties.message_id.as_ref().to_owned();
+
+        let mut buffer = self
+            .publish_buffer
+            .lock()
+            .expect("publish buffer mutex poisoned");
+        buffer.push(publish);
+
+        let should_flush = buffer.len() >= BUFFER_THRESHOLD
+            || self
+                .last_flush
+                .lock()
+                .expect("last_flush mutex poisoned")
+                .elapsed()
+                >= BUFFER_FLUSH_INTERVAL;
+        if should_flush {
+            let publishes = std::mem::take(&mut *buffer);
+            drop(buffer);
+            *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
+            self.flush_publishes(publishes)?;
         }
+
+        Ok(message_id)
+    }
+
+    /// Flushes the publish buffer, sending all buffered messages to the broker.
+    pub fn flush(&self) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::flush")?;
+        let publishes = std::mem::take(
+            &mut *self
+                .publish_buffer
+                .lock()
+                .expect("publish buffer mutex poisoned"),
+        );
+        if !publishes.is_empty() {
+            *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
+            self.flush_publishes(publishes)?;
+        }
+        Ok(())
     }
 
     /// Publishes multiple messages in one boundary crossing.
     pub fn publish_batch(&self, messages: &ZendHashTable) -> PhpResult<Vec<String>> {
+        self.flush()?;
         self.ensure_open("Goopil\\RabbitRs\\Pool::publishBatch")?;
         let publishes = conversion::publish_batch(messages).map_err(|message| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
@@ -243,6 +285,7 @@ impl Pool {
         if self.pid != std::process::id() {
             return rabbit_exception("cannot close a pool inherited across fork");
         }
+        let _ = self.flush();
         if !self.handle.is_closed()
             && let Err(error) = self.handle.runtime().block_on(self.client.close())
         {
@@ -251,6 +294,14 @@ impl Pool {
         }
         self.handle.close();
         Ok(())
+    }
+
+    /// Auto-flushes buffered messages when the pool is garbage collected.
+    pub fn __destruct(&self) {
+        if self.pid != std::process::id() {
+            return;
+        }
+        let _ = self.flush();
     }
 }
 
@@ -296,7 +347,25 @@ impl Pool {
             backpressure_callback: CallbackSlot::new(),
             last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
+            publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
+            last_flush: std::sync::Mutex::new(std::time::Instant::now()),
         }
+    }
+
+    fn flush_publishes(&self, publishes: Vec<conversion::NativePublish>) -> PhpResult<()> {
+        for publish in publishes {
+            let outcome = self
+                .handle
+                .runtime()
+                .block_on(self.client.publish(&publish.broker, publish.request));
+            match outcome {
+                Ok(outcome) => {
+                    let _ = publish_message_id(outcome)?;
+                }
+                Err(error) => return client_exception(&error),
+            }
+        }
+        Ok(())
     }
 
     fn ensure_open(&self, operation: &str) -> PhpResult<()> {
