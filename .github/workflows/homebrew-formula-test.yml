@@ -34,6 +34,7 @@ jobs:
 
       - name: Tap and install formula
         run: |
+          brew trust goopil/rabbit-rs
           brew tap goopil/rabbit-rs
           brew install rabbit-rs
 
