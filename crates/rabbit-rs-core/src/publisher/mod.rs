@@ -360,6 +360,15 @@ impl PublishWaiter {
         Self { receiver }
     }
 
+    /// Creates a `PublishWaiter` that is already resolved with the given
+    /// outcome. Used by blind-mode publishes where no confirmation is ever
+    /// received.
+    pub(crate) fn resolved(outcome: PublishOutcome) -> Self {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Ok(outcome));
+        Self { receiver: rx }
+    }
+
     /// Waits for the safe terminal outcome of one publish.
     ///
     /// # Errors
