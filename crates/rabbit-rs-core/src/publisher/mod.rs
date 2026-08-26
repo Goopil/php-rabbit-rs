@@ -1,6 +1,7 @@
 pub mod actor;
 pub mod confirms;
 pub mod delay;
+pub mod pump;
 
 use std::{
     error::Error,
