@@ -254,6 +254,10 @@ impl Pool {
     }
 }
 
+#[allow(
+    clippy::match_same_arms,
+    reason = "Confirmed and Ambiguous are semantically distinct outcomes that both return the message_id"
+)]
 fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
     match outcome {
         PublishOutcome::Confirmed { message_id } => Ok(message_id.as_ref().to_owned()),
@@ -261,9 +265,7 @@ fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
             "message {message_id} was returned as unroutable (AMQP {})",
             reply.code
         )),
-        PublishOutcome::Ambiguous { message_id } => rabbit_exception(format!(
-            "message {message_id} has an ambiguous publication outcome"
-        )),
+        PublishOutcome::Ambiguous { message_id } => Ok(message_id.as_ref().to_owned()),
     }
 }
 
