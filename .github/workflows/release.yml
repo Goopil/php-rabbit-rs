@@ -358,8 +358,70 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
 
+  update-homebrew-formula:
+    needs: [create-release, publish-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check prerequisites
+        id: check
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          if [[ -z "${MIRROR_TOKEN}" ]]; then
+            echo "::warning::MIRROR_TOKEN secret is not configured -- skipping Homebrew formula update"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update Homebrew formula
+        if: steps.check.outputs.skip == 'false'
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: ./scripts/update-homebrew-formula.sh --version "${VERSION}"
+
+      - name: Summary
+        if: steps.check.outputs.skip == 'true'
+        run: echo "::notice::MIRROR_TOKEN not configured -- Homebrew formula update skipped."
+
+  test-homebrew-formula:
+    needs: [update-homebrew-formula]
+    runs-on: macos-14
+    if: needs.update-homebrew-formula.result == 'success'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Tap and install
+        run: |
+          brew tap goopil/rabbit-rs
+          brew install rabbit-rs
+
+      - name: Verify extension loads
+        run: |
+          php -m | grep -q "rabbit_rs" || { echo "ERROR: rabbit_rs extension not loaded"; exit 1; }
+          echo "OK: rabbit_rs loaded, version $(php -r 'echo phpversion("rabbit_rs");')"
+
+      - name: Uninstall and verify cleanup
+        run: |
+          brew uninstall rabbit-rs
+          if php -m 2>/dev/null | grep -q "rabbit_rs"; then
+            echo "ERROR: rabbit_rs still loaded after uninstall"
+            exit 1
+          fi
+          echo "OK: rabbit_rs uninstalled cleanly"
+
   split-laravel:
-    needs: [publish-release]
+    needs: [publish-release, test-homebrew-formula]
     runs-on: ubuntu-latest
     permissions:
       contents: read
