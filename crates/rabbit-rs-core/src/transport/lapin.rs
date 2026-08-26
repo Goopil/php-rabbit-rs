@@ -360,7 +360,10 @@ pub fn connection_uri(config: &BrokerConfig, endpoint: &Endpoint) -> TransportRe
         .clear()
         .push(&config.vhost);
     uri.query_pairs_mut()
-        .append_pair("heartbeat", &config.heartbeat.as_secs().to_string());
+        .append_pair("heartbeat", &config.heartbeat.as_secs().to_string())
+        // Negotiate a 1 MB frame size (up from the 128 KB default) so larger
+        // payloads can be sent in a single frame, reducing per-frame overhead.
+        .append_pair("frame_max", "1048576");
 
     Ok(uri)
 }
@@ -667,7 +670,7 @@ mod tests {
         assert_eq!(uri.username(), "user%40example.com");
         assert_eq!(uri.password(), Some("p%40ss%2Fword"));
         assert_eq!(uri.path(), "/tenant%2Fone");
-        assert_eq!(uri.query(), Some("heartbeat=30"));
+        assert_eq!(uri.query(), Some("heartbeat=30&frame_max=1048576"));
     }
 
     #[test]
