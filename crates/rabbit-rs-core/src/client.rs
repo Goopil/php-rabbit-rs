@@ -110,9 +110,14 @@ impl ClientPool {
     ) -> Result<PublishOutcome, ClientError> {
         self.ensure_open()?;
         let publisher = self.publisher(broker).await?;
-        let waiter = publisher
-            .try_publish(request)
-            .map_err(|error| ClientError::publish(&error))?;
+        let waiter = match self.publisher_config.safety {
+            crate::config::SafetyMode::Blind => publisher
+                .try_publish_blind(request)
+                .map_err(|error| ClientError::publish(&error))?,
+            crate::config::SafetyMode::Safe | crate::config::SafetyMode::Unsafe => publisher
+                .try_publish_hot(request)
+                .map_err(|error| ClientError::publish(&error))?,
+        };
         waiter
             .wait()
             .await
@@ -136,6 +141,10 @@ impl ClientPool {
     ) -> Result<Vec<PublishOutcome>, ClientError> {
         self.ensure_open()?;
         let total = requests.len();
+        let blind = matches!(
+            self.publisher_config.safety,
+            crate::config::SafetyMode::Blind
+        );
         let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
         for (i, (broker, request)) in requests.into_iter().enumerate() {
             by_broker.entry(broker).or_default().push((i, request));
@@ -148,7 +157,12 @@ impl ClientPool {
         for (broker, msgs) in &by_broker {
             let publisher = self.publisher(broker).await?;
             for (original_index, request) in msgs {
-                match publisher.try_publish(request.clone()) {
+                let result = if blind {
+                    publisher.try_publish_blind(request.clone())
+                } else {
+                    publisher.try_publish_hot(request.clone())
+                };
+                match result {
                     Ok(waiter) => waiters.push((*original_index, waiter)),
                     Err(error) => {
                         let client_err = ClientError::publish(&error);
