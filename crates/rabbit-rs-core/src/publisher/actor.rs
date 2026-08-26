@@ -341,7 +341,7 @@ impl ActorState {
             channel: Some(channel),
             replay: VecDeque::new(),
             publishing: HashMap::new(),
-            ledger: ConfirmLedger::default(),
+            ledger: ConfirmLedger::with_capacity(config.buffer_capacity),
             confirmations: FuturesUnordered::new(),
             publish_in_flight: FuturesUnordered::new(),
             sequence: 0,
