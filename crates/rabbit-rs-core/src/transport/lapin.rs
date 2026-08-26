@@ -145,11 +145,13 @@ impl PublisherChannel for LapinPublisherChannel {
 
     async fn publish(&self, request: PublishRequest) -> TransportResult<Box<dyn PublishReceipt>> {
         let properties = publish_properties(&request);
+        let exchange = request.exchange;
+        let routing_key = request.routing_key;
         let confirmation = self
             .inner
             .basic_publish(
-                request.exchange.clone().into(),
-                request.routing_key.clone().into(),
+                exchange.as_str().into(),
+                routing_key.as_str().into(),
                 BasicPublishOptions {
                     mandatory: request.mandatory,
                     immediate: false,
