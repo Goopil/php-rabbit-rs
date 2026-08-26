@@ -83,6 +83,10 @@ if ! command -v ruby >/dev/null 2>&1; then
     fail "ruby is required to update the formula"
 fi
 
+if ! command -v unzip >/dev/null 2>&1; then
+    fail "unzip is required to verify artifact contents"
+fi
+
 # --- download macOS artifacts and compute SHA-256 -----------------------------
 
 TMP_DIR="$(mktemp -d)"
@@ -158,7 +162,11 @@ cd "${TAP_DIR}"
 git config user.name "rabbit-rs-ci"
 git config user.email "ci@rabbit-rs.local"
 git add "${FORMULA_PATH}"
-git commit -m "Update formula to v${VERSION}"
-git push origin main 2>&1 | sed 's|https://[^@]*@|https://|g'
+if ! git diff --cached --quiet; then
+    git commit -m "Update formula to v${VERSION}"
+    git push origin main 2>&1 | sed 's|https://[^@]*@|https://|g'
+else
+    echo "==> Formula already up to date for v${VERSION} -- nothing to commit"
+fi
 
 ok "formula updated to v${VERSION} and pushed to ${TAP_REPO}"
