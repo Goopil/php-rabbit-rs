@@ -72,14 +72,15 @@ Key features:
 
 ## Distribution channels
 
-Rabbit RS is distributed via two channels:
+Rabbit RS is distributed via three channels:
 
 | Package | Channel | Purpose |
 |---------|---------|---------|
 | `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (Linux binary) |
 | `goopil/rabbit-rs-laravel` | [Packagist](https://packagist.org) | Laravel queue driver (PHP source) |
+| `rabbit-rs` | [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs) | Native PHP extension (macOS binary) |
 
-PIE selects the correct pre-compiled binary for your PHP version, architecture, libc, and thread-safety mode. Composer installs the Laravel bridge and verifies that `ext-rabbit_rs` is loaded, but does **not** install or modify system PHP binaries.
+PIE selects the correct pre-compiled binary for your PHP version, architecture, libc, and thread-safety mode. Homebrew does the same for macOS Apple Silicon. Composer installs the Laravel bridge and verifies that `ext-rabbit_rs` is loaded, but does **not** install or modify system PHP binaries.
 
 ### macOS
 
