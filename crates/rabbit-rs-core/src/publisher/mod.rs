@@ -16,6 +16,7 @@ use bytes::Bytes;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::{sync::oneshot, time::Instant};
 
+use crate::config::SafetyMode;
 use crate::transport::{PublishHeaders, PublisherChannel, TransportError};
 
 pub use actor::{PublisherActor, PublisherHandle};
@@ -186,6 +187,7 @@ pub struct PublisherConfig {
     pub confirms: bool,
     pub mandatory: bool,
     pub max_buffered_bytes: u64,
+    pub safety: SafetyMode,
 }
 
 impl PublisherConfig {
@@ -197,6 +199,7 @@ impl PublisherConfig {
             confirms: true,
             mandatory: true,
             max_buffered_bytes: 64 * 1024 * 1024,
+            safety: SafetyMode::Safe,
         }
     }
 
@@ -213,6 +216,27 @@ impl PublisherConfig {
             confirms,
             mandatory,
             max_buffered_bytes: 64 * 1024 * 1024,
+            safety: if confirms {
+                SafetyMode::Safe
+            } else {
+                SafetyMode::Unsafe
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn with_safety(
+        buffer_capacity: usize,
+        confirm_timeout: Duration,
+        safety: SafetyMode,
+    ) -> Self {
+        Self {
+            buffer_capacity,
+            confirm_timeout,
+            confirms: matches!(safety, SafetyMode::Safe),
+            mandatory: matches!(safety, SafetyMode::Safe),
+            max_buffered_bytes: 64 * 1024 * 1024,
+            safety,
         }
     }
 
@@ -220,6 +244,22 @@ impl PublisherConfig {
     pub const fn with_byte_budget(mut self, max_buffered_bytes: u64) -> Self {
         self.max_buffered_bytes = max_buffered_bytes;
         self
+    }
+
+    #[must_use]
+    pub const fn enables_confirms(&self) -> bool {
+        match self.safety {
+            SafetyMode::Safe => self.confirms,
+            SafetyMode::Unsafe | SafetyMode::Blind => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn mandatory_flag(&self) -> bool {
+        match self.safety {
+            SafetyMode::Safe => self.mandatory,
+            SafetyMode::Unsafe | SafetyMode::Blind => false,
+        }
     }
 }
 

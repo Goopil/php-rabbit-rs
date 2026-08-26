@@ -798,12 +798,8 @@ fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
 
 fn publisher_config(config: &ValidatedConfig) -> PublisherConfig {
     let publisher = config.publisher();
-    PublisherConfig::with_flags(
-        DEFAULT_BUFFER_CAPACITY,
-        publisher.confirm_timeout,
-        publisher.confirms,
-        publisher.mandatory,
-    )
+    let safety = publisher.effective_safety();
+    PublisherConfig::with_safety(DEFAULT_BUFFER_CAPACITY, publisher.confirm_timeout, safety)
 }
 
 /// Stable classification for failures at the integrated client-pool boundary.
