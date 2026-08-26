@@ -10,7 +10,7 @@ set -euo pipefail
 #   ./scripts/update-homebrew-formula.sh --version 0.0.7
 #
 # Environment:
-#   MIRROR_TOKEN  GitHub token with write access to Goopil/homebrew-rabbit-rs
+#   HOMEBREW_TAP_TOKEN  GitHub token with write access to Goopil/homebrew-rabbit-rs
 
 TAP_REPO="Goopil/homebrew-rabbit-rs"
 RELEASE_BASE="https://github.com/Goopil/rabbit-rs/releases/download"
@@ -36,7 +36,7 @@ Options:
   -h, --help        Show this help
 
 Environment:
-  MIRROR_TOKEN      GitHub token with write access to Goopil/homebrew-rabbit-rs
+  HOMEBREW_TAP_TOKEN  GitHub token with write access to Goopil/homebrew-rabbit-rs
 USAGE
 }
 
@@ -62,8 +62,8 @@ ok "version: ${VERSION}"
 
 # --- check prerequisites -------------------------------------------------------
 
-if [[ -z "${MIRROR_TOKEN:-}" ]]; then
-    fail "MIRROR_TOKEN environment variable is not set"
+if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+    fail "HOMEBREW_TAP_TOKEN environment variable is not set"
 fi
 
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
@@ -116,7 +116,7 @@ done
 
 TAP_DIR="${TMP_DIR}/homebrew-rabbit-rs"
 echo "==> Cloning ${TAP_REPO}"
-git clone --depth 1 "https://${MIRROR_TOKEN}@github.com/${TAP_REPO}.git" "${TAP_DIR}" 2>&1 | sed 's|https://[^@]*@|https://|g'
+git clone --depth 1 "https://${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" "${TAP_DIR}" 2>&1 | sed 's|https://[^@]*@|https://|g'
 
 # --- update the formula using ruby --------------------------------------------
 #

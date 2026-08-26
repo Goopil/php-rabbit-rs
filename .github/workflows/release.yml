@@ -369,10 +369,10 @@ jobs:
       - name: Check prerequisites
         id: check
         env:
-          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [[ -z "${MIRROR_TOKEN}" ]]; then
-            echo "::warning::MIRROR_TOKEN secret is not configured -- skipping Homebrew formula update"
+          if [[ -z "${HOMEBREW_TAP_TOKEN}" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN secret is not configured -- skipping Homebrew formula update"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -381,13 +381,13 @@ jobs:
       - name: Update Homebrew formula
         if: steps.check.outputs.skip == 'false'
         env:
-          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.create-release.outputs.version }}
         run: ./scripts/update-homebrew-formula.sh --version "${VERSION}"
 
       - name: Summary
         if: steps.check.outputs.skip == 'true'
-        run: echo "::notice::MIRROR_TOKEN not configured -- Homebrew formula update skipped."
+        run: echo "::notice::HOMEBREW_TAP_TOKEN not configured -- Homebrew formula update skipped."
 
   test-homebrew-formula:
     needs: [update-homebrew-formula]
