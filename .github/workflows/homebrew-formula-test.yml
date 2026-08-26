@@ -21,6 +21,7 @@ jobs:
       - name: Tap and audit formula
         run: |
           brew tap goopil/rabbit-rs
+          brew trust goopil/rabbit-rs
           brew audit --strict --formula goopil/rabbit-rs/rabbit-rs
 
   test-install:
