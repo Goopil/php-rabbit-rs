@@ -322,7 +322,7 @@ struct ActorState {
     permanent_error: Option<PublishError>,
     metrics: Metrics,
     delay_strategy: Option<DelayStrategy>,
-    declared_ttl_queues: HashSet<String>,
+    declared_ttl_queues: HashSet<Arc<str>>,
     byte_budget: Arc<ByteBudget>,
 }
 
@@ -744,13 +744,13 @@ fn into_transport_request(
                 .properties
                 .content_type
                 .as_ref()
-                .map(ToString::to_string),
+                .map(|ct| ct.as_ref().to_owned()),
             correlation_id: request
                 .properties
                 .correlation_id
                 .as_ref()
-                .map(ToString::to_string),
-            message_id: Some(request.properties.message_id.to_string()),
+                .map(|ci| ci.as_ref().to_owned()),
+            message_id: Some(request.properties.message_id.as_ref().to_owned()),
             delay_ms: route.queue.is_none().then_some(route.delay_ms),
             headers: request.properties.headers.clone(),
             persistent: true,
@@ -766,8 +766,8 @@ fn into_transport_request(
     }
 
     TransportRequest {
-        exchange: request.destination.exchange.to_string(),
-        routing_key: request.destination.routing_key.to_string(),
+        exchange: request.destination.exchange.clone(),
+        routing_key: request.destination.routing_key.clone(),
         payload: request.payload.clone(),
         mandatory,
         properties: TransportProperties {
@@ -775,13 +775,13 @@ fn into_transport_request(
                 .properties
                 .content_type
                 .as_ref()
-                .map(ToString::to_string),
+                .map(|ct| ct.as_ref().to_owned()),
             correlation_id: request
                 .properties
                 .correlation_id
                 .as_ref()
-                .map(ToString::to_string),
-            message_id: Some(request.properties.message_id.to_string()),
+                .map(|ci| ci.as_ref().to_owned()),
+            message_id: Some(request.properties.message_id.as_ref().to_owned()),
             delay_ms: request.properties.delay_ms,
             headers: request.properties.headers.clone(),
             persistent: true,
@@ -949,7 +949,7 @@ async fn ensure_delay_topology(
 
     if route.queue.is_none() && !state.declared_ttl_queues.contains(&route.exchange) {
         let spec = crate::transport::ExchangeSpec {
-            name: route.exchange.clone(),
+            name: route.exchange.as_ref().to_owned(),
             kind: crate::transport::ExchangeKind::Delayed(Box::new(
                 crate::transport::ExchangeKind::Direct,
             )),
@@ -970,11 +970,13 @@ async fn ensure_delay_topology(
     }
 
     if let Some(queue_spec) = &route.queue
-        && !state.declared_ttl_queues.contains(&queue_spec.name)
+        && !state.declared_ttl_queues.contains(queue_spec.name.as_str())
     {
         match channel.declare_queue(queue_spec).await {
             Ok(()) => {
-                state.declared_ttl_queues.insert(queue_spec.name.clone());
+                state
+                    .declared_ttl_queues
+                    .insert(Arc::from(queue_spec.name.as_str()));
             }
             Err(error) if error.is_recoverable() => return DelayTopologyOutcome::Suspend,
             Err(error) => {

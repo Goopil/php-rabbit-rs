@@ -932,7 +932,7 @@ async fn delayed_release(
         properties.delay_ms = Some(route.delay_ms);
     }
     let request = PublishRequest::new(
-        Destination::new(route.exchange, route.routing_key),
+        Destination::new(route.exchange.as_ref(), route.routing_key.as_ref()),
         token.payload.clone(),
         properties,
         tokio::time::Instant::now() + publisher.confirm_timeout(),

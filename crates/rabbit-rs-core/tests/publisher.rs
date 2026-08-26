@@ -1229,7 +1229,8 @@ async fn plugin_mode_publishes_on_delayed_exchange_with_x_delay_header() {
     let request = find_publish(&transport);
 
     assert_ne!(
-        request.exchange, "jobs",
+        request.exchange.as_ref(),
+        "jobs",
         "plugin mode must publish on a delayed exchange, not the original"
     );
     assert!(
@@ -1237,7 +1238,7 @@ async fn plugin_mode_publishes_on_delayed_exchange_with_x_delay_header() {
         "exchange name should be the delayed variant, got: {}",
         request.exchange
     );
-    assert_eq!(request.routing_key, "high");
+    assert_eq!(request.routing_key.as_ref(), "high");
     assert_eq!(
         request.properties.delay_ms,
         Some(5_000),
@@ -1285,7 +1286,8 @@ async fn ttl_mode_publishes_on_ttl_queue_with_dead_letter_to_original() {
     let request = find_publish(&transport);
 
     assert_eq!(
-        request.exchange, "",
+        request.exchange.as_ref(),
+        "",
         "TTL mode must publish on the default exchange"
     );
     assert!(
@@ -1320,10 +1322,11 @@ async fn zero_delay_does_not_change_routing() {
     let request = find_publish(&transport);
 
     assert_eq!(
-        request.exchange, "jobs",
+        request.exchange.as_ref(),
+        "jobs",
         "zero delay must publish on the original exchange"
     );
-    assert_eq!(request.routing_key, "high");
+    assert_eq!(request.routing_key.as_ref(), "high");
     assert_eq!(
         request.properties.delay_ms, None,
         "zero delay must not set x-delay header"

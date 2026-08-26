@@ -1,11 +1,11 @@
-use std::{error::Error, fmt, time::Duration};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use crate::{publisher::Destination, topology::delay::DelayStrategy, transport::QueueSpec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DelayedRoute {
-    pub exchange: String,
-    pub routing_key: String,
+    pub exchange: Arc<str>,
+    pub routing_key: Arc<str>,
     pub delay_ms: u64,
     pub queue: Option<QueueSpec>,
 }
@@ -29,8 +29,8 @@ impl DelayRouter {
 
         match strategy {
             DelayStrategy::Plugin => Ok(DelayedRoute {
-                exchange: delayed_exchange_name(&destination.exchange),
-                routing_key: destination.routing_key.to_string(),
+                exchange: Arc::from(delayed_exchange_name(&destination.exchange)),
+                routing_key: destination.routing_key.clone(),
                 delay_ms,
                 queue: None,
             }),
@@ -39,8 +39,8 @@ impl DelayRouter {
                     .queue_for(destination, delay)
                     .map_err(|error| DelayRoutingError::new(error.to_string()))?;
                 Ok(DelayedRoute {
-                    exchange: String::new(),
-                    routing_key: queue.name.clone(),
+                    exchange: Arc::from(""),
+                    routing_key: Arc::from(queue.name.as_str()),
                     delay_ms,
                     queue: Some(queue),
                 })
