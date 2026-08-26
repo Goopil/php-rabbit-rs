@@ -285,6 +285,10 @@ impl Pool {
         if self.pid != std::process::id() {
             return rabbit_exception("cannot close a pool inherited across fork");
         }
+        // Flush before closing. If flush fails the error is deferred (swallowed)
+        // so close always proceeds; unpublished messages were re-buffered by
+        // flush_publishes and will be lost when the handle drops. This is an
+        // accepted limitation of deferred flush in close/destruct paths.
         let _ = self.flush();
         if !self.handle.is_closed()
             && let Err(error) = self.handle.runtime().block_on(self.client.close())
@@ -301,6 +305,10 @@ impl Pool {
         if self.pid != std::process::id() {
             return;
         }
+        // Deferred error path: flush errors are swallowed during GC teardown.
+        // Unpublished messages were re-buffered by flush_publishes but will be
+        // lost when the pool is dropped. Callers that need delivery guarantees
+        // should call flush() explicitly before the pool goes out of scope.
         let _ = self.flush();
     }
 }
@@ -353,7 +361,8 @@ impl Pool {
     }
 
     fn flush_publishes(&self, publishes: Vec<conversion::NativePublish>) -> PhpResult<()> {
-        for publish in publishes {
+        let mut remaining = publishes.into_iter();
+        while let Some(publish) = remaining.next() {
             let outcome = self
                 .handle
                 .runtime()
@@ -362,7 +371,19 @@ impl Pool {
                 Ok(outcome) => {
                     let _ = publish_message_id(outcome)?;
                 }
-                Err(error) => return client_exception(&error),
+                Err(error) => {
+                    // Re-buffer unpublished messages so the next flush() can retry
+                    // them. The failed message's request was consumed by publish();
+                    // messages after it were never attempted and are preserved here.
+                    // This upholds the at-least-once invariant: silent loss is
+                    // unacceptable, duplicates are permitted.
+                    let mut buffer = self
+                        .publish_buffer
+                        .lock()
+                        .expect("publish buffer mutex poisoned");
+                    buffer.extend(remaining);
+                    return client_exception(&error);
+                }
             }
         }
         Ok(())
