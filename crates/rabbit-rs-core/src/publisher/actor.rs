@@ -703,7 +703,7 @@ fn handle_publish_completion(
                 state.byte_budget.release(retained.payload_bytes);
                 record_publisher_metrics(state);
                 let _ = retained.completion.send(Ok(PublishOutcome::Confirmed {
-                    message_id: retained.request.properties.message_id.to_string(),
+                    message_id: retained.request.properties.message_id.clone(),
                 }));
             }
         }
@@ -845,7 +845,7 @@ fn resolve_confirmation(
             state.byte_budget.release(in_flight.retained.payload_bytes);
             record_publisher_metrics(state);
             state.metrics.record_return();
-            let message_id = in_flight.retained.request.properties.message_id.to_string();
+            let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(
                 in_flight.retained,
                 PublishOutcome::Returned {
@@ -862,7 +862,7 @@ fn resolve_confirmation(
         ConfirmationResult::Completed(Ok(PublishConfirmation::Ack(None))) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
             record_publisher_metrics(state);
-            let message_id = in_flight.retained.request.properties.message_id.to_string();
+            let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(in_flight.retained, PublishOutcome::Confirmed { message_id });
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Nack(None))) => {

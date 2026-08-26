@@ -258,14 +258,14 @@ pub struct BatchOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublishOutcome {
     Confirmed {
-        message_id: String,
+        message_id: Arc<str>,
     },
     Returned {
-        message_id: String,
+        message_id: Arc<str>,
         reply: ReturnInfo,
     },
     Ambiguous {
-        message_id: String,
+        message_id: Arc<str>,
     },
 }
 

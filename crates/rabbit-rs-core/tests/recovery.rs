@@ -236,7 +236,7 @@ async fn publisher_replays_unconfirmed_messages_after_recovery() {
     assert_eq!(
         outcome,
         PublishOutcome::Confirmed {
-            message_id: "replay-me".to_owned()
+            message_id: "replay-me".into()
         }
     );
 
