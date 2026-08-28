@@ -968,8 +968,8 @@ mod tests {
         SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify,
         TopologyMode, WorkerProfile,
     };
-    use crate::transport::lapin::connection_uri;
     use crate::transport::QueueKind;
+    use crate::transport::lapin::connection_uri;
 
     fn broker(hosts: Vec<Endpoint>) -> BrokerConfig {
         BrokerConfig {
@@ -1193,9 +1193,11 @@ mod tests {
         .expect_err("legacy worker-level max_in_flight must be rejected");
 
         assert!(error.to_string().contains("workers.main.max_in_flight"));
-        assert!(error
-            .to_string()
-            .contains("workers.main.scheduler.max_in_flight"));
+        assert!(
+            error
+                .to_string()
+                .contains("workers.main.scheduler.max_in_flight")
+        );
     }
 
     #[test]

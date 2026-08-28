@@ -1114,6 +1114,32 @@ async fn try_next_batch_returns_partial_batch_on_error() {
     let _ = consumer.close().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn flume_holds_two_prefetches_so_next_batch_fills_completely() {
+    let transport = MockTransport::default();
+    for tag in 1..=256_u64 {
+        transport.push_delivery(Ok(delivery(tag, b"payload")));
+    }
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 128, 0).await;
+    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+
+    // Let the pumps push everything and the actor fill the flume buffer to
+    // capacity before any drain.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // With prefetch=128 the flume holds 2x128=256, so nextBatch(256) can fill
+    // a complete batch in one call.
+    let batch = consumer.try_next_batch(256).expect("full batch");
+    assert_eq!(
+        batch.len(),
+        256,
+        "nextBatch(256) must fill completely from the flume buffer"
+    );
+
+    let _ = consumer.close().await;
+}
+
 // ---------------------------------------------------------------------------
 // Settlement lane and event-driven dispatch tests
 // ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ use crate::{
 };
 
 const COMMAND_CAPACITY: usize = 256;
-const BUFFER_CAPACITY_FACTOR: usize = 3;
+const BUFFER_CAPACITY_MULTIPLIER: usize = 2;
 
 pub struct Subscription {
     pub(crate) id: SubscriptionId,
@@ -201,8 +201,12 @@ impl ConsumerSet {
         }
 
         let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        // With prefetch >= 128 the flume holds >= 256, so `try_next_batch(256)`
+        // can fill a complete batch in one call. The actor-side dispatch stops
+        // when the flume is full, so this capacity is also the natural
+        // handoff window between the actor and the consumer.
         let buffer_size =
-            usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_FACTOR / 2;
+            usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_MULTIPLIER;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
         let (error_tx, error_rx) = flume::bounded::<SettlementError>(256);
@@ -392,8 +396,11 @@ impl ConsumerHandle {
     /// Drains up to `max` deliveries from the buffer in a single call.
     ///
     /// The requested `max` is clamped to `1..=256`. Returns an empty vector when
-    /// the buffer is empty. Each drained delivery releases dispatch budget so
-    /// the actor can pull more work from the transport.
+    /// the buffer is empty. The effective maximum batch size equals the flume
+    /// capacity (`total_prefetch × 2`), itself clamped by the `1..=256` clamp,
+    /// so with prefetch ≥ 128 a full `256` batch can drain in one call. Each
+    /// drained delivery wakes the actor, which refills the buffer from the
+    /// transport.
     ///
     /// # Errors
     ///
