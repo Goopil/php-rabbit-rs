@@ -167,7 +167,14 @@ impl ConsumerSet {
         metrics: Metrics,
         generation: u64,
     ) -> Result<ConsumerHandle, ConsumerError> {
-        let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        // The command channel carries Incoming delivery commands from the
+        // per-subscription pumps plus settlement commands. Size it from the
+        // total prefetch so a large prefetch does not turn every delivery
+        // handoff into pump backpressure.
+        let (commands, receiver) = mpsc::channel(
+            COMMAND_CAPACITY.max(usize::try_from(total_prefetch).unwrap_or(usize::MAX)),
+        );
         let mut streams = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
@@ -200,7 +207,6 @@ impl ConsumerSet {
             streams.push((subscription.id.clone(), stream));
         }
 
-        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
         // With prefetch >= 128 the flume holds >= 256, so `try_next_batch(256)`
         // can fill a complete batch in one call. The actor-side dispatch stops
         // when the flume is full, so this capacity is also the natural

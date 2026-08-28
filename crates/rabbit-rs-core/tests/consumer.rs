@@ -1140,6 +1140,30 @@ async fn flume_holds_two_prefetches_so_next_batch_fills_completely() {
     let _ = consumer.close().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn spawn_with_large_prefetch_delivers_beyond_the_legacy_command_capacity() {
+    let transport = MockTransport::default();
+    // More deliveries than the legacy fixed command capacity (256).
+    for tag in 1..=600_u64 {
+        transport.push_delivery(Ok(delivery(tag, b"payload")));
+    }
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 512, 0).await;
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set with prefetch 512");
+
+    // Let the pumps push everything and the actor fill the flume buffer.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let first = consumer.try_next_batch(256).expect("first batch");
+    assert_eq!(first.len(), 256, "first full batch");
+    let second = consumer.try_next_batch(256).expect("second batch");
+    assert_eq!(second.len(), 256, "second full batch");
+
+    let _ = consumer.close().await;
+}
+
 // ---------------------------------------------------------------------------
 // Settlement lane and event-driven dispatch tests
 // ---------------------------------------------------------------------------
