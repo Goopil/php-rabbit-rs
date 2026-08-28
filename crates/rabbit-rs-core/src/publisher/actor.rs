@@ -251,6 +251,11 @@ impl PublisherHandle {
 
     /// Delivers an ordered connection lifecycle event to the publisher actor.
     ///
+    /// The blind publish pump is driven alongside the actor: the transport
+    /// channel is cleared as soon as recovery starts (queued jobs are dropped,
+    /// blind semantics) and the replacement channel is installed before the
+    /// actor resumes, so the pump is ready when the pool starts publishing.
+    ///
     /// # Errors
     ///
     /// Returns a typed error for a closed actor, stale generation, missing
@@ -259,6 +264,20 @@ impl PublisherHandle {
         &self,
         event: PublisherConnectionEvent,
     ) -> Result<(), PublishError> {
+        match &event {
+            PublisherConnectionEvent::Recovering { .. }
+            | PublisherConnectionEvent::FailedPermanent { .. } => {
+                if let Some(pump) = &self.pump {
+                    pump.clear_channel();
+                }
+            }
+            PublisherConnectionEvent::Ready { channel, .. } => {
+                if let Some(pump) = &self.pump {
+                    pump.update_channel(Arc::clone(channel));
+                }
+            }
+        }
+
         let (completed, completion) = oneshot::channel();
         self.commands
             .send(Command::ConnectionEvent(event, completed))

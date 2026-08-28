@@ -9,7 +9,9 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::{BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint, TlsConfig},
+    config::{
+        BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint, SafetyMode, TlsConfig,
+    },
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
         PublishWaiter, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
@@ -1723,4 +1725,84 @@ async fn wait_all_preserves_order_regardless_of_completion_order() {
 async fn wait_all_handles_empty_input() {
     let results = PublishWaiter::wait_all(Vec::new()).await;
     assert!(results.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Blind pump recovery wiring (connection_event → pump channel hot-swap)
+// ---------------------------------------------------------------------------
+
+fn request_blind(message_id: &str) -> PublishRequest {
+    PublishRequest::new(
+        Destination::new("jobs", "high"),
+        Bytes::from_static(b"payload"),
+        MessageProperties::new(message_id),
+        Instant::now() + Duration::from_secs(30),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn connection_event_clears_then_restores_the_blind_pump_channel() {
+    let transport = MockTransport::default();
+    let channel = new_channel(&transport).await;
+    let config = PublisherConfig::with_safety(4, Duration::from_secs(5), SafetyMode::Blind);
+    let handle = PublisherActor::spawn(channel, config);
+
+    // m1 is taken in by the pump and held pending on the gate.
+    let gate = transport.push_publish_gate();
+    let waiter = handle
+        .try_publish_blind(request_blind("m1"))
+        .expect("blind publish accepted");
+    gate.wait_entered().await;
+
+    // Recovering clears the pump channel: sends stay accepted, queued jobs
+    // are dropped silently (blind semantics).
+    handle
+        .connection_event(PublisherConnectionEvent::Recovering { generation: 1 })
+        .await
+        .expect("publisher suspended");
+    handle
+        .try_publish_blind(request_blind("m2"))
+        .expect("send stays accepted while recovering");
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "m2 must be dropped while the pump channel is cleared"
+    );
+
+    // Ready installs the new channel before the actor resumes: publishes
+    // restart without waiting for the still-gated m1.
+    handle
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 2,
+            channel: new_channel(&transport).await,
+            topology_restored: true,
+        })
+        .await
+        .expect("publisher resumed");
+    handle
+        .try_publish_blind(request_blind("m3"))
+        .expect("blind publish accepted after ready");
+    wait_for_publish_count(&transport, 1).await;
+
+    // The still in-flight m1 completes once its gate is released.
+    assert!(gate.release(), "gate released");
+    wait_for_publish_count(&transport, 2).await;
+
+    let published_ids: Vec<Option<String>> = publish_operations(&transport)
+        .into_iter()
+        .map(|request| request.properties.message_id)
+        .collect();
+    assert!(published_ids.contains(&Some("m1".to_owned())));
+    assert!(published_ids.contains(&Some("m3".to_owned())));
+    assert!(
+        !published_ids.contains(&Some("m2".to_owned())),
+        "job queued while the channel was cleared must be dropped, got {published_ids:?}"
+    );
+
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
 }
