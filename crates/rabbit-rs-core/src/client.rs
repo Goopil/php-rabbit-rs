@@ -157,11 +157,7 @@ impl ClientPool {
         for (broker, msgs) in &by_broker {
             let publisher = self.publisher(broker).await?;
             for (original_index, request) in msgs {
-                let result = if blind {
-                    publisher.try_publish_blind(request.clone())
-                } else {
-                    publisher.try_publish_hot(request.clone())
-                };
+                let result = publisher.try_publish_hot(request.clone());
                 match result {
                     Ok(waiter) => waiters.push((*original_index, waiter)),
                     Err(error) => {
@@ -174,14 +170,27 @@ impl ClientPool {
         }
 
         let mut terminal_error = immediate_error;
-        let results = PublishWaiter::wait_all(waiters).await;
-        for (index, result) in results {
-            match result {
-                Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
-                Err(error) => {
-                    let client_err = ClientError::publish(&error);
-                    terminal_error.get_or_insert_with(|| client_err.clone());
-                    outcomes[index] = Some(Err(client_err));
+        if blind {
+            for (index, waiter) in waiters {
+                match waiter.wait().await {
+                    Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
+                    Err(error) => {
+                        let client_err = ClientError::publish(&error);
+                        terminal_error.get_or_insert_with(|| client_err.clone());
+                        outcomes[index] = Some(Err(client_err));
+                    }
+                }
+            }
+        } else {
+            let results = PublishWaiter::wait_all(waiters).await;
+            for (index, result) in results {
+                match result {
+                    Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
+                    Err(error) => {
+                        let client_err = ClientError::publish(&error);
+                        terminal_error.get_or_insert_with(|| client_err.clone());
+                        outcomes[index] = Some(Err(client_err));
+                    }
                 }
             }
         }

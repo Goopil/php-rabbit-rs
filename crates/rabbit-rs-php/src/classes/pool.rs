@@ -20,7 +20,7 @@ use ext_php_rs::{
 use rabbit_rs_core::{
     client::ClientPool,
     pool::{ConnectionHandle, ConnectionKey},
-    publisher::PublishOutcome,
+    publisher::{PublishOutcome, PublishRequest},
     recovery::ConnectionState,
     runtime::RuntimeRegistry,
 };
@@ -361,44 +361,29 @@ impl Pool {
     }
 
     fn flush_publishes(&self, publishes: Vec<conversion::NativePublish>) -> PhpResult<()> {
-        let mut remaining = publishes.into_iter();
-        while let Some(publish) = remaining.next() {
-            let outcome = self
-                .handle
-                .runtime()
-                .block_on(self.client.publish(&publish.broker, publish.request));
-            match outcome {
-                Ok(outcome) => match publish_message_id(outcome) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        // A returned/ambiguous outcome resolves this waiter with an
-                        // error. Re-buffer the un-attempted messages so the next
-                        // flush() can retry them, upholding the at-least-once
-                        // invariant: silent loss is unacceptable.
-                        let mut buffer = self
-                            .publish_buffer
-                            .lock()
-                            .expect("publish buffer mutex poisoned");
-                        buffer.extend(remaining);
-                        return Err(e);
-                    }
-                },
-                Err(error) => {
-                    // Re-buffer unpublished messages so the next flush() can retry
-                    // them. The failed message's request was consumed by publish();
-                    // messages after it were never attempted and are preserved here.
-                    // This upholds the at-least-once invariant: silent loss is
-                    // unacceptable, duplicates are permitted.
-                    let mut buffer = self
-                        .publish_buffer
-                        .lock()
-                        .expect("publish buffer mutex poisoned");
-                    buffer.extend(remaining);
-                    return client_exception(&error);
-                }
-            }
+        if publishes.is_empty() {
+            return Ok(());
         }
-        Ok(())
+
+        let requests: Vec<(String, PublishRequest)> = publishes
+            .into_iter()
+            .map(|p| (p.broker, p.request))
+            .collect();
+
+        let outcomes = self
+            .handle
+            .runtime()
+            .block_on(self.client.publish_batch(requests));
+
+        match outcomes {
+            Ok(outcomes) => {
+                for outcome in outcomes {
+                    publish_message_id(outcome)?;
+                }
+                Ok(())
+            }
+            Err(error) => client_exception(&error),
+        }
     }
 
     fn ensure_open(&self, operation: &str) -> PhpResult<()> {
