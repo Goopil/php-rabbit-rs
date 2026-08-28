@@ -11,6 +11,7 @@ test-support = []
 integration = []
 
 [dependencies]
+arc-swap = "1"
 async-trait = "0.1"
 bytes = "1.10"
 flume = "0.12"

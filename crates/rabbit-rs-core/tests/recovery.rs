@@ -58,7 +58,7 @@ mod helper {
                         early_ack: false,
                         no_ack: false,
                     }],
-                    scheduler: SchedulerConfig::weighted_fair(16),
+                    scheduler: SchedulerConfig::weighted_fair(),
                 }],
                 topology_mode: TopologyMode::Declare,
                 delay: rabbit_rs_core::config::DelayConfig::default(),
@@ -236,7 +236,7 @@ async fn publisher_replays_unconfirmed_messages_after_recovery() {
     assert_eq!(
         outcome,
         PublishOutcome::Confirmed {
-            message_id: "replay-me".to_owned()
+            message_id: "replay-me".into()
         }
     );
 

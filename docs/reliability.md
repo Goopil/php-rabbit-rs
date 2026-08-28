@@ -102,7 +102,7 @@ When a connection drops before a publish is confirmed, the state is ambiguous �
 3. **Replaying them after recovery** — once the topology is restored and a new confirm-enabled channel is open
 4. **Reusing the original deadline** — the deadline is never reset by a reconnection
 
-The replay buffer is **bounded** by the publisher's global capacity (`max_in_flight` plus in-flight confirms). When capacity is reached, new publications receive `Backpressure` instead of being accepted.
+The replay buffer is **bounded** by the publisher's global buffer capacity — a shared budget for in-flight confirms and replayed publications (1024 publications and 64 MiB of buffered payload bytes by default). When the budget is exhausted, new publications receive `Backpressure` instead of being accepted.
 
 ### What the replay buffer is not
 

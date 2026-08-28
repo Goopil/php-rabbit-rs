@@ -448,13 +448,9 @@ async fn recover_generation(
             continue;
         }
 
-        let max_in_flight = usize::from(worker.scheduler.max_in_flight);
-        let consumer =
-            ConsumerSet::spawn_with_metrics(subscriptions, max_in_flight, context.metrics.clone())
-                .await
-                .map_err(|error| {
-                    CoordinatorError::new(format!("consumer spawn failed: {error}"))
-                })?;
+        let consumer = ConsumerSet::spawn_with_metrics(subscriptions, context.metrics.clone())
+            .await
+            .map_err(|error| CoordinatorError::new(format!("consumer spawn failed: {error}")))?;
 
         let mut guard = consumers.lock().await;
         if let Some(old) = guard.insert(worker.name.clone(), consumer) {

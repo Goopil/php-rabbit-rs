@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_lite::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
     options::{
@@ -145,11 +146,13 @@ impl PublisherChannel for LapinPublisherChannel {
 
     async fn publish(&self, request: PublishRequest) -> TransportResult<Box<dyn PublishReceipt>> {
         let properties = publish_properties(&request);
+        let exchange = request.exchange;
+        let routing_key = request.routing_key;
         let confirmation = self
             .inner
             .basic_publish(
-                request.exchange.clone().into(),
-                request.routing_key.clone().into(),
+                exchange.as_ref().into(),
+                routing_key.as_ref().into(),
                 BasicPublishOptions {
                     mandatory: request.mandatory,
                     immediate: false,
@@ -163,6 +166,44 @@ impl PublisherChannel for LapinPublisherChannel {
         Ok(Box::new(LapinPublishReceipt {
             inner: confirmation,
         }))
+    }
+
+    async fn publish_batch(
+        &self,
+        requests: Vec<PublishRequest>,
+    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
+        let channel = self.inner.clone();
+        let mut futs = FuturesUnordered::new();
+        for request in requests {
+            let properties = publish_properties(&request);
+            let exchange = request.exchange;
+            let routing_key = request.routing_key;
+            let mandatory = request.mandatory;
+            let payload = request.payload;
+            let ch = channel.clone();
+            futs.push(async move {
+                ch.basic_publish(
+                    exchange.as_ref().into(),
+                    routing_key.as_ref().into(),
+                    BasicPublishOptions {
+                        mandatory,
+                        immediate: false,
+                    },
+                    &payload,
+                    properties,
+                )
+                .await
+                .map_err(map_lapin_error)
+            });
+        }
+        let mut receipts = Vec::with_capacity(futs.len());
+        while let Some(result) = futs.next().await {
+            let confirmation = result?;
+            receipts.push(Box::new(LapinPublishReceipt {
+                inner: confirmation,
+            }) as Box<dyn PublishReceipt>);
+        }
+        Ok(receipts)
     }
 }
 
@@ -358,7 +399,10 @@ pub fn connection_uri(config: &BrokerConfig, endpoint: &Endpoint) -> TransportRe
         .clear()
         .push(&config.vhost);
     uri.query_pairs_mut()
-        .append_pair("heartbeat", &config.heartbeat.as_secs().to_string());
+        .append_pair("heartbeat", &config.heartbeat.as_secs().to_string())
+        // Negotiate a 1 MB frame size (up from the 128 KB default) so larger
+        // payloads can be sent in a single frame, reducing per-frame overhead.
+        .append_pair("frame_max", "1048576");
 
     Ok(uri)
 }
@@ -665,7 +709,7 @@ mod tests {
         assert_eq!(uri.username(), "user%40example.com");
         assert_eq!(uri.password(), Some("p%40ss%2Fword"));
         assert_eq!(uri.path(), "/tenant%2Fone");
-        assert_eq!(uri.query(), Some("heartbeat=30"));
+        assert_eq!(uri.query(), Some("heartbeat=30&frame_max=1048576"));
     }
 
     #[test]

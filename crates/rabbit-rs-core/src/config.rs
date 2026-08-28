@@ -245,15 +245,13 @@ pub enum SchedulerStrategy {
 #[serde(deny_unknown_fields)]
 pub struct SchedulerConfig {
     pub strategy: SchedulerStrategy,
-    pub max_in_flight: u16,
 }
 
 impl SchedulerConfig {
     #[must_use]
-    pub const fn weighted_fair(max_in_flight: u16) -> Self {
+    pub const fn weighted_fair() -> Self {
         Self {
             strategy: SchedulerStrategy::WeightedFair,
-            max_in_flight,
         }
     }
 }
@@ -280,7 +278,11 @@ struct WorkerProfileWire {
 #[serde(deny_unknown_fields)]
 struct SchedulerConfigWire {
     strategy: SchedulerStrategy,
+    /// Deserialized for wire compatibility with existing hand-written configs,
+    /// then ignored: broker `QoS` structurally bounds un-acked deliveries per
+    /// channel, so a worker-level dispatch budget would be dead weight.
     #[serde(default)]
+    #[allow(dead_code)]
     max_in_flight: Option<u16>,
 }
 
@@ -296,19 +298,12 @@ impl<'de> Deserialize<'de> for WorkerProfile {
                 wire.name, wire.name
             )));
         }
-        let max_in_flight = wire.scheduler.max_in_flight.ok_or_else(|| {
-            serde::de::Error::custom(format!(
-                "workers.{}.scheduler.max_in_flight is required",
-                wire.name
-            ))
-        })?;
 
         Ok(Self {
             name: wire.name,
             subscriptions: wire.subscriptions,
             scheduler: SchedulerConfig {
                 strategy: wire.scheduler.strategy,
-                max_in_flight,
             },
         })
     }
@@ -408,12 +403,29 @@ pub struct DeadLetterConfig {
     pub routing_key: Option<String>,
 }
 
+/// Publisher safety mode determining the delivery guarantee level.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SafetyMode {
+    /// Fire-and-forget: async pump, no socket wait, no confirms. Messages
+    /// may be lost if the socket drops between pump send and TCP write.
+    Blind,
+    /// Synchronous socket write, no confirms. Message reached kernel socket buffer.
+    Unsafe,
+    /// Confirm mode + mandatory routing. At-least-once delivery guarantee.
+    #[default]
+    Safe,
+}
+
 /// Publisher configuration section controlling confirms, mandatory routing,
 /// and confirmation timeout.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct PublisherConfigSection {
+    pub safety: SafetyMode,
+    /// Deprecated: use `safety = "safe"` instead. Defaults to true for backward compat.
     pub confirms: bool,
+    /// Deprecated: use `safety = "safe"` instead. Defaults to true for backward compat.
     pub mandatory: bool,
     #[serde(deserialize_with = "deserialize_duration_millis")]
     pub confirm_timeout: Duration,
@@ -423,9 +435,32 @@ impl PublisherConfigSection {
     #[must_use]
     pub const fn new(confirms: bool, mandatory: bool, confirm_timeout: Duration) -> Self {
         Self {
+            safety: if confirms {
+                SafetyMode::Safe
+            } else {
+                SafetyMode::Unsafe
+            },
             confirms,
             mandatory,
             confirm_timeout,
+        }
+    }
+
+    /// Returns the effective safety mode, deriving from legacy `confirms`/`mandatory`
+    /// flags when `safety` was not explicitly set.
+    ///
+    /// - `safety != Safe` → returned as-is (explicitly chosen).
+    /// - `safety == Safe` (default) + `confirms=false` → `Unsafe`.
+    /// - `safety == Safe` (default) + `confirms=true` → `Safe`.
+    #[must_use]
+    pub fn effective_safety(&self) -> SafetyMode {
+        if !matches!(self.safety, SafetyMode::Safe) {
+            return self.safety;
+        }
+        if self.confirms {
+            SafetyMode::Safe
+        } else {
+            SafetyMode::Unsafe
         }
     }
 }
@@ -433,6 +468,7 @@ impl PublisherConfigSection {
 impl Default for PublisherConfigSection {
     fn default() -> Self {
         Self {
+            safety: SafetyMode::Safe,
             confirms: true,
             mandatory: true,
             confirm_timeout: Duration::from_secs(30),
@@ -543,13 +579,6 @@ impl Config {
                             worker.name, subscription.name
                         ),
                         "starvation_after must be greater than zero",
-                    ));
-                }
-
-                if worker.scheduler.max_in_flight < subscription.prefetch {
-                    return Err(ConfigError::new(
-                        format!("workers.{}.scheduler.max_in_flight", worker.name),
-                        "max_in_flight must be at least every subscription prefetch",
                     ));
                 }
             }
@@ -710,7 +739,6 @@ impl ConfigFingerprint {
         for worker in &config.workers {
             hash_value(&mut digest, &worker.name);
             hash_value(&mut digest, scheduler_name(worker.scheduler.strategy));
-            digest.update(worker.scheduler.max_in_flight.to_be_bytes());
             for subscription in &worker.subscriptions {
                 hash_value(&mut digest, &subscription.name);
                 hash_value(&mut digest, &subscription.broker);
@@ -836,6 +864,7 @@ fn hash_broker(digest: &mut Sha256, broker: &BrokerConfig) {
 
 fn hash_publisher(digest: &mut Sha256, publisher: &PublisherConfigSection) {
     hash_value(digest, "publisher");
+    hash_value(digest, safety_mode_name(publisher.safety));
     hash_value(
         digest,
         if publisher.confirms {
@@ -889,6 +918,14 @@ const fn tls_verify_name(verify: TlsVerify) -> &'static str {
     }
 }
 
+const fn safety_mode_name(mode: SafetyMode) -> &'static str {
+    match mode {
+        SafetyMode::Blind => "blind",
+        SafetyMode::Unsafe => "unsafe",
+        SafetyMode::Safe => "safe",
+    }
+}
+
 fn deserialize_duration_seconds<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
@@ -928,7 +965,8 @@ mod tests {
 
     use super::{
         BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
-        SchedulerConfig, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
+        SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify,
+        TopologyMode, WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -960,18 +998,18 @@ mod tests {
         }
     }
 
-    fn worker(prefetch: u16, max_in_flight: u16) -> WorkerProfile {
+    fn worker(prefetch: u16) -> WorkerProfile {
         WorkerProfile {
             name: "main".to_owned(),
             subscriptions: vec![subscription(prefetch)],
-            scheduler: SchedulerConfig::weighted_fair(max_in_flight),
+            scheduler: SchedulerConfig::weighted_fair(),
         }
     }
 
     fn config(hosts: Vec<Endpoint>) -> Config {
         Config {
             brokers: vec![broker(hosts)],
-            workers: vec![worker(16, 64)],
+            workers: vec![worker(16)],
             topology_mode: TopologyMode::Declare,
             delay: DelayConfig::default(),
             dead_letter: None,
@@ -992,7 +1030,7 @@ mod tests {
     #[test]
     fn rejects_zero_prefetch() {
         let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
-        candidate.workers = vec![worker(0, 64)];
+        candidate.workers = vec![worker(0)];
 
         let error = candidate.validate().unwrap_err();
 
@@ -1000,19 +1038,78 @@ mod tests {
     }
 
     #[test]
-    fn rejects_worker_budget_below_subscription_prefetch() {
-        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
-        candidate.workers = vec![worker(16, 8)];
+    fn accepts_config_without_scheduler_max_in_flight() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair"
+                }
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("scheduler.max_in_flight is optional");
 
-        let error = candidate.validate().unwrap_err();
+        candidate
+            .validate()
+            .expect("config without scheduler.max_in_flight is valid");
+    }
 
-        assert_eq!(error.path(), "workers.main.scheduler.max_in_flight");
+    #[test]
+    fn ignores_scheduler_max_in_flight_value() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 8
+                }
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("scheduler.max_in_flight is deserialized but ignored");
+
+        candidate
+            .validate()
+            .expect("max_in_flight below prefetch must not be validated");
     }
 
     #[test]
     fn rejects_zero_starvation_after_with_the_subscription_path() {
         let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
-        let mut profile = worker(16, 64);
+        let mut profile = worker(16);
         profile.subscriptions[0].starvation_after = Duration::ZERO;
         candidate.workers = vec![profile];
 
@@ -1058,7 +1155,7 @@ mod tests {
             .validate()
             .expect("canonical worker configuration");
         let worker = validated.worker("main").expect("worker");
-        assert_eq!(worker.scheduler.max_in_flight, 64);
+        assert_eq!(worker.scheduler.strategy, SchedulerStrategy::WeightedFair);
         assert_eq!(
             worker.subscriptions[0].starvation_after,
             Duration::from_secs(30)
@@ -1166,19 +1263,15 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_budget_and_starvation_are_part_of_the_fingerprint() {
+    fn starvation_is_part_of_the_fingerprint() {
         let mut base = config(vec![Endpoint::new("rabbit.local", 5672)]);
-        base.workers = vec![worker(16, 64)];
-        let mut scheduler_changed = base.clone();
-        scheduler_changed.workers[0].scheduler.max_in_flight = 65;
+        base.workers = vec![worker(16)];
         let mut starvation_changed = base.clone();
         starvation_changed.workers[0].subscriptions[0].starvation_after = Duration::from_secs(31);
 
         let base = base.validate().unwrap();
-        let scheduler_changed = scheduler_changed.validate().unwrap();
         let starvation_changed = starvation_changed.validate().unwrap();
 
-        assert_ne!(base.fingerprint(), scheduler_changed.fingerprint());
         assert_ne!(base.fingerprint(), starvation_changed.fingerprint());
     }
 
@@ -1188,10 +1281,9 @@ mod tests {
             .validate()
             .unwrap();
 
-        assert_eq!(
-            validated.worker("main").unwrap().scheduler.max_in_flight,
-            64
-        );
+        let worker = validated.worker("main").unwrap();
+        assert_eq!(worker.name, "main");
+        assert_eq!(worker.subscriptions.len(), 1);
     }
 
     #[test]
@@ -1558,5 +1650,86 @@ mod tests {
             none.fingerprint(),
             "different verify modes must produce different fingerprints"
         );
+    }
+
+    #[test]
+    fn safety_mode_defaults_to_safe() {
+        assert_eq!(SafetyMode::default(), SafetyMode::Safe);
+    }
+
+    #[test]
+    fn publisher_section_defaults_safety_to_safe() {
+        let publisher = PublisherConfigSection::default();
+        assert_eq!(publisher.safety, SafetyMode::Safe);
+    }
+
+    #[test]
+    fn effective_safety_returns_explicit_non_safe_mode() {
+        let publisher = PublisherConfigSection {
+            safety: SafetyMode::Blind,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Blind);
+
+        let publisher = PublisherConfigSection {
+            safety: SafetyMode::Unsafe,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Unsafe);
+    }
+
+    #[test]
+    fn effective_safety_derives_from_legacy_confirms_when_safe() {
+        let publisher = PublisherConfigSection {
+            confirms: false,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Unsafe);
+
+        let publisher = PublisherConfigSection {
+            confirms: true,
+            ..PublisherConfigSection::default()
+        };
+        assert_eq!(publisher.effective_safety(), SafetyMode::Safe);
+    }
+
+    #[test]
+    fn deserializes_safety_blind() {
+        let candidate = serde_json::from_value::<Config>(serde_json::json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external",
+            "publisher": {
+                "safety": "blind",
+                "confirm_timeout": 5000
+            }
+        }))
+        .expect("publisher section with safety=blind deserializes");
+
+        let validated = candidate.validate().expect("valid config");
+        let publisher = validated.publisher();
+        assert_eq!(publisher.safety, SafetyMode::Blind);
+        assert_eq!(publisher.effective_safety(), SafetyMode::Blind);
     }
 }

@@ -38,14 +38,26 @@ impl PidProvider for ProcessPid {
 }
 
 #[derive(Debug)]
-struct TokioRuntimeFactory;
+struct TokioRuntimeFactory {
+    worker_threads: usize,
+}
+
+impl Default for TokioRuntimeFactory {
+    fn default() -> Self {
+        // I/O-bound workload: a single worker thread reduces scheduling
+        // overhead while still allowing multiple concurrent tasks via async.
+        Self { worker_threads: 1 }
+    }
+}
 
 impl RuntimeFactory for TokioRuntimeFactory {
     fn create(&self) -> io::Result<Runtime> {
-        Builder::new_multi_thread()
-            .thread_name("rabbit-rs")
-            .enable_all()
-            .build()
+        let mut builder = Builder::new_multi_thread();
+        builder.thread_name("rabbit-rs").enable_all();
+        if self.worker_threads > 0 {
+            builder.worker_threads(self.worker_threads);
+        }
+        builder.build()
     }
 }
 
@@ -67,7 +79,10 @@ impl RuntimeRegistry {
     /// Creates an empty registry. No thread or socket is created by this call.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_dependencies(Arc::new(ProcessPid), Arc::new(TokioRuntimeFactory))
+        Self::with_dependencies(
+            Arc::new(ProcessPid),
+            Arc::new(TokioRuntimeFactory::default()),
+        )
     }
 
     /// Returns the process-global registry without eagerly starting its runtime.
@@ -268,7 +283,7 @@ mod tests {
 
     use tokio::runtime::{Builder, Runtime};
 
-    use super::{PidProvider, RuntimeFactory, RuntimeRegistry};
+    use super::{PidProvider, RuntimeFactory, RuntimeRegistry, TokioRuntimeFactory};
     use crate::{
         client::ClientPool,
         config::{
@@ -623,6 +638,15 @@ mod tests {
             !transport
                 .operations()
                 .contains(&TransportOperation::CloseConnection)
+        );
+    }
+
+    #[test]
+    fn tokio_runtime_factory_defaults_to_one_worker_thread() {
+        let factory = TokioRuntimeFactory::default();
+        assert_eq!(
+            factory.worker_threads, 1,
+            "I/O-bound runtime should default to 1 worker thread"
         );
     }
 }

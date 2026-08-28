@@ -322,13 +322,13 @@ async fn resolves_acks_for_multiple_sequences() {
     assert_eq!(
         first.wait().await.expect("first ACK"),
         PublishOutcome::Confirmed {
-            message_id: "one".to_owned()
+            message_id: "one".into()
         }
     );
     assert_eq!(
         second.wait().await.expect("second ACK"),
         PublishOutcome::Confirmed {
-            message_id: "two".to_owned()
+            message_id: "two".into()
         }
     );
 }
@@ -444,7 +444,7 @@ async fn connection_loss_before_confirm_is_replayed() {
     assert_eq!(
         waiter.wait().await.expect("replayed outcome"),
         PublishOutcome::Confirmed {
-            message_id: "uncertain".to_owned()
+            message_id: "uncertain".into()
         }
     );
 }
@@ -704,13 +704,13 @@ async fn pipeline_recoverable_error_sorts_replay_by_sequence() {
     assert_eq!(
         w1.wait().await.expect("msg1 confirmed"),
         PublishOutcome::Confirmed {
-            message_id: "msg1".to_owned()
+            message_id: "msg1".into()
         }
     );
     assert_eq!(
         w2.wait().await.expect("msg2 confirmed"),
         PublishOutcome::Confirmed {
-            message_id: "msg2".to_owned()
+            message_id: "msg2".into()
         }
     );
 
@@ -806,7 +806,7 @@ async fn publication_accepted_during_recovery_is_sent_after_ready() {
     assert_eq!(
         waiter.wait().await.expect("confirmed after recovery"),
         PublishOutcome::Confirmed {
-            message_id: "during-outage".to_owned()
+            message_id: "during-outage".into()
         }
     );
 }
@@ -836,7 +836,7 @@ async fn ready_with_the_same_generation_as_recovering_resumes_publication() {
     assert_eq!(
         waiter.wait().await.expect("confirmed after recovery"),
         PublishOutcome::Confirmed {
-            message_id: "same-generation".to_owned()
+            message_id: "same-generation".into()
         }
     );
 }
@@ -871,7 +871,7 @@ async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() 
     assert_eq!(
         waiter.wait().await.expect("replayed ACK"),
         PublishOutcome::Confirmed {
-            message_id: "stable-id".to_owned()
+            message_id: "stable-id".into()
         }
     );
 }
@@ -935,7 +935,7 @@ async fn late_confirm_from_old_generation_cannot_resolve_the_waiter() {
     assert_eq!(
         waiter.wait().await.expect("new generation ACK"),
         PublishOutcome::Confirmed {
-            message_id: "generation-safe".to_owned()
+            message_id: "generation-safe".into()
         }
     );
 }
@@ -1156,7 +1156,7 @@ async fn ready_with_same_generation_as_recovering_resumes() {
     assert_eq!(
         waiter.wait().await.expect("confirmed after recovery"),
         PublishOutcome::Confirmed {
-            message_id: "same-gen".to_owned()
+            message_id: "same-gen".into()
         }
     );
 }
@@ -1229,7 +1229,8 @@ async fn plugin_mode_publishes_on_delayed_exchange_with_x_delay_header() {
     let request = find_publish(&transport);
 
     assert_ne!(
-        request.exchange, "jobs",
+        request.exchange.as_ref(),
+        "jobs",
         "plugin mode must publish on a delayed exchange, not the original"
     );
     assert!(
@@ -1237,7 +1238,7 @@ async fn plugin_mode_publishes_on_delayed_exchange_with_x_delay_header() {
         "exchange name should be the delayed variant, got: {}",
         request.exchange
     );
-    assert_eq!(request.routing_key, "high");
+    assert_eq!(request.routing_key.as_ref(), "high");
     assert_eq!(
         request.properties.delay_ms,
         Some(5_000),
@@ -1285,7 +1286,8 @@ async fn ttl_mode_publishes_on_ttl_queue_with_dead_letter_to_original() {
     let request = find_publish(&transport);
 
     assert_eq!(
-        request.exchange, "",
+        request.exchange.as_ref(),
+        "",
         "TTL mode must publish on the default exchange"
     );
     assert!(
@@ -1320,10 +1322,11 @@ async fn zero_delay_does_not_change_routing() {
     let request = find_publish(&transport);
 
     assert_eq!(
-        request.exchange, "jobs",
+        request.exchange.as_ref(),
+        "jobs",
         "zero delay must publish on the original exchange"
     );
-    assert_eq!(request.routing_key, "high");
+    assert_eq!(request.routing_key.as_ref(), "high");
     assert_eq!(
         request.properties.delay_ms, None,
         "zero delay must not set x-delay header"

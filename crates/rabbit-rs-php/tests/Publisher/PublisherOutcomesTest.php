@@ -38,6 +38,7 @@ it('maps publisher confirmations and transport failures to the PHP contract', fu
 
         try {
             $pool->publish(outcomeMessage($messageId, $timeoutMs));
+            $pool->flush();
             expect(false)->toBeTrue("{$outcome} must fail");
         } catch (\Goopil\RabbitRs\Exception $e) {
             expect($e)->toBeInstanceOf($exceptionClass);

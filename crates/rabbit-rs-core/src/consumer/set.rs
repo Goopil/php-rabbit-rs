@@ -22,7 +22,7 @@ use crate::{
 };
 
 const COMMAND_CAPACITY: usize = 256;
-const BUFFER_CAPACITY_FACTOR: usize = 3;
+const BUFFER_CAPACITY_MULTIPLIER: usize = 2;
 
 pub struct Subscription {
     pub(crate) id: SubscriptionId,
@@ -145,11 +145,8 @@ impl ConsumerSet {
     /// # Errors
     ///
     /// Returns a typed transport error when `QoS` or consumer registration fails.
-    pub async fn spawn(
-        subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
-    ) -> Result<ConsumerHandle, ConsumerError> {
-        Self::spawn_with_metrics(subscriptions, max_in_flight, Metrics::default()).await
+    pub async fn spawn(subscriptions: Vec<Subscription>) -> Result<ConsumerHandle, ConsumerError> {
+        Self::spawn_with_metrics(subscriptions, Metrics::default()).await
     }
 
     /// Configures the consumer set with a metrics registry shared by its caller.
@@ -159,20 +156,25 @@ impl ConsumerSet {
     /// Returns a typed transport error when `QoS` or consumer registration fails.
     pub async fn spawn_with_metrics(
         subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
         metrics: Metrics,
     ) -> Result<ConsumerHandle, ConsumerError> {
         let generation = subscriptions.first().map_or(1, |s| s.generation);
-        Self::spawn_with_generation(subscriptions, max_in_flight, metrics, generation).await
+        Self::spawn_with_generation(subscriptions, metrics, generation).await
     }
 
     async fn spawn_with_generation(
         subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
         metrics: Metrics,
         generation: u64,
     ) -> Result<ConsumerHandle, ConsumerError> {
-        let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        // The command channel carries Incoming delivery commands from the
+        // per-subscription pumps plus settlement commands. Size it from the
+        // total prefetch so a large prefetch does not turn every delivery
+        // handoff into pump backpressure.
+        let (commands, receiver) = mpsc::channel(
+            COMMAND_CAPACITY.max(usize::try_from(total_prefetch).unwrap_or(usize::MAX)),
+        );
         let mut streams = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
@@ -205,9 +207,12 @@ impl ConsumerSet {
             streams.push((subscription.id.clone(), stream));
         }
 
-        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        // With prefetch >= 128 the flume holds >= 256, so `try_next_batch(256)`
+        // can fill a complete batch in one call. The actor-side dispatch stops
+        // when the flume is full, so this capacity is also the natural
+        // handoff window between the actor and the consumer.
         let buffer_size =
-            usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_FACTOR / 2;
+            usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_MULTIPLIER;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
         let (error_tx, error_rx) = flume::bounded::<SettlementError>(256);
@@ -215,7 +220,6 @@ impl ConsumerSet {
 
         tokio::spawn(run_actor(
             subscriptions,
-            max_in_flight.max(1),
             receiver,
             commands.clone(),
             buffer_tx,
@@ -398,8 +402,11 @@ impl ConsumerHandle {
     /// Drains up to `max` deliveries from the buffer in a single call.
     ///
     /// The requested `max` is clamped to `1..=256`. Returns an empty vector when
-    /// the buffer is empty. Each drained delivery releases dispatch budget so
-    /// the actor can pull more work from the transport.
+    /// the buffer is empty. The effective maximum batch size equals the flume
+    /// capacity (`total_prefetch × 2`), itself clamped by the `1..=256` clamp,
+    /// so with prefetch ≥ 128 a full `256` batch can drain in one call. Each
+    /// drained delivery wakes the actor, which refills the buffer from the
+    /// transport.
     ///
     /// # Errors
     ///

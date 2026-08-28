@@ -199,7 +199,7 @@ async fn consumer_records_deliveries_acks_rejects_and_settlement_latency() {
         .expect("consumer channel");
     let subscription = Subscription::new("jobs", connection_key(), "jobs", Arc::from(channel));
     let metrics = Metrics::default();
-    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], 2, metrics)
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], metrics)
         .await
         .expect("consumer set");
 

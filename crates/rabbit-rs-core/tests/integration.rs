@@ -73,7 +73,7 @@ mod helper {
                     early_ack: false,
                     no_ack: false,
                 }],
-                scheduler: SchedulerConfig::weighted_fair(16),
+                scheduler: SchedulerConfig::weighted_fair(),
             }],
             topology_mode: TopologyMode::External,
             delay: rabbit_rs_core::config::DelayConfig::default(),
@@ -156,7 +156,7 @@ mod helper {
                         no_ack: false,
                     },
                 ],
-                scheduler: SchedulerConfig::weighted_fair(16),
+                scheduler: SchedulerConfig::weighted_fair(),
             }],
             topology_mode: TopologyMode::External,
             delay: rabbit_rs_core::config::DelayConfig::default(),
@@ -329,13 +329,13 @@ async fn reuses_one_connection_and_publisher_for_confirmed_messages() {
     assert_eq!(
         first,
         PublishOutcome::Confirmed {
-            message_id: "first".to_owned()
+            message_id: "first".into()
         }
     );
     assert_eq!(
         second,
         PublishOutcome::Confirmed {
-            message_id: "second".to_owned()
+            message_id: "second".into()
         }
     );
     let operations = transport.operations();
@@ -615,19 +615,19 @@ async fn publish_batch_preserves_order_after_broker_grouping() {
     assert_eq!(
         outcomes[0],
         PublishOutcome::Confirmed {
-            message_id: "msgA".to_owned()
+            message_id: "msgA".into()
         }
     );
     assert_eq!(
         outcomes[1],
         PublishOutcome::Confirmed {
-            message_id: "msgB".to_owned()
+            message_id: "msgB".into()
         }
     );
     assert_eq!(
         outcomes[2],
         PublishOutcome::Confirmed {
-            message_id: "msgC".to_owned()
+            message_id: "msgC".into()
         }
     );
 }
@@ -691,25 +691,25 @@ async fn publish_batch_preserves_order_across_two_brokers() {
     assert_eq!(
         outcomes[0],
         PublishOutcome::Confirmed {
-            message_id: "msgA".to_owned()
+            message_id: "msgA".into()
         }
     );
     assert_eq!(
         outcomes[1],
         PublishOutcome::Confirmed {
-            message_id: "msgB".to_owned()
+            message_id: "msgB".into()
         }
     );
     assert_eq!(
         outcomes[2],
         PublishOutcome::Confirmed {
-            message_id: "msgC".to_owned()
+            message_id: "msgC".into()
         }
     );
     assert_eq!(
         outcomes[3],
         PublishOutcome::Confirmed {
-            message_id: "msgD".to_owned()
+            message_id: "msgD".into()
         }
     );
 
@@ -747,12 +747,12 @@ async fn publish_batch_detailed_classifies_confirmed_messages() {
     assert!(matches!(
         &outcome.results[0],
         MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id == "msgA"
+            if message_id.as_ref() == "msgA"
     ));
     assert!(matches!(
         &outcome.results[1],
         MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id == "msgB"
+            if message_id.as_ref() == "msgB"
     ));
 }
 
@@ -788,7 +788,7 @@ async fn publish_batch_detailed_classifies_returned_message() {
     assert!(matches!(
         &outcome.results[1],
         MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id == "ok"
+            if message_id.as_ref() == "ok"
     ));
 }
 
@@ -814,7 +814,7 @@ async fn publish_batch_detailed_classifies_failed_message() {
     assert!(matches!(
         &outcome.results[0],
         MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id == "ok"
+            if message_id.as_ref() == "ok"
     ));
     assert!(matches!(
         &outcome.results[1],
@@ -913,7 +913,7 @@ mod integration {
                         early_ack: false,
                         no_ack: false,
                     }],
-                    scheduler: SchedulerConfig::weighted_fair(16),
+                    scheduler: SchedulerConfig::weighted_fair(),
                 }],
                 topology_mode: TopologyMode::External,
                 delay: rabbit_rs_core::config::DelayConfig::default(),
@@ -965,7 +965,7 @@ mod integration {
                             no_ack: false,
                         },
                     ],
-                    scheduler: SchedulerConfig::weighted_fair(16),
+                    scheduler: SchedulerConfig::weighted_fair(),
                 }],
                 topology_mode: TopologyMode::External,
                 delay: rabbit_rs_core::config::DelayConfig::default(),
@@ -1050,7 +1050,7 @@ mod integration {
         assert_eq!(
             outcome,
             PublishOutcome::Confirmed {
-                message_id: "msg-confirm-1".to_owned(),
+                message_id: "msg-confirm-1".into(),
             }
         );
 
@@ -1160,7 +1160,7 @@ mod integration {
             assert_eq!(
                 outcome,
                 &PublishOutcome::Confirmed {
-                    message_id: format!("msg-bulk-{i}")
+                    message_id: format!("msg-bulk-{i}").into()
                 }
             );
         }

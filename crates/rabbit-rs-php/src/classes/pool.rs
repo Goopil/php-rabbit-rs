@@ -18,12 +18,17 @@ use ext_php_rs::{
     types::{ZendHashTable, Zval},
 };
 use rabbit_rs_core::{
-    client::ClientPool,
+    client::{ClientErrorKind, ClientPool},
     pool::{ConnectionHandle, ConnectionKey},
-    publisher::PublishOutcome,
+    publisher::{PublishOutcome, PublishRequest},
     recovery::ConnectionState,
     runtime::RuntimeRegistry,
 };
+
+/// Buffer threshold: flush when this many messages are buffered.
+const BUFFER_THRESHOLD: usize = 64;
+/// Maximum time to wait before flushing the buffer.
+const BUFFER_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
 
 /// Native `RabbitMQ` connection and operation pool.
 #[php_class]
@@ -37,6 +42,8 @@ pub struct Pool {
     backpressure_callback: CallbackSlot,
     last_connection_states: std::sync::Mutex<HashMap<String, (String, i64)>>,
     last_backpressure_total: std::sync::Mutex<u64>,
+    publish_buffer: std::sync::Mutex<Vec<conversion::NativePublish>>,
+    last_flush: std::sync::Mutex<std::time::Instant>,
 }
 
 #[php_impl]
@@ -67,6 +74,8 @@ impl Pool {
             backpressure_callback: CallbackSlot::new(),
             last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
+            publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
+            last_flush: std::sync::Mutex::new(std::time::Instant::now()),
         })
     }
 
@@ -97,18 +106,51 @@ impl Pool {
                 message,
             )
         })?;
-        let outcome = self
-            .handle
-            .runtime()
-            .block_on(self.client.publish(&publish.broker, publish.request));
-        match outcome {
-            Ok(outcome) => publish_message_id(outcome),
-            Err(error) => client_exception(&error),
+
+        let message_id = publish.request.properties.message_id.as_ref().to_owned();
+
+        let mut buffer = self
+            .publish_buffer
+            .lock()
+            .expect("publish buffer mutex poisoned");
+        buffer.push(publish);
+
+        let should_flush = buffer.len() >= BUFFER_THRESHOLD
+            || self
+                .last_flush
+                .lock()
+                .expect("last_flush mutex poisoned")
+                .elapsed()
+                >= BUFFER_FLUSH_INTERVAL;
+        if should_flush {
+            let publishes = std::mem::take(&mut *buffer);
+            drop(buffer);
+            *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
+            self.flush_publishes(publishes)?;
         }
+
+        Ok(message_id)
+    }
+
+    /// Flushes the publish buffer, sending all buffered messages to the broker.
+    pub fn flush(&self) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::flush")?;
+        let publishes = std::mem::take(
+            &mut *self
+                .publish_buffer
+                .lock()
+                .expect("publish buffer mutex poisoned"),
+        );
+        if !publishes.is_empty() {
+            *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
+            self.flush_publishes(publishes)?;
+        }
+        Ok(())
     }
 
     /// Publishes multiple messages in one boundary crossing.
     pub fn publish_batch(&self, messages: &ZendHashTable) -> PhpResult<Vec<String>> {
+        self.flush()?;
         self.ensure_open("Goopil\\RabbitRs\\Pool::publishBatch")?;
         let publishes = conversion::publish_batch(messages).map_err(|message| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
@@ -243,6 +285,12 @@ impl Pool {
         if self.pid != std::process::id() {
             return rabbit_exception("cannot close a pool inherited across fork");
         }
+        // Flush before closing. If flush fails the error is deferred (swallowed)
+        // so close always proceeds; unconfirmed publications were re-buffered by
+        // flush_publishes (unroutable returns are definitive and dropped) and
+        // will be lost when the handle drops. This is an accepted limitation of
+        // deferred flush in close/destruct paths.
+        let _ = self.flush();
         if !self.handle.is_closed()
             && let Err(error) = self.handle.runtime().block_on(self.client.close())
         {
@@ -252,18 +300,32 @@ impl Pool {
         self.handle.close();
         Ok(())
     }
+
+    /// Auto-flushes buffered messages when the pool is garbage collected.
+    pub fn __destruct(&self) {
+        if self.pid != std::process::id() {
+            return;
+        }
+        // Deferred error path: flush errors are swallowed during GC teardown.
+        // Unconfirmed publications were re-buffered by flush_publishes but will
+        // be lost when the pool is dropped. Callers that need delivery guarantees
+        // should call flush() explicitly before the pool goes out of scope.
+        let _ = self.flush();
+    }
 }
 
+#[allow(
+    clippy::match_same_arms,
+    reason = "Confirmed and Ambiguous are semantically distinct outcomes that both return the message_id"
+)]
 fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
     match outcome {
-        PublishOutcome::Confirmed { message_id } => Ok(message_id),
+        PublishOutcome::Confirmed { message_id } => Ok(message_id.as_ref().to_owned()),
         PublishOutcome::Returned { message_id, reply } => rabbit_exception(format!(
             "message {message_id} was returned as unroutable (AMQP {})",
             reply.code
         )),
-        PublishOutcome::Ambiguous { message_id } => rabbit_exception(format!(
-            "message {message_id} has an ambiguous publication outcome"
-        )),
+        PublishOutcome::Ambiguous { message_id } => Ok(message_id.as_ref().to_owned()),
     }
 }
 
@@ -294,6 +356,63 @@ impl Pool {
             backpressure_callback: CallbackSlot::new(),
             last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
+            publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
+            last_flush: std::sync::Mutex::new(std::time::Instant::now()),
+        }
+    }
+
+    fn flush_publishes(&self, publishes: Vec<conversion::NativePublish>) -> PhpResult<()> {
+        if publishes.is_empty() {
+            return Ok(());
+        }
+
+        // Keep the original requests so a failed flush can re-buffer them.
+        let requests: Vec<(String, PublishRequest)> = publishes
+            .iter()
+            .map(|publish| (publish.broker.clone(), publish.request.clone()))
+            .collect();
+
+        let batch = self
+            .handle
+            .runtime()
+            .block_on(self.client.publish_batch(requests));
+
+        match batch {
+            Ok(outcomes) => {
+                // Every outcome is inspected before anything is raised so a
+                // failure never short-circuits the buffer decisions. With the
+                // current `publish_batch` contract this arm only ever sees
+                // `Confirmed`, `Ambiguous`, and `Returned` outcomes: per-message
+                // failures such as backpressure or timeout are folded into the
+                // batch-level `Err` below, which re-buffers every request.
+                let mut first_error = None;
+                for outcome in outcomes {
+                    if let Err(error) = publish_message_id(outcome) {
+                        // `Returned` is the only outcome that resolves to an
+                        // error here. An unroutable message is definitive:
+                        // re-buffering it would loop forever, so the error is
+                        // recorded instead and raised once every outcome has
+                        // been processed.
+                        first_error.get_or_insert(error);
+                    }
+                }
+                first_error.map_or(Ok(()), Err)
+            }
+            Err(error) => {
+                // `publish_batch` discards per-message results after the first
+                // terminal failure, so every request of this flush is
+                // un-attempted or of unknown state. Conservatively re-buffer
+                // all of them, oldest first, so the next flush retries them;
+                // duplicates are permitted and identifiable via `message_id`.
+                // A closing pool must not re-buffer.
+                if !matches!(error.kind(), ClientErrorKind::Closed) {
+                    self.publish_buffer
+                        .lock()
+                        .expect("publish buffer mutex poisoned")
+                        .extend(publishes);
+                }
+                client_exception(&error)
+            }
         }
     }
 

@@ -54,7 +54,6 @@ class RabbitRsDriver extends AbstractBenchmark
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 1024,
                 ],
             ]],
             'topology_mode' => 'declare',
@@ -63,7 +62,14 @@ class RabbitRsDriver extends AbstractBenchmark
                     ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => false,
                     ScenarioMode::BATCH_CONFIRM => true,
                 },
-                'mandatory' => true,
+                'mandatory' => match ($this->scenarioMode) {
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => false,
+                    ScenarioMode::BATCH_CONFIRM => true,
+                },
+                'safety' => match ($this->scenarioMode) {
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => 'blind',
+                    ScenarioMode::BATCH_CONFIRM => 'safe',
+                },
                 'confirm_timeout' => 30000,
             ],
         ];
@@ -87,11 +93,7 @@ class RabbitRsDriver extends AbstractBenchmark
             throw new RuntimeException('Driver not set up');
         }
 
-        $batchSize = match ($this->scenarioMode) {
-            ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => 256,
-            ScenarioMode::BATCH_CONFIRM => 256,
-        };
-
+        $batchSize = 256;
         $timeoutMs = 5000;
 
         $batch = [];

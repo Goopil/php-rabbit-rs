@@ -127,7 +127,7 @@ mod helper {
             workers: vec![WorkerProfile {
                 name: "main".to_owned(),
                 subscriptions: vec![subscription(queue)],
-                scheduler: SchedulerConfig::weighted_fair(16),
+                scheduler: SchedulerConfig::weighted_fair(),
             }],
             topology_mode: TopologyMode::Declare,
             delay: DelayConfig::default(),
@@ -834,7 +834,7 @@ fn dead_letter_applies_to_all_worker_queues() {
     config.workers = vec![WorkerProfile {
         name: "main".to_owned(),
         subscriptions: vec![subscription("orders"), subscription("billing")],
-        scheduler: SchedulerConfig::weighted_fair(16),
+        scheduler: SchedulerConfig::weighted_fair(),
     }];
     config.dead_letter = Some(DeadLetterConfig {
         enabled: true,
@@ -1063,7 +1063,7 @@ async fn broker_message_id_is_preserved_as_delivery_id() {
         "jobs",
         Arc::from(consumer_channel),
     );
-    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+    let consumer = ConsumerSet::spawn(vec![subscription])
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
@@ -1099,7 +1099,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
         "jobs",
         Arc::from(consumer_channel),
     );
-    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+    let consumer = ConsumerSet::spawn(vec![subscription])
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
@@ -1156,7 +1156,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
     )
     .delayed_publisher(publisher, Destination::new("jobs", "high"))
     .delay_strategy(rabbit_rs_core::topology::delay::DelayStrategy::Plugin);
-    let consumer = ConsumerSet::spawn(vec![subscription], 1)
+    let consumer = ConsumerSet::spawn(vec![subscription])
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");

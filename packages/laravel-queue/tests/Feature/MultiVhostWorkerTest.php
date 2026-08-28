@@ -223,7 +223,6 @@ function multiVhostConfig(): array
             'main' => [
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 32,
                 ],
                 'subscriptions' => [
                     'orders_high' => [

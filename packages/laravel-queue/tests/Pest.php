@@ -61,7 +61,6 @@ function liveConfig(string $queueName): array
             'default' => [
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
                 ],
                 'subscriptions' => [
                     'default' => [

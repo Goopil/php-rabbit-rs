@@ -250,8 +250,8 @@ impl Default for PublishProperties {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishRequest {
-    pub exchange: String,
-    pub routing_key: String,
+    pub exchange: Arc<str>,
+    pub routing_key: Arc<str>,
     pub payload: Bytes,
     pub mandatory: bool,
     pub properties: PublishProperties,
@@ -260,8 +260,8 @@ pub struct PublishRequest {
 impl PublishRequest {
     #[must_use]
     pub fn new(
-        exchange: impl Into<String>,
-        routing_key: impl Into<String>,
+        exchange: impl Into<Arc<str>>,
+        routing_key: impl Into<Arc<str>>,
         payload: impl Into<Bytes>,
     ) -> Self {
         Self {
@@ -417,6 +417,26 @@ pub trait PublisherChannel: TopologyChannel {
     ///
     /// Returns an error when the publish cannot be written to the channel.
     async fn publish(&self, request: PublishRequest) -> TransportResult<Box<dyn PublishReceipt>>;
+
+    /// Sends a batch of publishes, returning one receipt per request in order.
+    ///
+    /// The default implementation calls [`publish`](Self::publish) sequentially.
+    /// Implementations may override this to pipeline frames and reduce per-message
+    /// async overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any publish cannot be written to the channel.
+    async fn publish_batch(
+        &self,
+        requests: Vec<PublishRequest>,
+    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
+        let mut receipts = Vec::with_capacity(requests.len());
+        for request in requests {
+            receipts.push(self.publish(request).await?);
+        }
+        Ok(receipts)
+    }
 }
 
 #[async_trait]
@@ -483,6 +503,17 @@ mod tests {
     #[test]
     fn publish_requests_are_mandatory_by_default() {
         assert!(PublishRequest::new("jobs", "default", b"payload".to_vec()).mandatory);
+    }
+
+    #[test]
+    fn publish_request_accepts_arc_str() {
+        let req = PublishRequest::new(
+            Arc::<str>::from("test_exchange"),
+            Arc::<str>::from("test.key"),
+            Bytes::from_static(b"payload"),
+        );
+        assert_eq!(req.exchange.as_ref(), "test_exchange");
+        assert_eq!(req.routing_key.as_ref(), "test.key");
     }
 
     #[tokio::test]

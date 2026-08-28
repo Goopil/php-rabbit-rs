@@ -48,6 +48,13 @@ final class Pool
     }
 
     /**
+     * Flushes the publish buffer, sending all buffered messages to the broker.
+     */
+    public function flush(): void
+    {
+    }
+
+    /**
      * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
      */
     public function stats(): array

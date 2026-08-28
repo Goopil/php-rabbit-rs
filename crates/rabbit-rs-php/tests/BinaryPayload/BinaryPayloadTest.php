@@ -18,6 +18,7 @@ describe('binary payload validation', function () {
 
         try {
             $pool->publish($binaryMessage);
+            $pool->flush();
             expect(false)->toBeTrue('unknown broker must fail');
         } catch (\Goopil\RabbitRs\Exception $e) {
             expect($e->getMessage())->toContain('brokers.missing');

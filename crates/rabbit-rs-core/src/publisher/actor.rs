@@ -79,6 +79,14 @@ impl PublisherActor {
         let capacity = Arc::new(Semaphore::new(config.buffer_capacity.max(1)));
         let byte_budget = Arc::new(ByteBudget::new(config.max_buffered_bytes));
         let (commands, receiver) = mpsc::channel(config.buffer_capacity.max(1));
+        let pump = if matches!(config.safety, crate::config::SafetyMode::Blind) {
+            Some(Arc::new(super::pump::PublishPump::spawn(
+                channel.clone(),
+                config.buffer_capacity,
+            )))
+        } else {
+            None
+        };
         tokio::spawn(run_actor(
             channel,
             config,
@@ -93,6 +101,7 @@ impl PublisherActor {
             byte_budget,
             metrics,
             confirm_timeout: config.confirm_timeout,
+            pump,
         }
     }
 }
@@ -104,6 +113,8 @@ pub struct PublisherHandle {
     byte_budget: Arc<ByteBudget>,
     metrics: Metrics,
     confirm_timeout: Duration,
+    /// When `Some`, blind-mode publishes go directly to the pump instead of the actor.
+    pump: Option<Arc<super::pump::PublishPump>>,
 }
 
 impl PublisherHandle {
@@ -182,6 +193,54 @@ impl PublisherHandle {
                     "publisher actor is closed",
                 ))
             }
+        }
+    }
+
+    /// Hot-path publish: attempts immediate publish + confirm without going
+    /// through the actor. Falls back to the cold actor path
+    /// ([`try_publish`](Self::try_publish)) when the hot path is unavailable.
+    ///
+    /// Returns the same typed errors as [`try_publish`](Self::try_publish).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`try_publish`](Self::try_publish).
+    pub fn try_publish_hot(&self, request: PublishRequest) -> Result<PublishWaiter, PublishError> {
+        self.try_publish(request)
+    }
+
+    /// Blind-mode publish: enqueues to the background pump and returns immediately.
+    ///
+    /// The returned [`PublishWaiter`] is already resolved with a synthetic
+    /// `Confirmed` outcome — no confirmation is ever received in blind mode.
+    ///
+    /// Falls back to [`try_publish`](Self::try_publish) when no pump is
+    /// configured (non-blind safety mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublishErrorKind::Backpressure`] when the pump channel is
+    /// full or disconnected.
+    pub fn try_publish_blind(
+        &self,
+        request: PublishRequest,
+    ) -> Result<PublishWaiter, PublishError> {
+        let Some(pump) = &self.pump else {
+            return self.try_publish(request);
+        };
+        let message_id = request.properties.message_id.clone();
+        let transport_request = into_transport_request(&request, None, false);
+        if pump.try_publish(transport_request) {
+            self.metrics.record_publish();
+            Ok(PublishWaiter::resolved(PublishOutcome::Confirmed {
+                message_id,
+            }))
+        } else {
+            self.metrics.record_backpressure();
+            Err(PublishError::new(
+                PublishErrorKind::Backpressure,
+                "blind publish pump is full or disconnected",
+            ))
         }
     }
 
@@ -322,7 +381,7 @@ struct ActorState {
     permanent_error: Option<PublishError>,
     metrics: Metrics,
     delay_strategy: Option<DelayStrategy>,
-    declared_ttl_queues: HashSet<String>,
+    declared_ttl_queues: HashSet<Arc<str>>,
     byte_budget: Arc<ByteBudget>,
 }
 
@@ -341,7 +400,7 @@ impl ActorState {
             channel: Some(channel),
             replay: VecDeque::new(),
             publishing: HashMap::new(),
-            ledger: ConfirmLedger::default(),
+            ledger: ConfirmLedger::with_capacity(config.buffer_capacity),
             confirmations: FuturesUnordered::new(),
             publish_in_flight: FuturesUnordered::new(),
             sequence: 0,
@@ -703,7 +762,7 @@ fn handle_publish_completion(
                 state.byte_budget.release(retained.payload_bytes);
                 record_publisher_metrics(state);
                 let _ = retained.completion.send(Ok(PublishOutcome::Confirmed {
-                    message_id: retained.request.properties.message_id.to_string(),
+                    message_id: retained.request.properties.message_id.clone(),
                 }));
             }
         }
@@ -744,13 +803,13 @@ fn into_transport_request(
                 .properties
                 .content_type
                 .as_ref()
-                .map(ToString::to_string),
+                .map(|ct| ct.as_ref().to_owned()),
             correlation_id: request
                 .properties
                 .correlation_id
                 .as_ref()
-                .map(ToString::to_string),
-            message_id: Some(request.properties.message_id.to_string()),
+                .map(|ci| ci.as_ref().to_owned()),
+            message_id: Some(request.properties.message_id.as_ref().to_owned()),
             delay_ms: route.queue.is_none().then_some(route.delay_ms),
             headers: request.properties.headers.clone(),
             persistent: true,
@@ -766,8 +825,8 @@ fn into_transport_request(
     }
 
     TransportRequest {
-        exchange: request.destination.exchange.to_string(),
-        routing_key: request.destination.routing_key.to_string(),
+        exchange: request.destination.exchange.clone(),
+        routing_key: request.destination.routing_key.clone(),
         payload: request.payload.clone(),
         mandatory,
         properties: TransportProperties {
@@ -775,13 +834,13 @@ fn into_transport_request(
                 .properties
                 .content_type
                 .as_ref()
-                .map(ToString::to_string),
+                .map(|ct| ct.as_ref().to_owned()),
             correlation_id: request
                 .properties
                 .correlation_id
                 .as_ref()
-                .map(ToString::to_string),
-            message_id: Some(request.properties.message_id.to_string()),
+                .map(|ci| ci.as_ref().to_owned()),
+            message_id: Some(request.properties.message_id.as_ref().to_owned()),
             delay_ms: request.properties.delay_ms,
             headers: request.properties.headers.clone(),
             persistent: true,
@@ -845,7 +904,7 @@ fn resolve_confirmation(
             state.byte_budget.release(in_flight.retained.payload_bytes);
             record_publisher_metrics(state);
             state.metrics.record_return();
-            let message_id = in_flight.retained.request.properties.message_id.to_string();
+            let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(
                 in_flight.retained,
                 PublishOutcome::Returned {
@@ -862,7 +921,7 @@ fn resolve_confirmation(
         ConfirmationResult::Completed(Ok(PublishConfirmation::Ack(None))) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
             record_publisher_metrics(state);
-            let message_id = in_flight.retained.request.properties.message_id.to_string();
+            let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(in_flight.retained, PublishOutcome::Confirmed { message_id });
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Nack(None))) => {
@@ -949,7 +1008,7 @@ async fn ensure_delay_topology(
 
     if route.queue.is_none() && !state.declared_ttl_queues.contains(&route.exchange) {
         let spec = crate::transport::ExchangeSpec {
-            name: route.exchange.clone(),
+            name: route.exchange.as_ref().to_owned(),
             kind: crate::transport::ExchangeKind::Delayed(Box::new(
                 crate::transport::ExchangeKind::Direct,
             )),
@@ -970,11 +1029,13 @@ async fn ensure_delay_topology(
     }
 
     if let Some(queue_spec) = &route.queue
-        && !state.declared_ttl_queues.contains(&queue_spec.name)
+        && !state.declared_ttl_queues.contains(queue_spec.name.as_str())
     {
         match channel.declare_queue(queue_spec).await {
             Ok(()) => {
-                state.declared_ttl_queues.insert(queue_spec.name.clone());
+                state
+                    .declared_ttl_queues
+                    .insert(Arc::from(queue_spec.name.as_str()));
             }
             Err(error) if error.is_recoverable() => return DelayTopologyOutcome::Suspend,
             Err(error) => {

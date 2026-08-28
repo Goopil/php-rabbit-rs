@@ -78,7 +78,6 @@ describe('native normalization', function (): void {
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
                 ],
             ]],
             'topology_mode' => 'declare',
@@ -489,7 +488,6 @@ function configValidConfig(): array
             'main' => [
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
                 ],
                 'subscriptions' => [
                     'orders' => [
@@ -546,12 +544,6 @@ function configInvalidConfigurations(): iterable
             $config['workers']['main']['subscriptions']['orders']['prefetch']['value'] = 0;
         },
         'workers.main.subscriptions.orders.prefetch.value',
-    ];
-    yield 'prefetch above worker budget' => [
-        static function (array &$config): void {
-            $config['workers']['main']['scheduler']['max_in_flight'] = 8;
-        },
-        'workers.main.scheduler.max_in_flight',
     ];
     yield 'zero starvation duration' => [
         static function (array &$config): void {

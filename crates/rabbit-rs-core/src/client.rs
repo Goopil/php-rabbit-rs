@@ -110,9 +110,14 @@ impl ClientPool {
     ) -> Result<PublishOutcome, ClientError> {
         self.ensure_open()?;
         let publisher = self.publisher(broker).await?;
-        let waiter = publisher
-            .try_publish(request)
-            .map_err(|error| ClientError::publish(&error))?;
+        let waiter = match self.publisher_config.safety {
+            crate::config::SafetyMode::Blind => publisher
+                .try_publish_blind(request)
+                .map_err(|error| ClientError::publish(&error))?,
+            crate::config::SafetyMode::Safe | crate::config::SafetyMode::Unsafe => publisher
+                .try_publish_hot(request)
+                .map_err(|error| ClientError::publish(&error))?,
+        };
         waiter
             .wait()
             .await
@@ -136,6 +141,10 @@ impl ClientPool {
     ) -> Result<Vec<PublishOutcome>, ClientError> {
         self.ensure_open()?;
         let total = requests.len();
+        let blind = matches!(
+            self.publisher_config.safety,
+            crate::config::SafetyMode::Blind
+        );
         let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
         for (i, (broker, request)) in requests.into_iter().enumerate() {
             by_broker.entry(broker).or_default().push((i, request));
@@ -148,7 +157,8 @@ impl ClientPool {
         for (broker, msgs) in &by_broker {
             let publisher = self.publisher(broker).await?;
             for (original_index, request) in msgs {
-                match publisher.try_publish(request.clone()) {
+                let result = publisher.try_publish_hot(request.clone());
+                match result {
                     Ok(waiter) => waiters.push((*original_index, waiter)),
                     Err(error) => {
                         let client_err = ClientError::publish(&error);
@@ -160,14 +170,27 @@ impl ClientPool {
         }
 
         let mut terminal_error = immediate_error;
-        let results = PublishWaiter::wait_all(waiters).await;
-        for (index, result) in results {
-            match result {
-                Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
-                Err(error) => {
-                    let client_err = ClientError::publish(&error);
-                    terminal_error.get_or_insert_with(|| client_err.clone());
-                    outcomes[index] = Some(Err(client_err));
+        if blind {
+            for (index, waiter) in waiters {
+                match waiter.wait().await {
+                    Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
+                    Err(error) => {
+                        let client_err = ClientError::publish(&error);
+                        terminal_error.get_or_insert_with(|| client_err.clone());
+                        outcomes[index] = Some(Err(client_err));
+                    }
+                }
+            }
+        } else {
+            let results = PublishWaiter::wait_all(waiters).await;
+            for (index, result) in results {
+                match result {
+                    Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
+                    Err(error) => {
+                        let client_err = ClientError::publish(&error);
+                        terminal_error.get_or_insert_with(|| client_err.clone());
+                        outcomes[index] = Some(Err(client_err));
+                    }
                 }
             }
         }
@@ -798,12 +821,8 @@ fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
 
 fn publisher_config(config: &ValidatedConfig) -> PublisherConfig {
     let publisher = config.publisher();
-    PublisherConfig::with_flags(
-        DEFAULT_BUFFER_CAPACITY,
-        publisher.confirm_timeout,
-        publisher.confirms,
-        publisher.mandatory,
-    )
+    let safety = publisher.effective_safety();
+    PublisherConfig::with_safety(DEFAULT_BUFFER_CAPACITY, publisher.confirm_timeout, safety)
 }
 
 /// Stable classification for failures at the integrated client-pool boundary.
