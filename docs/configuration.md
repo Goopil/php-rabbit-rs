@@ -126,7 +126,6 @@ Workers define consumer profiles with subscriptions and a scheduler:
     'default' => [
         'scheduler' => [
             'strategy' => 'weighted_fair',
-            'max_in_flight' => (int) env('RABBIT_RS_MAX_IN_FLIGHT', 64),
         ],
         'subscriptions' => [
             'default' => [
@@ -148,13 +147,12 @@ Workers define consumer profiles with subscriptions and a scheduler:
 
 | Env | Description | Default |
 |-----|-------------|---------|
-| `RABBIT_RS_MAX_IN_FLIGHT` | Global in-flight message budget | `64` |
 | `RABBIT_RS_QUEUE` | Default subscription queue name | `default` |
 | `RABBIT_RS_PREFETCH` | Prefetch count per subscription | `16` |
 
 #### Scheduler
 
-The scheduler uses a deficit weighted round-robin (`weighted_fair`) algorithm with starvation prevention. `max_in_flight` caps the total number of unacknowledged messages across all subscriptions in the profile. Each subscription's prefetch must not exceed `max_in_flight`.
+The scheduler uses a deficit weighted round-robin (`weighted_fair`) algorithm with starvation prevention. There is no separate worker-level in-flight cap: unacknowledged deliveries are bounded per consumer channel by the broker's QoS prefetch count.
 
 #### Subscriptions
 
@@ -292,7 +290,6 @@ A vhost owns a distinct AMQP connection. To consume from multiple vhosts, define
     'main' => [
         'scheduler' => [
             'strategy' => 'weighted_fair',
-            'max_in_flight' => 64,
         ],
         'subscriptions' => [
             'orders_high' => [

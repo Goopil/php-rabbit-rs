@@ -14,7 +14,7 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 - **Connection-generation-aware ACKs** — stale ACKs are rejected so RabbitMQ redelivers
 - **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers
 - **Weighted-fair scheduler** — multiple subscriptions per worker with configurable weights, priority classes, and starvation protection
-- **Backpressure events** — `BackpressureDetected` fires when in-flight messages exceed capacity
+- **Backpressure events** — `BackpressureDetected` fires when the publisher's bounded buffer is full
 - **Octane support** — consumers are flushed per-request and pools reloaded on worker restart
 - **Quorum queues by default** — durable, delivery-limit-aware topology out of the box
 - **Laravel Horizon support** — Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs; coexists with existing Redis queues
@@ -110,7 +110,6 @@ The full configuration lives in `config/rabbit-rs.php`. Every option is document
 | `RABBIT_RS_QUEUE` | Default queue name | `default` |
 | `RABBIT_RS_EXCHANGE` | Default exchange for routing | `laravel.jobs` |
 | `RABBIT_RS_HEARTBEAT` | AMQP heartbeat in seconds | `30` |
-| `RABBIT_RS_MAX_IN_FLIGHT` | Max unacked messages per worker | `64` |
 | `RABBIT_RS_PREFETCH` | QoS prefetch count per consumer | `16` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
 | `RABBIT_RS_TOPOLOGY_MODE` | `declare`, `verify`, or `external` | `declare` |
@@ -208,7 +207,6 @@ Each worker profile defines a set of subscriptions consumed by a single `rabbit-
     'default' => [
         'scheduler' => [
             'strategy' => 'weighted_fair',
-            'max_in_flight' => (int) env('RABBIT_RS_MAX_IN_FLIGHT', 64),
         ],
         'subscriptions' => [
             'default' => [
@@ -230,7 +228,6 @@ Each worker profile defines a set of subscriptions consumed by a single `rabbit-
     'multi' => [
         'scheduler' => [
             'strategy' => 'weighted_fair',
-            'max_in_flight' => 128,
         ],
         'subscriptions' => [
             'high-priority' => [
@@ -267,8 +264,6 @@ Each worker profile defines a set of subscriptions consumed by a single `rabbit-
 ```
 
 **`strategy`** — Currently only `weighted_fair` is supported. The scheduler distributes consumer credit proportional to weight.
-
-**`max_in_flight`** — Hard cap on unacked messages per worker. Must be ≥ every subscription's prefetch. When exceeded, `BackpressureDetected` fires and the scheduler pauses new deliveries.
 
 **`weight`** — Relative weight in the weighted-fair scheduler. Higher weight gets more consumer credit.
 
@@ -504,7 +499,7 @@ If Horizon is not installed, set `RABBIT_RS_WORKER=default` (the default). The `
 
 | Event | Fired when | Payload |
 | ----- | ---------- | ------- |
-| `BackpressureDetected` | In-flight messages exceed `max_in_flight` | `broker`, `inFlight`, `capacity` |
+| `BackpressureDetected` | The publisher's bounded buffer is full | `broker`, `inFlight`, `capacity` |
 | `ConnectionStateChanged` | A broker connection changes state | `broker`, `state`, `generation` |
 
 When `worker=horizon`, Horizon's own events (`JobPending`, `JobPushed`, `JobReserved`, `JobDeleted`) are also dispatched. See [Laravel Horizon](#laravel-horizon).

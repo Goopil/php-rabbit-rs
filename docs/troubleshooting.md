@@ -241,8 +241,7 @@ rabbitmqctl list_queues -p /your-vhost name messages
 
 1. Reduce publish rate — batch jobs, add delays
 2. Scale consumers — more workers drain queues faster
-3. Increase `max_in_flight` (if memory allows)
-4. Check broker health — high confirmation latency indicates broker saturation
+3. Check broker health — high confirmation latency indicates broker saturation
 
 See [Operations — Backpressure](operations.md#backpressure-detection-and-response).
 

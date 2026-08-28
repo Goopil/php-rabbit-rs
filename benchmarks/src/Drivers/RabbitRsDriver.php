@@ -54,7 +54,6 @@ class RabbitRsDriver extends AbstractBenchmark
                 ]],
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 1024,
                 ],
             ]],
             'topology_mode' => 'declare',

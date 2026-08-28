@@ -119,7 +119,6 @@ class LaravelSmokeBenchmark extends AbstractBenchmark
                 'default' => [
                     'scheduler' => [
                         'strategy' => 'weighted_fair',
-                        'max_in_flight' => 64,
                     ],
                     'subscriptions' => [
                         'default' => [

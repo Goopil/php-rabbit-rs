@@ -153,11 +153,6 @@ return [
     |                         The scheduler distributes consumer credit
     |                         across subscriptions proportional to weight.
     |
-    | scheduler.max_in_flight: Hard cap on unacknowledged messages per worker.
-    |                         Must be ≥ every subscription's prefetch value.
-    |                         When exceeded, BackpressureDetected fires and the
-    |                         scheduler pauses new deliveries.
-    |
     | subscriptions:          Each subscription binds the worker to a queue on
     |                         a broker. A worker can subscribe to multiple
     |                         queues with different weights and priorities.
@@ -200,7 +195,6 @@ return [
         'default' => [
             'scheduler' => [
                 'strategy' => 'weighted_fair',
-                'max_in_flight' => (int) env('RABBIT_RS_MAX_IN_FLIGHT', 256),
             ],
             'subscriptions' => [
                 'default' => [

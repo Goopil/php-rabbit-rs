@@ -488,7 +488,6 @@ function configValidConfig(): array
             'main' => [
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => 64,
                 ],
                 'subscriptions' => [
                     'orders' => [
