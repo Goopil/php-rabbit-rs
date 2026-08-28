@@ -18,7 +18,7 @@ use ext_php_rs::{
     types::{ZendHashTable, Zval},
 };
 use rabbit_rs_core::{
-    client::ClientPool,
+    client::{ClientErrorKind, ClientPool},
     pool::{ConnectionHandle, ConnectionKey},
     publisher::{PublishOutcome, PublishRequest},
     recovery::ConnectionState,
@@ -286,9 +286,10 @@ impl Pool {
             return rabbit_exception("cannot close a pool inherited across fork");
         }
         // Flush before closing. If flush fails the error is deferred (swallowed)
-        // so close always proceeds; unpublished messages were re-buffered by
-        // flush_publishes and will be lost when the handle drops. This is an
-        // accepted limitation of deferred flush in close/destruct paths.
+        // so close always proceeds; unconfirmed publications were re-buffered by
+        // flush_publishes (unroutable returns are definitive and dropped) and
+        // will be lost when the handle drops. This is an accepted limitation of
+        // deferred flush in close/destruct paths.
         let _ = self.flush();
         if !self.handle.is_closed()
             && let Err(error) = self.handle.runtime().block_on(self.client.close())
@@ -306,8 +307,8 @@ impl Pool {
             return;
         }
         // Deferred error path: flush errors are swallowed during GC teardown.
-        // Unpublished messages were re-buffered by flush_publishes but will be
-        // lost when the pool is dropped. Callers that need delivery guarantees
+        // Unconfirmed publications were re-buffered by flush_publishes but will
+        // be lost when the pool is dropped. Callers that need delivery guarantees
         // should call flush() explicitly before the pool goes out of scope.
         let _ = self.flush();
     }
@@ -365,24 +366,53 @@ impl Pool {
             return Ok(());
         }
 
+        // Keep the original requests so a failed flush can re-buffer them.
         let requests: Vec<(String, PublishRequest)> = publishes
-            .into_iter()
-            .map(|p| (p.broker, p.request))
+            .iter()
+            .map(|publish| (publish.broker.clone(), publish.request.clone()))
             .collect();
 
-        let outcomes = self
+        let batch = self
             .handle
             .runtime()
             .block_on(self.client.publish_batch(requests));
 
-        match outcomes {
+        match batch {
             Ok(outcomes) => {
+                // Every outcome is inspected before anything is raised so a
+                // failure never short-circuits the buffer decisions. With the
+                // current `publish_batch` contract this arm only ever sees
+                // `Confirmed`, `Ambiguous`, and `Returned` outcomes: per-message
+                // failures such as backpressure or timeout are folded into the
+                // batch-level `Err` below, which re-buffers every request.
+                let mut first_error = None;
                 for outcome in outcomes {
-                    publish_message_id(outcome)?;
+                    if let Err(error) = publish_message_id(outcome) {
+                        // `Returned` is the only outcome that resolves to an
+                        // error here. An unroutable message is definitive:
+                        // re-buffering it would loop forever, so the error is
+                        // recorded instead and raised once every outcome has
+                        // been processed.
+                        first_error.get_or_insert(error);
+                    }
                 }
-                Ok(())
+                first_error.map_or(Ok(()), Err)
             }
-            Err(error) => client_exception(&error),
+            Err(error) => {
+                // `publish_batch` discards per-message results after the first
+                // terminal failure, so every request of this flush is
+                // un-attempted or of unknown state. Conservatively re-buffer
+                // all of them, oldest first, so the next flush retries them;
+                // duplicates are permitted and identifiable via `message_id`.
+                // A closing pool must not re-buffer.
+                if !matches!(error.kind(), ClientErrorKind::Closed) {
+                    self.publish_buffer
+                        .lock()
+                        .expect("publish buffer mutex poisoned")
+                        .extend(publishes);
+                }
+                client_exception(&error)
+            }
         }
     }
 
