@@ -1,0 +1,54 @@
+name: Homebrew Formula Test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "scripts/update-homebrew-formula.sh"
+      - ".github/workflows/homebrew-formula-test.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-formula:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tap and audit formula
+        run: |
+          brew tap goopil/rabbit-rs
+          brew trust goopil/rabbit-rs
+          brew audit --strict --formula goopil/rabbit-rs/rabbit-rs
+
+  test-install:
+    runs-on: macos-14
+    needs: [audit-formula]
+    # Skip install test if the formula still has placeholder SHA-256 values
+    # (before the first real release populates them).
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.head.ref, 'homebrew') }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tap and install formula
+        run: |
+          brew trust goopil/rabbit-rs
+          brew tap goopil/rabbit-rs
+          brew install rabbit-rs
+
+      - name: Verify extension loads
+        run: |
+          $(brew --prefix php)/bin/php -m | grep -q "rabbit_rs" || { echo "ERROR: rabbit_rs extension not loaded"; exit 1; }
+          echo "OK: rabbit_rs loaded, version $($(brew --prefix php)/bin/php -r 'echo phpversion("rabbit_rs");')"
+
+      - name: Uninstall and verify cleanup
+        run: |
+          brew uninstall rabbit-rs
+          if $(brew --prefix php)/bin/php -m 2>/dev/null | grep -q "rabbit_rs"; then
+            echo "ERROR: rabbit_rs still loaded after uninstall"
+            exit 1
+          fi
+          echo "OK: rabbit_rs uninstalled cleanly"
