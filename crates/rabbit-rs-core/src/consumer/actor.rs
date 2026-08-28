@@ -26,6 +26,10 @@ use crate::{
 
 type ChannelKey = (SubscriptionId, u16, u64);
 
+/// Upper bound on retained source errors so a flapping transport can neither
+/// grow the deque without bound nor starve good deliveries behind errors.
+const SOURCE_ERROR_CAPACITY: usize = 64;
+
 struct ChannelLedgerEntry {
     state: DeliveryState,
     token: Option<Arc<DeliveryTokenInner>>,
@@ -110,8 +114,6 @@ struct ActorState {
     settle_through_queues: HashMap<ChannelKey, VecDeque<SettleThroughParams>>,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
-    in_flight: usize,
-    max_in_flight: usize,
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
@@ -121,7 +123,6 @@ struct ActorState {
 impl ActorState {
     fn new(
         subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
         commands: mpsc::Sender<ConsumerCommand>,
         buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
         error_tx: flume::Sender<SettlementError>,
@@ -174,8 +175,6 @@ impl ActorState {
             settle_through_queues: HashMap::new(),
             source_errors: VecDeque::new(),
             scheduler,
-            in_flight: 0,
-            max_in_flight,
             commands,
             buffer_tx,
             error_tx,
@@ -192,16 +191,16 @@ impl ActorState {
     #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self) {
         self.drain_pending();
-        while self.in_flight < self.max_in_flight {
+        loop {
             if let Some(error) = self.source_errors.front() {
                 if self.buffer_tx.try_send(Err(error.clone())).is_err() {
-                    return;
+                    break;
                 }
                 self.source_errors.pop_front();
                 continue;
             }
             let Some(subscription) = self.scheduler.next(Instant::now()) else {
-                return;
+                break;
             };
             let Some(delivery) = self
                 .buffers
@@ -209,7 +208,7 @@ impl ActorState {
                 .and_then(VecDeque::pop_front)
             else {
                 self.scheduler.mark_empty(&subscription);
-                return;
+                break;
             };
             let Some(runtime) = self.subscriptions.get(&subscription) else {
                 self.buffers
@@ -262,7 +261,7 @@ impl ActorState {
                         .or_default()
                         .push_front(delivery);
                     self.scheduler.mark_ready(&subscription);
-                    return;
+                    break;
                 }
                 if let Some(buffer) = self.buffers.get_mut(&subscription)
                     && buffer.is_empty()
@@ -313,7 +312,7 @@ impl ActorState {
                     .or_default()
                     .push_front(delivery);
                 self.scheduler.mark_ready(&subscription);
-                return;
+                break;
             }
             if let Some(buffer) = self.buffers.get_mut(&subscription)
                 && buffer.is_empty()
@@ -321,20 +320,15 @@ impl ActorState {
                 self.scheduler.mark_empty(&subscription);
             }
             self.metrics.record_delivery();
-            self.in_flight = self.in_flight.saturating_add(1);
         }
         record_consumer_buffer_metrics(self);
     }
 
     fn record_source_error(&mut self, error: ConsumerError) {
-        if self.source_errors.len() >= self.max_in_flight.max(64) {
+        if self.source_errors.len() >= SOURCE_ERROR_CAPACITY {
             self.source_errors.pop_front();
         }
         self.source_errors.push_back(error);
-    }
-
-    fn release_budget(&mut self) {
-        self.in_flight = self.in_flight.saturating_sub(1);
     }
 
     fn drain_pending(&mut self) {
@@ -394,10 +388,9 @@ fn record_consumer_buffer_metrics(state: &ActorState) {
     state.metrics.record_settlement_lane_depth(lane_depth);
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
-    max_in_flight: usize,
     mut receiver: mpsc::Receiver<ConsumerCommand>,
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
@@ -405,14 +398,7 @@ pub(crate) async fn run_actor(
     metrics: Metrics,
     dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
-    let mut state = ActorState::new(
-        subscriptions,
-        max_in_flight,
-        commands,
-        buffer_tx,
-        error_tx,
-        metrics,
-    );
+    let mut state = ActorState::new(subscriptions, commands, buffer_tx, error_tx, metrics);
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
     loop {
@@ -636,7 +622,6 @@ pub(crate) async fn run_actor(
                     if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
                         *bytes = bytes.saturating_sub(delivery_bytes);
                     }
-                    state.release_budget();
                     record_consumer_buffer_metrics(&state);
                     state.try_drain_pending();
                     if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
@@ -712,7 +697,6 @@ pub(crate) async fn run_actor(
                             if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
                                 *buf_bytes = buf_bytes.saturating_sub(bytes);
                             }
-                            state.release_budget();
                         }
                         state.metrics.record_ack(
                             settle_through_result
@@ -728,7 +712,6 @@ pub(crate) async fn run_actor(
                             if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
                                 *buf_bytes = buf_bytes.saturating_sub(bytes);
                             }
-                            state.release_budget();
                         }
                     }
                     record_consumer_buffer_metrics(&state);

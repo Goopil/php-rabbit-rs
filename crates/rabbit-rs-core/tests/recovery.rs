@@ -58,7 +58,7 @@ mod helper {
                         early_ack: false,
                         no_ack: false,
                     }],
-                    scheduler: SchedulerConfig::weighted_fair(16),
+                    scheduler: SchedulerConfig::weighted_fair(),
                 }],
                 topology_mode: TopologyMode::Declare,
                 delay: rabbit_rs_core::config::DelayConfig::default(),

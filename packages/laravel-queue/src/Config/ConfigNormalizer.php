@@ -257,10 +257,6 @@ final class ConfigNormalizer
             if (($scheduler['strategy'] ?? 'weighted_fair') !== 'weighted_fair') {
                 self::invalid($path.'.scheduler.strategy', 'must be weighted_fair');
             }
-            $maxInFlight = self::boundedU16(
-                $scheduler['max_in_flight'] ?? 64,
-                $path.'.scheduler.max_in_flight',
-            );
 
             $subscriptions = $worker['subscriptions'] ?? null;
             if (! is_array($subscriptions) || $subscriptions === []) {
@@ -293,12 +289,6 @@ final class ConfigNormalizer
                     $subscription['prefetch'] ?? ['mode' => 'fixed', 'value' => 16],
                     $subscriptionPath.'.prefetch',
                 );
-                if ($maxInFlight < $prefetch) {
-                    self::invalid(
-                        $path.'.scheduler.max_in_flight',
-                        'must be at least every subscription prefetch',
-                    );
-                }
 
                 $earlyAck = self::boolean(
                     $subscription['early_ack'] ?? false,
@@ -363,7 +353,6 @@ final class ConfigNormalizer
                 'subscriptions' => $normalizedSubscriptions,
                 'scheduler' => [
                     'strategy' => 'weighted_fair',
-                    'max_in_flight' => $maxInFlight,
                 ],
             ];
         }

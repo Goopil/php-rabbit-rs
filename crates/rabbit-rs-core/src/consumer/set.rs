@@ -145,11 +145,8 @@ impl ConsumerSet {
     /// # Errors
     ///
     /// Returns a typed transport error when `QoS` or consumer registration fails.
-    pub async fn spawn(
-        subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
-    ) -> Result<ConsumerHandle, ConsumerError> {
-        Self::spawn_with_metrics(subscriptions, max_in_flight, Metrics::default()).await
+    pub async fn spawn(subscriptions: Vec<Subscription>) -> Result<ConsumerHandle, ConsumerError> {
+        Self::spawn_with_metrics(subscriptions, Metrics::default()).await
     }
 
     /// Configures the consumer set with a metrics registry shared by its caller.
@@ -159,16 +156,14 @@ impl ConsumerSet {
     /// Returns a typed transport error when `QoS` or consumer registration fails.
     pub async fn spawn_with_metrics(
         subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
         metrics: Metrics,
     ) -> Result<ConsumerHandle, ConsumerError> {
         let generation = subscriptions.first().map_or(1, |s| s.generation);
-        Self::spawn_with_generation(subscriptions, max_in_flight, metrics, generation).await
+        Self::spawn_with_generation(subscriptions, metrics, generation).await
     }
 
     async fn spawn_with_generation(
         subscriptions: Vec<Subscription>,
-        max_in_flight: usize,
         metrics: Metrics,
         generation: u64,
     ) -> Result<ConsumerHandle, ConsumerError> {
@@ -215,7 +210,6 @@ impl ConsumerSet {
 
         tokio::spawn(run_actor(
             subscriptions,
-            max_in_flight.max(1),
             receiver,
             commands.clone(),
             buffer_tx,
