@@ -92,21 +92,6 @@ impl PublishPump {
         self.channel.store(None);
     }
 
-    /// Enqueues a publish job. Returns immediately without blocking.
-    ///
-    /// # Errors
-    ///
-    /// Returns `false` when the channel is full or the pump task has exited
-    /// (disconnected). The message is dropped in that case (fire-and-forget).
-    pub fn try_publish(&self, request: TransportRequest) -> bool {
-        self.tx
-            .try_send(PumpJob {
-                request,
-                barrier_tx: None,
-            })
-            .is_ok()
-    }
-
     /// Enqueues a publish job, applying backpressure by blocking the caller
     /// while the intake queue is full.
     ///

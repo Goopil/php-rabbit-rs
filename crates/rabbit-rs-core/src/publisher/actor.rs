@@ -196,19 +196,6 @@ impl PublisherHandle {
         }
     }
 
-    /// Hot-path publish: attempts immediate publish + confirm without going
-    /// through the actor. Falls back to the cold actor path
-    /// ([`try_publish`](Self::try_publish)) when the hot path is unavailable.
-    ///
-    /// Returns the same typed errors as [`try_publish`](Self::try_publish).
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`try_publish`](Self::try_publish).
-    pub fn try_publish_hot(&self, request: PublishRequest) -> Result<PublishWaiter, PublishError> {
-        self.try_publish(request)
-    }
-
     /// Blind-mode publish: hands the request to the background publish pump
     /// and returns a pre-resolved waiter.
     ///
