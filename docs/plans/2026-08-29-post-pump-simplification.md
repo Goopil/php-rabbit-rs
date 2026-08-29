@@ -50,7 +50,14 @@ du sweep) et C (A/B mimalloc) — d'où l'ordre A → B → C.
   `.superpowers/sdd/<date>-<slug>/`).
 - MR séparées, chacune depuis main, validées explicitement par l'utilisateur avant exécution.
 
-## Phase A — Benchs représentatifs de Laravel (MR 1)
+## Phase A — Benchs représentatifs de Laravel (MR 1) — MERGÉE (PR #32, 2026-08-29)
+
+Exécutée en SDD (Tasks 1-4, ledger `.superpowers/sdd/2026-08-29-post-pump-simplification/`).
+Résultats clés (release, 5 scénarios × 3 drivers, 0 losses/0 dups) : publish unitaire-Safe
+rabbit-rs ~3× PLUS LENT que les drivers PHP (9 755 vs 28 922-30 093 msg/s, haute variance)
+— input principal des Phases B/C ; worker consume rabbit-rs 5-6× plus rapide (push vs
+pull, écart mécanique honnête) ; p99 worker drain-dominated = artefact de définition du
+scénario. Budget smoke inchangé.
 
 Branche: `bench/laravel-realistic` (créée sur d923fe1).
 
@@ -139,7 +146,42 @@ SDD : T1 suppression + grep appelants + tests verts → T2 bench de confirmation
    `two_vhosts_in_one_consumer_set`).
 5. Standardiser benchs release (protocole obligatoire, doc).
 
+## Phase E — Bench niveau driver Laravel (MR 4, candidats tierces)
+
+Objectif : mesurer l'overhead **d'intégration framework** (queue API Laravel complète :
+dispatch, pop, ack, release/retries) là où la Phase A mesure le transport brut. Complète
+les findings Phase A (le gap publish ~3× est-il visible une fois le framework branché ?).
+
+### Candidats (évalués 2026-08-29)
+
+1. `goopil/rabbit-rs-laravel` — notre driver (extension native, Safe bufferisé).
+2. `vladimir-yuldashev/laravel-queue-rabbitmq` v15.0.1 (2026-08-21) — incumbent,
+   transport php-amqplib, référence adoption. **Cœur de la comparaison.**
+3. `iamfarhad/laravel-rabbitmq` — driver moderne sur **ext-amqp** (pooling, confirms,
+   quorum, Horizon, Octane). Requiert ext-amqp (absent des PHP locaux → Docker/CI).
+4. Optionnel : `bschmitt/laravel-amqp` v3.4.1 — wrapper/php-amqplib, transport déjà
+   couvert par vladimir-yuldashev, signaux de maintenance douteux (badge CI fork tiers,
+   README gonflé). À n'inclure que si le squelette le permet sans effort.
+
+### Design
+
+- Squelette app Laravel minimal (composer, une seule app) ; 3 connexions de queue
+  coexistantes ; commutation par `QUEUE_CONNECTION`.
+- Scénarios alignés Phase A : **dispatch** (push unitaire ×10k) et **worker** (pop +
+  ack unitaire, payload identique 1024 B). Runs interleavés, release uniquement
+  (PHP_CLI : realpath opcache activé), JSON par run archivés dans le workspace SDD.
+- Fairness : config par défaut de chaque driver documentée ; variante confirms si
+  disponible (iamfarhad) ; RabbitMQ identique (même lab, vhost dédié par driver).
+- Environnement : goopil + vladimir-yuldashev (php-amqplib) runnables localement ;
+  iamfarhad requiert ext-amqp → image Docker lab (php 8.x + pecl amqp) ou job CI dédié.
+- Livrable : tableau comparatif + conclusions écrites (où se situe notre driver à
+  niveau framework), feed direct pour arbitrer B/C.
+
+### Task E1 — Squelette app + wiring des 3 drivers
+### Task E2 — Run complet + tableau + conclusions
+
 ## Ordre d'exécution
 
 A → B → C (les scénarios A servent de base de mesure pour B et C).
+E est indépendante (peut passer après B ; requiert Docker/CI pour ext-amqp).
 D au fil de l'eau. Chaque phase validée explicitement avant exécution.
