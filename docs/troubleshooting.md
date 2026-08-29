@@ -242,6 +242,7 @@ rabbitmqctl list_queues -p /your-vhost name messages
 1. Reduce publish rate — batch jobs, add delays
 2. Scale consumers — more workers drain queues faster
 3. Check broker health — high confirmation latency indicates broker saturation
+4. Scale the publisher buffer — the publisher's bounded capacity (1024 publications by default) is currently **not configurable**: it is not exposed through the Laravel package config (`config/rabbit-rs.php`), and the raw native extension configuration does not accept a `buffer_capacity` key either. Until it is plumbed through, the mitigations above are the only levers.
 
 See [Operations — Backpressure](operations.md#backpressure-detection-and-response).
 
@@ -275,6 +276,12 @@ rabbitmqctl list_queues -p /your-vhost name messages | grep delay
 ```bash
 # With buckets [1, 5, 30, 120]
 # A 3-second delay → bucket 5 (delivered after ~5 seconds)
+```
+
+5. Check the publisher safety mode — in `blind` mode, delayed jobs are published immediately: the pump bypasses delay routing, so `delay_ms > 0` is not honored. Use `safe` or `unsafe` for delay routing:
+
+```bash
+RABBIT_RS_SAFETY=safe
 ```
 
 ### Getting help

@@ -188,7 +188,7 @@ The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`,
 
 - `safe` (default) — at-least-once: confirm mode + mandatory routing. Publications are retained in bounded process memory and replayed with their original `message_id` across connection recovery.
 - `unsafe` — synchronous socket write without confirms. The message reached the kernel socket buffer, but a broker-side failure can still lose it.
-- `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. `Pool::flush()` is a barrier: every request enqueued on the pump before it has been handed to the transport (submitted to the broker connection — delivery is not proven without confirms) when it returns. The only blind flush error is `Closed` (the pump is closed because the pool is dying): buffered requests are never re-buffered in blind mode. In `safe`/`unsafe` mode, a failed flush re-buffers the buffered requests conservatively — duplicates are permitted and identifiable through their `message_id`.
+- `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. Delayed jobs (`delay_ms > 0`) are **not** honored: the pump bypasses delay routing and publishes immediately — use `safe` or `unsafe` when you need delay routing. `Pool::flush()` is a barrier: every request enqueued on the pump before it has been handed to the transport — or dropped for lack of a channel during recovery (hand-off means submitted to the broker connection; delivery is not proven without confirms) — when it returns. The only blind flush error is `Closed` (the pump is closed because the pool is dying): buffered requests are never re-buffered in blind mode. In `safe`/`unsafe` mode, a failed flush re-buffers the buffered requests conservatively — duplicates are permitted and identifiable through their `message_id`.
 
 ### Delay
 
@@ -213,6 +213,8 @@ The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`,
 - `auto` — use the `rabbitmq_delayed_message_exchange` plugin if available, otherwise fall back to TTL queues
 - `plugin` — require the plugin; fail if it is not installed
 - `ttl` — always use TTL queue buckets
+
+> **Note:** when `publisher.safety` is `blind`, delayed jobs are **not** honored — the blind pump bypasses delay routing and publishes immediately. Use `safe` or `unsafe` when you need delay routing.
 
 See [Topology — Delay routing](topology.md#delay-routing) for details.
 

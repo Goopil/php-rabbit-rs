@@ -70,6 +70,12 @@ final class Pool
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      *
      * Flushes the publish buffer, sending all buffered messages to the broker.
+     *
+     * In blind mode this is a barrier: every request enqueued on the publish
+     * pump before this call has been handed to the transport (or dropped for
+     * lack of a channel during recovery) when flush() returns. Hand-off is
+     * not delivery: per the blind fire-and-forget contract, a later transport
+     * failure is a silent loss.
      */
     public function flush(): void
     {

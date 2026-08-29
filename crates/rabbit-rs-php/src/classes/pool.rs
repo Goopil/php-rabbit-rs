@@ -138,8 +138,9 @@ impl Pool {
     /// In blind mode this is a barrier: every request enqueued on the publish
     /// pump before this call — including buffered publications flushed just
     /// above and any earlier blind publish — has been handed to the transport
-    /// when `flush` returns. Hand-off is not delivery: per the blind
-    /// fire-and-forget contract, a later transport failure is a silent loss.
+    /// (or dropped for lack of a channel during recovery) when `flush`
+    /// returns. Hand-off is not delivery: per the blind fire-and-forget
+    /// contract, a later transport failure is a silent loss.
     pub fn flush(&self) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::flush")?;
         let publishes = std::mem::take(
