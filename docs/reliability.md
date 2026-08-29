@@ -2,7 +2,7 @@
 
 Rabbit RS provides at-least-once delivery. Silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable.
 
-The documented exception is `publisher.safety = blind`: an explicit fire-and-forget mode (silent loss possible) that is currently reachable only through the raw native extension configuration — see [Configuration](configuration.md).
+The documented exception is `publisher.safety = blind`: an explicit fire-and-forget mode (silent loss possible) that is configurable through the Laravel package (`publisher.safety`, env `RABBIT_RS_SAFETY`) as well as the raw native extension configuration — an explicit `blind` (or `unsafe`) value takes precedence over the legacy `confirms`/`mandatory` flags; see [Configuration](configuration.md).
 
 ## At-least-once contract
 

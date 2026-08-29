@@ -18,7 +18,7 @@ final class RabbitMqConnector implements ConnectorInterface
      * @param array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
-     *     publisher: array{confirms: bool, mandatory: bool, confirm_timeout: int},
+     *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int},
      *     topology: array<string, mixed>
      * } $normalizedConfig
      */
