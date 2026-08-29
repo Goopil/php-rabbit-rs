@@ -7,15 +7,17 @@ use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Illuminate\Support\Facades\Log;
 
+const CONSOLE_KERNEL = 'Illuminate\Contracts\Console\Kernel';
+
 describe('rabbit-rs:work command', function () {
     it('command is registered', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
 
         expect($commands)->toHaveKey('rabbit-rs:work');
     });
 
     it('command signature accepts workers and queue options', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -29,7 +31,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('command signature accepts worker propagation options', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -42,7 +44,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('worker propagation options have expected defaults', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -55,7 +57,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('default worker count is one', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -65,7 +67,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('default connection is rabbit-rs', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -290,5 +292,5 @@ function registerTestWorkCommand($app): void
         }
     };
 
-    $app->make('Illuminate\Contracts\Console\Kernel')->registerCommand($command);
+    $app->make(CONSOLE_KERNEL)->registerCommand($command);
 }

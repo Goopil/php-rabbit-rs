@@ -5,6 +5,8 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
 use Illuminate\Support\Str;
 
+const EXAMPLE_PAYLOAD = '{"job":"App\\\\Jobs\\\\Example"}';
+
 function mapperRoute(): array
 {
     return [
@@ -19,7 +21,7 @@ describe('MessageMapper', function () {
         $mapper = new MessageMapper(['confirm_timeout' => 5000]);
 
         $message = $mapper->map(
-            '{"job":"App\\\\Jobs\\\\Example"}',
+            EXAMPLE_PAYLOAD,
             mapperRoute(),
             'orders',
         );
@@ -31,7 +33,7 @@ describe('MessageMapper', function () {
         $mapper = new MessageMapper(['confirm_timeout' => 5000]);
 
         $message = $mapper->map(
-            '{"job":"App\\\\Jobs\\\\Example"}',
+            EXAMPLE_PAYLOAD,
             mapperRoute(),
             'orders',
             ['timeout_ms' => 12000],
@@ -44,7 +46,7 @@ describe('MessageMapper', function () {
         $mapper = new MessageMapper([]);
 
         $message = $mapper->map(
-            '{"job":"App\\\\Jobs\\\\Example"}',
+            EXAMPLE_PAYLOAD,
             mapperRoute(),
             'orders',
         );

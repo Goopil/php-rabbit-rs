@@ -9,6 +9,11 @@ use InvalidArgumentException;
 final class ConfigNormalizer
 {
     private const DEFAULT_AMQP_PORT = 5672;
+    private const MSG_MUST_BE_ARRAY = 'must be an array';
+    private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
+    private const MSG_NO_ACK = '.no_ack';
+    private const MSG_BROKER = '.broker';
+    private const MSG_SUBSCRIPTIONS = '.subscriptions';
 
     /**
      * @param array<string, mixed> $config
@@ -71,7 +76,7 @@ final class ConfigNormalizer
         foreach ($brokers as $name => $broker) {
             $path = 'brokers.'.self::name($name, 'brokers');
             if (! is_array($broker)) {
-                self::invalid($path, 'must be an array');
+                self::invalid($path, self::MSG_MUST_BE_ARRAY);
             }
 
             $hosts = $broker['hosts'] ?? null;
@@ -93,7 +98,7 @@ final class ConfigNormalizer
 
             $credentials = $broker['credentials'] ?? null;
             if (! is_array($credentials)) {
-                self::invalid($path.'.credentials', 'must be an array');
+                self::invalid($path.'.credentials', self::MSG_MUST_BE_ARRAY);
             }
 
             $username = self::string($credentials['username'] ?? null, $path.'.credentials.username');
@@ -156,7 +161,7 @@ final class ConfigNormalizer
     private static function tls(mixed $tls, string $path): array
     {
         if (! is_array($tls)) {
-            self::invalid($path, 'must be an array');
+            self::invalid($path, self::MSG_MUST_BE_ARRAY);
         }
 
         $enabled = $tls['enabled'] ?? false;
@@ -171,17 +176,17 @@ final class ConfigNormalizer
 
         $caCert = $tls['ca_cert'] ?? null;
         if ($caCert !== null && ! is_string($caCert)) {
-            self::invalid($path.'.ca_cert', 'must be null or a string');
+            self::invalid($path.'.ca_cert', self::MSG_MUST_BE_NULL_OR_STRING);
         }
 
         $clientCert = $tls['client_cert'] ?? null;
         if ($clientCert !== null && ! is_string($clientCert)) {
-            self::invalid($path.'.client_cert', 'must be null or a string');
+            self::invalid($path.'.client_cert', self::MSG_MUST_BE_NULL_OR_STRING);
         }
 
         $clientKey = $tls['client_key'] ?? null;
         if ($clientKey !== null && ! is_string($clientKey)) {
-            self::invalid($path.'.client_key', 'must be null or a string');
+            self::invalid($path.'.client_key', self::MSG_MUST_BE_NULL_OR_STRING);
         }
 
         $verify = $tls['verify'] ?? 'peer';
@@ -206,7 +211,7 @@ final class ConfigNormalizer
     private static function routes(mixed $routes, array $brokerNames): array
     {
         if (! is_array($routes)) {
-            self::invalid('routes', 'must be an array');
+            self::invalid('routes', self::MSG_MUST_BE_ARRAY);
         }
 
         ksort($routes);
@@ -214,12 +219,12 @@ final class ConfigNormalizer
         foreach ($routes as $name => $route) {
             $path = 'routes.'.self::name($name, 'routes');
             if (! is_array($route)) {
-                self::invalid($path, 'must be an array');
+                self::invalid($path, self::MSG_MUST_BE_ARRAY);
             }
 
-            $broker = self::string($route['broker'] ?? null, $path.'.broker');
+            $broker = self::string($route['broker'] ?? null, $path.self::MSG_BROKER);
             if (! isset($brokerNames[$broker])) {
-                self::invalid($path.'.broker', 'references an unknown broker');
+                self::invalid($path.self::MSG_BROKER, 'references an unknown broker');
             }
 
             $normalized[(string) $name] = [
@@ -239,7 +244,7 @@ final class ConfigNormalizer
     private static function workers(mixed $workers, array $brokerNames, bool $bestEffort): array
     {
         if (! is_array($workers)) {
-            self::invalid('workers', 'must be an array');
+            self::invalid('workers', self::MSG_MUST_BE_ARRAY);
         }
 
         ksort($workers);
@@ -247,12 +252,12 @@ final class ConfigNormalizer
         foreach ($workers as $name => $worker) {
             $path = 'workers.'.self::name($name, 'workers');
             if (! is_array($worker)) {
-                self::invalid($path, 'must be an array');
+                self::invalid($path, self::MSG_MUST_BE_ARRAY);
             }
 
             $scheduler = $worker['scheduler'] ?? null;
             if (! is_array($scheduler)) {
-                self::invalid($path.'.scheduler', 'must be an array');
+                self::invalid($path.'.scheduler', self::MSG_MUST_BE_ARRAY);
             }
             if (($scheduler['strategy'] ?? 'weighted_fair') !== 'weighted_fair') {
                 self::invalid($path.'.scheduler.strategy', 'must be weighted_fair');
@@ -260,7 +265,7 @@ final class ConfigNormalizer
 
             $subscriptions = $worker['subscriptions'] ?? null;
             if (! is_array($subscriptions) || $subscriptions === []) {
-                self::invalid($path.'.subscriptions', 'must contain at least one subscription');
+                self::invalid($path.self::MSG_SUBSCRIPTIONS, 'must contain at least one subscription');
             }
             ksort($subscriptions);
 
@@ -268,10 +273,10 @@ final class ConfigNormalizer
             foreach ($subscriptions as $subscriptionName => $subscription) {
                 $subscriptionPath = $path.'.subscriptions.'.self::name(
                     $subscriptionName,
-                    $path.'.subscriptions',
+                    $path.self::MSG_SUBSCRIPTIONS,
                 );
                 if (! is_array($subscription)) {
-                    self::invalid($subscriptionPath, 'must be an array');
+                    self::invalid($subscriptionPath, self::MSG_MUST_BE_ARRAY);
                 }
                 if (! self::boolean($subscription['enabled'] ?? true, $subscriptionPath.'.enabled')) {
                     continue;
@@ -279,10 +284,10 @@ final class ConfigNormalizer
 
                 $broker = self::string(
                     $subscription['broker'] ?? null,
-                    $subscriptionPath.'.broker',
+                    $subscriptionPath.self::MSG_BROKER,
                 );
                 if (! isset($brokerNames[$broker])) {
-                    self::invalid($subscriptionPath.'.broker', 'references an unknown broker');
+                    self::invalid($subscriptionPath.self::MSG_BROKER, 'references an unknown broker');
                 }
 
                 $prefetch = self::prefetch(
@@ -303,18 +308,18 @@ final class ConfigNormalizer
 
                 $noAck = self::boolean(
                     $subscription['no_ack'] ?? false,
-                    $subscriptionPath.'.no_ack',
+                    $subscriptionPath.self::MSG_NO_ACK,
                 );
                 if ($noAck) {
                     if (! $earlyAck) {
                         self::invalid(
-                            $subscriptionPath.'.no_ack',
+                            $subscriptionPath.self::MSG_NO_ACK,
                             "no_ack=true requires early_ack=true for subscription '{$subscriptionName}'",
                         );
                     }
                     if (! $bestEffort) {
                         self::invalid(
-                            $subscriptionPath.'.no_ack',
+                            $subscriptionPath.self::MSG_NO_ACK,
                             "no_ack=true requires best_effort=true for subscription '{$subscriptionName}'",
                         );
                     }
@@ -345,7 +350,7 @@ final class ConfigNormalizer
                 ];
             }
             if ($normalizedSubscriptions === []) {
-                self::invalid($path.'.subscriptions', 'must contain at least one enabled subscription');
+                self::invalid($path.self::MSG_SUBSCRIPTIONS, 'must contain at least one enabled subscription');
             }
 
             $normalized[] = [
@@ -378,7 +383,7 @@ final class ConfigNormalizer
     private static function publisher(mixed $publisher): array
     {
         if (! is_array($publisher)) {
-            self::invalid('publisher', 'must be an array');
+            self::invalid('publisher', self::MSG_MUST_BE_ARRAY);
         }
 
         return [
@@ -397,7 +402,7 @@ final class ConfigNormalizer
     private static function delay(mixed $delay): array
     {
         if (! is_array($delay)) {
-            self::invalid('delay', 'must be an array');
+            self::invalid('delay', self::MSG_MUST_BE_ARRAY);
         }
 
         $mode = $delay['mode'] ?? 'auto';
@@ -440,12 +445,12 @@ final class ConfigNormalizer
     private static function topology(mixed $topology): array
     {
         if (! is_array($topology)) {
-            self::invalid('topology', 'must be an array');
+            self::invalid('topology', self::MSG_MUST_BE_ARRAY);
         }
 
         $queue = $topology['queue'] ?? [];
         if (! is_array($queue)) {
-            self::invalid('topology.queue', 'must be an array');
+            self::invalid('topology.queue', self::MSG_MUST_BE_ARRAY);
         }
 
         $type = $queue['type'] ?? 'quorum';

@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+const STATUS_JSON_COMMAND = 'rabbit-rs:status --format=json';
+
 describe('status command', function () {
     it('human output shows pool stats without secrets', function () {
         $this->artisan('rabbit-rs:status')
@@ -14,7 +16,7 @@ describe('status command', function () {
     });
 
     it('json output includes consumer metrics', function () {
-        $this->artisan('rabbit-rs:status --format=json')
+        $this->artisan(STATUS_JSON_COMMAND)
             ->assertSuccessful()
             ->expectsOutputToContain('deliveries_total')
             ->expectsOutputToContain('acks_total')
@@ -22,7 +24,7 @@ describe('status command', function () {
     });
 
     it('json output includes confirmation latency percentiles', function () {
-        $this->artisan('rabbit-rs:status --format=json')
+        $this->artisan(STATUS_JSON_COMMAND)
             ->assertSuccessful()
             ->expectsOutputToContain('confirmation_latency_p50')
             ->expectsOutputToContain('confirmation_latency_p95')
@@ -30,7 +32,7 @@ describe('status command', function () {
     });
 
     it('json output includes settlement latency percentiles', function () {
-        $this->artisan('rabbit-rs:status --format=json')
+        $this->artisan(STATUS_JSON_COMMAND)
             ->assertSuccessful()
             ->expectsOutputToContain('settlement_latency_p50')
             ->expectsOutputToContain('settlement_latency_p95')
@@ -48,7 +50,7 @@ describe('status command', function () {
     });
 
     it('json output returns structured stats', function () {
-        $this->artisan('rabbit-rs:status --format=json')
+        $this->artisan(STATUS_JSON_COMMAND)
             ->assertSuccessful();
     });
 
@@ -60,7 +62,7 @@ describe('status command', function () {
     });
 
     it('json output does not leak credentials', function () {
-        $this->artisan('rabbit-rs:status --format=json')
+        $this->artisan(STATUS_JSON_COMMAND)
             ->assertSuccessful()
             ->doesntExpectOutput('guest')
             ->doesntExpectOutput('password');

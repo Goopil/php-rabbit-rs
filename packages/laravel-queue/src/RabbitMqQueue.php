@@ -23,6 +23,8 @@ use InvalidArgumentException;
 
 class RabbitMqQueue extends Queue implements QueueContract
 {
+    private const CONTENT_TYPE_JSON = 'application/json';
+
     /** @var array<string, Consumer> */
     private array $consumers = [];
 
@@ -152,7 +154,7 @@ class RabbitMqQueue extends Queue implements QueueContract
             fn (string $payload, ?string $queue): string => $this->publish(
                 $payload,
                 $queue,
-                ['content_type' => 'application/json'],
+                ['content_type' => self::CONTENT_TYPE_JSON],
             ),
         );
     }
@@ -174,7 +176,7 @@ class RabbitMqQueue extends Queue implements QueueContract
             fn (string $payload, ?string $queue, mixed $delay): string => $this->publish(
                 $payload,
                 $queue,
-                ['content_type' => 'application/json'],
+                ['content_type' => self::CONTENT_TYPE_JSON],
                 $this->delayMilliseconds($delay),
             ),
         );
@@ -189,7 +191,7 @@ class RabbitMqQueue extends Queue implements QueueContract
         return $this->publish(
             $payload,
             $queue,
-            ['content_type' => 'application/json'],
+            ['content_type' => self::CONTENT_TYPE_JSON],
             $this->delayMilliseconds($delay),
         );
     }
@@ -266,7 +268,7 @@ class RabbitMqQueue extends Queue implements QueueContract
                     $payload,
                     $route,
                     $queueName,
-                    ['content_type' => 'application/json'],
+                    ['content_type' => self::CONTENT_TYPE_JSON],
                     $delay === null ? null : $this->delayMilliseconds($delay),
                 ),
             ];

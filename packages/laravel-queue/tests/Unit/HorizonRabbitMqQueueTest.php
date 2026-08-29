@@ -13,6 +13,8 @@ use Laravel\Horizon\Events\JobPending;
 use Laravel\Horizon\Events\JobPushed;
 use Laravel\Horizon\Events\JobReserved;
 
+const HORIZON_EVENTS_NS = 'Laravel\Horizon\Events\\';
+
 /**
  * @return list<array<string, mixed>>
  */
@@ -61,7 +63,7 @@ it('dispatches JobPending then JobPushed on push', function (): void {
     $events = [];
     $this->events->method('dispatch')->willReturnCallback(
         static function (object $event) use (&$events): void {
-            if (str_starts_with($event::class, 'Laravel\Horizon\Events\\')) {
+            if (str_starts_with($event::class, HORIZON_EVENTS_NS)) {
                 $events[] = $event;
             }
         }
@@ -88,7 +90,7 @@ it('dispatches JobPending then JobPushed on later', function (): void {
     $events = [];
     $this->events->method('dispatch')->willReturnCallback(
         static function (object $event) use (&$events): void {
-            if (str_starts_with($event::class, 'Laravel\Horizon\Events\\')) {
+            if (str_starts_with($event::class, HORIZON_EVENTS_NS)) {
                 $events[] = $event;
             }
         }
@@ -113,7 +115,7 @@ it('dispatches JobReserved on pop when a job is returned', function (): void {
     $events = [];
     $this->events->method('dispatch')->willReturnCallback(
         static function (object $event) use (&$events): void {
-            if (str_starts_with($event::class, 'Laravel\Horizon\Events\\')) {
+            if (str_starts_with($event::class, HORIZON_EVENTS_NS)) {
                 $events[] = $event;
             }
         }
@@ -146,7 +148,7 @@ it('dispatches JobDeleted on deleteReserved', function (): void {
     $events = [];
     $this->events->method('dispatch')->willReturnCallback(
         static function (object $event) use (&$events): void {
-            if (str_starts_with($event::class, 'Laravel\Horizon\Events\\')) {
+            if (str_starts_with($event::class, HORIZON_EVENTS_NS)) {
                 $events[] = $event;
             }
         }
