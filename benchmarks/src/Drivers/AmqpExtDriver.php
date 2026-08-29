@@ -80,12 +80,13 @@ class AmqpExtDriver extends AbstractBenchmark
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
-            || $this->scenarioMode === ScenarioMode::AUTO_ACK) {
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK
+            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
             $this->publishFireAndForget($count);
             return;
         }
 
-        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
+        $batchSize = $this->scenarioMode === ScenarioMode::LARAVEL_DISPATCH ? 64 : 256;
         $this->publishWithConfirms($count, $batchSize);
     }
 
@@ -129,7 +130,7 @@ class AmqpExtDriver extends AbstractBenchmark
             }
         }
 
-        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM && ($count % $batchSize !== 0)) {
+        if ($count % $batchSize !== 0) {
             try {
                 $this->pubChannel->waitForConfirm(5);
             } catch (\Throwable) {
@@ -142,6 +143,11 @@ class AmqpExtDriver extends AbstractBenchmark
     {
         if ($this->consQueue === null) {
             throw new BenchmarkException('Driver not set up');
+        }
+
+        if ($this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
+            $this->consumeSingleGet($count);
+            return;
         }
 
         if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
@@ -157,6 +163,36 @@ class AmqpExtDriver extends AbstractBenchmark
         $callback = $this->makeConsumeCallback($count, $autoAck, $consumerTag, $consumed);
 
         $this->consumeWithTimeouts($this->consQueue, $callback, $count, $consumed, $consumerTag, $flags);
+    }
+
+    private function consumeSingleGet(int $count): void
+    {
+        $consumed = 0;
+        $consecutiveEmpty = 0;
+        while ($consumed < $count) {
+            $envelope = $this->consQueue->get(AMQP_NOPARAM);
+            if ($envelope === false) {
+                $consecutiveEmpty++;
+                if ($consecutiveEmpty >= 3) {
+                    break;
+                }
+                usleep(100_000);
+                continue;
+            }
+            $consecutiveEmpty = 0;
+
+            $body = $envelope->getBody();
+            $this->recordReceived($envelope->getMessageId() ?? '');
+            if (strlen($body) >= 8) {
+                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
+                if ($ts !== null) {
+                    $elapsedNs = hrtime(true) - (int) $ts;
+                    $this->recordLatency($elapsedNs / 1_000_000);
+                }
+            }
+            $this->consQueue->ack($envelope->getDeliveryTag());
+            $consumed++;
+        }
     }
 
     private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure

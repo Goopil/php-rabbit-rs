@@ -88,7 +88,8 @@ class AmqplibDriver extends AbstractBenchmark
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
-            || $this->scenarioMode === ScenarioMode::AUTO_ACK) {
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK
+            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
             for ($i = 0; $i < $count; $i++) {
                 $ts = hrtime(true);
                 $msg = new AMQPMessage(pack('P', $ts) . $this->createMessage((string) $i), [
@@ -100,7 +101,7 @@ class AmqplibDriver extends AbstractBenchmark
             return;
         }
 
-        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
+        $batchSize = $this->scenarioMode === ScenarioMode::LARAVEL_DISPATCH ? 64 : 256;
         try {
             $this->pubChannel->close();
         } catch (\Throwable) {
@@ -118,10 +119,19 @@ class AmqplibDriver extends AbstractBenchmark
             $this->pubChannel->basic_publish($msg, self::EXCHANGE, self::QUEUE, true);
 
             if (($i + 1) % $batchSize === 0) {
-                $this->pubChannel->wait_for_pending_acks(5);
+                $this->waitForPublishConfirms();
             }
         }
 
+        $this->waitForPublishConfirms();
+    }
+
+    private function waitForPublishConfirms(): void
+    {
+        if ($this->scenarioMode === ScenarioMode::LARAVEL_DISPATCH) {
+            $this->pubChannel->wait_for_pending_acks_returns(5);
+            return;
+        }
         $this->pubChannel->wait_for_pending_acks(5);
     }
 
@@ -129,6 +139,11 @@ class AmqplibDriver extends AbstractBenchmark
     {
         if ($this->consChannel === null) {
             throw new BenchmarkException('Driver not set up');
+        }
+
+        if ($this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
+            $this->consumeSingleGet($count);
+            return;
         }
 
         try {
@@ -148,6 +163,44 @@ class AmqplibDriver extends AbstractBenchmark
         $this->consChannel->basic_consume(self::QUEUE, $consumerTag, false, $autoAck, false, false, $callback);
 
         $this->consumeWithTimeouts($count, $consumed);
+    }
+
+    private function consumeSingleGet(int $count): void
+    {
+        try {
+            $this->consChannel->close();
+        } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
+        }
+        $this->consChannel = $this->consConnection->channel();
+        $this->consChannel->basic_qos(0, Config::PREFETCH_LARAVEL, false);
+
+        $consumed = 0;
+        $consecutiveEmpty = 0;
+        while ($consumed < $count) {
+            $msg = $this->consChannel->basic_get(self::QUEUE, false);
+            if ($msg === null) {
+                $consecutiveEmpty++;
+                if ($consecutiveEmpty >= 3) {
+                    break;
+                }
+                usleep(100_000);
+                continue;
+            }
+            $consecutiveEmpty = 0;
+
+            $body = $msg->getBody();
+            $this->recordReceived($msg->get('message_id'));
+            if (strlen($body) >= 8) {
+                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
+                if ($ts !== null) {
+                    $elapsedNs = hrtime(true) - (int) $ts;
+                    $this->recordLatency($elapsedNs / 1_000_000);
+                }
+            }
+            $msg->ack();
+            $consumed++;
+        }
     }
 
     private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure
