@@ -124,7 +124,7 @@ class AmqpExtDriver extends AbstractBenchmark
             try {
                 $this->pubChannel->waitForConfirm(5);
             } catch (\Throwable) {
-                // Best-effort: ignore errors during cleanup/teardown.
+                // Trailing confirm failure of the final partial batch is not actionable here.
             }
         }
     }

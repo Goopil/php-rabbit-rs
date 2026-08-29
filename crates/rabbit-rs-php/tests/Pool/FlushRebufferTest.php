@@ -57,7 +57,7 @@ describe('flush re-buffering', function () {
             $pool->flush();
             expect(false)->toBeTrue('failed flush must throw');
         } catch (\Goopil\RabbitRs\ConnectionException) {
-            // Best-effort: ignore errors during cleanup/teardown.
+            // Expected: flush must throw while the transport error persists.
         }
 
         try {
