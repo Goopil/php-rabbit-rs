@@ -5,12 +5,6 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -21,6 +15,8 @@ env:
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
       has_packagist: ${{ steps.check-secrets.outputs.has_packagist }}
@@ -59,6 +55,11 @@ jobs:
   build-linux:
     needs: create-release
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -191,6 +192,11 @@ jobs:
   build-macos:
     needs: create-release
     runs-on: macos-14
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -341,6 +347,8 @@ jobs:
   publish-release:
     needs: [create-release, build-linux, build-macos, verify-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Publish release
@@ -361,6 +369,8 @@ jobs:
   update-homebrew-formula:
     needs: [create-release, publish-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
@@ -392,6 +402,8 @@ jobs:
   test-homebrew-formula:
     needs: [update-homebrew-formula]
     runs-on: macos-14
+    permissions:
+      contents: read
     if: needs.update-homebrew-formula.result == 'success' && needs.update-homebrew-formula.outputs.skip == 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
