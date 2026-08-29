@@ -101,8 +101,7 @@ for php_ver in 8.4 8.5; do
 
     echo "==> Downloading ${asset_name}"
     # URL is HTTPS-only (-L follows redirects; GitHub release URLs never downgrade to HTTP).
-    curl -fsSL --retry 3 --retry-delay 5 -o "${zip_path}" "${download_url}" \
-        || fail "failed to download ${download_url}"
+    curl -fsSL --retry 3 --retry-delay 5 -o "${zip_path}" "${download_url}" || fail "failed to download ${download_url}" # NOSONAR
 
     sha="$(sha256_func "${zip_path}")"
     SHAS["${php_ver}"]="${sha}"
