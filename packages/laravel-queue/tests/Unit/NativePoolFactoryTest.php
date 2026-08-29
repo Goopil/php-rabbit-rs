@@ -30,7 +30,7 @@ describe('flush', function (): void {
 
         $pools = ['a' => $poolA, 'b' => $poolB];
         $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pools[$config['key']] ?? throw new RuntimeException('unknown'),
+            createPool: static fn (array $config): Pool => $pools[$config['key']] ?? throw new TestException('unknown'),
         );
 
         $factory->make(['key' => 'a']);

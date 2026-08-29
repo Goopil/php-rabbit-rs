@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bench\Laravel;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 
 class LaravelCompareBenchmark extends AbstractBenchmark
 {
@@ -146,7 +147,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
                 'vhost' => '/orders-eu',
                 'prefetch_count' => 16,
             ],
-            default => throw new \RuntimeException("Unknown driver: {$this->driver}"),
+            default => throw new BenchmarkException("Unknown driver: {$this->driver}"),
         };
     }
 }

@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
 use Bunny\Channel;
 use Bunny\Client;
-use RuntimeException;
 
 class BunnyDriver extends AbstractBenchmark
 {
@@ -58,7 +58,7 @@ class BunnyDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->channel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
@@ -126,7 +126,7 @@ class BunnyDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->channel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET

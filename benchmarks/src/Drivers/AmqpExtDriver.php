@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
-use RuntimeException;
 
 class AmqpExtDriver extends AbstractBenchmark
 {
@@ -24,7 +24,7 @@ class AmqpExtDriver extends AbstractBenchmark
     public function __construct()
     {
         if (!extension_loaded('amqp')) {
-            throw new \RuntimeException('The pecl "amqp" extension is not loaded');
+            throw new BenchmarkException('The pecl "amqp" extension is not loaded');
         }
     }
 
@@ -76,7 +76,7 @@ class AmqpExtDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->pubExchange === null || $this->pubChannel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
@@ -132,7 +132,7 @@ class AmqpExtDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->consQueue === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {

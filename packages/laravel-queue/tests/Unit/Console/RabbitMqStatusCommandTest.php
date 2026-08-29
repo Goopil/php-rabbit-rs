@@ -8,7 +8,7 @@ describe('RabbitMqStatusCommand exit codes', function () {
     it('returns FAILURE when stats collection throws', function () {
         $factory = new NativePoolFactory(
             createPool: static function (array $config): \Goopil\RabbitRs\Pool {
-                throw new RuntimeException('broker unreachable');
+                throw new TestException('broker unreachable');
             },
         );
 
@@ -27,7 +27,7 @@ describe('RabbitMqStatusCommand exit codes', function () {
     it('returns FAILURE with json format when stats collection throws', function () {
         $factory = new NativePoolFactory(
             createPool: static function (array $config): \Goopil\RabbitRs\Pool {
-                throw new RuntimeException('broker unreachable');
+                throw new TestException('broker unreachable');
             },
         );
 

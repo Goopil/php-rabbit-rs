@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
-use RuntimeException;
 
 class AmqplibDriver extends AbstractBenchmark
 {
@@ -84,7 +84,7 @@ class AmqplibDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->pubChannel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
@@ -128,7 +128,7 @@ class AmqplibDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->consChannel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         try {

@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Pool;
-use RuntimeException;
 
 class RabbitRsDriver extends AbstractBenchmark
 {
@@ -91,7 +91,7 @@ class RabbitRsDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->pool === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         $batchSize = 256;
@@ -129,7 +129,7 @@ class RabbitRsDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->pool === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->consumer === null) {

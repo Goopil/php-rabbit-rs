@@ -13,11 +13,11 @@ class Budget
     {
         $contents = @file_get_contents($path);
         if ($contents === false) {
-            throw new \RuntimeException("Budget file not found: {$path}");
+            throw new BenchmarkException("Budget file not found: {$path}");
         }
         $decoded = json_decode($contents, true);
         if (!is_array($decoded)) {
-            throw new \RuntimeException("Invalid budget JSON in: {$path}");
+            throw new BenchmarkException("Invalid budget JSON in: {$path}");
         }
         $this->budget = $decoded;
     }

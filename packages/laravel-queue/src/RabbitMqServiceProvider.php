@@ -9,11 +9,11 @@ use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
+use Goopil\RabbitRs\Laravel\Exceptions\MissingExtensionException;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
-use RuntimeException;
 
 class RabbitMqServiceProvider extends ServiceProvider
 {
@@ -119,7 +119,7 @@ class RabbitMqServiceProvider extends ServiceProvider
 
     private static function throwMissingNativeExtension(): never
     {
-        throw new RuntimeException(
+        throw new MissingExtensionException(
             'The Rabbit RS Laravel driver requires ext-rabbit_rs ^1.0 to be loaded.',
         );
     }
