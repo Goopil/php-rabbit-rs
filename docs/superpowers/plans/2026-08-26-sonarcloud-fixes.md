@@ -713,6 +713,13 @@ For each test file, add constants at the class/file level:
 
 - `RabbitMqJobTest.php:40`: UUID `'018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137'` (5×) → `private const TEST_MESSAGE_ID = '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137';`
 - `HorizonRabbitMqJobTest.php:16`: same UUID (3×) → same constant
+
+> **⚠️ CORRIGÉ EN EXÉCUTION (2026-08-29, commit eca073e) :** `private const` est invalide
+> au niveau fichier Pest, et déclarer le MÊME nom `TEST_MESSAGE_ID` dans deux fichiers
+> chargés dans un même processus Pest produit des warnings « Constant already defined ».
+> Résolution livrée : constantes renommées par fichier — `RABBIT_MQ_JOB_TEST_MESSAGE_ID`
+> (RabbitMqJobTest) et `HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID` (HorizonRabbitMqJobTest),
+> `const` simple (sans `private`). Ne pas ré-exécuter la prescription verbatim ci-dessus.
 - `HorizonRabbitMqQueueTest.php:64`: `'Laravel\Horizon\Events\'` (4×) → `private const HORIZON_EVENTS_NS = 'Laravel\Horizon\Events\';`
 - `MessageMapperTest.php:22`: `'{"job":"App\\Jobs\\Example"}'` (3×) → constant
 - `AtLeastOnceChaosTest.php:76`: `'rabbit@rabbitmq-1'` (3×) → constant
