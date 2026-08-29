@@ -58,15 +58,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: coverage-rust
-          path: |
-            target/coverage/rust.lcov
-            target/nextest/junit.xml
-          retention-days: 7
-
   coverage-php-ext:
     name: Coverage (PHP Extension)
     runs-on: ubuntu-latest
@@ -139,13 +130,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: coverage-php-ext
-          path: target/coverage/
-          retention-days: 7
-
   coverage-laravel:
     name: Coverage (Laravel)
     runs-on: ubuntu-latest
@@ -189,65 +173,3 @@ jobs:
           disable_search: true
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: coverage-laravel
-          path: packages/laravel-queue/build/
-          retention-days: 7
-
-  sonarcloud:
-    name: SonarCloud
-    needs: [coverage-rust, coverage-php-ext, coverage-laravel]
-    runs-on: ubuntu-latest
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-
-      - name: Download coverage-rust
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: coverage-rust
-          path: artifacts/coverage-rust
-
-      - name: Download coverage-php-ext
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: coverage-php-ext
-          path: artifacts/coverage-php-ext
-
-      - name: Download coverage-laravel
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: coverage-laravel
-          path: artifacts/coverage-laravel
-
-      - name: Place artifacts
-        run: |
-          mkdir -p target/coverage target/nextest packages/laravel-queue/build
-          if [ -f artifacts/coverage-rust/rust.lcov ]; then
-            cp artifacts/coverage-rust/rust.lcov target/coverage/
-            cp artifacts/coverage-rust/junit.xml target/nextest/
-          fi
-          if [ -f artifacts/coverage-php-ext/php-ext.lcov ]; then
-            cp artifacts/coverage-php-ext/php-ext.lcov target/coverage/
-          fi
-          if [ -f artifacts/coverage-laravel/clover.xml ]; then
-            cp artifacts/coverage-laravel/clover.xml packages/laravel-queue/build/
-          fi
-
-      - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f
-        if: env.SONAR_TOKEN != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >
-            -Dsonar.organization=goopil
-            -Dsonar.projectKey=Goopil_rabbit-rs
-            -Dsonar.coverage.lcovReportPaths=target/coverage/rust.lcov,target/coverage/php-ext.lcov
-            -Dsonar.php.coverage.reportPaths=packages/laravel-queue/build/clover.xml
