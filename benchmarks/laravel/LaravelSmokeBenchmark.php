@@ -84,6 +84,7 @@ class LaravelSmokeBenchmark extends AbstractBenchmark
             try {
                 $this->queue->clear($this->queueName);
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
         }
         if ($this->pool !== null) {

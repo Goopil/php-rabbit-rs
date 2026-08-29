@@ -68,6 +68,7 @@ class AmqpExtDriver extends AbstractBenchmark
             try {
                 $this->consQueue->purge();
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -123,6 +124,7 @@ class AmqpExtDriver extends AbstractBenchmark
             try {
                 $this->pubChannel->waitForConfirm(5);
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
         }
     }
@@ -191,6 +193,7 @@ class AmqpExtDriver extends AbstractBenchmark
                 $this->connection->disconnect();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
 
         $this->connection = new \AMQPConnection([
@@ -218,6 +221,7 @@ class AmqpExtDriver extends AbstractBenchmark
                 $this->connection->disconnect();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
         $this->connection = null;
         $this->pubChannel = null;

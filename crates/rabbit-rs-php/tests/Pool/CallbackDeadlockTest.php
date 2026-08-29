@@ -54,6 +54,7 @@ describe('callback deadlock', function () {
                 pubMessage('bp-2', 'payload', [], 1),
             ]);
         } catch (\Goopil\RabbitRs\BackpressureException) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
 
         // This call must complete without hanging.

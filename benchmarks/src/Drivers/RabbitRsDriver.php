@@ -83,6 +83,7 @@ class RabbitRsDriver extends AbstractBenchmark
             try {
                 $this->pool->clear('default', self::QUEUE);
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -189,6 +190,7 @@ class RabbitRsDriver extends AbstractBenchmark
             try {
                 $this->consumer->close();
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
             $this->consumer = null;
         }

@@ -45,6 +45,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
         try {
             $this->queue->clear($this->queueName);
         } catch (\Throwable) {
+            // Queue may not exist yet; safe to ignore.
         }
     }
 
@@ -81,6 +82,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
             try {
                 $this->queue->clear($this->queueName);
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
         }
     }

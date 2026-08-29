@@ -50,6 +50,7 @@ class BunnyDriver extends AbstractBenchmark
             try {
                 $this->channel->queuePurge(self::QUEUE);
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -182,6 +183,7 @@ class BunnyDriver extends AbstractBenchmark
             try {
                 $this->client->disconnect();
             } catch (\Throwable) {
+                // Connection may already be closed; safe to ignore.
             }
             $this->client = null;
         }

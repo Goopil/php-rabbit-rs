@@ -76,6 +76,7 @@ class AmqplibDriver extends AbstractBenchmark
             try {
                 $this->pubChannel->queue_purge(self::QUEUE);
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -103,6 +104,7 @@ class AmqplibDriver extends AbstractBenchmark
         try {
             $this->pubChannel->close();
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         $this->pubChannel = $this->pubConnection->channel();
         $this->pubChannel->confirm_select();
@@ -132,6 +134,7 @@ class AmqplibDriver extends AbstractBenchmark
         try {
             $this->consChannel->close();
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         $this->consChannel = $this->consConnection->channel();
         $this->consChannel->basic_qos(0, Config::PREFETCH_COUNT, false);
@@ -190,24 +193,28 @@ class AmqplibDriver extends AbstractBenchmark
                 $this->pubChannel->close();
             }
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         try {
             if ($this->consChannel !== null) {
                 $this->consChannel->close();
             }
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         try {
             if ($this->pubConnection !== null) {
                 $this->pubConnection->close();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
         try {
             if ($this->consConnection !== null) {
                 $this->consConnection->close();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
         $this->pubChannel = null;
         $this->consChannel = null;
