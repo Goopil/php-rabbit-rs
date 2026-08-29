@@ -10,12 +10,9 @@ describe('secret redaction', function () {
         $config['brokers'][0]['hosts'][0]['port'] = 'not-a-port';
         $config['brokers'][0]['credentials']['password'] = $password;
 
-        try {
-            new \Goopil\RabbitRs\Pool($config);
-            expect(false)->toBeTrue('operation must fail');
-        } catch (\Goopil\RabbitRs\Exception $e) {
-            expect($e->getMessage())->not->toContain($password);
-        }
+        expect(fn () => new \Goopil\RabbitRs\Pool($config))->toThrow(
+            fn (\Goopil\RabbitRs\Exception $e) => expect($e->getMessage())->not->toContain($password),
+        );
     });
 
     it('does not expose private key material in validation errors', function () {
@@ -29,11 +26,8 @@ describe('secret redaction', function () {
             'private_key' => $privateKey,
         ];
 
-        try {
-            new \Goopil\RabbitRs\Pool($config);
-            expect(false)->toBeTrue('operation must fail');
-        } catch (\Goopil\RabbitRs\Exception $e) {
-            expect($e->getMessage())->not->toContain($privateKey);
-        }
+        expect(fn () => new \Goopil\RabbitRs\Pool($config))->toThrow(
+            fn (\Goopil\RabbitRs\Exception $e) => expect($e->getMessage())->not->toContain($privateKey),
+        );
     });
 });

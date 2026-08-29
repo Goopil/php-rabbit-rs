@@ -169,19 +169,16 @@ describe('Pool construction error', function () {
             'PRIVATE-KEY-MATERIAL',
         ];
 
-        try {
-            new \Goopil\RabbitRs\Pool([
-                'uri' => $secrets[0],
-                'password' => $secrets[1],
-                'private_key' => $secrets[2],
-            ]);
-            expect(false)->toBeTrue('Pool construction must be unavailable');
-        } catch (\Goopil\RabbitRs\Exception $e) {
+        expect(fn () => new \Goopil\RabbitRs\Pool([
+            'uri' => $secrets[0],
+            'password' => $secrets[1],
+            'private_key' => $secrets[2],
+        ]))->toThrow(function (\Goopil\RabbitRs\Exception $e) use ($secrets): void {
             expect($e::class)->toBe(\Goopil\RabbitRs\Exception::class);
             expect($e->getMessage())->not->toBeEmpty();
             foreach ($secrets as $secret) {
                 expect($e->getMessage())->not->toContain($secret);
             }
-        }
+        });
     });
 });
