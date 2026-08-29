@@ -348,13 +348,13 @@ final class ConfigNormalizer
             $subscription['early_ack'] ?? false,
             $subscriptionPath.'.early_ack',
         );
-        self::validateEarlyAck($earlyAck, $bestEffort, $subscriptionPath);
-
-        $noAck = self::boolean(
+        $noAck = self::validateAckFlags(
             $subscription['no_ack'] ?? false,
-            $subscriptionPath.self::MSG_NO_ACK,
+            $earlyAck,
+            $bestEffort,
+            $subscriptionName,
+            $subscriptionPath,
         );
-        self::validateNoAck($noAck, $earlyAck, $bestEffort, $subscriptionName, $subscriptionPath);
 
         return [
             'name' => $subscriptionName,
@@ -363,9 +363,10 @@ final class ConfigNormalizer
                 $subscription['queue'] ?? null,
                 $subscriptionPath.'.queue',
             ),
-            'weight' => self::boundedU16(
+            'weight' => self::positiveInt(
                 $subscription['weight'] ?? 1,
                 $subscriptionPath.'.weight',
+                65535,
             ),
             'priority_class' => self::boundedI16(
                 $subscription['priority_class'] ?? 0,
@@ -381,38 +382,40 @@ final class ConfigNormalizer
         ];
     }
 
-    private static function validateEarlyAck(bool $earlyAck, bool $bestEffort, string $subscriptionPath): void
-    {
+    private static function validateAckFlags(
+        mixed $noAckRaw,
+        bool $earlyAck,
+        bool $bestEffort,
+        string $subscriptionName,
+        string $subscriptionPath,
+    ): bool {
         if ($earlyAck && ! $bestEffort) {
             self::invalid(
                 $subscriptionPath.'.early_ack',
                 'early_ack is not allowed in reliable mode — set best_effort=true to opt in',
             );
         }
-    }
 
-    private static function validateNoAck(
-        bool $noAck,
-        bool $earlyAck,
-        bool $bestEffort,
-        string $subscriptionName,
-        string $subscriptionPath,
-    ): void {
+        $noAck = self::boolean($noAckRaw, $subscriptionPath.self::MSG_NO_ACK);
         if (! $noAck) {
-            return;
+            return false;
         }
+
         if (! $earlyAck) {
             self::invalid(
                 $subscriptionPath.self::MSG_NO_ACK,
                 "no_ack=true requires early_ack=true for subscription '{$subscriptionName}'",
             );
         }
+
         if (! $bestEffort) {
             self::invalid(
                 $subscriptionPath.self::MSG_NO_ACK,
                 "no_ack=true requires best_effort=true for subscription '{$subscriptionName}'",
             );
         }
+
+        return true;
     }
 
     private static function prefetch(mixed $prefetch, string $path): int
@@ -424,7 +427,7 @@ final class ConfigNormalizer
             self::invalid($path.'.mode', 'must be fixed');
         }
 
-        return self::boundedU16($prefetch['value'] ?? null, $path.'.value');
+        return self::positiveInt($prefetch['value'] ?? null, $path.'.value', 65535);
     }
 
     /**
@@ -572,20 +575,13 @@ final class ConfigNormalizer
         return $value;
     }
 
-    private static function positiveInt(mixed $value, string $path): int
+    private static function positiveInt(mixed $value, string $path, ?int $max = null): int
     {
         if (! is_int($value) || $value < 1) {
             self::invalid($path, 'must be a positive integer');
         }
-
-        return $value;
-    }
-
-    private static function boundedU16(mixed $value, string $path): int
-    {
-        $value = self::positiveInt($value, $path);
-        if ($value > 65535) {
-            self::invalid($path, 'must be at most 65535');
+        if ($max !== null && $value > $max) {
+            self::invalid($path, 'must be at most '.$max);
         }
 
         return $value;
