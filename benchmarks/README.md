@@ -56,8 +56,8 @@ Drivers are auto-detected based on available extensions and classes.
 | `fire-and-forget` | No confirms, no mandatory flag | `no_ack=true` (auto-ack by broker) |
 | `batch-confirm` | Batched confirms (every 256 msgs), mandatory flag | Manual ACK |
 | `auto-ack` | Per-message confirms, mandatory flag | `no_ack=true` (auto-ack by broker) |
-| `laravel-dispatch` | Unit publishes, confirms + mandatory (Safe), 1024 B payload | Fast batch drain (not measured) |
-| `laravel-worker` | Fast batch fill, blind (not measured) | Unit consume + ACK per message, 1024 B payload, prefetch 64 |
+| `laravel-dispatch` | Unit publishes, confirms + mandatory (Safe), 1024 B payload | Fast batch drain (not the headline metric) |
+| `laravel-worker` | Fast batch fill, blind (not the headline metric) | Unit consume + ACK per message, 1024 B payload, prefetch 64 |
 
 Note: for the `rabbit-rs` driver, the no-confirm scenarios (`fire-and-forget`, `auto-ack`, `laravel-worker`) run in the native `blind` safety mode.
 
