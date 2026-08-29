@@ -61,6 +61,8 @@ $scenarios = [
     'fire-and-forget' => \Bench\Scenarios\FireAndForgetBenchmark::class,
     'batch-confirm' => \Bench\Scenarios\BatchConfirmBenchmark::class,
     'auto-ack' => \Bench\Scenarios\AutoAckBenchmark::class,
+    'laravel-dispatch' => \Bench\Scenarios\LaravelDispatchBenchmark::class,
+    'laravel-worker' => \Bench\Scenarios\LaravelWorkerBenchmark::class,
 ];
 
 $budgetPath = __DIR__ . '/../baselines/smoke-budget.json';

@@ -42,7 +42,10 @@ class RabbitRsDriver extends AbstractBenchmark
                     'queue' => self::QUEUE,
                     'weight' => 1,
                     'priority_class' => 0,
-                    'prefetch' => Config::PREFETCH_COUNT,
+                    'prefetch' => match ($this->scenarioMode) {
+                        ScenarioMode::LARAVEL_WORKER => Config::PREFETCH_LARAVEL,
+                        default => Config::PREFETCH_COUNT,
+                    },
                     'early_ack' => match ($this->scenarioMode) {
                         ScenarioMode::AUTO_ACK => true,
                         default => false,
@@ -59,16 +62,16 @@ class RabbitRsDriver extends AbstractBenchmark
             'topology_mode' => 'declare',
             'publisher' => [
                 'confirms' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => false,
-                    ScenarioMode::BATCH_CONFIRM => true,
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,
+                    ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => true,
                 },
                 'mandatory' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => false,
-                    ScenarioMode::BATCH_CONFIRM => true,
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,
+                    ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => true,
                 },
                 'safety' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK => 'blind',
-                    ScenarioMode::BATCH_CONFIRM => 'safe',
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => 'blind',
+                    ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => 'safe',
                 },
                 'confirm_timeout' => 30000,
             ],
@@ -94,6 +97,14 @@ class RabbitRsDriver extends AbstractBenchmark
             throw new BenchmarkException('Driver not set up');
         }
 
+        match ($this->scenarioMode) {
+            ScenarioMode::LARAVEL_DISPATCH => $this->publishSingle($count),
+            default => $this->publishBatched($count),
+        };
+    }
+
+    private function publishBatched(int $count): void
+    {
         $batchSize = 256;
         $timeoutMs = 5000;
 
@@ -126,6 +137,28 @@ class RabbitRsDriver extends AbstractBenchmark
         }
     }
 
+    private function publishSingle(int $count): void
+    {
+        $timeoutMs = 30000;
+
+        for ($i = 0; $i < $count; $i++) {
+            $ts = hrtime(true);
+            $publishStart = hrtime(true);
+            $this->pool->publish([
+                'broker' => 'default',
+                'exchange' => '',
+                'routing_key' => self::QUEUE,
+                'payload' => pack('P', $ts) . $this->createMessage((string) $i),
+                'message_id' => $this->uuid(),
+                'timeout_ms' => $timeoutMs,
+            ]);
+            $publishElapsed = (hrtime(true) - $publishStart) / 1_000_000;
+            $this->recordPublishLatency($publishElapsed);
+        }
+
+        $this->pool->flush();
+    }
+
     public function consumeMessages(int $count): void
     {
         if ($this->pool === null) {
@@ -136,12 +169,10 @@ class RabbitRsDriver extends AbstractBenchmark
             $this->consumer = $this->pool->consumer('default');
         }
 
-        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
-            $this->consumeBatchConfirm($count);
-            return;
-        }
-
-        $this->consumeSingle($count);
+        match ($this->scenarioMode) {
+            ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => $this->consumeBatchConfirm($count),
+            default => $this->consumeSingle($count),
+        };
     }
 
     private function consumeBatchConfirm(int $count): void

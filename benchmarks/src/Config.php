@@ -36,6 +36,8 @@ class Config
     public const BENCHMARK_ROUNDS = 10;
     public const MESSAGE_PAYLOAD_BYTES = 256;
     public const PREFETCH_COUNT = 128;
+    public const MESSAGE_PAYLOAD_LARAVEL_BYTES = 1024;
+    public const PREFETCH_LARAVEL = 64;
 
     public const EXCHANGE_NAME = 'benchmark_exchange';
     public const EXCHANGE_TYPE = 'direct';
