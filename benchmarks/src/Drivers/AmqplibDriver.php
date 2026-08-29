@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
-use RuntimeException;
 
 class AmqplibDriver extends AbstractBenchmark
 {
@@ -76,6 +76,7 @@ class AmqplibDriver extends AbstractBenchmark
             try {
                 $this->pubChannel->queue_purge(self::QUEUE);
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -83,7 +84,7 @@ class AmqplibDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->pubChannel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
@@ -103,6 +104,7 @@ class AmqplibDriver extends AbstractBenchmark
         try {
             $this->pubChannel->close();
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         $this->pubChannel = $this->pubConnection->channel();
         $this->pubChannel->confirm_select();
@@ -126,21 +128,31 @@ class AmqplibDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->consChannel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         try {
             $this->consChannel->close();
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         $this->consChannel = $this->consConnection->channel();
         $this->consChannel->basic_qos(0, Config::PREFETCH_COUNT, false);
 
-        $consumed = 0;
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+        $consumerTag = 'bench_consumer';
 
-        $callback = function (AMQPMessage $msg) use ($count, &$consumed, $autoAck): void {
+        $consumed = 0;
+        $callback = $this->makeConsumeCallback($count, $autoAck, $consumerTag, $consumed);
+        $this->consChannel->basic_consume(self::QUEUE, $consumerTag, false, $autoAck, false, false, $callback);
+
+        $this->consumeWithTimeouts($count, $consumed);
+    }
+
+    private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure
+    {
+        return function (AMQPMessage $msg) use ($count, &$consumed, $autoAck, $consumerTag): void {
             $body = $msg->getBody();
             $this->recordReceived($msg->get('message_id'));
             if (strlen($body) >= 8) {
@@ -155,14 +167,13 @@ class AmqplibDriver extends AbstractBenchmark
                 $msg->ack();
             }
             if ($consumed >= $count) {
-                $msg->getChannel()->basic_cancel('bench_consumer');
+                $msg->getChannel()->basic_cancel($consumerTag);
             }
         };
+    }
 
-        $noAck = $autoAck;
-        $consumerTag = 'bench_consumer';
-        $this->consChannel->basic_consume(self::QUEUE, $consumerTag, false, $noAck, false, false, $callback);
-
+    private function consumeWithTimeouts(int $count, int &$consumed): void
+    {
         $consecutiveTimeouts = 0;
         while ($consumed < $count) {
             try {
@@ -190,24 +201,28 @@ class AmqplibDriver extends AbstractBenchmark
                 $this->pubChannel->close();
             }
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         try {
             if ($this->consChannel !== null) {
                 $this->consChannel->close();
             }
         } catch (\Throwable) {
+            // Best-effort: ignore errors during cleanup/teardown.
         }
         try {
             if ($this->pubConnection !== null) {
                 $this->pubConnection->close();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
         try {
             if ($this->consConnection !== null) {
                 $this->consConnection->close();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
         $this->pubChannel = null;
         $this->consChannel = null;

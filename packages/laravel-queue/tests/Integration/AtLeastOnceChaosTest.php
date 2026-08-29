@@ -14,6 +14,7 @@ const MGMT_API = 'http://localhost:15672';
 const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'admin_lab';
 const PROXY_1 = 'rabbitmq-1-toxiproxy';
+const PRIMARY_NODE = 'rabbit@rabbitmq-1';
 
 function resetToxiproxy(): void
 {
@@ -73,7 +74,7 @@ function getQueueLeader(string $queue): string
     curl_close($ch);
 
     $data = json_decode($resp, true);
-    return $data['leader'] ?? 'rabbit@rabbitmq-1';
+    return $data['leader'] ?? PRIMARY_NODE;
 }
 
 function stopNode(string $node): void
@@ -318,9 +319,9 @@ it('survives node restart', function () {
     $this->queue->push('stdClass', ['msg' => 'chaos-restart-1']);
 
     // Stop and start rabbitmq-1.
-    stopNode('rabbit@rabbitmq-1');
+    stopNode(PRIMARY_NODE);
     usleep(2000000); // 2 seconds
-    startNode('rabbit@rabbitmq-1');
+    startNode(PRIMARY_NODE);
     usleep(5000000); // 5 seconds
 
     // Publish after restart.

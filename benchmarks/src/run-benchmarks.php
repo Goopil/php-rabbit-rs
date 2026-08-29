@@ -16,7 +16,7 @@ spl_autoload_register(static function (string $class): void {
             $relative = substr($class, strlen($prefix));
             $file = $base . str_replace('\\', '/', $relative) . '.php';
             if (is_file($file)) {
-                require $file;
+                require_once $file;
             }
             return;
         }
@@ -24,7 +24,7 @@ spl_autoload_register(static function (string $class): void {
 });
 
 if (is_file(BASE_DIR . '/vendor/autoload.php')) {
-    require BASE_DIR . '/vendor/autoload.php';
+    require_once BASE_DIR . '/vendor/autoload.php';
 }
 
 use Bench\Budget;

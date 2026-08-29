@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Pool;
-use RuntimeException;
 
 class RabbitRsDriver extends AbstractBenchmark
 {
@@ -83,6 +83,7 @@ class RabbitRsDriver extends AbstractBenchmark
             try {
                 $this->pool->clear('default', self::QUEUE);
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -90,7 +91,7 @@ class RabbitRsDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->pool === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         $batchSize = 256;
@@ -128,58 +129,73 @@ class RabbitRsDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->pool === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->consumer === null) {
             $this->consumer = $this->pool->consumer('default');
         }
 
+        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
+            $this->consumeBatchConfirm($count);
+            return;
+        }
+
+        $this->consumeSingle($count);
+    }
+
+    private function consumeBatchConfirm(int $count): void
+    {
         $consumed = 0;
         $consecutiveNulls = 0;
         while ($consumed < $count) {
-            if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
-                $batch = $this->consumer->nextBatch(256, 1000);
-                if ($batch === []) {
+            $batch = $this->consumer->nextBatch(256, 1000);
+            if ($batch === []) {
+                $consecutiveNulls++;
+                if ($consecutiveNulls >= 3) {
+                    break;
+                }
+                continue;
+            }
+            $consecutiveNulls = 0;
+
+            $last = end($batch);
+            foreach ($batch as $d) {
+                $this->recordLatencyFromPayload($d->payload());
+                $this->recordReceived($d->metadata()['message_id']);
+            }
+            $this->consumer->ackThrough($last);
+            $consumed += count($batch);
+        }
+    }
+
+    private function consumeSingle(int $count): void
+    {
+        $consumed = 0;
+        $consecutiveNulls = 0;
+        while ($consumed < $count) {
+            $delivery = $this->consumer->tryNext();
+            if ($delivery === null) {
+                $delivery = $this->consumer->next(1000);
+                if ($delivery === null) {
                     $consecutiveNulls++;
                     if ($consecutiveNulls >= 3) {
                         break;
                     }
                     continue;
                 }
-                $consecutiveNulls = 0;
-
-                $last = end($batch);
-                foreach ($batch as $d) {
-                    $this->recordLatencyFromPayload($d->payload());
-                    $this->recordReceived($d->metadata()['message_id']);
-                }
-                $this->consumer->ackThrough($last);
-                $consumed += count($batch);
-            } else {
-                $delivery = $this->consumer->tryNext();
-                if ($delivery === null) {
-                    $delivery = $this->consumer->next(1000);
-                    if ($delivery === null) {
-                        $consecutiveNulls++;
-                        if ($consecutiveNulls >= 3) {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-                $consecutiveNulls = 0;
-
-                $payload = $delivery->payload();
-                $metadata = $delivery->metadata();
-                $this->recordReceived($metadata['message_id']);
-                $this->recordLatencyFromPayload($payload);
-
-                if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
-                    $delivery->ack();
-                }
-                $consumed++;
             }
+            $consecutiveNulls = 0;
+
+            $payload = $delivery->payload();
+            $metadata = $delivery->metadata();
+            $this->recordReceived($metadata['message_id']);
+            $this->recordLatencyFromPayload($payload);
+
+            if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
+                $delivery->ack();
+            }
+            $consumed++;
         }
     }
 
@@ -189,6 +205,7 @@ class RabbitRsDriver extends AbstractBenchmark
             try {
                 $this->consumer->close();
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
             $this->consumer = null;
         }

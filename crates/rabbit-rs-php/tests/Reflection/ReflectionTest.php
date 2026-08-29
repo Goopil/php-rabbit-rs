@@ -164,24 +164,24 @@ describe('Delivery method signatures', function () {
 describe('Pool construction error', function () {
     it('throws the stable base exception without exposing secrets', function () {
         $secrets = [
+            // Dummy test fixture: this URI is never used to open a connection and the
+            // credentials are fictional. S5332 (plaintext AMQP) and S2068 (hardcoded
+            // credentials) are false positives in this context.
             'amqp://native-user:native-password@rabbit.internal/private-vhost',
             'native-password',
             'PRIVATE-KEY-MATERIAL',
         ];
 
-        try {
-            new \Goopil\RabbitRs\Pool([
-                'uri' => $secrets[0],
-                'password' => $secrets[1],
-                'private_key' => $secrets[2],
-            ]);
-            expect(false)->toBeTrue('Pool construction must be unavailable');
-        } catch (\Goopil\RabbitRs\Exception $e) {
+        expect(fn () => new \Goopil\RabbitRs\Pool([
+            'uri' => $secrets[0],
+            'password' => $secrets[1],
+            'private_key' => $secrets[2],
+        ]))->toThrow(function (\Goopil\RabbitRs\Exception $e) use ($secrets): void {
             expect($e::class)->toBe(\Goopil\RabbitRs\Exception::class);
             expect($e->getMessage())->not->toBeEmpty();
             foreach ($secrets as $secret) {
                 expect($e->getMessage())->not->toContain($secret);
             }
-        }
+        });
     });
 });

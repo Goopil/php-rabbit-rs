@@ -77,7 +77,7 @@ it('resolves a different queue to a different profile on pop', function (): void
 });
 
 it('rejects an unknown queue on pop', function (): void {
-    [$queue, $pool] = makePopQueue();
+    [$queue] = makePopQueue();
 
     $this->expectException(\InvalidArgumentException::class);
     $this->expectExceptionMessage('No worker profile subscribes to queue');

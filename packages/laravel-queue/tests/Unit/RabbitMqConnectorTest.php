@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 
 function connectorProperty(object $object, string $name): mixed
 {
+    // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
     return (new ReflectionProperty($object, $name))->getValue($object);
 }
 

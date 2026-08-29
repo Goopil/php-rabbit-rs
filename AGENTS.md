@@ -107,8 +107,8 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - PHP extension coverage uses `-Cinstrument-coverage` on the cdylib + PHP tests, then `llvm-profdata`/`llvm-cov` from the rustup toolchain (not system LLVM — version must match Rust 1.96). Local: `./scripts/coverage-php-ext.sh`.
 - Laravel coverage uses PCOV + Pest `--coverage-clover`. Local: `./scripts/coverage-laravel.sh`.
 - `./scripts/coverage.sh` runs all three locally and prints a summary.
-- CI workflow `.github/workflows/coverage.yml` has 4 jobs: `coverage-rust`, `coverage-php-ext`, `coverage-laravel`, `sonarcloud` (aggregates all artifacts).
-- Codecov receives LCOV + JUnit from each coverage job. SonarCloud receives LCOV + Clover via `sonar-project.properties`.
+- CI workflow `.github/workflows/coverage.yml` has 3 jobs: `coverage-rust`, `coverage-php-ext`, `coverage-laravel`.
+- Codecov receives LCOV + JUnit from the rust job, LCOV from the php-ext job, and Clover + JUnit from the laravel job. SonarCloud analysis comes from the SonarCloud GitHub App (automatic analysis on project `Goopil_php-rabbit-rs`, key aligned with the repo `Goopil/php-rabbit-rs`) — CI-based Sonar analysis was removed because automatic analysis and CI-based analysis are mutually exclusive; SonarCloud therefore does not receive coverage reports (Codecov still does).
 - `cargo-deny` runs in CI (`deny` job) with config in `deny.toml`. Checks advisories (RUSTSEC), licenses, bans, and sources.
 - Clippy SARIF is generated in CI (`clippy-sarif` job) via the `clippy-sarif` crate and uploaded to GitHub Code Scanning.
-- Required GitHub secrets: `CODECOV_TOKEN`, `SONAR_TOKEN`.
+- Required GitHub secrets: `CODECOV_TOKEN`. (`SONAR_TOKEN` is no longer used by CI.)

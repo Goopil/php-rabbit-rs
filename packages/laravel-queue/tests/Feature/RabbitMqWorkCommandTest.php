@@ -7,15 +7,17 @@ use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Illuminate\Support\Facades\Log;
 
+const CONSOLE_KERNEL = 'Illuminate\Contracts\Console\Kernel';
+
 describe('rabbit-rs:work command', function () {
     it('command is registered', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
 
         expect($commands)->toHaveKey('rabbit-rs:work');
     });
 
     it('command signature accepts workers and queue options', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -29,7 +31,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('command signature accepts worker propagation options', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -42,7 +44,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('worker propagation options have expected defaults', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -55,7 +57,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('default worker count is one', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -65,7 +67,7 @@ describe('rabbit-rs:work command', function () {
     });
 
     it('default connection is rabbit-rs', function () {
-        $commands = $this->app->make('Illuminate\Contracts\Console\Kernel')->all();
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
@@ -73,7 +75,9 @@ describe('rabbit-rs:work command', function () {
 
         expect($connectionOption->getDefault())->toBe('rabbit-rs');
     });
+});
 
+describe('rabbit-rs worker extension', function () {
     it('extension from environment returns null when no worker env set', function () {
         // Ensure the env var is not set in the test process.
         putenv(WorkerSupervisor::workerEnv());
@@ -113,7 +117,7 @@ describe('rabbit-rs:work command', function () {
             $extension = RabbitMqWorkCommandExtension::fromEnvironment();
             $called = false;
             $events = $this->app->make('events');
-            $extension->register($events, static function (string $level, array $context) use (&$called): void {
+            $extension->register($events, static function () use (&$called): void {
                 $called = true;
             });
 
@@ -135,14 +139,7 @@ describe('rabbit-rs:work command', function () {
             });
 
             // Build a mock job to dispatch a real JobProcessing event.
-            $job = \Mockery::mock(\Illuminate\Contracts\Queue\Job::class);
-            $job->shouldReceive('resolveName')->andReturn('TestJob');
-            $job->shouldReceive('getJobId')->andReturn('test-123');
-            $job->shouldReceive('getQueue')->andReturn('default');
-            $job->shouldReceive('payload')->andReturn([]);
-            $job->shouldReceive('uuid')->andReturn('test-uuid');
-            $job->shouldReceive('attempts')->andReturn(1);
-            $job->shouldReceive('getConnectionName')->andReturn('rabbit-rs');
+            $job = mockQueueJob();
 
             $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
 
@@ -154,7 +151,9 @@ describe('rabbit-rs:work command', function () {
             putenv(WorkerSupervisor::workerEnv());
         }
     });
+});
 
+describe('rabbit-rs:work command handle wiring', function () {
     /**
      * Verifies that the --rabbit-rs-worker CLI option is wired into the
      * command's handle() method: when the option is provided, the extension
@@ -193,14 +192,7 @@ describe('rabbit-rs:work command', function () {
             // Dispatch a JobProcessing event; the listener registered by
             // handle() should log it with the [worker-2] tag.
             $events = $this->app->make('events');
-            $job = \Mockery::mock(\Illuminate\Contracts\Queue\Job::class);
-            $job->shouldReceive('resolveName')->andReturn('TestJob');
-            $job->shouldReceive('getJobId')->andReturn('test-123');
-            $job->shouldReceive('getQueue')->andReturn('default');
-            $job->shouldReceive('payload')->andReturn([]);
-            $job->shouldReceive('uuid')->andReturn('test-uuid');
-            $job->shouldReceive('attempts')->andReturn(1);
-            $job->shouldReceive('getConnectionName')->andReturn('rabbit-rs');
+            $job = mockQueueJob();
 
             $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
 
@@ -233,14 +225,7 @@ describe('rabbit-rs:work command', function () {
             // Dispatch a JobProcessing event; no listener should be registered
             // by handle() since the option was not provided.
             $events = $this->app->make('events');
-            $job = \Mockery::mock(\Illuminate\Contracts\Queue\Job::class);
-            $job->shouldReceive('resolveName')->andReturn('TestJob');
-            $job->shouldReceive('getJobId')->andReturn('test-123');
-            $job->shouldReceive('getQueue')->andReturn('default');
-            $job->shouldReceive('payload')->andReturn([]);
-            $job->shouldReceive('uuid')->andReturn('test-uuid');
-            $job->shouldReceive('attempts')->andReturn(1);
-            $job->shouldReceive('getConnectionName')->andReturn('rabbit-rs');
+            $job = mockQueueJob();
 
             $events->dispatch(new \Illuminate\Queue\Events\JobProcessing('rabbit-rs', $job));
         } finally {
@@ -290,5 +275,23 @@ function registerTestWorkCommand($app): void
         }
     };
 
-    $app->make('Illuminate\Contracts\Console\Kernel')->registerCommand($command);
+    $app->make(CONSOLE_KERNEL)->registerCommand($command);
+}
+
+/**
+ * Build a mock queue job with the standard expectations used to dispatch
+ * a real JobProcessing event in the worker-tagging tests above.
+ */
+function mockQueueJob(): \Mockery\MockInterface
+{
+    $job = \Mockery::mock(\Illuminate\Contracts\Queue\Job::class);
+    $job->shouldReceive('resolveName')->andReturn('TestJob');
+    $job->shouldReceive('getJobId')->andReturn('test-123');
+    $job->shouldReceive('getQueue')->andReturn('default');
+    $job->shouldReceive('payload')->andReturn([]);
+    $job->shouldReceive('uuid')->andReturn('test-uuid');
+    $job->shouldReceive('attempts')->andReturn(1);
+    $job->shouldReceive('getConnectionName')->andReturn('rabbit-rs');
+
+    return $job;
 }

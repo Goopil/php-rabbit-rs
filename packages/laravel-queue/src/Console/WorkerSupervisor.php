@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Console;
 
+use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
 use Symfony\Component\Process\Process;
 
 /**
@@ -121,12 +122,12 @@ class WorkerSupervisor
      * gracefully. On unexpected exit, children are restarted with backoff
      * until maxRestarts is reached.
      *
-     * @throws \RuntimeException when ext-pcntl is not available
+     * @throws SupervisorException when ext-pcntl is not available
      */
     public function run(): int
     {
         if (! $this->canFork()) {
-            throw new \RuntimeException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
+            throw new SupervisorException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
         }
 
         return $this->runInternal();

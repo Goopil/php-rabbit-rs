@@ -27,15 +27,34 @@ declare(strict_types=1);
 namespace {
     require_once __DIR__ . '/worker_stub_functions.php';
 
-    $worker = isset($_ENV['RABBIT_RS_WORKER']) ? (string) $_ENV['RABBIT_RS_WORKER']
-        : (getenv('RABBIT_RS_WORKER') !== false ? (string) getenv('RABBIT_RS_WORKER') : '0');
-    $mode = isset($_ENV['RABBIT_RS_STUB_MODE']) ? (string) $_ENV['RABBIT_RS_STUB_MODE']
-        : (getenv('RABBIT_RS_STUB_MODE') !== false ? (string) getenv('RABBIT_RS_STUB_MODE') : 'run');
-    $crashAfter = isset($_ENV['RABBIT_RS_STUB_CRASH_AFTER'])
-        ? (int) $_ENV['RABBIT_RS_STUB_CRASH_AFTER']
-        : (getenv('RABBIT_RS_STUB_CRASH_AFTER') !== false ? (int) getenv('RABBIT_RS_STUB_CRASH_AFTER') : 0);
-    $stateDir = isset($_ENV['RABBIT_RS_STUB_STATE_DIR']) ? (string) $_ENV['RABBIT_RS_STUB_STATE_DIR']
-        : (getenv('RABBIT_RS_STUB_STATE_DIR') !== false ? (string) getenv('RABBIT_RS_STUB_STATE_DIR') : sys_get_temp_dir());
+    if (isset($_ENV['RABBIT_RS_WORKER'])) {
+        $worker = (string) $_ENV['RABBIT_RS_WORKER'];
+    } elseif (getenv('RABBIT_RS_WORKER') !== false) {
+        $worker = (string) getenv('RABBIT_RS_WORKER');
+    } else {
+        $worker = '0';
+    }
+    if (isset($_ENV['RABBIT_RS_STUB_MODE'])) {
+        $mode = (string) $_ENV['RABBIT_RS_STUB_MODE'];
+    } elseif (getenv('RABBIT_RS_STUB_MODE') !== false) {
+        $mode = (string) getenv('RABBIT_RS_STUB_MODE');
+    } else {
+        $mode = 'run';
+    }
+    if (isset($_ENV['RABBIT_RS_STUB_CRASH_AFTER'])) {
+        $crashAfter = (int) $_ENV['RABBIT_RS_STUB_CRASH_AFTER'];
+    } elseif (getenv('RABBIT_RS_STUB_CRASH_AFTER') !== false) {
+        $crashAfter = (int) getenv('RABBIT_RS_STUB_CRASH_AFTER');
+    } else {
+        $crashAfter = 0;
+    }
+    if (isset($_ENV['RABBIT_RS_STUB_STATE_DIR'])) {
+        $stateDir = (string) $_ENV['RABBIT_RS_STUB_STATE_DIR'];
+    } elseif (getenv('RABBIT_RS_STUB_STATE_DIR') !== false) {
+        $stateDir = (string) getenv('RABBIT_RS_STUB_STATE_DIR');
+    } else {
+        $stateDir = sys_get_temp_dir();
+    }
 
     $invocation = recordInvocation($stateDir, (int) $worker);
     writeWorkerMarker($stateDir, (int) $worker, $invocation);

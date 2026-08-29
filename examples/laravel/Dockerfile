@@ -13,17 +13,17 @@ FROM php:8.4-cli AS builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     libzip-dev \
     unzip \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # Install PIE (PHP Installer for Extensions)
-RUN curl -L https://github.com/php/pie/releases/latest/download/pie.phar -o /usr/local/bin/pie \
-    && chmod +x /usr/local/bin/pie
+ADD https://github.com/php/pie/releases/latest/download/pie.phar /usr/local/bin/pie
+RUN chmod +x /usr/local/bin/pie
 
 # Install the Rabbit RS native extension
 RUN pie install goopil/rabbit-rs-native
@@ -41,6 +41,7 @@ RUN composer dump-autoload --optimize
 
 # ─── Stage 2: Production image ──────────────────────────────────────────────
 
+# Runs as root: example kept simple for documentation; harden with USER (e.g. www-data) for real deployments.
 FROM php:8.4-cli AS production
 
 # Install runtime system dependencies (minimal)

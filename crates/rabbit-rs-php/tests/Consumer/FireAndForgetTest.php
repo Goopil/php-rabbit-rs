@@ -133,7 +133,7 @@ describe('fire-and-forget settlement', function () {
         ]);
         $consumer = $pool->consumer('main');
 
-        $first = $consumer->next(10);
+        $consumer->next(10);
         $second = $consumer->next(10);
 
         $consumer->ackThrough($second);

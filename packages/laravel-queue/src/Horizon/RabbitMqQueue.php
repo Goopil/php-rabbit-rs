@@ -33,7 +33,7 @@ class RabbitMqQueue extends BaseRabbitMqQueue
 
         $this->event($this->queueName($queue), new JobPending($payload));
 
-        return tap(parent::pushRaw($payload, $queue, $options), function (string $messageId) use ($queue, $payload): void {
+        return tap(parent::pushRaw($payload, $queue, $options), function () use ($queue, $payload): void {
             $this->event($this->queueName($queue), new JobPushed($payload));
         });
     }

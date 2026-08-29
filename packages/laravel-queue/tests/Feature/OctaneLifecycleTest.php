@@ -61,6 +61,7 @@ function resolveQueueWithConsumer($app): array
     $manager = $app->make('queue');
     $reflection = new \ReflectionClass($manager);
     $connectionsProperty = $reflection->getProperty('connections');
+    // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
     $connectionsProperty->setValue($manager, ['rabbit-rs' => $queue]);
 
     // Trigger consumer creation by calling pop().
@@ -213,7 +214,7 @@ describe('lifecycle operations', function () {
 
 describe('consumer cleanup', function () {
     it('flush closes consumers on current queue', function () {
-        [$queue, $pool] = resolveQueueWithConsumer($this->app);
+        [, $pool] = resolveQueueWithConsumer($this->app);
         $consumer = $pool->consumerFor('default');
 
         $lifecycle = new OctaneLifecycle($this->app);
@@ -223,7 +224,7 @@ describe('consumer cleanup', function () {
     });
 
     it('reload closes consumers on current queue', function () {
-        [$queue, $pool] = resolveQueueWithConsumer($this->app);
+        [, $pool] = resolveQueueWithConsumer($this->app);
         $consumer = $pool->consumerFor('default');
 
         $lifecycle = new OctaneLifecycle($this->app);
@@ -233,7 +234,7 @@ describe('consumer cleanup', function () {
     });
 
     it('stop closes consumers on current queue', function () {
-        [$queue, $pool] = resolveQueueWithConsumer($this->app);
+        [, $pool] = resolveQueueWithConsumer($this->app);
         $consumer = $pool->consumerFor('default');
 
         $lifecycle = new OctaneLifecycle($this->app);

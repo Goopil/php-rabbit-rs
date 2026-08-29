@@ -30,7 +30,7 @@ it('invalidates inherited pools after fork and creates a child-local registry', 
 
     $childPid = pcntl_fork();
     if ($childPid === -1) {
-        throw new \Exception('fork failed');
+        throw new \Goopil\RabbitRs\Exception('fork failed');
     }
 
     if ($childPid === 0) {

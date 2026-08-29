@@ -5,6 +5,8 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Symfony\Component\Process\Process;
 
+const WORKER_STUB_PATH = '/Fixture/worker_stub.php';
+
 describe('WorkerSupervisor integration', function () {
     beforeEach(function () {
         $this->stateDir = sys_get_temp_dir() . '/rabbit-rs-supervisor-' . uniqid('', true);
@@ -78,7 +80,7 @@ describe('WorkerSupervisor integration', function () {
         // Worker 1 runs until signaled ("run" mode).
         // The supervisor must stop worker 1 before returning EXIT_MAX_RESTARTS.
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . '/Fixture/worker_stub.php';
+        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
 
         $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
             $cmd = [PHP_BINARY, $stubPath];
@@ -166,7 +168,7 @@ function makeSupervisor(
     array $extraEnv = [],
 ): WorkerSupervisor {
     $stateDir = test()->stateDir;
-    $stubPath = dirname(__DIR__) . '/Fixture/worker_stub.php';
+    $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
     $env = array_merge([
         'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
     ], $extraEnv);
@@ -239,7 +241,7 @@ function supervisorCleanupStateDir(string $dir): void
 
 function writeSupervisorScript(): string
 {
-    $stubPath = dirname(__DIR__) . '/Fixture/worker_stub.php';
+    $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
     $autoloadPath = dirname(__DIR__, 2) . '/vendor/autoload.php';
 
     // Build a self-contained script that constructs the supervisor and runs it.

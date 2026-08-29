@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
 use Bunny\Channel;
 use Bunny\Client;
-use RuntimeException;
 
 class BunnyDriver extends AbstractBenchmark
 {
@@ -50,6 +50,7 @@ class BunnyDriver extends AbstractBenchmark
             try {
                 $this->channel->queuePurge(self::QUEUE);
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -57,7 +58,7 @@ class BunnyDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->channel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
@@ -96,19 +97,19 @@ class BunnyDriver extends AbstractBenchmark
             $pending++;
 
             if ($pending >= $batchSize) {
-                $this->waitForConfirms($pending);
+                $this->waitForConfirms();
                 $pending = 0;
             }
         }
 
         if ($pending > 0) {
-            $this->waitForConfirms($pending);
+            $this->waitForConfirms();
         }
     }
 
     private int $publishSeq = 0;
 
-    private function waitForConfirms(int $expected): void
+    private function waitForConfirms(): void
     {
         $targetSeq = $this->publishSeq;
         $listener = function ($frame) use ($targetSeq) {
@@ -125,21 +126,28 @@ class BunnyDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->channel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
-        $consumed = 0;
-        $consecutiveTimeouts = 0;
 
         $consumerTag = 'bench_bunny_consumer';
-        $channel = $this->channel;
-        $queue = self::QUEUE;
 
+        $consumed = 0;
+        $callback = $this->makeConsumeCallback($count, $autoAck, $consumerTag, $consumed);
+
+        $this->channel->consume($callback, self::QUEUE, $consumerTag, false, $autoAck);
+
+        $this->runConsumerLoop($count, $consumed);
+    }
+
+    private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure
+    {
+        $channel = $this->channel;
         $client = $this->client;
 
-        $callback = function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag, $client): void {
+        return function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag, $client): void {
             $body = $message->content;
             $this->recordReceived($message->getHeader('message-id', ''));
             if (strlen($body) >= 8) {
@@ -158,8 +166,11 @@ class BunnyDriver extends AbstractBenchmark
                 $client->stop();
             }
         };
+    }
 
-        $this->channel->consume($callback, $queue, $consumerTag, false, $autoAck);
+    private function runConsumerLoop(int $count, int &$consumed): void
+    {
+        $consecutiveTimeouts = 0;
 
         while ($consumed < $count) {
             try {
@@ -182,6 +193,7 @@ class BunnyDriver extends AbstractBenchmark
             try {
                 $this->client->disconnect();
             } catch (\Throwable) {
+                // Connection may already be closed; safe to ignore.
             }
             $this->client = null;
         }

@@ -24,7 +24,7 @@ describe('backpressure', function () {
             'publisher_capacity' => 1,
             'pending_confirmations' => 1,
         ]);
-        $consumer = $pool->consumer('main');
+        $pool->consumer('main');
 
         try {
             $pool->publishBatch([backpressureMessage('first'), backpressureMessage('second')]);
@@ -45,6 +45,7 @@ describe('backpressure', function () {
         try {
             $pool->publishBatch([backpressureMessage('first'), backpressureMessage('second')]);
         } catch (\Goopil\RabbitRs\BackpressureException) {
+            // Expected: publish exceeds capacity and must surface backpressure.
         }
 
         expect($pool->stats()['backpressure_total'])->toBe(1);

@@ -130,6 +130,12 @@ final class RabbitMqWorkCommandExtension
         if (class_exists(\Illuminate\Queue\Events\WorkerIdle::class)) {
             $events->listen(
                 \Illuminate\Queue\Events\WorkerIdle::class,
+                /**
+                 * The listener signature requires the event parameter, but the
+                 * WorkerIdle event carries no data relevant to the log line.
+                 *
+                 * @noinspection PhpUnusedParameterInspection
+                 */
                 static function (\Illuminate\Queue\Events\WorkerIdle $event) use ($logger, $prefix): void {
                     $logger('debug', [
                         'worker' => $prefix,

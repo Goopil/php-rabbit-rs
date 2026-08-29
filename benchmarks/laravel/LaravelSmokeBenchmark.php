@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bench\Laravel;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
@@ -26,7 +27,7 @@ class LaravelSmokeBenchmark extends AbstractBenchmark
     public function setUp(): void
     {
         if (!extension_loaded('rabbit_rs')) {
-            throw new \RuntimeException('ext-rabbit_rs is not loaded');
+            throw new BenchmarkException('ext-rabbit_rs is not loaded');
         }
 
         $this->queueName = self::QUEUE_PREFIX . '-' . uniqid('', true);
@@ -84,6 +85,7 @@ class LaravelSmokeBenchmark extends AbstractBenchmark
             try {
                 $this->queue->clear($this->queueName);
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
         }
         if ($this->pool !== null) {

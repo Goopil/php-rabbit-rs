@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bench\Laravel;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 
 class LaravelCompareBenchmark extends AbstractBenchmark
 {
@@ -45,6 +46,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
         try {
             $this->queue->clear($this->queueName);
         } catch (\Throwable) {
+            // Queue may not exist yet; safe to ignore.
         }
     }
 
@@ -81,6 +83,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
             try {
                 $this->queue->clear($this->queueName);
             } catch (\Throwable) {
+                // Best-effort: ignore errors during cleanup/teardown.
             }
         }
     }
@@ -144,7 +147,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
                 'vhost' => '/orders-eu',
                 'prefetch_count' => 16,
             ],
-            default => throw new \RuntimeException("Unknown driver: {$this->driver}"),
+            default => throw new BenchmarkException("Unknown driver: {$this->driver}"),
         };
     }
 }

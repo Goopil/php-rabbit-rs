@@ -36,6 +36,10 @@ final class OctaneLifecycle
 
     /**
      * Called when the Octane worker stops. All pools are flushed.
+     *
+     * This intentionally mirrors {@see reload()} — both operations require
+     * a full flush, but stop() may diverge in the future (e.g. waiting for
+     * in-flight work before flushing).
      */
     public function stop(): void
     {

@@ -10,6 +10,8 @@ use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Queue\Events\JobFailed;
 
+const RABBIT_MQ_JOB_TEST_MESSAGE_ID = '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137';
+
 final class RabbitMqFailedJobHandler
 {
     public function __construct(private readonly Closure $callback) {}
@@ -37,12 +39,12 @@ function delivery(int $attempts = 1): Delivery
 {
     return new Delivery(
         json_encode([
-            'uuid' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
+            'uuid' => RABBIT_MQ_JOB_TEST_MESSAGE_ID,
             'job' => RabbitMqFailedJobHandler::class,
             'data' => ['report' => 42],
         ], JSON_THROW_ON_ERROR),
         [
-            'message_id' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
+            'message_id' => RABBIT_MQ_JOB_TEST_MESSAGE_ID,
             'subscription' => 'orders_high',
             'attempts' => $attempts,
             'state' => 'pending',
@@ -56,7 +58,7 @@ it('exposes the native payload identifier and attempts', function (): void {
     $job = job($delivery);
 
     expect($delivery->payload())->toBe($job->getRawBody())
-        ->and('018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137')->toBe($job->getJobId())
+        ->and(RABBIT_MQ_JOB_TEST_MESSAGE_ID)->toBe($job->getJobId())
         ->and(4)->toBe($job->attempts())
         ->and('rabbit-main')->toBe($job->getConnectionName())
         ->and('orders.high')->toBe($job->getQueue());
@@ -89,7 +91,7 @@ it('acknowledges exactly once and keeps cached metadata on delete', function ():
     expect(1)->toBe($delivery->ackCalls)
         ->and($job->isDeleted())->toBeTrue()
         ->and($delivery->payload())->toBe($job->getRawBody())
-        ->and('018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137')->toBe($job->getJobId())
+        ->and(RABBIT_MQ_JOB_TEST_MESSAGE_ID)->toBe($job->getJobId())
         ->and(3)->toBe($job->attempts());
 });
 
@@ -161,7 +163,7 @@ it('uses the Laravel ack callback and event sequence on fail', function (): void
             self::assertSame(1, $delivery->ackCalls);
             self::assertSame(['report' => 42], $data);
             self::assertSame($failure, $exception);
-            self::assertSame('018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137', $uuid);
+            self::assertSame(RABBIT_MQ_JOB_TEST_MESSAGE_ID, $uuid);
             self::assertSame($job, $failedJob);
             $order[] = 'failed';
         },

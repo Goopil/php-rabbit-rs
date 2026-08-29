@@ -18,11 +18,20 @@ final class ConnectionException extends Exception
 
 final class Pool
 {
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     */
     public function __construct(array $config)
     {
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * @param array{broker: string, exchange: string, routing_key: string, payload: string, message_id: string, content_type?: string, correlation_id?: string, delay_ms?: int, timeout_ms?: int, headers?: array<string, bool|int|float|string|null>} $message
      *
      * Payload and all headers are limited to 1 MiB and 64 KiB per call respectively.
@@ -33,6 +42,10 @@ final class Pool
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * @param list<array{broker: string, exchange: string, routing_key: string, payload: string, message_id: string, content_type?: string, correlation_id?: string, delay_ms?: int, timeout_ms?: int, headers?: array<string, bool|int|float|string|null>}> $messages
      * @return list<string>
      *
@@ -43,11 +56,19 @@ final class Pool
     {
     }
 
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     */
     public function consumer(string $profile): Consumer
     {
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     *
      * Flushes the publish buffer, sending all buffered messages to the broker.
      */
     public function flush(): void
@@ -55,21 +76,38 @@ final class Pool
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     *
      * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
      */
     public function stats(): array
     {
     }
 
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     */
     public function size(string $broker, string $queue): int
     {
     }
 
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     */
     public function clear(string $broker, string $queue): void
     {
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Registers a PHP callback invoked when a broker connection state changes.
      *
      * The callback receives (string $broker, string $state, int $generation).
@@ -82,6 +120,10 @@ final class Pool
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Registers a PHP callback invoked when publisher backpressure is detected.
      *
      * The callback receives (string $broker, int $inFlight, int $capacity).
@@ -93,6 +135,10 @@ final class Pool
     {
     }
 
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     */
     public function close(): void
     {
     }
@@ -100,11 +146,19 @@ final class Pool
 
 final class Consumer
 {
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     */
     public function next(int $timeoutMs): ?Delivery
     {
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     *
      * Returns the next delivery without blocking, or null when the buffer is empty.
      */
     public function tryNext(): ?Delivery
@@ -112,6 +166,10 @@ final class Consumer
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Drains up to $max deliveries from the buffer in one call.
      *
      * When the buffer is empty, blocks up to $timeoutMs for the first delivery,
@@ -125,6 +183,10 @@ final class Consumer
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Acknowledges a contiguous prefix of deliveries up to and including the
      * given delivery using a single AMQP basic.ack with multiple=true.
      * Fire-and-forget: enqueues the command and returns immediately.
@@ -134,6 +196,10 @@ final class Consumer
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Acknowledges a batch of deliveries, potentially across different channels.
      * Fire-and-forget: enqueues each settlement command without blocking.
      * Bounded to 256 deliveries per call.
@@ -145,6 +211,9 @@ final class Consumer
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     *
      * Drains settlement errors that have surfaced asynchronously since the
      * last call. Each entry contains delivery_tag, subscription, error_kind,
      * and message.
@@ -155,6 +224,10 @@ final class Consumer
     {
     }
 
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Consumer Method is provided by the C extension at runtime.
+     */
     public function close(): void
     {
     }
@@ -162,11 +235,18 @@ final class Consumer
 
 final class Delivery
 {
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Delivery Method is provided by the C extension at runtime.
+     */
     public function payload(): string
     {
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Delivery Method is provided by the C extension at runtime.
+     *
      * @return array{message_id: string, correlation_id?: string, subscription: string, attempts: int, state: string, headers: array<string, bool|int|float|string|null>}
      *
      * Nested broker headers such as x-death are omitted from the flat PHP header model.
@@ -176,6 +256,9 @@ final class Delivery
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Delivery Method is provided by the C extension at runtime.
+     *
      * Returns the AMQP delivery tag.
      */
     public function deliveryTag(): int
@@ -183,6 +266,9 @@ final class Delivery
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Delivery Method is provided by the C extension at runtime.
+     *
      * Acknowledges the delivery (fire-and-forget with bounded backpressure).
      */
     public function ack(): void
@@ -190,6 +276,10 @@ final class Delivery
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Delivery Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Releases the delivery immediately or after a delay (fire-and-forget).
      */
     public function release(int $delayMs = 0): void
@@ -197,6 +287,10 @@ final class Delivery
     }
 
     /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Delivery Method is provided by the C extension at runtime.
+     * @noinspection PhpUnusedParameterInspection
+     *
      * Rejects the delivery with optional requeueing (fire-and-forget).
      */
     public function reject(bool $requeue = false): void

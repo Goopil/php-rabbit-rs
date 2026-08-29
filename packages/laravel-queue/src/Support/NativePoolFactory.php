@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Support;
 
 use Closure;
+use Goopil\RabbitRs\Laravel\Exceptions\PoolException;
 use Goopil\RabbitRs\Pool;
-use RuntimeException;
 
 final class NativePoolFactory
 {
@@ -33,7 +33,7 @@ final class NativePoolFactory
         $this->resolveProcessId = $resolveProcessId ?? static function (): int {
             $processId = getmypid();
             if ($processId === false) {
-                throw new RuntimeException('Unable to determine the current process ID.');
+                throw new PoolException('Unable to determine the current process ID.');
             }
 
             return $processId;

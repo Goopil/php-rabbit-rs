@@ -9,7 +9,6 @@ beforeAll(function () {
         test('extension loaded', fn () => true)->markTestSkipped(
             'rabbit_rs extension not loaded'
         );
-        return;
     }
 });
 

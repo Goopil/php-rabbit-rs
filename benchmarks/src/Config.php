@@ -16,6 +16,14 @@ namespace Bench;
 //              reliable batch (confirms=true, batch ack),
 //              best-effort (confirms=false and/or early_ack)
 // - Verification: losses=0 AND duplicates=0 for reliable modes
+/**
+ * Benchmark configuration.
+ *
+ * @noinspection PhpUnnecessaryFullyQualifiedNameInspection
+ *
+ * Credentials are local lab-only values (rabbit_rs_lab). They are NOT production
+ * secrets. SonarCloud S2068 is a false positive for this context.
+ */
 class Config
 {
     public const RABBITMQ_HOST = '127.0.0.1';

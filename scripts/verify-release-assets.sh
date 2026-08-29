@@ -65,10 +65,11 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
 fi
 
 sha256_func() {
+    local file="$1"
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
+        sha256sum "$file" | awk '{print $1}'
     else
-        shasum -a 256 "$1" | awk '{print $1}'
+        shasum -a 256 "$file" | awk '{print $1}'
     fi
 }
 

@@ -5,12 +5,6 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
-
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -21,11 +15,13 @@ env:
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
       has_packagist: ${{ steps.check-secrets.outputs.has_packagist }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Extract version from tag
         id: version
@@ -59,6 +55,11 @@ jobs:
   build-linux:
     needs: create-release
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +68,7 @@ jobs:
         ts: ["nts", "zts"]
         libc: ["glibc", "musl"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set Docker image
         id: docker
@@ -88,7 +89,7 @@ jobs:
           fi
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cargo/registry
@@ -178,12 +179,12 @@ jobs:
             --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: Attest build provenance
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
 
       - name: Attest SBOM
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
           sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
@@ -191,27 +192,32 @@ jobs:
   build-macos:
     needs: create-release
     runs-on: macos-14
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
         php: ["8.4", "8.5"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup PHP ${{ matrix.php }}
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
         with:
           php-version: ${{ matrix.php }}
           coverage: none
           extensions: json
 
       - name: Install Rust 1.96
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: "1.96.0"
 
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cargo/registry
@@ -266,12 +272,12 @@ jobs:
             --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: Attest build provenance
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
 
       - name: Attest SBOM
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
           sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
@@ -283,7 +289,7 @@ jobs:
       contents: write
       attestations: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Verify release assets and attestations
         env:
@@ -341,8 +347,10 @@ jobs:
   publish-release:
     needs: [create-release, build-linux, build-macos, verify-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -361,10 +369,12 @@ jobs:
   update-homebrew-formula:
     needs: [create-release, publish-release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Check prerequisites
         id: check
@@ -392,9 +402,11 @@ jobs:
   test-homebrew-formula:
     needs: [update-homebrew-formula]
     runs-on: macos-14
+    permissions:
+      contents: read
     if: needs.update-homebrew-formula.result == 'success' && needs.update-homebrew-formula.outputs.skip == 'false'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Tap and audit formula
         run: |
@@ -425,7 +437,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 

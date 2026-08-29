@@ -8,6 +8,8 @@ require_once __DIR__.'/bootstrap.php';
 
 uses(TestCase::class)->in(__DIR__);
 
+class TestException extends \Exception {}
+
 function validConfig(): array
 {
     return [

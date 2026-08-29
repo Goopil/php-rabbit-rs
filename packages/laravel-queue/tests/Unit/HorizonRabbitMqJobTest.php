@@ -9,16 +9,18 @@ use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Events\Dispatcher;
 use Laravel\Horizon\Events\JobDeleted;
 
+const HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID = '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137';
+
 function horizonDelivery(int $attempts = 1): Delivery
 {
     return new Delivery(
         json_encode([
-            'uuid' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
+            'uuid' => HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID,
             'job' => 'TestJob',
             'data' => ['report' => 42],
         ], JSON_THROW_ON_ERROR),
         [
-            'message_id' => '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137',
+            'message_id' => HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID,
             'subscription' => 'default',
             'attempts' => $attempts,
             'state' => 'pending',
@@ -114,7 +116,7 @@ it('preserves job id, attempts, and raw body from parent', function (): void {
     $delivery = horizonDelivery(attempts: 3);
     $job = horizonJob($delivery, horizonQueueForJob());
 
-    expect('018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137')->toBe($job->getJobId())
+    expect(HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID)->toBe($job->getJobId())
         ->and(3)->toBe($job->attempts())
         ->and($delivery->payload())->toBe($job->getRawBody())
         ->and('rabbit-rs')->toBe($job->getConnectionName())

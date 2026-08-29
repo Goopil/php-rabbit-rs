@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Bench\Drivers;
 
 use Bench\AbstractBenchmark;
+use Bench\BenchmarkException;
 use Bench\Config;
 use Bench\ScenarioMode;
-use RuntimeException;
 
 class AmqpExtDriver extends AbstractBenchmark
 {
@@ -24,7 +24,7 @@ class AmqpExtDriver extends AbstractBenchmark
     public function __construct()
     {
         if (!extension_loaded('amqp')) {
-            throw new \RuntimeException('The pecl "amqp" extension is not loaded');
+            throw new BenchmarkException('The pecl "amqp" extension is not loaded');
         }
     }
 
@@ -68,6 +68,7 @@ class AmqpExtDriver extends AbstractBenchmark
             try {
                 $this->consQueue->purge();
             } catch (\Throwable) {
+                // Queue may not exist yet; safe to ignore.
             }
         }
     }
@@ -75,22 +76,33 @@ class AmqpExtDriver extends AbstractBenchmark
     public function publishMessages(int $count): void
     {
         if ($this->pubExchange === null || $this->pubChannel === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK) {
-            for ($i = 0; $i < $count; $i++) {
-                $ts = hrtime(true);
-                $attrs = [
-                    'message_id' => $this->uuid(),
-                    'delivery_mode' => AMQP_DURABLE,
-                ];
-                $this->pubExchange->publish(pack('P', $ts) . $this->createMessage((string) $i), self::QUEUE, AMQP_NOPARAM, $attrs);
-            }
+            $this->publishFireAndForget($count);
             return;
         }
 
+        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
+        $this->publishWithConfirms($count, $batchSize);
+    }
+
+    private function publishFireAndForget(int $count): void
+    {
+        for ($i = 0; $i < $count; $i++) {
+            $ts = hrtime(true);
+            $attrs = [
+                'message_id' => $this->uuid(),
+                'delivery_mode' => AMQP_DURABLE,
+            ];
+            $this->pubExchange->publish(pack('P', $ts) . $this->createMessage((string) $i), self::QUEUE, AMQP_NOPARAM, $attrs);
+        }
+    }
+
+    private function publishWithConfirms(int $count, int $batchSize): void
+    {
         if (!$this->confirmMode) {
             $this->pubChannel->confirmSelect();
             $this->pubChannel->setConfirmCallback(
@@ -99,8 +111,6 @@ class AmqpExtDriver extends AbstractBenchmark
             );
             $this->confirmMode = true;
         }
-
-        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
 
         for ($i = 0; $i < $count; $i++) {
             $ts = hrtime(true);
@@ -123,6 +133,7 @@ class AmqpExtDriver extends AbstractBenchmark
             try {
                 $this->pubChannel->waitForConfirm(5);
             } catch (\Throwable) {
+                // Trailing confirm failure of the final partial batch is not actionable here.
             }
         }
     }
@@ -130,7 +141,7 @@ class AmqpExtDriver extends AbstractBenchmark
     public function consumeMessages(int $count): void
     {
         if ($this->consQueue === null) {
-            throw new RuntimeException('Driver not set up');
+            throw new BenchmarkException('Driver not set up');
         }
 
         if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
@@ -139,11 +150,18 @@ class AmqpExtDriver extends AbstractBenchmark
 
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+        $consumerTag = 'bench_amqpext_consumer';
+        $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
 
         $consumed = 0;
-        $consumerTag = 'bench_amqpext_consumer';
+        $callback = $this->makeConsumeCallback($count, $autoAck, $consumerTag, $consumed);
 
-        $callback = function (\AMQPEnvelope $envelope, \AMQPQueue $q) use ($count, &$consumed, $autoAck, $consumerTag): bool {
+        $this->consumeWithTimeouts($this->consQueue, $callback, $count, $consumed, $consumerTag, $flags);
+    }
+
+    private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure
+    {
+        return function (\AMQPEnvelope $envelope, \AMQPQueue $q) use ($count, &$consumed, $autoAck, $consumerTag): bool {
             $body = $envelope->getBody();
             $this->recordReceived($envelope->getMessageId() ?? '');
             if (strlen($body) >= 8) {
@@ -163,15 +181,17 @@ class AmqpExtDriver extends AbstractBenchmark
             }
             return true;
         };
+    }
 
-        $flags = $autoAck ? AMQP_AUTOACK : AMQP_NOPARAM;
+    private function consumeWithTimeouts(\AMQPQueue $queue, \Closure $callback, int $count, int &$consumed, string $consumerTag, int $flags): void
+    {
         $consecutiveTimeouts = 0;
 
         $this->connection->setReadTimeout(1);
 
         while ($consumed < $count) {
             try {
-                $this->consQueue->consume($callback, $flags, $consumerTag);
+                $queue->consume($callback, $flags, $consumerTag);
                 $consecutiveTimeouts = 0;
             } catch (\AMQPQueueException) {
                 $consecutiveTimeouts++;
@@ -191,6 +211,7 @@ class AmqpExtDriver extends AbstractBenchmark
                 $this->connection->disconnect();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
 
         $this->connection = new \AMQPConnection([
@@ -218,6 +239,7 @@ class AmqpExtDriver extends AbstractBenchmark
                 $this->connection->disconnect();
             }
         } catch (\Throwable) {
+            // Connection may already be closed; safe to ignore.
         }
         $this->connection = null;
         $this->pubChannel = null;

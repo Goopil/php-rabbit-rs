@@ -30,7 +30,7 @@ describe('flush', function (): void {
 
         $pools = ['a' => $poolA, 'b' => $poolB];
         $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pools[$config['key']] ?? throw new RuntimeException('unknown'),
+            createPool: static fn (array $config): Pool => $pools[$config['key']] ?? throw new TestException('unknown'),
         );
 
         $factory->make(['key' => 'a']);
@@ -146,7 +146,7 @@ describe('resetAfterFork', function (): void {
         $createCount = 0;
 
         $factory = new NativePoolFactory(
-            createPool: static function (array $config) use (&$parentPool, &$childPool, &$createCount): Pool {
+            createPool: static function () use (&$parentPool, &$childPool, &$createCount): Pool {
                 $createCount++;
 
                 return $createCount === 1 ? $parentPool : $childPool;
