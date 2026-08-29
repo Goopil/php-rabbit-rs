@@ -1976,7 +1976,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rabbit-rs-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "rabbit-rs-php"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "bytes",
  "ext-php-rs",
