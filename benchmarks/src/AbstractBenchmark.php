@@ -30,10 +30,12 @@ abstract class AbstractBenchmark
     private ?string $payloadTemplate = null;
     private int $uuidCounter = 0;
 
+    protected int $payloadBytes = Config::MESSAGE_PAYLOAD_BYTES;
+
     protected function createMessage(string $body): string
     {
         if ($this->payloadTemplate === null) {
-            $this->payloadTemplate = str_repeat('x', Config::MESSAGE_PAYLOAD_BYTES);
+            $this->payloadTemplate = str_repeat('x', $this->payloadBytes);
         }
         return json_encode([
             'id' => uniqid('', true),

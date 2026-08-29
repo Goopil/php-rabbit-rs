@@ -9,4 +9,6 @@ class ScenarioMode
     public const FIRE_AND_FORGET = 'fire-and-forget';
     public const BATCH_CONFIRM = 'batch-confirm';
     public const AUTO_ACK = 'auto-ack';
+    public const LARAVEL_DISPATCH = 'laravel-dispatch';
+    public const LARAVEL_WORKER = 'laravel-worker';
 }

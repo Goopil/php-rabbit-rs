@@ -62,7 +62,8 @@ class BunnyDriver extends AbstractBenchmark
         }
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
-            || $this->scenarioMode === ScenarioMode::AUTO_ACK) {
+            || $this->scenarioMode === ScenarioMode::AUTO_ACK
+            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
             for ($i = 0; $i < $count; $i++) {
                 $ts = hrtime(true);
                 $this->channel->publish(
@@ -76,7 +77,7 @@ class BunnyDriver extends AbstractBenchmark
             return;
         }
 
-        $batchSize = $this->scenarioMode === ScenarioMode::BATCH_CONFIRM ? 256 : 1;
+        $batchSize = $this->scenarioMode === ScenarioMode::LARAVEL_DISPATCH ? 64 : 256;
         if (!$this->confirmMode) {
             $this->channel->confirmSelect();
             $this->confirmMode = true;
@@ -129,6 +130,11 @@ class BunnyDriver extends AbstractBenchmark
             throw new BenchmarkException('Driver not set up');
         }
 
+        if ($this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
+            $this->consumeSingleGet($count);
+            return;
+        }
+
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
 
@@ -166,6 +172,36 @@ class BunnyDriver extends AbstractBenchmark
                 $client->stop();
             }
         };
+    }
+
+    private function consumeSingleGet(int $count): void
+    {
+        $consumed = 0;
+        $consecutiveEmpty = 0;
+        while ($consumed < $count) {
+            $message = $this->channel->get(self::QUEUE, false);
+            if ($message === null) {
+                $consecutiveEmpty++;
+                if ($consecutiveEmpty >= 3) {
+                    break;
+                }
+                usleep(100_000);
+                continue;
+            }
+            $consecutiveEmpty = 0;
+
+            $body = $message->content;
+            $this->recordReceived($message->getHeader('message-id', ''));
+            if (strlen($body) >= 8) {
+                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
+                if ($ts !== null) {
+                    $elapsedNs = hrtime(true) - (int) $ts;
+                    $this->recordLatency($elapsedNs / 1_000_000);
+                }
+            }
+            $this->channel->ack($message);
+            $consumed++;
+        }
     }
 
     private function runConsumerLoop(int $count, int &$consumed): void
