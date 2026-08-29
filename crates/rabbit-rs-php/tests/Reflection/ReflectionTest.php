@@ -164,6 +164,9 @@ describe('Delivery method signatures', function () {
 describe('Pool construction error', function () {
     it('throws the stable base exception without exposing secrets', function () {
         $secrets = [
+            // Dummy test fixture: this URI is never used to open a connection and the
+            // credentials are fictional. S5332 (plaintext AMQP) and S2068 (hardcoded
+            // credentials) are false positives in this context.
             'amqp://native-user:native-password@rabbit.internal/private-vhost',
             'native-password',
             'PRIVATE-KEY-MATERIAL',
