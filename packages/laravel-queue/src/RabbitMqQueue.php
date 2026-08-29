@@ -21,6 +21,13 @@ use Illuminate\Queue\Attributes\Delay;
 use Illuminate\Queue\Queue;
 use InvalidArgumentException;
 
+/**
+ * @noinspection PhpTooManyMethodsInspection
+ * @phpstan-ignore-next-line
+ *
+ * Method count is dictated by the Illuminate\Contracts\Queue\Queue interface
+ * and Laravel's Queue base class. Splitting would add indirection on the hot path.
+ */
 class RabbitMqQueue extends Queue implements QueueContract
 {
     private const CONTENT_TYPE_JSON = 'application/json';

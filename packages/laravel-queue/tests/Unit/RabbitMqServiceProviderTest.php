@@ -43,7 +43,8 @@ describe('RabbitMqServiceProvider', function () {
 
             public function getCachedServicesPath(): string
             {
-                return '';
+                // Interface stub — only configurationIsCached() is consulted by the provider.
+                return $this->getCachedConfigPath();
             }
         };
         $app->instance('config', new Repository([
