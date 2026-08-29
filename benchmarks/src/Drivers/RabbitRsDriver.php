@@ -136,51 +136,66 @@ class RabbitRsDriver extends AbstractBenchmark
             $this->consumer = $this->pool->consumer('default');
         }
 
+        if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
+            $this->consumeBatchConfirm($count);
+            return;
+        }
+
+        $this->consumeSingle($count);
+    }
+
+    private function consumeBatchConfirm(int $count): void
+    {
         $consumed = 0;
         $consecutiveNulls = 0;
         while ($consumed < $count) {
-            if ($this->scenarioMode === ScenarioMode::BATCH_CONFIRM) {
-                $batch = $this->consumer->nextBatch(256, 1000);
-                if ($batch === []) {
+            $batch = $this->consumer->nextBatch(256, 1000);
+            if ($batch === []) {
+                $consecutiveNulls++;
+                if ($consecutiveNulls >= 3) {
+                    break;
+                }
+                continue;
+            }
+            $consecutiveNulls = 0;
+
+            $last = end($batch);
+            foreach ($batch as $d) {
+                $this->recordLatencyFromPayload($d->payload());
+                $this->recordReceived($d->metadata()['message_id']);
+            }
+            $this->consumer->ackThrough($last);
+            $consumed += count($batch);
+        }
+    }
+
+    private function consumeSingle(int $count): void
+    {
+        $consumed = 0;
+        $consecutiveNulls = 0;
+        while ($consumed < $count) {
+            $delivery = $this->consumer->tryNext();
+            if ($delivery === null) {
+                $delivery = $this->consumer->next(1000);
+                if ($delivery === null) {
                     $consecutiveNulls++;
                     if ($consecutiveNulls >= 3) {
                         break;
                     }
                     continue;
                 }
-                $consecutiveNulls = 0;
-
-                $last = end($batch);
-                foreach ($batch as $d) {
-                    $this->recordLatencyFromPayload($d->payload());
-                    $this->recordReceived($d->metadata()['message_id']);
-                }
-                $this->consumer->ackThrough($last);
-                $consumed += count($batch);
-            } else {
-                $delivery = $this->consumer->tryNext();
-                if ($delivery === null) {
-                    $delivery = $this->consumer->next(1000);
-                    if ($delivery === null) {
-                        $consecutiveNulls++;
-                        if ($consecutiveNulls >= 3) {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-                $consecutiveNulls = 0;
-
-                $payload = $delivery->payload();
-                $metadata = $delivery->metadata();
-                $this->recordReceived($metadata['message_id']);
-                $this->recordLatencyFromPayload($payload);
-
-                if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
-                    $delivery->ack();
-                }
-                $consumed++;
             }
+            $consecutiveNulls = 0;
+
+            $payload = $delivery->payload();
+            $metadata = $delivery->metadata();
+            $this->recordReceived($metadata['message_id']);
+            $this->recordLatencyFromPayload($payload);
+
+            if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
+                $delivery->ack();
+            }
+            $consumed++;
         }
     }
 

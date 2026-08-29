@@ -131,16 +131,23 @@ class BunnyDriver extends AbstractBenchmark
 
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
-        $consumed = 0;
-        $consecutiveTimeouts = 0;
 
         $consumerTag = 'bench_bunny_consumer';
-        $channel = $this->channel;
-        $queue = self::QUEUE;
 
+        $consumed = 0;
+        $callback = $this->makeConsumeCallback($count, $autoAck, $consumerTag, $consumed);
+
+        $this->channel->consume($callback, self::QUEUE, $consumerTag, false, $autoAck);
+
+        $this->runConsumerLoop($count, $consumed);
+    }
+
+    private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure
+    {
+        $channel = $this->channel;
         $client = $this->client;
 
-        $callback = function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag, $client): void {
+        return function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag, $client): void {
             $body = $message->content;
             $this->recordReceived($message->getHeader('message-id', ''));
             if (strlen($body) >= 8) {
@@ -159,8 +166,11 @@ class BunnyDriver extends AbstractBenchmark
                 $client->stop();
             }
         };
+    }
 
-        $this->channel->consume($callback, $queue, $consumerTag, false, $autoAck);
+    private function runConsumerLoop(int $count, int &$consumed): void
+    {
+        $consecutiveTimeouts = 0;
 
         while ($consumed < $count) {
             try {

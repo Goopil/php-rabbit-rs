@@ -139,11 +139,20 @@ class AmqplibDriver extends AbstractBenchmark
         $this->consChannel = $this->consConnection->channel();
         $this->consChannel->basic_qos(0, Config::PREFETCH_COUNT, false);
 
-        $consumed = 0;
         $autoAck = $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK;
+        $consumerTag = 'bench_consumer';
 
-        $callback = function (AMQPMessage $msg) use ($count, &$consumed, $autoAck): void {
+        $consumed = 0;
+        $callback = $this->makeConsumeCallback($count, $autoAck, $consumerTag, $consumed);
+        $this->consChannel->basic_consume(self::QUEUE, $consumerTag, false, $autoAck, false, false, $callback);
+
+        $this->consumeWithTimeouts($count, $consumed);
+    }
+
+    private function makeConsumeCallback(int $count, bool $autoAck, string $consumerTag, int &$consumed): \Closure
+    {
+        return function (AMQPMessage $msg) use ($count, &$consumed, $autoAck, $consumerTag): void {
             $body = $msg->getBody();
             $this->recordReceived($msg->get('message_id'));
             if (strlen($body) >= 8) {
@@ -158,14 +167,13 @@ class AmqplibDriver extends AbstractBenchmark
                 $msg->ack();
             }
             if ($consumed >= $count) {
-                $msg->getChannel()->basic_cancel('bench_consumer');
+                $msg->getChannel()->basic_cancel($consumerTag);
             }
         };
+    }
 
-        $noAck = $autoAck;
-        $consumerTag = 'bench_consumer';
-        $this->consChannel->basic_consume(self::QUEUE, $consumerTag, false, $noAck, false, false, $callback);
-
+    private function consumeWithTimeouts(int $count, int &$consumed): void
+    {
         $consecutiveTimeouts = 0;
         while ($consumed < $count) {
             try {
