@@ -106,7 +106,13 @@ smoke-budget.json (min 1000 pub / 500 conso, losses=0) ; prefetch défaut Larave
   (Safe), tableau comparatif 4 drivers × 2 scénarios.
 - PR `bench/laravel-realistic` → main.
 
-## Phase B — Sweep dead code publish (MR 2, ~230 lignes)
+## Phase B — Sweep dead code publish (MR 2, ~230 lignes) — MERGÉE (PR #33, 2026-08-29)
+
+Exécutée en SDD (T1 sweep + T2 bench confirmation). Supprimé : alias
+`try_publish_hot`, `PublishPump::try_publish`, API `publish_batch_detailed` + types +
+tests (+6/−247, 5 fichiers, 0 appelant vérifié). Else-arms no-pump conservées
+(comportement défini, contrat intangible). Bench confirmation : 15/15 cellules dans la
+variance Phase A, 0 losses/0 dups, gap ~3× inchangé.
 
 Branche depuis main. Items identifiés lors de l'évaluation simplification, vérifiés
 morts (ni PHP, ni Rust, ni benchs) :
@@ -125,7 +131,7 @@ SDD : T1 suppression + grep appelants + tests verts → T2 bench de confirmation
 **Garder explicitement** : dualité pump/actor, byte budget/semaphore/ledger,
 3 modes distincts (Blind/Unsafe/Safe).
 
-## Phase C — A/B mimalloc (MR 3, après A)
+## Phase C — A/B mimalloc (MR 3, après A) — REJETÉE (2026-08-29, critère non rempli)
 
 - Dépendance `mimalloc` + `#[global_allocator]` dans la cdylib
   (crates/rabbit-rs-php/src/lib.rs). Couvre tous les allocs Rust ; Zend MM séparé.
@@ -135,6 +141,13 @@ SDD : T1 suppression + grep appelants + tests verts → T2 bench de confirmation
   `/usr/bin/time -l` ou sonde dans le runner.
 - Critère de conservation : batch-confirm ≥ 5 % ou RSS sensiblement réduit,
   **sans régression** ailleurs ; sinon rejet.
+
+Résultat : A/B release interleavé (main d35580c vs mimalloc 0.1.52, 30 runs, 5 scénarios
+× 2 builds × 3 rounds, 0 losses/0 dups) — batch-confirm pub **+4.5 % ≤ bruit** (< seuil
++5 %), RSS **en hausse** (+0.7 %→+1.7 % médians, 15/15 runs, plages disjointes, ~+1.6 Mo)
+au lieu de baisser, régressions réelles worker consume −3.1 % / p99 +3.5 %. Le gain isolé
+auto-ack pub (+9.5 %, réel) est hors cellule de décision. Verdict : rejet, branche
+abandonnée (commits locaux `704aaf9`, archives SDD `runs/mimalloc-ab/`).
 
 ## Phase D — Backlog (au fil de l'eau, pas de MR planifiée)
 
