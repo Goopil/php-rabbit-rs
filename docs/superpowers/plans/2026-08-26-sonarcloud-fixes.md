@@ -214,6 +214,17 @@ git commit -m "fix: pin GitHub Actions to full commit SHAs (SonarCloud S7637)"
 
 ## Task 3: Fix GitHub Actions — lock-file enforcement (S8546, S8549)
 
+> **⚠️ CORRIGÉ EN EXÉCUTION (2026-08-29, commits d0594f7 + b6371d3) :** les marqueurs
+> sur les 2 lignes `composer update` de `coverage.yml` ont été RETIRÉS (b6371d3).
+> Raison: l'ajout du commentaire rendait les lignes « new code » de la PR #31, et
+> l'issue S8546 (vulnérabilité) y était donc comptée → QG échoué. Le marqueur ne
+> supprime rien (annotations inertes pour Sonar), et `# NOSONAR` ne fonctionne PAS
+> dans les block scalaires YAML (`run: |` — le `#` y est du contenu shell, pas un
+> commentaire YAML pour l'analyseur; vérifié empiriquement — en Shell, NOSONAR
+> fonctionne). Les 2 lignes sont restaurées byte-identiques à main → l'issue retourne
+> dans la baseline old-code, traitée par l'arbitrage global post-merge. Les 3
+> marqueurs de `ci.yml` restent en place (pas flaggés en new code).
+
 **Files:**
 - Modify: `.github/workflows/ci.yml` (lines 137, 255, 296, 301)
 - Modify: `.github/workflows/coverage.yml` (lines 101, 106, 165)
