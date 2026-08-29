@@ -53,7 +53,9 @@ describe('Octane lifecycle hooks', function () {
     it('terminating callback is registered', function () {
         $reflection = new \ReflectionClass($this->app);
         $property = $reflection->getProperty('terminatingCallbacks');
+        // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
         $property->setAccessible(true);
+        // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
         $callbacks = $property->getValue($this->app);
 
         expect($callbacks)->not->toBeEmpty();

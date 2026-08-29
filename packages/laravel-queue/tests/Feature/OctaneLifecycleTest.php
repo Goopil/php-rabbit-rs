@@ -61,6 +61,7 @@ function resolveQueueWithConsumer($app): array
     $manager = $app->make('queue');
     $reflection = new \ReflectionClass($manager);
     $connectionsProperty = $reflection->getProperty('connections');
+    // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
     $connectionsProperty->setValue($manager, ['rabbit-rs' => $queue]);
 
     // Trigger consumer creation by calling pop().
