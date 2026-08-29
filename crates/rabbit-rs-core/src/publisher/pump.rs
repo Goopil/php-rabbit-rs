@@ -368,31 +368,33 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         let gate = transport.push_publish_gate();
-        let pump = Arc::new(PublishPump::spawn(channel, 4));
+        let pump = PublishPump::spawn(channel, 4);
 
         pump.send(request("gated")).await.expect("send accepted");
-        settle(&pump).await;
+        // Anchor: the transport worker entered the publish gate, proving the
+        // publish was handed off and is now parked — the flush barrier cannot
+        // resolve before the gate is released.
+        gate.wait_entered().await;
 
-        let flush_pump = Arc::clone(&pump);
-        let flush = tokio::spawn(async move { flush_pump.flush().await });
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
-
+        // A full simulated second must elapse without the flush resolving.
+        // The timeout expiry is positive proof the flush worker ran, entered
+        // the barrier drain and stayed parked on the gated publish — the
+        // assertion can no longer pass while the flush merely has not been
+        // scheduled yet.
         assert!(
-            !flush.is_finished(),
-            "flush must wait for pending publishes to be handed to the transport"
+            timeout(Duration::from_secs(1), pump.flush()).await.is_err(),
+            "flush must not resolve while the gated publish has not reached the transport"
         );
         assert!(publish_requests(&transport).is_empty());
 
+        // Releasing the gate hands the publish to the transport and lets the
+        // barrier drain finish: a fresh flush must then resolve promptly.
         assert!(gate.release(), "gate released");
         wait_for_publishes(&transport, 1).await;
-
-        let result = timeout(Duration::from_secs(1), flush)
+        timeout(Duration::from_secs(1), pump.flush())
             .await
             .expect("flush must not hang once the transport accepted everything")
-            .expect("flush task joined");
-        assert!(result.is_ok(), "flush succeeded");
+            .expect("flush succeeded after the transport accepted everything");
     }
 
     #[tokio::test(start_paused = true)]
@@ -469,6 +471,59 @@ mod tests {
         assert!(
             matches!(outcome, Err(ref error) if error.kind() == super::super::PublishErrorKind::Closed),
             "flush on a closed pump must return Closed, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_fails_immediately_once_the_pump_task_is_cancelled() {
+        let transport = MockTransport::default();
+        let channel = mock_channel(&transport).await;
+        let gate = transport.push_publish_gate();
+        let slot = Arc::new(ArcSwapOption::from_pointee(PumpChannel(channel)));
+        let (tx, rx) = flume::bounded::<PumpJob>(4);
+        let task = tokio::spawn(pump_loop(slot, rx, 128));
+
+        // A live pump accepts hand-offs; the publish parks in its gate so
+        // nothing reaches the transport during this test.
+        tx.send_async(PumpJob {
+            request: request("before"),
+            barrier_tx: None,
+        })
+        .await
+        .expect("send accepted while the pump task is alive");
+        gate.wait_entered().await;
+
+        // Real closure path: the pump task is cancelled (runtime teardown).
+        // The intake receiver drops with the task, so the hand-off behind
+        // `publish_blind` — and therefore every blind `publish_batch` — must
+        // observe an immediate `Closed` error and leave every request that
+        // was not yet enqueued with the caller (no synthetic `Confirmed`
+        // outcome may be produced for them).
+        task.abort();
+        // Synchronize on the cancellation so the intake receiver is actually
+        // dropped before the next hand-off is attempted.
+        let _ = task.await;
+
+        let outcome = timeout(
+            Duration::from_secs(1),
+            tx.send_async(PumpJob {
+                request: request("after"),
+                barrier_tx: None,
+            }),
+        )
+        .await
+        .expect("send must not hang once the pump task is cancelled");
+        assert!(
+            outcome.is_err(),
+            "send must fail once the pump task is cancelled, got {outcome:?}"
+        );
+
+        // The post-cancellation request was never enqueued: the
+        // pre-cancellation publish is still parked in its gate and nothing
+        // else may reach the transport.
+        assert!(
+            publish_requests(&transport).is_empty(),
+            "no publish may be recorded for a request rejected by a closed pump"
         );
     }
 
