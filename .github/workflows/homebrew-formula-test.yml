@@ -16,7 +16,7 @@ jobs:
   audit-formula:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Tap and audit formula
         run: |
@@ -31,7 +31,7 @@ jobs:
     # (before the first real release populates them).
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.head.ref, 'homebrew') }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Tap and install formula
         run: |
