@@ -8,7 +8,7 @@ php artisan vendor:publish --tag="rabbit-rs-config"
 
 ## Structure
 
-The configuration has six sections:
+The configuration has seven sections:
 
 | Section | Purpose |
 |---------|---------|

@@ -18,7 +18,7 @@ Standalone PHP benchmark suite for measuring rabbit-rs throughput, latency, and 
 ./benchmarks/run-benchmarks.sh
 ```
 
-This runs all 3 scenarios x all available drivers (up to 12 combinations).
+This runs all 5 scenarios x all available drivers (up to 20 combinations).
 
 ### Run specific driver or scenario
 
@@ -56,8 +56,10 @@ Drivers are auto-detected based on available extensions and classes.
 | `fire-and-forget` | No confirms, no mandatory flag | `no_ack=true` (auto-ack by broker) |
 | `batch-confirm` | Batched confirms (every 256 msgs), mandatory flag | Manual ACK |
 | `auto-ack` | Per-message confirms, mandatory flag | `no_ack=true` (auto-ack by broker) |
+| `laravel-dispatch` | Unit publishes, confirms + mandatory (Safe), 1024 B payload | Fast batch drain (not measured) |
+| `laravel-worker` | Fast batch fill, blind (not measured) | Unit consume + ACK per message, 1024 B payload, prefetch 64 |
 
-Note: The `rabbit_rs` extension always uses confirms internally. For `fire-and-forget`, a 100ms timeout approximates fire-and-forget behavior.
+Note: for the `rabbit-rs` driver, the no-confirm scenarios (`fire-and-forget`, `auto-ack`, `laravel-worker`) run in the native `blind` safety mode.
 
 ### Budget system
 
@@ -109,9 +111,12 @@ benchmarks/
 │   │   ├── BunnyDriver.php
 │   │   └── RabbitRsDriver.php
 │   └── Scenarios/
+│       ├── AbstractLaravelScenarioBenchmark.php  # Shared base for the laravel-* scenarios
 │       ├── FireAndForgetBenchmark.php
 │       ├── BatchConfirmBenchmark.php
-│       └── AutoAckBenchmark.php
+│       ├── AutoAckBenchmark.php
+│       ├── LaravelDispatchBenchmark.php
+│       └── LaravelWorkerBenchmark.php
 └── laravel/
     ├── LaravelCompareBenchmark.php
     └── LaravelSmokeBenchmark.php

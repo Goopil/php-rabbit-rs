@@ -8,7 +8,7 @@
 
 Performance is measured at the PHP level — publish and consume throughput, latency, and resource cost — not at the Rust microbenchmark level. The Rust core is covered by integration tests; benchmarks focus on the user-facing contract.
 
-The benchmark suite (`benchmarks/run-benchmarks.php`, wrapped by `benchmarks/run-benchmarks.sh`) runs **manually only — no CI workflow executes the runner**. It compares up to four drivers (`rabbit-rs` native extension, `amqplib`, `amqp-ext`, `bunny`) across five scenarios: three transport scenarios (`fire-and-forget`, `batch-confirm`, `auto-ack`) and two Laravel-representative scenarios (`laravel-dispatch`, `laravel-worker`). Each cell measures publish/consume throughput and p50/p95/p99 latency, reports losses and duplicate deliveries, and prints the budget comparison (see below).
+The benchmark suite (`benchmarks/src/run-benchmarks.php`, wrapped by `benchmarks/run-benchmarks.sh`) runs **manually only — no CI workflow executes the runner**. It compares up to four drivers (`rabbit-rs` native extension, `amqplib`, `amqp-ext`, `bunny`) across five scenarios: three transport scenarios (`fire-and-forget`, `batch-confirm`, `auto-ack`) and two Laravel-representative scenarios (`laravel-dispatch`, `laravel-worker`). Each cell measures publish/consume throughput and p50/p95/p99 latency, reports losses and duplicate deliveries, and prints the budget comparison (see below).
 
 **Release runs must follow the [release protocol](../benchmarks/README.md#release-protocol-mandatory)** (release build, interleaved runs, per-run JSON archived, 0 losses/0 duplicates expected in Safe).
 
@@ -51,4 +51,4 @@ Options: `--driver=rabbit-rs|amqplib|amqp-ext|bunny`, `--scenario=fire-and-forge
 - Latency is measured as publish-to-consume wall-clock time per message (via `hrtime`).
 - Throughput is messages per second over the full publish or consume phase.
 - Resource metrics (RSS, CPU) are captured via `getrusage()` and `/proc/self/status` (Linux) or `ps` (macOS).
-- Safety modes ensure apples-to-apples comparison: `unsafe` disables confirms and mandatory returns on all drivers; `safest` enables both.
+- Safety is fixed per scenario via `ScenarioMode` (there is no `--safety` flag): `fire-and-forget`, `auto-ack` and `laravel-worker` publish without confirms, while `batch-confirm` and `laravel-dispatch` publish with confirms + mandatory — drivers are compared apples-to-apples within a scenario.
