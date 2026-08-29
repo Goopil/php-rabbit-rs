@@ -12,12 +12,9 @@ use rabbit_rs_core::{
         SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     consumer::{Scheduler, SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
-    publisher::{
-        Destination, MessageOutcome, MessageProperties, PublishErrorKind, PublishOutcome,
-        PublishRequest,
-    },
+    publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, QueueKind, ReturnedMessage,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -719,121 +716,6 @@ async fn publish_batch_preserves_order_across_two_brokers() {
         .filter(|op| matches!(op, TransportOperation::OpenPublisher))
         .count();
     assert_eq!(publisher_count, 2, "one publisher per broker");
-}
-
-// ---------------------------------------------------------------------------
-// publish_batch_detailed: per-message indexed report
-// ---------------------------------------------------------------------------
-
-/// Verifies that `publish_batch_detailed` returns one `MessageOutcome` per
-/// input request in input order, classifying confirmed messages correctly.
-#[tokio::test(start_paused = true)]
-async fn publish_batch_detailed_classifies_confirmed_messages() {
-    let transport = Arc::new(MockTransport::default());
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let pool = ClientPool::new(Arc::new(config()), transport);
-
-    let requests = vec![
-        ("default".to_owned(), request("msgA")),
-        ("default".to_owned(), request("msgB")),
-    ];
-
-    let outcome = pool
-        .publish_batch_detailed(requests)
-        .await
-        .expect("detailed batch");
-    assert_eq!(outcome.results.len(), 2);
-    assert!(matches!(
-        &outcome.results[0],
-        MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id.as_ref() == "msgA"
-    ));
-    assert!(matches!(
-        &outcome.results[1],
-        MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id.as_ref() == "msgB"
-    ));
-}
-
-/// Verifies that a mandatory return is surfaced as `MessageOutcome::Returned`
-/// with the broker reply info, in input order.
-#[tokio::test(start_paused = true)]
-async fn publish_batch_detailed_classifies_returned_message() {
-    let transport = Arc::new(MockTransport::default());
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(Some(ReturnedMessage {
-        reply_code: 312,
-        reply_text: "NO_ROUTE".to_owned(),
-        exchange: "jobs".to_owned(),
-        routing_key: "missing".to_owned(),
-        payload: Bytes::from_static(b"payload"),
-    }))));
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let pool = ClientPool::new(Arc::new(config()), transport);
-
-    let requests = vec![
-        ("default".to_owned(), request("returned")),
-        ("default".to_owned(), request("ok")),
-    ];
-
-    let outcome = pool
-        .publish_batch_detailed(requests)
-        .await
-        .expect("detailed batch");
-    assert_eq!(outcome.results.len(), 2);
-    assert!(matches!(
-        &outcome.results[0],
-        MessageOutcome::Returned(info) if info.code == 312
-    ));
-    assert!(matches!(
-        &outcome.results[1],
-        MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id.as_ref() == "ok"
-    ));
-}
-
-/// Verifies that a NACK is surfaced as `MessageOutcome::Failed` with the
-/// `Nack` error kind, in input order.
-#[tokio::test(start_paused = true)]
-async fn publish_batch_detailed_classifies_failed_message() {
-    let transport = Arc::new(MockTransport::default());
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
-    let pool = ClientPool::new(Arc::new(config()), transport);
-
-    let requests = vec![
-        ("default".to_owned(), request("ok")),
-        ("default".to_owned(), request("nacked")),
-    ];
-
-    let outcome = pool
-        .publish_batch_detailed(requests)
-        .await
-        .expect("detailed batch");
-    assert_eq!(outcome.results.len(), 2);
-    assert!(matches!(
-        &outcome.results[0],
-        MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-            if message_id.as_ref() == "ok"
-    ));
-    assert!(matches!(
-        &outcome.results[1],
-        MessageOutcome::Failed(err) if err.kind() == PublishErrorKind::Nack
-    ));
-}
-
-/// `publish_batch_detailed` returns a `BatchOutcome` whose `results` length
-/// always matches the input length, even on an empty batch.
-#[tokio::test(start_paused = true)]
-async fn publish_batch_detailed_empty_batch_returns_empty_outcome() {
-    let transport = Arc::new(MockTransport::default());
-    let pool = ClientPool::new(Arc::new(config()), transport);
-
-    let outcome = pool
-        .publish_batch_detailed(Vec::new())
-        .await
-        .expect("empty detailed batch");
-    assert!(outcome.results.is_empty());
 }
 
 // ---------------------------------------------------------------------------

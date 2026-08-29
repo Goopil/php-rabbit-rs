@@ -13,8 +13,8 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
-        BatchOutcome, MessageOutcome, PublishError, PublishErrorKind, PublishOutcome,
-        PublishRequest, PublishWaiter, PublisherConfig, PublisherHandle,
+        PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
+        PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
     topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
@@ -116,7 +116,7 @@ impl ClientPool {
                 .await
                 .map_err(|error| ClientError::publish(&error))?,
             SafetyMode::Safe | SafetyMode::Unsafe => publisher
-                .try_publish_hot(request)
+                .try_publish(request)
                 .map_err(|error| ClientError::publish(&error))?,
         };
         waiter
@@ -178,7 +178,7 @@ impl ClientPool {
                         .map(|_| PublishOutcome::Confirmed { message_id })
                         .map_err(|error| ClientError::publish(&error))
                 } else {
-                    match publisher.try_publish_hot(request) {
+                    match publisher.try_publish(request) {
                         Ok(waiter) => {
                             waiters.push((original_index, waiter));
                             continue;
@@ -234,77 +234,6 @@ impl ClientPool {
         }
 
         terminal_error.map_or(Ok(results), Err)
-    }
-
-    /// Enqueues a complete batch and returns a per-message indexed report.
-    ///
-    /// Like [`publish_batch`](Self::publish_batch), the publisher handle is
-    /// cached per broker and the results preserve the original input order.
-    /// Unlike `publish_batch`, every input request yields exactly one
-    /// [`MessageOutcome`] entry — including publications that were never
-    /// accepted by an actor — so callers can correlate per-message status
-    /// without inferring gaps.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`ClientError`] only if the pool is closed or an unknown
-    /// broker is referenced before any publication is attempted. Per-message
-    /// failures are reported inside the returned [`BatchOutcome`].
-    pub async fn publish_batch_detailed(
-        &self,
-        requests: Vec<(String, PublishRequest)>,
-    ) -> Result<BatchOutcome, ClientError> {
-        self.ensure_open()?;
-        let total = requests.len();
-        let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
-        for (i, (broker, request)) in requests.into_iter().enumerate() {
-            by_broker.entry(broker).or_default().push((i, request));
-        }
-
-        let mut outcomes: Vec<Option<Result<PublishOutcome, PublishError>>> = vec![None; total];
-        let mut waiters: Vec<(usize, PublishWaiter)> = Vec::new();
-
-        for (broker, msgs) in &by_broker {
-            let publisher = self.publisher(broker).await?;
-            for (original_index, request) in msgs {
-                match publisher.try_publish(request.clone()) {
-                    Ok(waiter) => waiters.push((*original_index, waiter)),
-                    Err(error) => {
-                        outcomes[*original_index] = Some(Err(error));
-                    }
-                }
-            }
-        }
-
-        let results = PublishWaiter::wait_all(waiters).await;
-        for (index, result) in results {
-            match result {
-                Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
-                Err(error) => {
-                    outcomes[index] = Some(Err(error));
-                }
-            }
-        }
-
-        let results = outcomes
-            .into_iter()
-            .map(|o| match o {
-                Some(Ok(PublishOutcome::Confirmed { message_id })) => {
-                    MessageOutcome::Confirmed(PublishOutcome::Confirmed { message_id })
-                }
-                Some(Ok(PublishOutcome::Returned { reply, .. })) => MessageOutcome::Returned(reply),
-                Some(Ok(PublishOutcome::Ambiguous { .. })) => MessageOutcome::Failed(
-                    PublishError::new(PublishErrorKind::Unconfirmed, "ambiguous confirmation"),
-                ),
-                Some(Err(error)) => MessageOutcome::Failed(error),
-                None => MessageOutcome::NotAccepted(PublishError::new(
-                    PublishErrorKind::Backpressure,
-                    "not accepted",
-                )),
-            })
-            .collect();
-
-        Ok(BatchOutcome { results })
     }
 
     /// Flush barrier for blind-mode publishing: resolves once every request
