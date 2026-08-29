@@ -1,5 +1,8 @@
 # Publish Pump v2 — vrai fire-and-forget
 
+Status: exécuté — mergé via PR #30 (d923fe1, 2026-08-28). Benchs désormais en release
+(debug masque ~4×). Suite: `2026-08-29-post-pump-simplification.md`.
+
 Date: 2026-08-28
 Base: `perf/publish-optimizations` (2b8a9b5) → merge PR #29 → nouvelle branche `perf/publish-pump`
 
