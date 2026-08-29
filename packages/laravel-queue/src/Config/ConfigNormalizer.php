@@ -132,7 +132,7 @@ final class ConfigNormalizer
         $port = self::DEFAULT_AMQP_PORT;
 
         if (str_starts_with($endpoint, '[')) {
-            if (preg_match('/^\[([^]]+)](?::([0-9]+))?$/', $endpoint, $matches) !== 1) {
+            if (preg_match('/^\[([^]]+)](?::(\d+))?$/', $endpoint, $matches) !== 1) {
                 self::invalid($path, 'contains an invalid bracketed IPv6 endpoint');
             }
             $host = $matches[1];
