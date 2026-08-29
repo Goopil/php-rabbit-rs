@@ -8,7 +8,7 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    config::{TopologyMode, ValidatedConfig},
+    config::{SafetyMode, TopologyMode, ValidatedConfig},
     consumer::{ConsumerError, ConsumerHandle},
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
@@ -111,10 +111,11 @@ impl ClientPool {
         self.ensure_open()?;
         let publisher = self.publisher(broker).await?;
         let waiter = match self.publisher_config.safety {
-            crate::config::SafetyMode::Blind => publisher
-                .try_publish_blind(request)
+            SafetyMode::Blind => publisher
+                .publish_blind(request)
+                .await
                 .map_err(|error| ClientError::publish(&error))?,
-            crate::config::SafetyMode::Safe | crate::config::SafetyMode::Unsafe => publisher
+            SafetyMode::Safe | SafetyMode::Unsafe => publisher
                 .try_publish_hot(request)
                 .map_err(|error| ClientError::publish(&error))?,
         };
@@ -124,27 +125,39 @@ impl ClientPool {
             .map_err(|error| ClientError::publish(&error))
     }
 
-    /// Enqueues a complete batch before awaiting confirmations, preserving input order.
+    /// Enqueues a complete batch through cached per-broker publishers,
+    /// preserving input order in the returned outcomes.
     ///
-    /// The publisher handle is cached per broker so that repeated brokers in the
-    /// batch reuse a single actor instead of performing one lookup per message.
-    /// Outcomes are returned in the original input order regardless of how
-    /// requests are grouped by broker internally.
+    /// The publisher handle is cached per broker so that repeated brokers in
+    /// the batch reuse a single actor instead of performing one lookup per
+    /// message.
+    ///
+    /// In [`SafetyMode::Safe`] and [`SafetyMode::Unsafe`] modes the batch
+    /// awaits every outcome before returning; outcomes are returned in the
+    /// original input order regardless of how requests are grouped by broker
+    /// internally.
+    ///
+    /// In [`SafetyMode::Blind`] mode the batch returns as soon as every
+    /// request has been handed off to the bounded publish pump (backpressure
+    /// by blocking); no transport outcome is awaited and every returned
+    /// outcome is the synthetic `Confirmed` resolved at hand-off. A closed
+    /// pump fails the batch immediately, leaving the requests that were not
+    /// yet enqueued with the caller — re-buffering callers therefore
+    /// re-publish a conservative superset, and duplicates are permitted and
+    /// identifiable through their `message_id`.
     ///
     /// # Errors
     ///
-    /// Returns the first terminal failure after resolving every publication that
-    /// was already accepted by an actor.
+    /// Returns the first terminal failure after resolving every publication
+    /// that was already accepted by an actor. In blind mode the only failure
+    /// is a closed pump, which fails the batch immediately.
     pub async fn publish_batch(
         &self,
         requests: Vec<(String, PublishRequest)>,
     ) -> Result<Vec<PublishOutcome>, ClientError> {
         self.ensure_open()?;
         let total = requests.len();
-        let blind = matches!(
-            self.publisher_config.safety,
-            crate::config::SafetyMode::Blind
-        );
+        let blind = matches!(self.publisher_config.safety, SafetyMode::Blind);
         let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
         for (i, (broker, request)) in requests.into_iter().enumerate() {
             by_broker.entry(broker).or_default().push((i, request));
@@ -152,36 +165,45 @@ impl ClientPool {
 
         let mut outcomes: Vec<Option<Result<PublishOutcome, ClientError>>> = vec![None; total];
         let mut waiters: Vec<(usize, PublishWaiter)> = Vec::new();
-        let mut immediate_error = None;
+        let mut terminal_error = None;
 
-        for (broker, msgs) in &by_broker {
-            let publisher = self.publisher(broker).await?;
+        for (broker, msgs) in by_broker {
+            let publisher = self.publisher(&broker).await?;
             for (original_index, request) in msgs {
-                let result = publisher.try_publish_hot(request.clone());
+                let result = if blind {
+                    let message_id = Arc::clone(&request.properties.message_id);
+                    publisher
+                        .publish_blind(request)
+                        .await
+                        .map(|_| PublishOutcome::Confirmed { message_id })
+                        .map_err(|error| ClientError::publish(&error))
+                } else {
+                    match publisher.try_publish_hot(request) {
+                        Ok(waiter) => {
+                            waiters.push((original_index, waiter));
+                            continue;
+                        }
+                        Err(error) => Err(ClientError::publish(&error)),
+                    }
+                };
                 match result {
-                    Ok(waiter) => waiters.push((*original_index, waiter)),
-                    Err(error) => {
-                        let client_err = ClientError::publish(&error);
-                        immediate_error.get_or_insert_with(|| client_err.clone());
-                        outcomes[*original_index] = Some(Err(client_err));
+                    Ok(outcome) => outcomes[original_index] = Some(Ok(outcome)),
+                    Err(client_err) if blind => {
+                        // Only a closed pump can fail a blind hand-off. Fail
+                        // the batch immediately: un-enqueued requests stay
+                        // with the caller, which re-buffers a conservative
+                        // superset (Task 1 contract).
+                        return Err(client_err);
+                    }
+                    Err(client_err) => {
+                        terminal_error.get_or_insert_with(|| client_err.clone());
+                        outcomes[original_index] = Some(Err(client_err));
                     }
                 }
             }
         }
 
-        let mut terminal_error = immediate_error;
-        if blind {
-            for (index, waiter) in waiters {
-                match waiter.wait().await {
-                    Ok(outcome) => outcomes[index] = Some(Ok(outcome)),
-                    Err(error) => {
-                        let client_err = ClientError::publish(&error);
-                        terminal_error.get_or_insert_with(|| client_err.clone());
-                        outcomes[index] = Some(Err(client_err));
-                    }
-                }
-            }
-        } else {
+        if !blind {
             let results = PublishWaiter::wait_all(waiters).await;
             for (index, result) in results {
                 match result {
@@ -283,6 +305,30 @@ impl ClientPool {
             .collect();
 
         Ok(BatchOutcome { results })
+    }
+
+    /// Flush barrier for blind-mode publishing: resolves once every request
+    /// enqueued before this call has been handed to the transport (or dropped
+    /// for lack of a channel during recovery) on every cached publisher.
+    ///
+    /// Never fails when no publisher is cached yet, and resolves immediately
+    /// for non-blind pools: those publishers have no pump and no outstanding
+    /// hand-offs — their outcomes are resolved before `publish` and
+    /// `publish_batch` return.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`PublishErrorKind::Closed`] raised by a cached
+    /// publisher's pump.
+    pub async fn flush_blind(&self) -> Result<(), ClientError> {
+        let publishers: Vec<PublisherHandle> = lock(&self.publishers).values().cloned().collect();
+        let mut first_error = None;
+        for publisher in publishers {
+            if let Err(error) = publisher.flush_blind().await {
+                first_error.get_or_insert(ClientError::publish(&error));
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Returns a cached consumer handle if it matches the coordinator's
@@ -434,6 +480,12 @@ impl ClientPool {
             .iter()
             .map(|(broker, handle)| (broker.clone(), handle.state()))
             .collect()
+    }
+
+    /// Returns the publisher safety mode this pool was configured with.
+    #[must_use]
+    pub fn safety_mode(&self) -> SafetyMode {
+        self.publisher_config.safety
     }
 
     /// Returns the aggregate publisher utilization across all known brokers.

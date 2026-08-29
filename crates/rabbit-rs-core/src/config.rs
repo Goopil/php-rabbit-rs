@@ -404,11 +404,22 @@ pub struct DeadLetterConfig {
 }
 
 /// Publisher safety mode determining the delivery guarantee level.
+///
+/// Only [`SafetyMode::Unsafe`] and [`SafetyMode::Safe`] provide
+/// at-least-once delivery: publications are retained in bounded process
+/// memory and replayed with their original `message_id` across connection
+/// recovery. [`SafetyMode::Blind`] is an explicit fire-and-forget contract
+/// with no replay.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SafetyMode {
-    /// Fire-and-forget: async pump, no socket wait, no confirms. Messages
-    /// may be lost if the socket drops between pump send and TCP write.
+    /// Fire-and-forget: publishing hands the message to a bounded background
+    /// pump (backpressure by blocking) and returns without waiting for any
+    /// transport outcome. A transport failure after the hand-off — including
+    /// a channel cleared during recovery — is a silent loss: no confirmation,
+    /// no mandatory return, no replay. A flush barrier
+    /// ([`PublisherHandle::flush_blind`](crate::publisher::PublisherHandle::flush_blind))
+    /// is the only completion point.
     Blind,
     /// Synchronous socket write, no confirms. Message reached kernel socket buffer.
     Unsafe,

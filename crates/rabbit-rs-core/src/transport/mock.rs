@@ -246,15 +246,31 @@ async fn wait_for_gate(gate: Option<MockOperationGateWait>) {
 }
 
 struct MockPublishGateWait {
+    entered: oneshot::Sender<()>,
     release: oneshot::Receiver<()>,
 }
 
 #[derive(Clone)]
 pub struct MockPublishGate {
+    entered: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
     release: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl MockPublishGate {
+    /// Waits until a publish call entered the gate, proving the publish
+    /// future was polled (and is now pending on the gate).
+    pub async fn wait_entered(&self) {
+        let Some(receiver) = self
+            .entered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        else {
+            return;
+        };
+        let _ = receiver.await;
+    }
+
     /// Releases the gated publish, allowing it to complete.
     pub fn release(&self) -> bool {
         self.release
@@ -266,12 +282,15 @@ impl MockPublishGate {
 }
 
 fn publish_gate() -> (MockPublishGateWait, MockPublishGate) {
+    let (entered_sender, entered_receiver) = oneshot::channel();
     let (release_sender, release_receiver) = oneshot::channel();
     (
         MockPublishGateWait {
+            entered: entered_sender,
             release: release_receiver,
         },
         MockPublishGate {
+            entered: Arc::new(Mutex::new(Some(entered_receiver))),
             release: Arc::new(Mutex::new(Some(release_sender))),
         },
     )
@@ -279,6 +298,7 @@ fn publish_gate() -> (MockPublishGateWait, MockPublishGate) {
 
 async fn wait_for_publish_gate(gate: Option<MockPublishGateWait>) {
     if let Some(gate) = gate {
+        let _ = gate.entered.send(());
         let _ = gate.release.await;
     }
 }
