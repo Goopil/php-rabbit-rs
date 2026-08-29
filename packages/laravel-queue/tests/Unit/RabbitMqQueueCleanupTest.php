@@ -107,7 +107,7 @@ describe('closeConsumers', function (): void {
     });
 
     it('is safe with no cached consumers', function (): void {
-        [$queue, $pool] = makeCleanupQueue();
+        [$queue] = makeCleanupQueue();
 
         // Should not throw.
         $queue->closeConsumers();

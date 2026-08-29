@@ -36,7 +36,7 @@ namespace Laravel\Horizon {
                 $this->decoded = json_decode($value, true) ?: [];
             }
 
-            public function prepare(mixed $job = null): self
+            public function prepare(mixed $_ = null): self
             {
                 $this->decoded['type'] = 'job';
                 $this->decoded['tags'] = $this->decoded['tags'] ?? [];

@@ -113,7 +113,7 @@ describe('rabbit-rs:work command', function () {
             $extension = RabbitMqWorkCommandExtension::fromEnvironment();
             $called = false;
             $events = $this->app->make('events');
-            $extension->register($events, static function (string $level, array $context) use (&$called): void {
+            $extension->register($events, static function () use (&$called): void {
                 $called = true;
             });
 

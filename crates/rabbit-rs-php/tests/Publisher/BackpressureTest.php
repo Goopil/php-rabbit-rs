@@ -24,7 +24,7 @@ describe('backpressure', function () {
             'publisher_capacity' => 1,
             'pending_confirmations' => 1,
         ]);
-        $consumer = $pool->consumer('main');
+        $pool->consumer('main');
 
         try {
             $pool->publishBatch([backpressureMessage('first'), backpressureMessage('second')]);

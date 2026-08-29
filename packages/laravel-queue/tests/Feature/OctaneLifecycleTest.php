@@ -213,7 +213,7 @@ describe('lifecycle operations', function () {
 
 describe('consumer cleanup', function () {
     it('flush closes consumers on current queue', function () {
-        [$queue, $pool] = resolveQueueWithConsumer($this->app);
+        [, $pool] = resolveQueueWithConsumer($this->app);
         $consumer = $pool->consumerFor('default');
 
         $lifecycle = new OctaneLifecycle($this->app);
@@ -223,7 +223,7 @@ describe('consumer cleanup', function () {
     });
 
     it('reload closes consumers on current queue', function () {
-        [$queue, $pool] = resolveQueueWithConsumer($this->app);
+        [, $pool] = resolveQueueWithConsumer($this->app);
         $consumer = $pool->consumerFor('default');
 
         $lifecycle = new OctaneLifecycle($this->app);
@@ -233,7 +233,7 @@ describe('consumer cleanup', function () {
     });
 
     it('stop closes consumers on current queue', function () {
-        [$queue, $pool] = resolveQueueWithConsumer($this->app);
+        [, $pool] = resolveQueueWithConsumer($this->app);
         $consumer = $pool->consumerFor('default');
 
         $lifecycle = new OctaneLifecycle($this->app);

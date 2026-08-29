@@ -146,7 +146,7 @@ describe('resetAfterFork', function (): void {
         $createCount = 0;
 
         $factory = new NativePoolFactory(
-            createPool: static function (array $config) use (&$parentPool, &$childPool, &$createCount): Pool {
+            createPool: static function () use (&$parentPool, &$childPool, &$createCount): Pool {
                 $createCount++;
 
                 return $createCount === 1 ? $parentPool : $childPool;

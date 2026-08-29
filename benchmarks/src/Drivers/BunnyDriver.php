@@ -97,19 +97,19 @@ class BunnyDriver extends AbstractBenchmark
             $pending++;
 
             if ($pending >= $batchSize) {
-                $this->waitForConfirms($pending);
+                $this->waitForConfirms();
                 $pending = 0;
             }
         }
 
         if ($pending > 0) {
-            $this->waitForConfirms($pending);
+            $this->waitForConfirms();
         }
     }
 
     private int $publishSeq = 0;
 
-    private function waitForConfirms(int $expected): void
+    private function waitForConfirms(): void
     {
         $targetSeq = $this->publishSeq;
         $listener = function ($frame) use ($targetSeq) {
