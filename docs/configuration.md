@@ -164,7 +164,6 @@ Set `enabled => false` to exclude a subscription without removing it from config
 
 ```php
 'publisher' => [
-    'safety' => env('RABBIT_RS_SAFETY', 'safe'),
     'confirms' => true,
     'mandatory' => true,
     'confirm_timeout' => (int) env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),
@@ -173,7 +172,6 @@ Set `enabled => false` to exclude a subscription without removing it from config
 
 | Env | Description | Default |
 |-----|-------------|---------|
-| `RABBIT_RS_SAFETY` | Publisher safety mode: `safe`, `unsafe` or `blind` | `safe` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
 
 Publisher confirms and mandatory routing are **enabled by default**. This provides at-least-once delivery guarantees. Disabling either is possible but removes safety guarantees — see [Reliability](reliability.md).
@@ -182,11 +180,13 @@ Publisher confirms and mandatory routing are **enabled by default**. This provid
 - `mandatory: true` — the broker returns unroutable messages instead of silently dropping them
 - `confirm_timeout` — how long to wait for a confirm before timing out (milliseconds)
 
-#### Safety modes
+#### Safety modes (native extension configuration only)
+
+The `safety` setting (`RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) is currently reachable **only through the raw native extension configuration**. The Laravel package does not expose it yet: `config/rabbit-rs.php` has no `safety` key, and a hand-added one is silently ignored — the package normalizer rebuilds the publisher section with only `confirms`, `mandatory` and `confirm_timeout`. A follow-up will plumb it through.
 
 - `safe` (default) — at-least-once: confirm mode + mandatory routing. Publications are retained in bounded process memory and replayed with their original `message_id` across connection recovery.
 - `unsafe` — synchronous socket write without confirms. The message reached the kernel socket buffer, but a broker-side failure can still lose it.
-- `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. `Pool::flush()` is a barrier: every request handed to the pump before it has been written to the broker when it returns. On a flush error, buffered requests are re-buffered conservatively — duplicates are permitted and identifiable through their `message_id`.
+- `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. `Pool::flush()` is a barrier: every request enqueued on the pump before it has been handed to the transport (submitted to the broker connection — delivery is not proven without confirms) when it returns. The only blind flush error is `Closed` (the pump is closed because the pool is dying): buffered requests are never re-buffered in blind mode. In `safe`/`unsafe` mode, a failed flush re-buffers the buffered requests conservatively — duplicates are permitted and identifiable through their `message_id`.
 
 ### Delay
 
