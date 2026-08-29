@@ -1750,7 +1750,8 @@ async fn connection_event_clears_then_restores_the_blind_pump_channel() {
     // m1 is taken in by the pump and held pending on the gate.
     let gate = transport.push_publish_gate();
     let waiter = handle
-        .try_publish_blind(request_blind("m1"))
+        .publish_blind(request_blind("m1"))
+        .await
         .expect("blind publish accepted");
     gate.wait_entered().await;
 
@@ -1761,7 +1762,8 @@ async fn connection_event_clears_then_restores_the_blind_pump_channel() {
         .await
         .expect("publisher suspended");
     handle
-        .try_publish_blind(request_blind("m2"))
+        .publish_blind(request_blind("m2"))
+        .await
         .expect("send stays accepted while recovering");
     for _ in 0..50 {
         tokio::task::yield_now().await;
@@ -1782,7 +1784,8 @@ async fn connection_event_clears_then_restores_the_blind_pump_channel() {
         .await
         .expect("publisher resumed");
     handle
-        .try_publish_blind(request_blind("m3"))
+        .publish_blind(request_blind("m3"))
+        .await
         .expect("blind publish accepted after ready");
     wait_for_publish_count(&transport, 1).await;
 

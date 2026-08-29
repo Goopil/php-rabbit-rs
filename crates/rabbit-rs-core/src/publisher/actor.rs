@@ -209,38 +209,56 @@ impl PublisherHandle {
         self.try_publish(request)
     }
 
-    /// Blind-mode publish: enqueues to the background pump and returns immediately.
+    /// Blind-mode publish: hands the request to the background publish pump
+    /// and returns a pre-resolved waiter.
     ///
-    /// The returned [`PublishWaiter`] is already resolved with a synthetic
-    /// `Confirmed` outcome — no confirmation is ever received in blind mode.
+    /// Backpressure is expressed by blocking: the returned future resolves
+    /// once the request has been enqueued in the pump's bounded intake queue —
+    /// never on a transport outcome. The returned [`PublishWaiter`] is already
+    /// resolved with a synthetic `Confirmed` outcome; blind mode never
+    /// observes confirmations, returns, or transport failures after the
+    /// hand-off (silent loss — see
+    /// [`SafetyMode::Blind`](crate::config::SafetyMode::Blind)).
     ///
     /// Falls back to [`try_publish`](Self::try_publish) when no pump is
-    /// configured (non-blind safety mode).
+    /// configured (non-blind safety mode), preserving outcome visibility for
+    /// that fallback.
     ///
     /// # Errors
     ///
-    /// Returns [`PublishErrorKind::Backpressure`] when the pump channel is
-    /// full or disconnected.
-    pub fn try_publish_blind(
+    /// Returns [`PublishErrorKind::Closed`] when the pump is closed, or the
+    /// fallback [`try_publish`](Self::try_publish) errors when no pump is
+    /// configured.
+    pub async fn publish_blind(
         &self,
         request: PublishRequest,
     ) -> Result<PublishWaiter, PublishError> {
         let Some(pump) = &self.pump else {
             return self.try_publish(request);
         };
-        let message_id = request.properties.message_id.clone();
+        let message_id = Arc::clone(&request.properties.message_id);
         let transport_request = into_transport_request(&request, None, false);
-        if pump.try_publish(transport_request) {
-            self.metrics.record_publish();
-            Ok(PublishWaiter::resolved(PublishOutcome::Confirmed {
-                message_id,
-            }))
-        } else {
-            self.metrics.record_backpressure();
-            Err(PublishError::new(
-                PublishErrorKind::Backpressure,
-                "blind publish pump is full or disconnected",
-            ))
+        pump.send(transport_request).await?;
+        self.metrics.record_publish();
+        Ok(PublishWaiter::resolved(PublishOutcome::Confirmed {
+            message_id,
+        }))
+    }
+
+    /// Flush barrier for blind-mode publishers: resolves once every request
+    /// enqueued before this call has been handed to the transport (or dropped
+    /// for lack of a channel during recovery). Resolves immediately when no
+    /// pump is configured (non-blind safety mode — those publishers resolve
+    /// every outcome before their publish call returns).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublishErrorKind::Closed`] when the pump is closed before
+    /// the barrier could complete.
+    pub async fn flush_blind(&self) -> Result<(), PublishError> {
+        match &self.pump {
+            Some(pump) => pump.flush().await,
+            None => Ok(()),
         }
     }
 
