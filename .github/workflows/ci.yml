@@ -257,7 +257,7 @@ jobs:
       - name: Install Octane
         run: |
           cd packages/laravel-queue
-          composer require laravel/octane --dev --ignore-platform-reqs || true
+          composer require laravel/octane --dev --ignore-platform-reqs || true # sonar:no-lock CI matrix test — intentional
 
       - name: Run Octane lifecycle tests
         run: |
