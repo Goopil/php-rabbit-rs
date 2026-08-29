@@ -19,6 +19,7 @@ use ext_php_rs::{
 };
 use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
+    config::SafetyMode,
     pool::{ConnectionHandle, ConnectionKey},
     publisher::{PublishOutcome, PublishRequest},
     recovery::ConnectionState,
@@ -133,6 +134,12 @@ impl Pool {
     }
 
     /// Flushes the publish buffer, sending all buffered messages to the broker.
+    ///
+    /// In blind mode this is a barrier: every request handed to the publish
+    /// pump before this call — including buffered publications flushed just
+    /// above and any earlier blind publish — has been written to the broker
+    /// (or dropped per the blind fire-and-forget contract) when `flush`
+    /// returns.
     pub fn flush(&self) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::flush")?;
         let publishes = std::mem::take(
@@ -144,6 +151,11 @@ impl Pool {
         if !publishes.is_empty() {
             *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
             self.flush_publishes(publishes)?;
+        }
+        if matches!(self.client.safety_mode(), SafetyMode::Blind)
+            && let Err(error) = self.handle.runtime().block_on(self.client.flush_blind())
+        {
+            return client_exception(&error);
         }
         Ok(())
     }

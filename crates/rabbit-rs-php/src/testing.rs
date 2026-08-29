@@ -8,6 +8,7 @@ use ext_php_rs::{
 };
 use rabbit_rs_core::{
     client::ClientPool,
+    config::SafetyMode,
     consumer::APPLICATION_ATTEMPTS_HEADER,
     pool::ConnectionKey,
     publisher::PublisherConfig,
@@ -31,6 +32,7 @@ pub(crate) fn register(module: ModuleBuilder) -> ModuleBuilder {
 struct Scenario {
     deliveries: Vec<DeliveryFixture>,
     publisher_capacity: usize,
+    publisher_safety: SafetyMode,
     pending_confirmations: usize,
     confirmed_publications: usize,
     publication_outcomes: Vec<PublicationFixture>,
@@ -102,8 +104,11 @@ pub(crate) fn testing_pool(config: &ZendHashTable, scenario: &ZendHashTable) -> 
     let handle = RuntimeRegistry::global()
         .acquire(key)
         .map_err(|error| testing_exception(error.to_string()))?;
-    let publisher_config =
-        PublisherConfig::new(scenario.publisher_capacity, Duration::from_secs(30));
+    let publisher_config = PublisherConfig::with_safety(
+        scenario.publisher_capacity,
+        Duration::from_secs(30),
+        scenario.publisher_safety,
+    );
     let client = Arc::new(ClientPool::new_for_tests(
         config,
         Arc::new(transport),
@@ -121,6 +126,7 @@ impl Scenario {
             &[
                 "deliveries",
                 "publisher_capacity",
+                "publisher_safety",
                 "pending_confirmations",
                 "confirmed_publications",
                 "publication_outcomes",
@@ -131,6 +137,7 @@ impl Scenario {
         if publisher_capacity == 0 {
             return Err("scenario.publisher_capacity: must be greater than zero".to_owned());
         }
+        let publisher_safety = optional_publisher_safety(table)?;
         let pending_confirmations =
             optional_usize(table, "pending_confirmations", "scenario")?.unwrap_or(0);
         let confirmed_publications =
@@ -141,10 +148,29 @@ impl Scenario {
         Ok(Self {
             deliveries,
             publisher_capacity,
+            publisher_safety,
             pending_confirmations,
             confirmed_publications,
             publication_outcomes,
         })
+    }
+}
+
+fn optional_publisher_safety(table: &ZendHashTable) -> Result<SafetyMode, String> {
+    let Some(value) = table.get("publisher_safety").map(Zval::dereference) else {
+        return Ok(SafetyMode::Safe);
+    };
+    let value = value
+        .dereference()
+        .str()
+        .ok_or_else(|| "scenario.publisher_safety: expected a string".to_owned())?;
+    match value {
+        "safe" => Ok(SafetyMode::Safe),
+        "unsafe" => Ok(SafetyMode::Unsafe),
+        "blind" => Ok(SafetyMode::Blind),
+        other => Err(format!(
+            "scenario.publisher_safety: unsupported safety mode '{other}'"
+        )),
     }
 }
 
