@@ -9,7 +9,7 @@ if ! curl -s -o /dev/null -u rabbit_rs:rabbit_rs_lab http://localhost:15672/api/
     exit 1
 fi
 
-if [ ! -d vendor ]; then
+if [[ ! -d vendor ]]; then
     composer install --no-interaction
 fi
 

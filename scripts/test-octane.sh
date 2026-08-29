@@ -11,7 +11,7 @@ PACKAGE_DIR="${PROJECT_ROOT}/packages/laravel-queue"
 cd "${PACKAGE_DIR}"
 
 if ! command -v php &> /dev/null; then
-    echo "ERROR: php not found"
+    echo "ERROR: php not found" >&2
     exit 1
 fi
 

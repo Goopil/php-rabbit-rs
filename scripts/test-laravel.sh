@@ -54,6 +54,8 @@ for arg in "${PEST_ARGS[@]:-}"; do
         tests/Integration|tests/Integration/*)
             NEED_EXTENSION=true
             ;;
+        *)
+            ;;
     esac
 done
 
