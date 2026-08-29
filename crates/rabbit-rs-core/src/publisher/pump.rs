@@ -197,10 +197,14 @@ async fn pump_loop(
                 // Advance futures that already completed without blocking.
                 while inflight.next().now_or_never().flatten().is_some() {}
             }
-
-            // 3) Sender dropped and nothing in flight: exit.
-            else => break,
         }
+
+        // No `else` branch: the guards above can never be false at the same
+        // time. The in-flight set is bounded by `inflight_cap` (at least
+        // 128), so an empty set always satisfies `len() < inflight_cap` —
+        // the drain and intake branches cover every reachable state. A
+        // disconnected sender exits through the `recv_async` error above,
+        // and the final drain below still completes every in-flight publish.
     }
     // Final drain so in-flight publishes are not cancelled on shutdown.
     while inflight.next().await.is_some() {}
@@ -568,6 +572,32 @@ mod tests {
         assert!(
             result.is_err(),
             "barrier oneshot must be dropped without a reply, got {result:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_the_pump_drains_in_flight_publishes() {
+        let transport = MockTransport::default();
+        let channel = mock_channel(&transport).await;
+        let gate = transport.push_publish_gate();
+        let pump = PublishPump::spawn(channel, 4);
+
+        pump.send(request("drained")).await.expect("send accepted");
+        gate.wait_entered().await;
+
+        // Sender dropped while a publish is in flight: the pump task exits
+        // through the disconnected `recv_async` intake branch and the final
+        // drain must complete the pending publish instead of cancelling it.
+        drop(pump);
+        assert!(gate.release(), "gate released");
+        wait_for_publishes(&transport, 1).await;
+        assert_eq!(
+            publish_requests(&transport)[0]
+                .properties
+                .message_id
+                .as_deref(),
+            Some("drained"),
+            "in-flight publishes must be drained, not cancelled, on shutdown"
         );
     }
 }
