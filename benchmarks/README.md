@@ -28,6 +28,16 @@ This runs all 3 scenarios x all available drivers (up to 12 combinations).
 ./benchmarks/run-benchmarks.sh --driver=rabbit-rs --scenario=batch-confirm
 ```
 
+### Release protocol (mandatory)
+
+Comparative numbers are only meaningful under this protocol:
+
+- **Release build mandatory.** Benchmark the extension built in release mode (`./scripts/install.sh --release`); a debug build masks throughput by ~4×.
+- **Interleave runs.** When comparing drivers or builds, alternate runs (A/B/A/B) instead of completing one side first, so drift (cache, thermal, broker state) hits both sides equally.
+- **Archive one JSON per run.** `results/benchmark-results.json` is overwritten on every run and gitignored — copy the per-run JSON to a durable location (outside the repo) before starting the next run.
+- **0 losses / 0 duplicates expected** wherever Safe mode guarantees at-least-once delivery (e.g. `batch-confirm`, `laravel-dispatch`). A non-zero counter invalidates the run — do not record it as a measurement.
+- **Broker lab + vhost grant.** Start the lab (`./scripts/lab-up.sh`), wait for readiness (`./scripts/lab-ready.sh`), and make sure the benchmark user (`rabbit_rs`) has permissions on its vhost (`rabbitmqctl set_permissions`).
+
 ### Available drivers
 
 | Driver | Requires | Description |

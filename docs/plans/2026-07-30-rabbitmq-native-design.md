@@ -130,6 +130,8 @@ La priorité AMQP d'un message dans une queue est distincte de la priorité d'un
 
 La V1 utilise un prefetch fixe par subscription et un budget global max_in_flight par worker. Les métriques nécessaires au futur contrôleur adaptatif sont collectées dès la V1 : durée du job, temps réservé, profondeur du buffer, latence d'ACK et pression mémoire.
 
+> **Note (2026-08-29) :** le budget global `max_in_flight` décrit ci-dessus comme vivant en V1 a depuis été supprimé — les deliveries non acquittées sont désormais bornées uniquement par le prefetch QoS par consumer channel ; la suppression est tracée par le plan consumer-tuning (PR #29). Ce document reste un record point-in-time.
+
 ## ACK, retry et attempts
 
 Chaque message rendu à PHP contient un jeton natif opaque avec l'identité de connexion, de channel, de consumer, le delivery tag et la génération de connexion.
