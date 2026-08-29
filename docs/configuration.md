@@ -16,7 +16,7 @@ The configuration has six sections:
 | `brokers` | Connection endpoints, vhosts, TLS, credentials |
 | `routes` | Publishing destinations (exchange + routing key) |
 | `workers` | Consumer profiles with subscriptions and scheduler |
-| `publisher` | Publisher confirms, mandatory routing, timeouts |
+| `publisher` | Delivery guarantee (safety), confirms, mandatory routing, timeouts |
 | `delay` | Delayed message routing (plugin or TTL fallback) |
 | `topology` | Queue type, durability, delivery limits, DLQ |
 
@@ -164,6 +164,7 @@ Set `enabled => false` to exclude a subscription without removing it from config
 
 ```php
 'publisher' => [
+    'safety' => env('RABBIT_RS_SAFETY', 'safe'),
     'confirms' => true,
     'mandatory' => true,
     'confirm_timeout' => (int) env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),
@@ -172,6 +173,7 @@ Set `enabled => false` to exclude a subscription without removing it from config
 
 | Env | Description | Default |
 |-----|-------------|---------|
+| `RABBIT_RS_SAFETY` | Delivery guarantee level: `safe`, `unsafe` or `blind` | `safe` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
 
 Publisher confirms and mandatory routing are **enabled by default**. This provides at-least-once delivery guarantees. Disabling either is possible but removes safety guarantees — see [Reliability](reliability.md).
@@ -180,9 +182,9 @@ Publisher confirms and mandatory routing are **enabled by default**. This provid
 - `mandatory: true` — the broker returns unroutable messages instead of silently dropping them
 - `confirm_timeout` — how long to wait for a confirm before timing out (milliseconds)
 
-#### Safety modes (native extension configuration only)
+#### Safety modes
 
-The `safety` setting (`RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) is currently reachable **only through the raw native extension configuration**. The Laravel package does not expose it yet: `config/rabbit-rs.php` has no `safety` key, and a hand-added one is silently ignored — the package normalizer rebuilds the publisher section with only `confirms`, `mandatory` and `confirm_timeout`. A follow-up will plumb it through.
+The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) selects the delivery guarantee level. An explicit `unsafe` or `blind` value takes precedence over the legacy `confirms`/`mandatory` flags; the default `safe` keeps deriving from them (`confirms=false` ⇒ `unsafe`).
 
 - `safe` (default) — at-least-once: confirm mode + mandatory routing. Publications are retained in bounded process memory and replayed with their original `message_id` across connection recovery.
 - `unsafe` — synchronous socket write without confirms. The message reached the kernel socket buffer, but a broker-side failure can still lose it.

@@ -20,7 +20,7 @@ final class ConfigNormalizer
      * @return array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
-     *     publisher: array{confirms: bool, mandatory: bool, confirm_timeout: int},
+     *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int},
      *     topology: array<string, mixed>
      * }
      */
@@ -431,7 +431,7 @@ final class ConfigNormalizer
     }
 
     /**
-     * @return array{confirms: bool, mandatory: bool, confirm_timeout: int}
+     * @return array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int}
      */
     private static function publisher(mixed $publisher): array
     {
@@ -440,6 +440,7 @@ final class ConfigNormalizer
         }
 
         return [
+            'safety' => self::safetyMode($publisher['safety'] ?? 'safe'),
             'confirms' => self::boolean($publisher['confirms'] ?? true, 'publisher.confirms'),
             'mandatory' => self::boolean($publisher['mandatory'] ?? true, 'publisher.mandatory'),
             'confirm_timeout' => self::positiveInt(
@@ -447,6 +448,15 @@ final class ConfigNormalizer
                 'publisher.confirm_timeout',
             ),
         ];
+    }
+
+    private static function safetyMode(mixed $mode): string
+    {
+        if (! is_string($mode) || ! in_array($mode, ['safe', 'unsafe', 'blind'], true)) {
+            self::invalid('publisher.safety', 'must be safe, unsafe, or blind');
+        }
+
+        return $mode;
     }
 
     /**
