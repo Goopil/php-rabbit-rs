@@ -134,7 +134,7 @@ jobs:
           cd packages/laravel-queue
           rm -f composer.lock
           composer require illuminate/queue:^${{ matrix.laravel }}.0 illuminate/support:^${{ matrix.laravel }}.0 --no-update
-          composer update --quiet --ignore-platform-reqs
+          composer update --quiet --ignore-platform-reqs # sonar:no-lock CI matrix test — intentional
 
       - name: Run Pest tests
         run: ./scripts/test-laravel.sh
@@ -252,7 +252,7 @@ jobs:
       - name: Install Laravel package dependencies
         run: |
           cd packages/laravel-queue
-          composer update --quiet --ignore-platform-reqs
+          composer update --quiet --ignore-platform-reqs # sonar:no-lock CI matrix test — intentional
 
       - name: Install Octane
         run: |
@@ -298,7 +298,7 @@ jobs:
       - name: Install Laravel package dependencies
         run: |
           cd packages/laravel-queue
-          composer update --quiet --ignore-platform-reqs
+          composer update --quiet --ignore-platform-reqs # sonar:no-lock CI matrix test — intentional
 
       - name: Start RabbitMQ lab
         run: ./scripts/lab-up.sh with-plugin
