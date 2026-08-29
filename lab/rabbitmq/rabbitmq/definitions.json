@@ -32,6 +32,13 @@
       "read": ".*"
     },
     {
+      "user": "rabbit_rs",
+      "vhost": "/",
+      "configure": "^(amq\\.|bench\\.|benchmark_)",
+      "write": ".*",
+      "read": ".*"
+    },
+    {
       "user": "admin",
       "vhost": "/",
       "configure": ".*",
