@@ -39,7 +39,7 @@ Expected output:
 rabbit_rs
 
 Rabbit RS - High-performance RabbitMQ transport for PHP and Laravel, powered by Rust
-Version => 1.0.0
+Version => 0.0.7
 ...
 ```
 
@@ -143,7 +143,7 @@ The separation is:
 | PIE | Downloads and installs the correct pre-compiled `.so` binary |
 | Composer | Installs the Laravel bridge (PHP source) and verifies `ext-rabbit_rs` is loaded |
 
-The Laravel bridge's `composer.json` declares `"ext-rabbit_rs": "^1.0"`, which causes Composer to check that the extension is loaded at install time. If the extension is missing, Composer reports the error. But Composer never installs the binary — that is PIE's role.
+The Laravel bridge's `composer.json` declares `"ext-rabbit_rs": "^0.0"`, which causes Composer to check that the extension is loaded at install time. If the extension is missing, Composer reports the error. But Composer never installs the binary — that is PIE's role.
 
 ## Multiple PHP versions
 
