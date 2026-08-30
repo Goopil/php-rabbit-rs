@@ -138,7 +138,7 @@ Reading:
   goopil / iamfarhad-ON ≈ 7.8×** (11 156 / 1 434) — this strengthens the E2
   conclusion of ≥ 5.0× (5.4× raw under Docker, 5.0–11.7× normalized).
 - iamfarhad local is slower than its archived Docker runs (1 075–1 434 vs
-  2 367) — consistent with the vladimir bridge finding that Docker's
+  2 365) — consistent with the vladimir bridge finding that Docker's
   loopback path to the broker is ~2.17× faster for RTT-bound workloads.
 - The PHP version strongly affects fire-and-forget dispatch (iamfarhad OFF:
   3 438 on 8.4 vs 16 175 on 8.5, ~4.7×) but barely affects confirms-ON
@@ -151,6 +151,46 @@ The E2 archives remain the reference dataset; this cross-check lifts the
 "iamfarhad is Docker-only" caveat. Local runtime smoke: dispatch 1000/1000
 at 3 483 ops/s, worker 1000/1000 at 1 747 ops/s, 0 losses — ext-amqp runs
 against the lab broker without Docker.
+
+### Publish safety variants (goopil)
+
+goopil's publish guarantee is configurable per connection
+(`RABBIT_RS_SAFETY=safe|unsafe|blind`): `safe` = confirms + mandatory
+(at-least-once, the product default), `unsafe` = synchronous socket write
+(kernel-buffer guarantee only), `blind` = explicit fire-and-forget through a
+bounded background pump. In `unsafe`/`blind` the legacy confirms/mandatory
+flags are inert. The dispatch matrix was re-run in a single session (php
+8.5.6 for every driver — goopil via the dylib, iamfarhad via a locally
+built ext-amqp 2.2.0), all runs interleaved, `--count=1000 --rounds=10`:
+
+| Cell (dispatch) | Median rate (ops/s) | n | Reading |
+|-----------------|---------------------|---|---------|
+| goopil blind    | 76 794              | 3 | **leads the fire-and-forget family** (2.46× vladimir, 4.9× iamfarhad-OFF) |
+| goopil unsafe   | 62 474              | 3 | 2.0× vladimir |
+| goopil safe     | 9 772               | 2 | 0.31× vladimir — the known ~3.2× framework gap |
+| vladimir (f&f)  | 31 182              | 3 | pure-PHP reference |
+| iamfarhad OFF   | 15 655              | 3 | — |
+| iamfarhad ON    | 1 412               | 3 | consistent with the cross-check above (1 434) |
+
+goopil's safety ladder, same session: blind 76.8k → unsafe 62.5k (×1.23) →
+safe 9.8k (×6.4 from unsafe; ×7.9 from blind). The entire at-least-once
+contract cost sits in the per-message confirm+mandatory path (unsafe→safe) —
+that path is the remaining publish-side optimization frontier (see
+`docs/plans/ROADMAP.md`, dispatch-gap round).
+
+For context, the transport-level harness (Phase B sweep, `sweep-b1`, a
+different session — read ratios, not absolute values) showed the same
+shape: fire-and-forget 260 679/s for rabbit-rs vs 90 590 (amqplib) and
+94 144 (bunny) → **~2.8× lead**; batch-confirm 37 353 vs 49 902 / 54 770 →
+**0.68× (secondary target)**; safe unitary (laravel-dispatch) 8 213 vs
+28 458 / 29 648 → **0.28× (the frontier)**; laravel-worker consume 14 425
+vs 2 452 / 2 557 → **~5.9× lead**.
+
+Net picture: with the delivery contract relaxed, rabbit-rs is already the
+fastest driver at both levels; the whole remaining publish gap is the safe
+per-message path, and the consume side leads everywhere (transport ~5.9×;
+at framework level ~4× vs vladimir even with the stall tax, expected to
+widen once the Round 2 consumer fixes land — see `docs/plans/ROADMAP.md`).
 
 ## Fairness
 
