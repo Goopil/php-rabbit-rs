@@ -414,7 +414,7 @@ function drainUntilEmpty(
     $received = 0;
     $consecutiveNulls = 0;
     $recoveries = 0;
-    $nullCap = $nullCapOverride ?? max(5000, $expected * 5);
+    $nullCap = $nullCapOverride ?? max(50_000, $expected * 50);
     $stallRecoveryAfter = 400; // consecutive nulls (~0.1 s at 250 µs sleep)
     $deadline = hrtime(true) + 120_000_000_000; // 120 s wall guard
 

@@ -94,6 +94,10 @@ Output is a single JSON object (stdout) in the style of the Phase A archives:
 avg/min/max rate, per-round detail, payload size, masked config echo, and
 environment metadata.
 
+Never run two bench runs at the same time: the lab broker is shared, and
+concurrent load (memory pressure / throttling) can slow ingestion enough to
+make a worker drain give up on still-in-flight messages.
+
 ### Vladimir as the comparability bridge
 
 `rabbitmq-amqplib` runs BOTH locally (same host as goopil) and inside the
