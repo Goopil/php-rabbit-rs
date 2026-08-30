@@ -43,7 +43,9 @@ composer install --ignore-platform-req=ext-rabbit_rs --ignore-platform-req=ext-a
   for the local PHP (8.5) and the Docker image (php:8.4-cli).
 - `--ignore-platform-req` is needed because neither `ext-rabbit_rs` nor
   `ext-amqp` is installed system-wide (protocol): the rabbit_rs extension is
-  loaded per-run with `-d extension=<dylib>`, ext-amqp only exists in Docker.
+  loaded per-run with `-d extension=<dylib>`. For ext-amqp, the Docker image
+  ships it; locally, Homebrew `php@8.4` also provides ext-amqp 2.2.0 (the
+  default `php` 8.5 does not).
 
 Broker: start the lab if needed (`docker compose up -d` in `lab/`), broker at
 `127.0.0.1:5672`.
@@ -75,10 +77,15 @@ php -d extension=../../target/release/librabbit_rs_php.dylib bin/bench.php \
 # vladimir (local, pure PHP — no extension flag)
 php bin/bench.php --connection=rabbitmq-amqplib --mode=worker --count=1000
 
-# iamfarhad (Docker only — local PHP has no ext-amqp)
+# iamfarhad (Docker image, or locally with Homebrew php@8.4 — it ships ext-amqp)
 docker build -t rabbit-rs-driver-bench ./docker
 docker run --rm --network host -v "$PWD":/app -w /app rabbit-rs-driver-bench \
   php bin/bench.php --connection=rabbitmq-ext --mode=worker --count=1000
+
+# iamfarhad locally (Homebrew php@8.4; the goopil dylib is 8.5-only, so the
+# rabbit-rs connection cannot run under this binary)
+/opt/homebrew/opt/php@8.4/bin/php bin/bench.php \
+  --connection=rabbitmq-ext --mode=worker --count=1000
 ```
 
 Options: `--connection=` (required), `--mode=dispatch|worker`,
@@ -103,7 +110,47 @@ make a worker drain give up on still-in-flight messages.
 `rabbitmq-amqplib` runs BOTH locally (same host as goopil) and inside the
 Docker image (same environment as iamfarhad). Use its local vs Docker delta
 to normalize the two execution environments when reading cross-driver
-numbers. iamfarhad runs Docker-only.
+numbers. iamfarhad ran Docker-only in the E2 archives; a local cross-check
+exists below.
+
+### Local ext-amqp cross-check (same-environment confirms comparison)
+
+ext-amqp exists locally: Homebrew `php@8.4` ships 2.2.0, and 2.2.0 also
+builds against PHP 8.5 (pecl's PEAR builder is broken on 8.5 — a TypeError
+in `PEAR/Builder.php`; build via `phpize`/`configure`/`make` directly and
+load per-run with `php -d extension=<pecl-dir>/20250925/amqp.so`). The
+runtime was verified outside Docker and the confirms comparison was re-run
+locally in a single session: all runs interleaved per group,
+`--count=1000 --rounds=10`, same lab broker, native loopback on both sides.
+
+| Cell | Env | Median rate (ops/s) | Notes |
+|------|-----|---------------------|-------|
+| goopil dispatch | php 8.5 | 9 657 | ×3, interleaved with the 8.4 iamfarhad runs |
+| iamfarhad confirms ON | php 8.4 | 1 075 | ×3, spread 974–1 136 |
+| iamfarhad confirms OFF | php 8.4 | 3 438 | ×1 |
+| goopil dispatch | php 8.5 | 11 156 | ×2, interleaved with the 8.5 iamfarhad runs |
+| iamfarhad confirms ON | php 8.5 | 1 434 | ×3 (1 395–1 456) |
+| iamfarhad confirms OFF | php 8.5 | 16 175 | ×1 |
+
+Reading:
+
+- **Same-binary pair (php 8.5.6 both sides, same session, interleaved):
+  goopil / iamfarhad-ON ≈ 7.8×** (11 156 / 1 434) — this strengthens the E2
+  conclusion of ≥ 5.0× (5.4× raw under Docker, 5.0–11.7× normalized).
+- iamfarhad local is slower than its archived Docker runs (1 075–1 434 vs
+  2 367) — consistent with the vladimir bridge finding that Docker's
+  loopback path to the broker is ~2.17× faster for RTT-bound workloads.
+- The PHP version strongly affects fire-and-forget dispatch (iamfarhad OFF:
+  3 438 on 8.4 vs 16 175 on 8.5, ~4.7×) but barely affects confirms-ON
+  (RTT-bound: 1 075 → 1 434).
+- The iamfarhad confirms cost is environment-dependent: ≈3.2× (8.4 local),
+  ≈7.8× (Docker), ≈11.1× (8.5 local, standalone pair 16 175 / 1 456,
+  inflated by the much faster OFF baseline).
+
+The E2 archives remain the reference dataset; this cross-check lifts the
+"iamfarhad is Docker-only" caveat. Local runtime smoke: dispatch 1000/1000
+at 3 483 ops/s, worker 1000/1000 at 1 747 ops/s, 0 losses — ext-amqp runs
+against the lab broker without Docker.
 
 ## Fairness
 
