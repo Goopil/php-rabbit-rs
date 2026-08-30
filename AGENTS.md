@@ -1,5 +1,3 @@
-@/Users/zacharyvolpi/.codex/RTK.md
-
 # Rabbit RS Repository Guide
 
 ## Project Overview

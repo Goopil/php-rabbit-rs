@@ -114,7 +114,7 @@ Actually in PHP, `use Bench\Drivers;` imports the `Bench\Drivers` namespace pref
 
 Run:
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench/benchmarks && php -d xdebug.mode=off -r '
+cd <worktree-root>/benchmarks && php -d xdebug.mode=off -r '
 spl_autoload_register(static function (string $class): void {
     $prefixes = [
         "Bench\\Drivers\\" => __DIR__ . "/src/Drivers/",
@@ -1276,7 +1276,7 @@ git commit -m "fix(bench): align docker-compose credentials and rewrite README"
 - [ ] **Step 1: Run composer install in benchmarks**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench/benchmarks && composer install --no-interaction
+cd <worktree-root>/benchmarks && composer install --no-interaction
 ```
 
 Expected: `vendor/` directory created with php-amqplib, bunny, illuminate packages.
@@ -1284,7 +1284,7 @@ Expected: `vendor/` directory created with php-amqplib, bunny, illuminate packag
 - [ ] **Step 2: Build and install the rabbit_rs extension**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench && ./scripts/install.sh --release --yes
+cd <worktree-root> && ./scripts/install.sh --release --yes
 ```
 
 Expected: Extension compiled and installed. Verify with:
@@ -1318,7 +1318,7 @@ Expected: `amqp` in the module list.
 - [ ] **Step 4: Verify all 4 drivers are detected**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench/benchmarks && php -d xdebug.mode=off -r '
+cd <worktree-root>/benchmarks && php -d xdebug.mode=off -r '
 spl_autoload_register(static function (string $class): void {
     $prefixes = [
         "Bench\\Drivers\\" => __DIR__ . "/src/Drivers/",
@@ -1357,7 +1357,7 @@ Expected: all 4 detected/loaded.
 - [ ] **Step 1: Run smoke test with amqplib driver**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench/benchmarks && php -d xdebug.mode=off src/run-benchmarks.php --driver=amqplib --scenario=fire-and-forget
+cd <worktree-root>/benchmarks && php -d xdebug.mode=off src/run-benchmarks.php --driver=amqplib --scenario=fire-and-forget
 ```
 
 Expected: 
@@ -1394,7 +1394,7 @@ Common issues:
 - [ ] **Step 1: Run the full benchmark suite**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench/benchmarks && php -d xdebug.mode=off src/run-benchmarks.php
+cd <worktree-root>/benchmarks && php -d xdebug.mode=off src/run-benchmarks.php
 ```
 
 Expected:
@@ -1683,7 +1683,7 @@ git commit -m "fix(bench): align budget metric keys with actual stats structure,
 - [ ] **Step 1: Run PHP lint on all modified files**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench/benchmarks && find src/ -name "*.php" -exec php -d xdebug.mode=off -l {} \; 2>&1 | grep -v "No syntax errors"
+cd <worktree-root>/benchmarks && find src/ -name "*.php" -exec php -d xdebug.mode=off -l {} \; 2>&1 | grep -v "No syntax errors"
 ```
 
 Expected: no output (all files pass lint).
@@ -1703,7 +1703,7 @@ Expected:
 - [ ] **Step 3: Run the Rust quality gate to verify no regressions**
 
 ```bash
-cd /Users/zacharyvolpi/orca/workspaces/rabbit-rs/fix-bench && ./scripts/check.sh
+cd <worktree-root> && ./scripts/check.sh
 ```
 
 Expected: all checks pass (fmt + clippy + test + composer validate).
