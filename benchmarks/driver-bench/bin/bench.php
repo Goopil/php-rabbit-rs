@@ -80,7 +80,7 @@ $driverPackage = match ($connection) {
 };
 
 $connectionConfig = (array) config("queue.connections.{$connection}", []);
-$queueName = (string) ($connectionConfig['queue'] ?? ($args['queue'] ?? 'bench.default'));
+$queueName = (string) ($connectionConfig['queue'] ?? 'bench.default');
 
 $queue = $queueManager->connection($connection);
 
@@ -173,6 +173,12 @@ for ($round = 0; $round < $rounds; $round++) {
             // misses deliveries (see warmup note above).
             $queue = $reconnect();
             purgeQueue($queue, $connection, $queueName);
+        } else {
+            // Round 0 was purged before the loop. If that purge had to fall
+            // back to pops (fresh vhost), it created a consumer — rebuild the
+            // connection so the measured drain starts consumer-free (same
+            // missing-deliveries interplay as above).
+            $queue = $reconnect();
         }
 
         // Fill phase: mass dispatch, NOT measured (Phase A laravel-worker model).
@@ -218,6 +224,14 @@ for ($round = 0; $round < $rounds; $round++) {
 }
 
 gc_enable();
+
+// --- Post-run cleanup (dispatch): published rounds are never consumed, so
+// without a final purge the queue keeps this run's backlog and the depth
+// drifts across rounds and consecutive runs. Purge through the driver API
+// (the pop-drain fallback is acceptable here: dispatch never consumes). ---
+if ($mode === 'dispatch') {
+    purgeQueue($queue, $connection, $queueName);
+}
 
 // ---------------------------------------------------------------------------
 // Post-run verification: the queue must stay empty (worker mode). A settling
@@ -388,7 +402,11 @@ function resetQueueConnection(object $queueManager, string $name): void
  */
 function drainAll(object $queue, string $queueName): int
 {
-    return drainUntilEmpty($queue, $queueName, 0, 1000)[0];
+    // Purge fallback: the expected count is unknowable — drain until the
+    // queue is observed empty for a patient null streak (40 × 250 µs),
+    // reusing the measured-drain machinery. No stall reconnects: a purge
+    // must stay best-effort and cannot rebuild the caller's connection.
+    return drainUntilEmpty($queue, $queueName, PHP_INT_MAX, 40)[0];
 }
 
 /**
@@ -463,7 +481,7 @@ function maskCredentials(array $config): array
 {
     $masked = [];
     foreach ($config as $key => $value) {
-        if (is_string($key) && preg_match('/password|pass|secret|token|credential/i', $key) === 1) {
+        if (is_string($key) && preg_match('/password|pass|secret|token|credential|user|username/i', $key) === 1) {
             $masked[$key] = '***';
             continue;
         }

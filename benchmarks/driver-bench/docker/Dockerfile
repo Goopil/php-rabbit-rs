@@ -23,7 +23,7 @@ RUN apt-get update \
         librabbitmq-dev \
         git \
         unzip \
-    && pecl install amqp \
+    && pecl install amqp-2.2.0 \
     && docker-php-ext-enable amqp \
     && rm -rf /var/lib/apt/lists/*
 
