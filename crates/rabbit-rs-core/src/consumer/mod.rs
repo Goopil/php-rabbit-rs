@@ -15,4 +15,4 @@ pub use delivery::{
     MessageId, SettleError, Settlement, SettlementError, SettlementErrorKind,
 };
 pub use scheduler::{Scheduler, SubscriptionId, SubscriptionPolicy, WeightedFairScheduler};
-pub use set::{ConsumerHandle, ConsumerSet, Subscription};
+pub use set::{ConsumerSet, ConsumerSetHandle, Subscription};

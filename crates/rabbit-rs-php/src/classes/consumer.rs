@@ -15,7 +15,7 @@ use ext_php_rs::{
     prelude::{PhpResult, php_class, php_impl},
     types::{ZendClassObject, ZendHashTable},
 };
-use rabbit_rs_core::consumer::ConsumerHandle;
+use rabbit_rs_core::consumer::ConsumerSetHandle;
 use tokio::{runtime::Handle, time};
 
 /// Native consumer for an aggregated subscription profile.
@@ -23,7 +23,7 @@ use tokio::{runtime::Handle, time};
 #[php(name = "Goopil\\RabbitRs\\Consumer")]
 #[php(flags = ClassFlags::Final)]
 pub struct Consumer {
-    handle: ConsumerHandle,
+    handle: ConsumerSetHandle,
     runtime: Handle,
     pid: u32,
     closed: AtomicBool,
@@ -259,7 +259,7 @@ impl Consumer {
     ///
     /// This is a best-effort safety net that prevents AMQP channel leaks in
     /// long-lived processes (Octane, daemons) when `close()` is never called
-    /// explicitly. The underlying `ConsumerHandle::Drop` also sends `Close` to
+    /// explicitly. The underlying `ConsumerSetHandle::Drop` also sends `Close` to
     /// the actor so channels are closed even if PHP never calls `close()`.
     pub fn __destruct(&self) {
         if self.pid != std::process::id() {
@@ -273,7 +273,7 @@ impl Consumer {
 }
 
 impl Consumer {
-    pub(crate) fn new(handle: ConsumerHandle, runtime: Handle, pid: u32) -> Self {
+    pub(crate) fn new(handle: ConsumerSetHandle, runtime: Handle, pid: u32) -> Self {
         Self {
             handle,
             runtime,

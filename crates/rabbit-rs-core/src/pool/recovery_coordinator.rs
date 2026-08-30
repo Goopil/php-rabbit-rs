@@ -7,7 +7,7 @@ use tokio::{
 
 use crate::{
     config::{BrokerConfig, ValidatedConfig},
-    consumer::{ConsumerHandle, ConsumerSet, Subscription, SubscriptionPolicy},
+    consumer::{ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
     metrics::Metrics,
     publisher::{PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle},
     recovery::{ConnectionState, RecoveryPolicy},
@@ -18,7 +18,7 @@ use crate::{
 use super::connection_actor::{ConnectionActor, ConnectionActorClosed, ConnectionActorHandle};
 
 type SharedPublisher = Arc<Mutex<Option<PublisherHandle>>>;
-type SharedConsumers = Arc<Mutex<std::collections::HashMap<String, ConsumerHandle>>>;
+type SharedConsumers = Arc<Mutex<std::collections::HashMap<String, ConsumerSetHandle>>>;
 
 /// Orchestrates end-to-end recovery for one broker connection.
 ///
@@ -199,12 +199,16 @@ impl RecoveryCoordinatorHandle {
             .ok_or_else(|| CoordinatorError::new("publisher is not ready"))
     }
 
-    /// Returns a consumer handle for the given worker profile.
+    /// Returns the per-broker consumer set for the given worker profile.
+    ///
+    /// The set contains only the profile's subscriptions that belong to this
+    /// coordinator's broker. Callers that consume from several brokers must
+    /// merge the per-broker sets (see `ClientPool::consumer`).
     ///
     /// # Errors
     ///
     /// Returns a typed consumer or coordinator error.
-    pub async fn consumer(&self, profile: &str) -> Result<ConsumerHandle, CoordinatorError> {
+    pub async fn consumer(&self, profile: &str) -> Result<ConsumerSetHandle, CoordinatorError> {
         if let Some(handle) = self.consumers.lock().await.get(profile).cloned() {
             return Ok(handle);
         }

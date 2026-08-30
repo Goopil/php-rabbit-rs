@@ -9,7 +9,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     config::{SafetyMode, TopologyMode, ValidatedConfig},
-    consumer::{ConsumerError, ConsumerHandle},
+    consumer::{ConsumerError, ConsumerSetHandle},
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
@@ -44,7 +44,7 @@ pub struct ClientPool {
     coordinator_initializers: Initializers,
     publishers: StdMutex<HashMap<String, PublisherHandle>>,
     publisher_initializers: Initializers,
-    consumers: StdMutex<HashMap<String, ConsumerHandle>>,
+    consumers: StdMutex<HashMap<String, ConsumerSetHandle>>,
     consumer_initializers: Initializers,
     metrics: Metrics,
 }
@@ -269,7 +269,7 @@ impl ClientPool {
         generation: u64,
         worker: &crate::config::WorkerProfile,
         profile: &str,
-    ) -> Result<Option<ConsumerHandle>, ClientError> {
+    ) -> Result<Option<ConsumerSetHandle>, ClientError> {
         let Some(consumer) = self.ready(generation, &self.consumers, profile)? else {
             return Ok(None);
         };
@@ -303,7 +303,7 @@ impl ClientPool {
     ///
     /// Returns a typed error for an unknown profile or broker, connection/channel
     /// failure, `QoS` failure, or consumer registration failure.
-    pub async fn consumer(&self, profile: &str) -> Result<ConsumerHandle, ClientError> {
+    pub async fn consumer(&self, profile: &str) -> Result<ConsumerSetHandle, ClientError> {
         let generation = self.open_generation()?;
         let worker = self.config.worker(profile).cloned().ok_or_else(|| {
             ClientError::new(
