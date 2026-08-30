@@ -20,7 +20,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 ## Workspace Map
 
 - `crates/rabbit-rs-core/`: runtime-independent configuration, connection pooling, topology, publishing, consuming, recovery, metrics, and transport abstractions.
-- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (8 files: publisher, consumer, recovery, topology, metrics, integration, blind_pump, transport_tuning).
+- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (9 files: publisher, consumer, recovery, topology, metrics, integration, blind_pump, transport_tuning, pool_clear).
 - `crates/rabbit-rs-php/`: `cdylib` for the native PHP extension; depends on the core crate. Pest tests in `tests/`.
 - `packages/laravel-queue/`: Laravel queue driver package (`goopil/rabbit-rs-laravel`). Pest tests in `tests/`.
 - `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.
