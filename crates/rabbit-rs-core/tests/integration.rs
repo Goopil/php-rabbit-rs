@@ -757,6 +757,32 @@ async fn multi_broker_profile_starts_all_coordinators() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn closing_a_multi_broker_consumer_closes_every_brokers_channels() {
+    let transport = Arc::new(MockTransport::default());
+    transport.keep_delivery_stream_open();
+    let pool = ClientPool::new(Arc::new(helper::multi_broker_config()), transport.clone());
+
+    let consumer = pool
+        .consumer("multi-broker-worker")
+        .await
+        .expect("consumer");
+    consumer.close().await.expect("close");
+
+    tokio::time::advance(std::time::Duration::from_millis(20)).await;
+    tokio::task::yield_now().await;
+
+    let close_channels = transport
+        .operations()
+        .iter()
+        .filter(|operation| matches!(operation, TransportOperation::CloseChannel))
+        .count();
+    assert_eq!(
+        close_channels, 2,
+        "closing the profile consumer must fan out to both brokers' channels"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests (from publish_consume.rs — integration-gated)
 // ---------------------------------------------------------------------------

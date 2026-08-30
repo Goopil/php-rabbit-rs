@@ -9,7 +9,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     config::{SafetyMode, TopologyMode, ValidatedConfig},
-    consumer::{ConsumerError, ConsumerSetHandle},
+    consumer::{ConsumerError, ConsumerHandle},
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
@@ -22,6 +22,18 @@ use crate::{
 };
 
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
+
+/// Returns the distinct broker names of a worker profile's subscriptions, in
+/// subscription order.
+fn worker_brokers(worker: &crate::config::WorkerProfile) -> Vec<String> {
+    let mut brokers: Vec<String> = Vec::with_capacity(worker.subscriptions.len());
+    for subscription in &worker.subscriptions {
+        if !brokers.contains(&subscription.broker) {
+            brokers.push(subscription.broker.clone());
+        }
+    }
+    brokers
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PoolLifecycle {
@@ -44,7 +56,7 @@ pub struct ClientPool {
     coordinator_initializers: Initializers,
     publishers: StdMutex<HashMap<String, PublisherHandle>>,
     publisher_initializers: Initializers,
-    consumers: StdMutex<HashMap<String, ConsumerSetHandle>>,
+    consumers: StdMutex<HashMap<String, ConsumerHandle>>,
     consumer_initializers: Initializers,
     metrics: Metrics,
 }
@@ -260,50 +272,62 @@ impl ClientPool {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Returns a cached consumer handle if it matches the coordinator's
-    /// current generation, evicting stale handles when the generation has
-    /// advanced. Returns `Ok(None)` when no cached handle exists or it has
-    /// been evicted.
+    /// Returns a cached consumer handle if every broker coordinator's
+    /// current generation still matches the handle's per-source generations,
+    /// evicting stale handles when any generation has advanced. Returns
+    /// `Ok(None)` when no cached handle exists, it has been evicted, or a
+    /// coordinator is not `Ready`.
     fn consumer_if_fresh(
         &self,
         generation: u64,
         worker: &crate::config::WorkerProfile,
         profile: &str,
-    ) -> Result<Option<ConsumerSetHandle>, ClientError> {
+    ) -> Result<Option<ConsumerHandle>, ClientError> {
         let Some(consumer) = self.ready(generation, &self.consumers, profile)? else {
             return Ok(None);
         };
-        let broker = &worker.subscriptions[0].broker;
-        let coord_gen =
-            lock(&self.coordinators)
-                .get(broker)
-                .and_then(|coord| match coord.state() {
-                    crate::recovery::ConnectionState::Ready { generation } => Some(generation),
-                    _ => None,
-                });
-        match coord_gen {
-            Some(coord_gen) if consumer.generation() == coord_gen => Ok(Some(consumer)),
-            Some(_) => {
-                // Stale — evict and fall through to fetch a fresh handle.
-                lock(&self.consumers).remove(profile);
-                Ok(None)
-            }
-            None => {
-                // Coordinator not Ready (Recovering/Connecting/etc.) — don't
-                // return a potentially stale cached handle; fall through so the
-                // loop can wait for Ready and fetch a fresh consumer.
-                Ok(None)
-            }
+        let brokers = worker_brokers(worker);
+        let source_generations = consumer.source_generations();
+        if source_generations.len() != brokers.len() {
+            lock(&self.consumers).remove(profile);
+            return Ok(None);
         }
+        let stale = {
+            let coordinators = lock(&self.coordinators);
+            brokers
+                .iter()
+                .zip(&source_generations)
+                .any(|(broker, source_generation)| {
+                    coordinators
+                        .get(broker)
+                        .is_none_or(|coord| match coord.state() {
+                            crate::recovery::ConnectionState::Ready { generation } => {
+                                generation != *source_generation
+                            }
+                            _ => true,
+                        })
+                })
+        };
+        if stale {
+            // Stale — evict and fall through to fetch a fresh handle.
+            lock(&self.consumers).remove(profile);
+            return Ok(None);
+        }
+        Ok(Some(consumer))
     }
 
-    /// Opens or reuses the multiplexed consumer actor for one worker profile.
+    /// Opens or reuses the composed consumer for one worker profile.
+    ///
+    /// The returned handle merges the per-broker consumer sets of the
+    /// profile: deliveries from every broker surface through one API, while
+    /// each delivery's settlements route back to its originating broker and
+    /// each broker keeps its own recovery coordinator.
     ///
     /// # Errors
     ///
     /// Returns a typed error for an unknown profile or broker, connection/channel
     /// failure, `QoS` failure, or consumer registration failure.
-    pub async fn consumer(&self, profile: &str) -> Result<ConsumerSetHandle, ClientError> {
+    pub async fn consumer(&self, profile: &str) -> Result<ConsumerHandle, ClientError> {
         let generation = self.open_generation()?;
         let worker = self.config.worker(profile).cloned().ok_or_else(|| {
             ClientError::new(
@@ -330,60 +354,61 @@ impl ClientPool {
         // started so that every subscription's broker has a recovery coordinator
         // running. The coordinator for each broker only creates consumers for
         // subscriptions that belong to that broker (see `recover_generation`).
-        let mut brokers: Vec<String> = worker
-            .subscriptions
-            .iter()
-            .map(|s| s.broker.clone())
-            .collect();
-        brokers.dedup();
+        let brokers = worker_brokers(&worker);
         for broker in &brokers {
             self.coordinator(broker).await?;
         }
 
-        // The consumer is composed from all coordinators. For now, use the
-        // first coordinator's handle for the primary consumer handle. A future
-        // task may compose a multi-broker consumer that merges handles.
-        let coordinator = self.coordinator(&brokers[0]).await?;
-        let consumer = loop {
-            if self.is_closed() {
-                return Err(ClientError::closed());
-            }
-            if let Ok(consumer) = coordinator.consumer(profile).await {
-                break consumer;
-            }
-            // Wait for any state transition (including Ready so we can retry
-            // without blocking when the state hasn't left Ready yet).
-            coordinator
-                .wait_for_state(|state| {
-                    matches!(
-                        state,
-                        crate::recovery::ConnectionState::Ready { .. }
-                            | crate::recovery::ConnectionState::Recovering { .. }
-                            | crate::recovery::ConnectionState::Connecting { .. }
-                            | crate::recovery::ConnectionState::FailedPermanent { .. }
-                            | crate::recovery::ConnectionState::Closed
-                    )
-                })
-                .await;
-            if self.is_closed() {
-                return Err(ClientError::closed());
-            }
-            if matches!(
-                coordinator.state(),
-                crate::recovery::ConnectionState::FailedPermanent { .. }
-            ) {
-                return Err(ClientError::transport(&TransportError::connection(
-                    "broker connection failed permanently",
-                )));
-            }
-            if matches!(
-                coordinator.state(),
-                crate::recovery::ConnectionState::Closed
-            ) {
-                return Err(ClientError::closed());
-            }
-        };
+        // Compose the profile's consumer from every broker's coordinator: each
+        // source multiplexes the subscriptions of one broker, and the composite
+        // merges deliveries fairly while routing every settlement back to the
+        // broker the delivery came from.
+        let mut sources = Vec::with_capacity(brokers.len());
+        for broker in &brokers {
+            let coordinator = self.coordinator(broker).await?;
+            let consumer = loop {
+                if self.is_closed() {
+                    return Err(ClientError::closed());
+                }
+                if let Ok(consumer) = coordinator.consumer(profile).await {
+                    break consumer;
+                }
+                // Wait for any state transition (including Ready so we can retry
+                // without blocking when the state hasn't left Ready yet).
+                coordinator
+                    .wait_for_state(|state| {
+                        matches!(
+                            state,
+                            crate::recovery::ConnectionState::Ready { .. }
+                                | crate::recovery::ConnectionState::Recovering { .. }
+                                | crate::recovery::ConnectionState::Connecting { .. }
+                                | crate::recovery::ConnectionState::FailedPermanent { .. }
+                                | crate::recovery::ConnectionState::Closed
+                        )
+                    })
+                    .await;
+                if self.is_closed() {
+                    return Err(ClientError::closed());
+                }
+                if matches!(
+                    coordinator.state(),
+                    crate::recovery::ConnectionState::FailedPermanent { .. }
+                ) {
+                    return Err(ClientError::transport(&TransportError::connection(
+                        "broker connection failed permanently",
+                    )));
+                }
+                if matches!(
+                    coordinator.state(),
+                    crate::recovery::ConnectionState::Closed
+                ) {
+                    return Err(ClientError::closed());
+                }
+            };
+            sources.push(consumer);
+        }
 
+        let consumer = ConsumerHandle::from_sources(sources);
         if self.commit(generation, &self.consumers, profile, consumer.clone()) {
             Ok(consumer)
         } else {
