@@ -30,7 +30,7 @@ use InvalidArgumentException;
  */
 class RabbitMqQueue extends Queue implements QueueContract
 {
-    private const CONTENT_TYPE_JSON = 'application/json';
+    protected const CONTENT_TYPE_JSON = 'application/json';
 
     /** @var array<string, Consumer> */
     private array $consumers = [];
@@ -189,20 +189,6 @@ class RabbitMqQueue extends Queue implements QueueContract
         );
     }
 
-    /**
-     * Publish a raw payload with a delay, bypassing enqueueUsing.
-     * Used by Horizon subclass to dispatch with an already-prepared payload.
-     */
-    protected function laterRawFromPayload($delay, string $payload, $queue = null): string
-    {
-        return $this->publish(
-            $payload,
-            $queue,
-            ['content_type' => self::CONTENT_TYPE_JSON],
-            $this->delayMilliseconds($delay),
-        );
-    }
-
     public function bulk($jobs, $data = '', $queue = null)
     {
         $jobs = array_values((array) $jobs);
@@ -258,7 +244,7 @@ class RabbitMqQueue extends Queue implements QueueContract
      * @param list<mixed> $jobs
      * @return list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>
      */
-    private function prepareBatch(array $jobs, mixed $data, mixed $queue): array
+    protected function prepareBatch(array $jobs, mixed $data, mixed $queue): array
     {
         $queueName = $this->queueName($queue);
         $route = $this->route($queueName);
@@ -286,7 +272,7 @@ class RabbitMqQueue extends Queue implements QueueContract
      * @param list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}> $messages
      * @return list<string>
      */
-    private function publishBatch(array $messages, mixed $queue): array
+    protected function publishBatch(array $messages, mixed $queue): array
     {
         foreach ($messages as $message) {
             $this->raiseJobQueueingEvent(
@@ -426,7 +412,7 @@ class RabbitMqQueue extends Queue implements QueueContract
     /**
      * @param array<string, mixed> $options
      */
-    private function publish(
+    protected function publish(
         string $payload,
         ?string $queue,
         array $options,
@@ -474,7 +460,7 @@ class RabbitMqQueue extends Queue implements QueueContract
         return $route;
     }
 
-    private function delayMilliseconds(mixed $delay): ?int
+    protected function delayMilliseconds(mixed $delay): ?int
     {
         $seconds = max(0, $this->secondsUntil($delay));
         if ($seconds === 0) {
