@@ -418,10 +418,12 @@ mod tests {
             BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
             TopologyMode,
         },
-        consumer::{ConsumerSet, DeliveryState, Subscription, SubscriptionPolicy},
+        consumer::{
+            ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionPolicy,
+        },
         pool::ConnectionKey,
         transport::{
-            Delivery as TransportDelivery, QueueKind, Transport,
+            Delivery as TransportDelivery, QueueKind, Transport, TransportError,
             mock::{MockTransport, TransportOperation},
         },
     };
@@ -482,7 +484,9 @@ mod tests {
     }
 
     /// Spawns one source per transport so each delivery lands in a
-    /// deterministic source set.
+    /// deterministic source set. The per-broker handles are moved into the
+    /// composite; tests that need to close a single source build their own
+    /// setup (see `retiring_one_closed_source_keeps_the_others_delivering`).
     async fn two_source_composite() -> (super::ConsumerHandle, MockTransport, MockTransport) {
         let first = MockTransport::default();
         let second = MockTransport::default();
@@ -527,7 +531,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn settlements_route_to_the_origin_source() {
-        let (consumer, first, second) = two_source_composite().await;
+        let (consumer, first, second, ..) = two_source_composite().await;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -558,7 +562,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn close_fans_out_to_every_source() {
-        let (consumer, first, second) = two_source_composite().await;
+        let (consumer, first, second, ..) = two_source_composite().await;
 
         consumer.close().await.expect("close");
 
@@ -586,6 +590,169 @@ mod tests {
         let payloads: Vec<Bytes> = batch.iter().map(|d| d.payload.clone()).collect();
         assert!(payloads.contains(&Bytes::from_static(b"from-first")));
         assert!(payloads.contains(&Bytes::from_static(b"from-second")));
+
+        consumer.close().await.expect("close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retiring_one_closed_source_keeps_the_others_delivering() {
+        // All deliveries are pushed before the sets spawn: a mock delivery
+        // stream parks on `pending()` once its queue is empty, so this is the
+        // deterministic way to have items still buffered when a source closes.
+        // Both per-broker handles stay alive so nothing drops and closes a
+        // set ahead of the scenario.
+        let first = MockTransport::default();
+        let second = MockTransport::default();
+        first.push_delivery(Ok(delivery(1, b"from-first-1")));
+        first.push_delivery(Ok(delivery(2, b"from-first-2")));
+        first.push_delivery(Ok(delivery(3, b"from-first-3")));
+        second.push_delivery(Ok(delivery(1, b"from-second-1")));
+        second.push_delivery(Ok(delivery(2, b"from-second-2")));
+
+        let left = ConsumerSet::spawn(vec![
+            subscription(&first, "jobs-first", connection_key("first")).await,
+        ])
+        .await
+        .expect("first source set");
+        let right = ConsumerSet::spawn(vec![
+            subscription(&second, "jobs-second", connection_key("second")).await,
+        ])
+        .await
+        .expect("second source set");
+        let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Drain three of the five deliveries, leaving one buffered in each
+        // source.
+        let mut drained = Vec::new();
+        while drained.len() < 3 {
+            if let Some(delivery) = consumer.try_next().expect("initial drain") {
+                drained.push(delivery.payload);
+            }
+        }
+        assert!(drained.contains(&Bytes::from_static(b"from-first-1")));
+        assert!(drained.contains(&Bytes::from_static(b"from-second-1")));
+        assert!(drained.contains(&Bytes::from_static(b"from-first-2")));
+
+        // Closing one source must not discard a delivery already buffered in
+        // it: the composite drains it before retiring the source.
+        right.close().await.expect("close second source");
+        let drained_before_retire =
+            tokio::time::timeout(Duration::from_millis(100), consumer.next())
+                .await
+                .expect("a closed source with a buffered delivery must not hang the composite")
+                .expect("buffered delivery drains before retire");
+        assert_eq!(
+            drained_before_retire.payload,
+            Bytes::from_static(b"from-second-2")
+        );
+
+        // The closed source is retired from the rotation while the remaining
+        // source keeps delivering.
+        let live = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+            .await
+            .expect("no hang after retire")
+            .expect("remaining source keeps delivering");
+        assert_eq!(live.payload, Bytes::from_static(b"from-first-3"));
+
+        // With the retired source gone and the remaining source idle, next()
+        // parks waiting for work instead of failing closed (the retire is
+        // stable: the closed source is never polled again, no panic).
+        for _ in 0..2 {
+            let idle = tokio::time::timeout(Duration::from_millis(100), consumer.next()).await;
+            assert!(
+                idle.is_err(),
+                "an idle live source must keep the composite waiting, not closed"
+            );
+        }
+
+        // Closing the remaining source fails the composite closed, and the
+        // closed state is stable across repeated calls (idempotent retire,
+        // no panic, no hang).
+        left.close().await.expect("close first source");
+        let closed = consumer
+            .next()
+            .await
+            .expect_err("all sources retired must surface closed");
+        assert_eq!(closed.kind(), ConsumerErrorKind::Closed);
+        let again = consumer.next().await.expect_err("closed state is stable");
+        assert_eq!(again.kind(), ConsumerErrorKind::Closed);
+        assert!(
+            matches!(consumer.try_next(), Err(error) if error.kind() == ConsumerErrorKind::Closed)
+        );
+        assert!(
+            matches!(consumer.try_next_batch(4), Err(error) if error.kind() == ConsumerErrorKind::Closed)
+        );
+
+        // The composite handle stays usable: close fans out without error.
+        consumer.close().await.expect("composite close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn source_error_burst_is_bounded_and_does_not_starve_live_deliveries() {
+        let first = MockTransport::default();
+        let second = MockTransport::default();
+        // A 200-error burst from one source: the actor's retained-error buffer
+        // (SOURCE_ERROR_CAPACITY = 64 in consumer/actor.rs) must cap how many
+        // of them can surface downstream.
+        for _ in 0..200 {
+            first.push_delivery(Err(TransportError::connection("burst error")));
+        }
+        first.push_delivery(Ok(delivery(1, b"from-first")));
+
+        let left = ConsumerSet::spawn(vec![
+            subscription(&first, "jobs-first", connection_key("first")).await,
+        ])
+        .await
+        .expect("first source set");
+        let right = ConsumerSet::spawn(vec![
+            subscription(&second, "jobs-second", connection_key("second")).await,
+        ])
+        .await
+        .expect("second source set");
+        let consumer = super::ConsumerHandle::from_sources(vec![left, right]);
+
+        // Let the pumps absorb the whole burst before any drain: no
+        // intermediate dispatch runs during the burst, so the retained-error
+        // buffer alone bounds what can ever surface.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut surfaced_errors = 0_usize;
+        let mut saw_delivery = false;
+        let mut quiet = 0_usize;
+        for _ in 0..10_000 {
+            match consumer.try_next() {
+                Ok(Some(_)) => {
+                    saw_delivery = true;
+                    quiet = 0;
+                }
+                Ok(None) => {
+                    quiet += 1;
+                    tokio::time::advance(Duration::from_millis(1)).await;
+                    tokio::task::yield_now().await;
+                    if quiet >= 20 && saw_delivery {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    surfaced_errors += 1;
+                    quiet = 0;
+                }
+            }
+        }
+        assert!(
+            surfaced_errors > 0,
+            "burst errors must surface to the caller"
+        );
+        assert!(
+            surfaced_errors <= 64,
+            "retained source errors must stay bounded (64), got {surfaced_errors}"
+        );
+        assert!(
+            saw_delivery,
+            "a live delivery must not starve behind the error burst"
+        );
 
         consumer.close().await.expect("close");
     }
