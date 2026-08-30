@@ -53,6 +53,7 @@ impl From<Bytes> for HeaderValue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportErrorKind {
     Authentication,
+    Configuration,
     Connection,
     Protocol,
     Closed,
@@ -69,6 +70,12 @@ impl TransportError {
     #[must_use]
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::new(TransportErrorKind::Authentication, message)
+    }
+
+    /// Configuration failure that retries cannot fix (e.g. unreadable TLS file).
+    #[must_use]
+    pub fn config(message: impl Into<String>) -> Self {
+        Self::new(TransportErrorKind::Configuration, message)
     }
 
     #[must_use]

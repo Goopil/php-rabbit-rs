@@ -36,7 +36,7 @@ impl Transport for LapinTransport {
     ) -> TransportResult<Box<dyn TransportConnection>> {
         let properties = ConnectionProperties::default()
             .with_connection_name(format!("rabbit-rs:{}", config.name).into());
-        let tls_config = build_tls_config(config);
+        let tls_config = build_tls_config(config)?;
         let mut last_error = None;
 
         for endpoint in config.hosts() {
@@ -348,27 +348,46 @@ impl DeliveryStream for LapinDeliveryStream {
     }
 }
 
-fn build_tls_config(config: &BrokerConfig) -> OwnedTLSConfig {
+fn build_tls_config(config: &BrokerConfig) -> TransportResult<OwnedTLSConfig> {
     let tls = &config.tls;
-    let identity = build_tls_identity(tls);
-    let cert_chain = tls
-        .ca_cert()
-        .and_then(|path| std::fs::read_to_string(path).ok());
+    let identity = build_tls_identity(tls)?;
+    let cert_chain = match tls.ca_cert() {
+        Some(path) => Some(std::fs::read_to_string(path).map_err(|error| {
+            TransportError::config(format!(
+                "tls.ca_cert: cannot read '{}': {error}",
+                path.display()
+            ))
+        })?),
+        None => None,
+    };
 
-    OwnedTLSConfig {
+    Ok(OwnedTLSConfig {
         identity,
         cert_chain,
-    }
+    })
 }
 
-fn build_tls_identity(tls: &crate::config::TlsConfig) -> Option<lapin::tcp::OwnedIdentity> {
-    let cert_path = tls.client_cert()?;
-    let key_path = tls.client_key()?;
+fn build_tls_identity(
+    tls: &crate::config::TlsConfig,
+) -> TransportResult<Option<lapin::tcp::OwnedIdentity>> {
+    let (Some(cert_path), Some(key_path)) = (tls.client_cert(), tls.client_key()) else {
+        return Ok(None);
+    };
 
-    let pem = std::fs::read(cert_path).ok()?;
-    let key = std::fs::read(key_path).ok()?;
+    let pem = std::fs::read(cert_path).map_err(|error| {
+        TransportError::config(format!(
+            "tls.client_cert: cannot read '{}': {error}",
+            cert_path.display()
+        ))
+    })?;
+    let key = std::fs::read(key_path).map_err(|error| {
+        TransportError::config(format!(
+            "tls.client_key: cannot read '{}': {error}",
+            key_path.display()
+        ))
+    })?;
 
-    Some(lapin::tcp::OwnedIdentity::PKCS8 { pem, key })
+    Ok(Some(lapin::tcp::OwnedIdentity::PKCS8 { pem, key }))
 }
 
 /// Builds the AMQP URI for the given broker endpoint.

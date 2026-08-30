@@ -469,6 +469,7 @@ async fn recover_generation(
 fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> TransportError {
     match kind {
         TransportErrorKind::Authentication => TransportError::authentication(reason),
+        TransportErrorKind::Configuration => TransportError::config(reason),
         TransportErrorKind::Connection => TransportError::connection(reason),
         TransportErrorKind::Protocol => TransportError::protocol(reason),
         TransportErrorKind::Closed => TransportError::closed(reason),
