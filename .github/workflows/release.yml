@@ -168,11 +168,10 @@ jobs:
       - name: Package
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
-          TS_SUFFIX=""
-          if [[ "${{ matrix.ts }}" == "zts" ]]; then
-            TS_SUFFIX="-zts"
-          fi
-          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}${TS_SUFFIX}"
+          # Unified PIE naming convention: every Linux artifact carries an
+          # explicit thread-safety suffix (-nts / -zts). See
+          # docs/distribution.md and scripts/verify-pie-naming.sh.
+          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}"
           ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
           sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
@@ -358,8 +357,55 @@ jobs:
           echo "OK: 18 ZIPs + 18 SHA256 + 18 SBOMs verified"
           echo "OK: 18 provenance + 18 SBOM attestations verified"
 
+  verify-pie-install:
+    name: PIE install end-to-end (glibc NTS x86_64 PHP 8.4)
+    needs: [create-release, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Install PIE
+        run: |
+          curl -fL --output /tmp/pie.phar https://github.com/php/pie/releases/latest/download/pie.phar
+          gh attestation verify --owner php /tmp/pie.phar
+          sudo mv /tmp/pie.phar /usr/local/bin/pie
+          sudo chmod +x /usr/local/bin/pie
+          pie --version
+
+      - name: Authenticate Composer for the GitHub API (draft release access)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
+
+      - name: Install the drafted release via PIE
+        run: |
+          set -e
+          pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
+          pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
+
+      - name: Smoke test installed extension
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          php -m | grep -qx "rabbit_rs" \
+            || { echo "::error::rabbit_rs is not loaded after pie install"; php -m; exit 1; }
+          php -r "
+            \$v = phpversion('rabbit_rs');
+            if (\$v !== '${VERSION}') {
+              fwrite(STDERR, \"ERROR: version mismatch - installed '\$v', expected '${VERSION}'\" . PHP_EOL);
+              exit(1);
+            }
+            echo 'OK: rabbit_rs ' . \$v . ' installed via PIE from the draft release' . PHP_EOL;
+          "
+
   publish-release:
-    needs: [create-release, build-linux, build-macos, verify-release]
+    needs: [create-release, build-linux, build-macos, verify-release, verify-pie-install]
     runs-on: ubuntu-latest
     permissions:
       contents: write

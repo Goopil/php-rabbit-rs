@@ -46,6 +46,22 @@ For example:
 php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 ```
 
+### Unified thread-safety suffix
+
+Every Linux artifact carries an **explicit** thread-safety suffix: `-nts` or `-zts`. PIE (1.5.x) resolves NTS assets matched either with or without the `-nts` suffix, but requires `-zts` for ZTS builds; the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in three places that must stay consistent:
+
+- `scripts/package-pie-binary.sh` — packaging script (self-tested via `--self-test`)
+- `release/pie-matrix.json` — machine-readable matrix (`ts_suffix` is always `-nts` or `-zts`)
+- `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name)
+
+`scripts/verify-pie-naming.sh` fails if any of them drifts from the pattern expected by PIE.
+
+macOS artifacts (`arm64-darwin-nts`) are outside the PIE matrix — `composer.json` declares `os-families: ["linux"]` — and are consumed by the Homebrew formula.
+
+### End-to-end PIE validation
+
+Before a release is published, the release pipeline runs a blocking `verify-pie-install` job that installs the drafted release with a real `pie install` (PHP 8.4, x86_64, glibc, NTS) by resolving the package through the GitHub API against the draft release. Publication is blocked unless PIE successfully matches, downloads, installs, and loads the extension with the released version.
+
 Each release archive is accompanied by:
 
 - A **SHA-256** checksum file (`.sha256`)

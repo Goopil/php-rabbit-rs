@@ -12,8 +12,8 @@
       "arch": "x86_64",
       "libc": "glibc",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.4-x86_64-linux-glibc"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.4-x86_64-linux-glibc-nts"
     },
     {
       "php": "8.4",
@@ -28,8 +28,8 @@
       "arch": "x86_64",
       "libc": "musl",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.4-x86_64-linux-musl"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.4-x86_64-linux-musl-nts"
     },
     {
       "php": "8.4",
@@ -44,8 +44,8 @@
       "arch": "arm64",
       "libc": "glibc",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.4-arm64-linux-glibc"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.4-arm64-linux-glibc-nts"
     },
     {
       "php": "8.4",
@@ -60,8 +60,8 @@
       "arch": "arm64",
       "libc": "musl",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.4-arm64-linux-musl"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.4-arm64-linux-musl-nts"
     },
     {
       "php": "8.4",
@@ -76,8 +76,8 @@
       "arch": "x86_64",
       "libc": "glibc",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.5-x86_64-linux-glibc"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.5-x86_64-linux-glibc-nts"
     },
     {
       "php": "8.5",
@@ -92,8 +92,8 @@
       "arch": "x86_64",
       "libc": "musl",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.5-x86_64-linux-musl"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.5-x86_64-linux-musl-nts"
     },
     {
       "php": "8.5",
@@ -108,8 +108,8 @@
       "arch": "arm64",
       "libc": "glibc",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.5-arm64-linux-glibc"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.5-arm64-linux-glibc-nts"
     },
     {
       "php": "8.5",
@@ -124,8 +124,8 @@
       "arch": "arm64",
       "libc": "musl",
       "thread_safety": "nts",
-      "ts_suffix": "",
-      "artifact_suffix": "php8.5-arm64-linux-musl"
+      "ts_suffix": "-nts",
+      "artifact_suffix": "php8.5-arm64-linux-musl-nts"
     },
     {
       "php": "8.5",
