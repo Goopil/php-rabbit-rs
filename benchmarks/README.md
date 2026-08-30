@@ -37,6 +37,7 @@ Comparative numbers are only meaningful under this protocol:
 - **Archive one JSON per run.** `results/benchmark-results.json` is overwritten on every run and gitignored — copy the per-run JSON to a durable location (outside the repo) before starting the next run.
 - **0 losses / 0 duplicates expected** wherever Safe mode guarantees at-least-once delivery (e.g. `batch-confirm`, `laravel-dispatch`). A non-zero counter invalidates the run — do not record it as a measurement.
 - **Broker lab + vhost grant.** Start the lab (`./scripts/lab-up.sh`), wait for readiness (`./scripts/lab-ready.sh`), and make sure the benchmark user (`rabbit_rs`) has permissions on its vhost (`rabbitmqctl set_permissions`).
+- **Uninstall the release build after the runs.** Run `cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes` and delete any `ext-rabbit_rs.ini` in the PHP conf.d directory — the Laravel Unit/Feature suite asserts the extension is absent (`RabbitMqServiceProviderTest`) and fails while it stays installed.
 
 ### Available drivers
 
@@ -77,7 +78,7 @@ The smoke budget (`baselines/smoke-budget.json`) checks:
 
 All benchmark parameters are in `src/Config.php`:
 - 10,000 messages per round, 10 rounds (+ 1 warmup)
-- 256-byte payload
+- 256 B payload (`Config::MESSAGE_PAYLOAD_BYTES`) — 1024 B for the `laravel-*` scenarios (`Config::MESSAGE_PAYLOAD_LARAVEL_BYTES`)
 - RabbitMQ: `127.0.0.1:5672`, user `rabbit_rs`, vhost `/`
 
 ### Latency measurement

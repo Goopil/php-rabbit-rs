@@ -61,6 +61,8 @@ Recovery follows a **deterministic order**:
 
 This order ensures that consumers are only re-registered after their queues and bindings exist, and that publishers only resume after the topology is restored.
 
+With multiple brokers, each broker recovers independently through its own coordinator: one broker recovering never blocks consumption from the others. When a broker's consumer set is replaced after recovery, the composed multi-broker consumer surfaces a one-shot `ConnectionException` ("broker source replaced by recovery; re-fetch consumer") — re-fetch the consumer to resume deliveries from that broker (see [Multiple brokers and vhosts](configuration.md#multiple-brokers-and-vhosts)).
+
 ### Backoff
 
 Retries use exponential backoff with jitter:

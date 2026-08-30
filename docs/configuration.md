@@ -338,6 +338,14 @@ A vhost owns a distinct AMQP connection. To consume from multiple vhosts, define
 
 This configures a single worker profile (`main`) consuming from three queues across two brokers and vhosts, with weighted-fair scheduling.
 
+### Composed consumer behavior
+
+A worker profile subscribed to several brokers gets one composed consumer: deliveries from every broker fan in through a single `pop()` call, and each delivery's ACK/Release/Reject is routed back to the broker it came from.
+
+- **No cross-broker ordering.** Deliveries are merged round-robin so no broker starves another; ordering is guaranteed only within a single queue.
+- **Independent recovery.** A broker that is recovering does not stop consumption from the others. When the broker comes back, its old consumer set is replaced and the composed consumer surfaces a one-shot `Goopil\RabbitRs\ConnectionException` ("broker source replaced by recovery; re-fetch consumer"). On that error, re-fetch the consumer — e.g. `closeConsumers()` on the queue connector clears the cache so the next `pop()` rebuilds it from every broker's current connection. The fresh handle re-subscribes on all brokers without duplicating subscriptions; deliveries already buffered on the healthy brokers are not lost.
+- **Close fan-out.** Closing the composed consumer closes every broker's channels.
+
 ## Connection key
 
 Rabbit RS uses a connection key to determine pool reuse. The key includes:
