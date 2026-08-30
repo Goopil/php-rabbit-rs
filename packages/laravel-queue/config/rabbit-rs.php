@@ -354,6 +354,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Production Warning
+    |--------------------------------------------------------------------------
+    |
+    | When true (default) and the application runs in the production
+    | environment, the driver logs a warning the first time a rabbit-rs
+    | queue connection resolves while topology.queue.delivery_limit and
+    | topology.dead_letter are both unset: a message that crashes the
+    | worker before settlement is then redelivered forever.
+    |
+    | Set to false to silence the warning, e.g. when unbounded redelivery is
+    | an accepted trade-off. It can also be silenced per queue connection
+    | with `production_warning => false` in config/queue.php.
+    |
+    */
+
+    'production_warning' => (bool) env('RABBIT_RS_PRODUCTION_WARNING', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Worker Mode
     |--------------------------------------------------------------------------
     |

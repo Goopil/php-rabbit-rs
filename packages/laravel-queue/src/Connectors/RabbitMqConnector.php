@@ -4,15 +4,20 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Connectors;
 
+use Closure;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Illuminate\Queue\Connectors\ConnectorInterface;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 final class RabbitMqConnector implements ConnectorInterface
 {
+    /** Whether the poison-friendly defaults warning was already emitted in this process. */
+    private static bool $unboundedRedeliveryWarningEmitted = false;
+
     private readonly WorkerProfileResolver $workerProfiles;
     /**
      * @param array{
@@ -21,10 +26,13 @@ final class RabbitMqConnector implements ConnectorInterface
      *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int},
      *     topology: array<string, mixed>
      * } $normalizedConfig
+     * @param (Closure(): bool)|null $inProductionEnvironment
      */
     public function __construct(
         private readonly NativePoolFactory $pools,
         private readonly array $normalizedConfig,
+        private readonly ?Closure $inProductionEnvironment = null,
+        private readonly bool $productionWarningEnabled = true,
     ) {
         $this->workerProfiles = new WorkerProfileResolver(
             $this->normalizedConfig['native']['workers'] ?? [],
@@ -36,6 +44,8 @@ final class RabbitMqConnector implements ConnectorInterface
      */
     public function connect(array $config): RabbitMqQueue
     {
+        $this->warnOnUnboundedRedeliveryDefaults($config);
+
         $defaultQueue = $config['queue'] ?? 'default';
         if (! is_string($defaultQueue) || $defaultQueue === '') {
             throw new InvalidArgumentException('queue must be a non-empty string');
@@ -65,6 +75,47 @@ final class RabbitMqConnector implements ConnectorInterface
             workerProfiles: $this->workerProfiles,
             blockForMilliseconds: ($blockFor ?? 0) * 1000,
             publisherConfig: $this->normalizedConfig['publisher'],
+        );
+    }
+
+    /**
+     * Warns once per process when a connection resolves in production while
+     * delivery_limit and dead_letter are both unset: a poison message (worker
+     * crash before settlement) is then redelivered forever. The warning is
+     * silenced with production_warning => false on the connection or in the
+     * package config.
+     *
+     * @param array<string, mixed> $config
+     */
+    private function warnOnUnboundedRedeliveryDefaults(array $config): void
+    {
+        if (self::$unboundedRedeliveryWarningEmitted) {
+            return;
+        }
+
+        if ($this->inProductionEnvironment === null || ! ($this->inProductionEnvironment)()) {
+            return;
+        }
+
+        if (($this->normalizedConfig['topology']['queue']['delivery_limit'] ?? null) !== null) {
+            return;
+        }
+
+        if (($this->normalizedConfig['topology']['dead_letter'] ?? null) !== null) {
+            return;
+        }
+
+        if (! (bool) ($config['production_warning'] ?? $this->productionWarningEnabled)) {
+            return;
+        }
+
+        self::$unboundedRedeliveryWarningEmitted = true;
+
+        Log::warning(
+            'rabbit-rs: delivery_limit and dead_letter are both unset for this connection. '
+            .'A poison message (worker crash before settlement) will be redelivered forever. '
+            .'Set topology.queue.delivery_limit with topology.dead_letter, or silence this '
+            .'with production_warning => false.'
         );
     }
 }
