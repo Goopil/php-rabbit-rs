@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
+    bridge::EventBridge,
     delivery::Delivery,
     exception::{consumer_exception, rabbit_exception},
 };
@@ -27,6 +28,7 @@ pub struct Consumer {
     runtime: Handle,
     pid: u32,
     closed: AtomicBool,
+    bridge: std::sync::Arc<EventBridge>,
 }
 
 #[php_impl]
@@ -52,7 +54,9 @@ impl Consumer {
             )));
         }
 
-        // Slow path: block on the async runtime with timeout.
+        // Slow path: drain native events (connection state, backpressure)
+        // before blocking on the async runtime with timeout.
+        self.bridge.drain();
         let timeout = u64::try_from(timeoutMs).map_err(|_| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
                 "timeoutMs must be a non-negative integer".to_owned(),
@@ -87,7 +91,12 @@ impl Consumer {
                 self.runtime.clone(),
                 self.pid,
             ))),
-            Ok(None) => Ok(None),
+            Ok(None) => {
+                // Buffer empty: drain native events before returning, mirroring
+                // the drain performed before the blocking wait in next().
+                self.bridge.drain();
+                Ok(None)
+            }
             Err(error) => consumer_exception(&error),
         }
     }
@@ -119,10 +128,13 @@ impl Consumer {
                 .collect();
         }
 
-        // Slow path: block on the async runtime with timeout, then drain.
+        // Slow path: drain native events (connection state, backpressure)
+        // before blocking on the async runtime with timeout, then drain
+        // whatever is available.
+        self.bridge.drain();
         let timeout = u64::try_from(timeoutMs).map_err(|_| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                "timeoutMs must be a non-negative integer".to_owned(),
+                "max must be a non-negative integer".to_owned(),
             )
         })?;
         match self.runtime.block_on(async {
@@ -273,12 +285,18 @@ impl Consumer {
 }
 
 impl Consumer {
-    pub(crate) fn new(handle: ConsumerHandle, runtime: Handle, pid: u32) -> Self {
+    pub(crate) fn new(
+        handle: ConsumerHandle,
+        runtime: Handle,
+        pid: u32,
+        bridge: std::sync::Arc<EventBridge>,
+    ) -> Self {
         Self {
             handle,
             runtime,
             pid,
             closed: AtomicBool::new(false),
+            bridge,
         }
     }
 

@@ -923,7 +923,7 @@ git commit -m "feat(core): count redelivered messages as duplicates in metrics"
 
 **Context:** The `onConnectionState`/`onBackpressure` callbacks are only invoked during `stats()` (`pool.rs:263-264`) — yet the driver never calls `stats()` in normal operation. `ConnectionStateChanged`/`BackpressureDetected` are ineffective in production while the README (`packages/laravel-queue/README.md:17`) and `docs/operations.md:231` promise the opposite.
 
-- [ ] **Step 1: Write the failing test (extension)**
+- [x] **Step 1: Write the failing test (extension)**
 
 ```php
 it('invokes connection state callbacks during publish and consume without stats()', function () {
@@ -939,12 +939,12 @@ it('invokes connection state callbacks during publish and consume without stats(
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `rtk ./scripts/test-extension.sh`
 Expected: FAIL — `$states` empty without `stats()`.
 
-- [ ] **Step 3: Extract an EventBridge**
+- [x] **Step 3: Extract an EventBridge**
 
 `crates/rabbit-rs-php/src/classes/bridge.rs`:
 
@@ -969,16 +969,16 @@ Trigger `bridge.drain(...)`:
 - in `Consumer::next()`/`tryNext()`/`nextBatch()` (before blocking on the wait),
 - still in `stats()` (existing behavior).
 
-- [ ] **Step 4: Wire the Laravel driver**
+- [x] **Step 4: Wire the Laravel driver**
 
 In `packages/laravel-queue/src/RabbitMqQueue.php::pop()`, before `next()`: no PHP-side change needed (the extension drains natively); however **fix the docs**: `README.md:17` and `docs/operations.md:231` become accurate with this behavior — verify and adjust the wording ("events fire during publish and consume operations").
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `rtk ./scripts/test-extension.sh && cd packages/laravel-queue && php vendor/bin/pest`
 Expected: PASS (including `CallbackDeadlockTest` and `NativeEventDispatchTest`).
 
-- [ ] **Step 6: Full gate and commit**
+- [x] **Step 6: Full gate and commit**
 
 Run: `rtk ./scripts/check.sh`
 Expected: PASS.
