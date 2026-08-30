@@ -57,15 +57,22 @@ class RabbitMqServiceProvider extends ServiceProvider
         $normalizedConfig = ConfigNormalizer::normalize(is_array($config) ? $config : []);
         $pools = $this->app->make(NativePoolFactory::class);
         $nativeExtensionLoaded = $this->nativeExtensionLoaded();
+        $app = $this->app;
+        $productionWarningEnabled = (bool) (is_array($config) ? ($config['production_warning'] ?? true) : true);
 
         $this->app->make('queue')->extend(
             'rabbit-rs',
-            static function () use ($nativeExtensionLoaded, $normalizedConfig, $pools): RabbitMqConnector {
+            static function () use ($app, $nativeExtensionLoaded, $normalizedConfig, $pools, $productionWarningEnabled): RabbitMqConnector {
                 if (! $nativeExtensionLoaded) {
                     self::throwMissingNativeExtension();
                 }
 
-                return new RabbitMqConnector($pools, $normalizedConfig);
+                return new RabbitMqConnector(
+                    $pools,
+                    $normalizedConfig,
+                    inProductionEnvironment: static fn (): bool => $app->environment('production'),
+                    productionWarningEnabled: $productionWarningEnabled,
+                );
             },
         );
     }
