@@ -29,6 +29,7 @@ pub struct Consumer {
     pid: u32,
     closed: AtomicBool,
     bridge: std::sync::Arc<EventBridge>,
+    publish_buffer: std::sync::Arc<super::publish_buffer::PublishBuffer>,
 }
 
 #[php_impl]
@@ -40,6 +41,7 @@ impl Consumer {
     /// specified timeout.
     pub fn next(&self, timeoutMs: i64) -> PhpResult<Option<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::next")?;
+        self.drain_publish_buffer()?;
 
         // Fast path: check the flume buffer without block_on.
         if let Some(delivery) = self
@@ -85,6 +87,7 @@ impl Consumer {
     /// or `None` when the buffer is empty. No timeout, no async wait.
     pub fn tryNext(&self) -> PhpResult<Option<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::tryNext")?;
+        self.drain_publish_buffer()?;
         match self.handle.try_next() {
             Ok(Some(delivery)) => Ok(Some(Delivery::new(
                 delivery,
@@ -109,6 +112,7 @@ impl Consumer {
     /// available. `max` is clamped to `1..=256`.
     pub fn nextBatch(&self, max: i64, timeoutMs: i64) -> PhpResult<Vec<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::nextBatch")?;
+        self.drain_publish_buffer()?;
 
         let max = usize::try_from(max).map_err(|_| {
             ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
@@ -290,6 +294,7 @@ impl Consumer {
         runtime: Handle,
         pid: u32,
         bridge: std::sync::Arc<EventBridge>,
+        publish_buffer: std::sync::Arc<super::publish_buffer::PublishBuffer>,
     ) -> Self {
         Self {
             handle,
@@ -297,7 +302,15 @@ impl Consumer {
             pid,
             closed: AtomicBool::new(false),
             bridge,
+            publish_buffer,
         }
+    }
+
+    /// Drains the shared publish buffer before the consumer observes broker
+    /// state, so publications accepted earlier are never trapped in process
+    /// memory while the consumer waits (see [`super::publish_buffer`]).
+    fn drain_publish_buffer(&self) -> PhpResult<()> {
+        self.publish_buffer.flush_nonempty()
     }
 
     fn ensure_open(&self, operation: &str) -> PhpResult<()> {

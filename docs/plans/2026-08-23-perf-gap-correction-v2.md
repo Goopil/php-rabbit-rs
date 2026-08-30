@@ -1867,6 +1867,21 @@ high-throughput single-message publishing. flush() is called before
 publishBatch, close, and __destruct."
 ```
 
+> **Follow-up (2026-08-31, issue #36):** production-like benching exposed a
+> silent-loss and consumer-starvation defect in this design. Because flush
+> triggers only run on `publish()` calls, the tail of a fill (below the 64
+> threshold with no interval clock started) could stay buffered indefinitely;
+> a consumer created afterwards starved waiting for messages that only
+> existed in process memory, and a later pool close could drop the residue
+> once its publish deadline expired. Fix: the buffer moved to a shared
+> `PublishBuffer` (`src/classes/publish_buffer.rs`) cloned into every
+> consumer, which drains it at the entry of `next`/`tryNext`/`nextBatch` and
+> propagates flush errors loudly; re-buffered publications whose deadline
+> expired are dropped instead of poisoning later flushes, mirroring the
+> core actor's `expire_replay`. The bench stall (400 consecutive null
+> pops per round, 2.70x throughput tax) and its loss path are gone:
+> 3x1000 worker rounds report zero stall recoveries and zero losses.
+
 ---
 
 ### Task 14: Add try_ack fast path and tryNext to PHP

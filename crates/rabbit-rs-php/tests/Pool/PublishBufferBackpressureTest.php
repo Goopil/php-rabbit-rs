@@ -8,10 +8,13 @@ describe('publish buffer backpressure', function () {
         // capacity of 1, so every threshold flush fails (core pump
         // backpressure or unconfirmed publication) and re-buffers its
         // messages — the application-side publish buffer never drains.
+        // The deadline must outlive the loop (~4000 failed flushes):
+        // deadline-expired publications are definitive and are not
+        // re-buffered, mirroring the core actor's expire_replay behavior.
         $pool = testingPool(defaultConfig(), ['publisher_capacity' => 1]);
 
         // PUBLISH_BUFFER_MAX_MESSAGES = 4096; beyond that, publish() refuses.
-        $message = pubMessage('backpressure', str_repeat('x', 64), [], 1);
+        $message = pubMessage('backpressure', str_repeat('x', 64), [], 30000);
 
         for ($i = 0; $i < 4096; $i++) {
             try {
