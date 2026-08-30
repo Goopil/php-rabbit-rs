@@ -126,6 +126,92 @@ describe('WorkerSupervisor integration', function () {
         expect(is_file($exitFile))->toBeTrue('Worker 1 should have been stopped by the supervisor, not left as an orphan');
     });
 
+    it('runs a single worker inline without pcntl', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+
+        $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER'         => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE'      => 'exit-clean',
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
+        $supervisor = new class(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+        ) extends WorkerSupervisor {
+            protected function canFork(): bool
+            {
+                return false;
+            }
+        };
+
+        $exit = $supervisor->run();
+
+        // Must not throw a SupervisorException: with a single worker the child
+        // runs in the foreground, no forking and no pcntl involved. The restart
+        // semantics mirror the forking path (initial start + one restart).
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS);
+
+        $marker = supervisorWaitForMarker(0);
+        expect($marker)->not->toBeNull('Worker 0 should have run inline');
+        expect($marker['worker'])->toBe(0);
+        expect(supervisorInvocationCount(0))->toBe(2);
+    });
+
+    it('keeps supervising other children while one is in backoff', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+
+        $starts = [0 => [], 1 => []];
+        $factory = static function (int $workerIndex) use (&$starts, $stubPath, $stateDir): Process {
+            $starts[$workerIndex][] = microtime(true);
+
+            if ($workerIndex === 0) {
+                // Crashes immediately on every start.
+                return new Process([PHP_BINARY, $stubPath], null, [
+                    'RABBIT_RS_WORKER'         => '0',
+                    'RABBIT_RS_STUB_MODE'      => 'crash',
+                    'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+                ]);
+            }
+
+            // Stays up for a moment, then exits non-zero: its crash lands well
+            // inside worker 0's backoff window.
+            return new Process([PHP_BINARY, '-r', 'usleep(500000); exit(1);'], null, [
+                'RABBIT_RS_WORKER' => '1',
+            ]);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 2,
+            maxRestarts: 2,
+            baseBackoffSeconds: 3,
+            processFactory: $factory,
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS);
+        expect(count($starts[0]))->toBe(3);
+        expect(count($starts[1]))->toBe(2);
+
+        // Worker 1's first restart must not be serialised behind worker 0's
+        // backoff window: a blocking sleep() would delay it by a full backoff
+        // period (>= 3s gap). Non-blocking polling keeps the gap under 1.5s.
+        $gap = $starts[1][1] - $starts[0][1];
+        expect($gap)->toBeLessThan(1.5);
+    });
+
     it('run mode worker then signal returns clean exit', function () {
         // Run the supervisor in a subprocess so we can send it a signal.
         $script = writeSupervisorScript();

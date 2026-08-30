@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
+use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
 
 describe('buildChildCommand', function (): void {
     it('constructs the child command with a single worker', function (): void {
@@ -281,11 +282,11 @@ describe('backoff', function (): void {
 });
 
 describe('pcntl availability', function (): void {
-    it('throws RuntimeException when ext-pcntl is not available', function (): void {
+    it('throws SupervisorException when ext-pcntl is missing and workers > 1', function (): void {
         $supervisor = new class(
             connection: 'rabbit-rs',
             queue: 'default',
-            workers: 1,
+            workers: 2,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
         ) extends WorkerSupervisor {
@@ -298,8 +299,8 @@ describe('pcntl availability', function (): void {
         try {
             $supervisor->run();
             expect(false)->toBeTrue('run() should have thrown');
-        } catch (\RuntimeException $e) {
-            expect(str_contains($e->getMessage(), 'ext-pcntl is required'))->toBeTrue();
+        } catch (SupervisorException $e) {
+            expect(str_contains($e->getMessage(), 'ext-pcntl is required for --workers>1'))->toBeTrue();
         }
     });
 });
