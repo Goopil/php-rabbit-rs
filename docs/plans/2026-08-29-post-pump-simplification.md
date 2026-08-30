@@ -149,17 +149,17 @@ au lieu de baisser, régressions réelles worker consume −3.1 % / p99 +3.5 %. 
 auto-ack pub (+9.5 %, réel) est hors cellule de décision. Verdict : rejet, branche
 abandonnée (commits locaux `704aaf9`, archives SDD `runs/mimalloc-ab/`).
 
-## Phase D — Backlog (au fil de l'eau, pas de MR planifiée)
+## Phase D — Backlog (au fil de l'eau) — MERGÉE (PR #34, 2026-08-29)
 
-1. Plomber `publisher.safety` dans ConfigNormalizer
-   (packages/laravel-queue/src/Config/ConfigNormalizer.php:378-392).
-2. Doc limitation `delay_ms` en blind (le pump bypass le routing delay).
-3. Polish wording/stubs + minors parkés des reviews #29/#30.
-4. Fix composition consumer multi-broker (client.rs:362, e2e
-   `two_vhosts_in_one_consumer_set`).
-5. Standardiser benchs release (protocole obligatoire, doc).
+Exécutée en SDD (Tasks D1-D3, ledger `.superpowers/sdd/2026-08-29-post-pump-simplification/`).
+D1 : plomberie `publisher.safety` (TDD) + docs/wording/stubs + protocole benchs release.
+D2 : tests invariants (closed-pump, debug_assert pump/Blind, flush non-vacue, bras
+else=>break prouvée morte et supprimée, footgun lib-extension.sh fixé). D3 : fix
+composition consumer multi-broker (rename pur ConsumerSetHandle + fan-in composite,
+acks token-routés, TDD e2e prouvé). Fix wave : signal one-shot retire (I1) + docs
+multi-broker (I2). Final review MERGE-READY, 17/17 checks.
 
-## Phase E — Bench niveau driver Laravel (MR 4, candidats tierces)
+## Phase E — Bench niveau driver Laravel (MR 4, candidats tierces) — MERGÉE (PR #35, 2026-08-30)
 
 Objectif : mesurer l'overhead **d'intégration framework** (queue API Laravel complète :
 dispatch, pop, ack, release/retries) là où la Phase A mesure le transport brut. Complète
@@ -171,7 +171,9 @@ les findings Phase A (le gap publish ~3× est-il visible une fois le framework b
 2. `vladimir-yuldashev/laravel-queue-rabbitmq` v15.0.1 (2026-08-21) — incumbent,
    transport php-amqplib, référence adoption. **Cœur de la comparaison.**
 3. `iamfarhad/laravel-rabbitmq` — driver moderne sur **ext-amqp** (pooling, confirms,
-   quorum, Horizon, Octane). Requiert ext-amqp (absent des PHP locaux → Docker/CI).
+   quorum, Horizon, Octane). ext-amqp : présent sur Homebrew php@8.4 (2.2.0) et
+   buildable sur 8.5 (phpize — pecl/PEAR cassé sur 8.5) ; runs E2 archivés sous Docker
+   (php 8.4) avec cross-check local documenté.
 4. Optionnel : `bschmitt/laravel-amqp` v3.4.1 — wrapper/php-amqplib, transport déjà
    couvert par vladimir-yuldashev, signaux de maintenance douteux (badge CI fork tiers,
    README gonflé). À n'inclure que si le squelette le permet sans effort.
@@ -193,8 +195,24 @@ les findings Phase A (le gap publish ~3× est-il visible une fois le framework b
 ### Task E1 — Squelette app + wiring des 3 drivers
 ### Task E2 — Run complet + tableau + conclusions
 
+### Résultats (2026-08-30, PR #35)
+
+Batterie E2 (Docker, 100 runs, 0 pertes/dup) : dispatch goopil 12 761/s vs
+iamfarhad-conf 2 365/s (≥ 5,0× ; 5,4× brut) ; worker goopil 10 030/s médian AVEC
+taxe stall vs 27 073/s sur rounds sains (~4× vladimir malgré le stall). Cross-check
+local ext-amqp (php 8.4/8.5, même session) : ratio same-binaire ≈ 7,8×. Matrice
+safety framework (session interleavée) : blind 76 794/s (2,46× vladimir), unsafe
+62 474/s, safe 9 772/s (0,31× — le gap publish est concentré dans le chemin safe
+per-message) ; consume : leader ~5,9× transport. Trois défauts consumer documentés
+avec harnais de repro → plan round 2 `2026-08-30-consumer-stall-and-reliability.md`.
+Corrections QG Sonar en route : composer.lock committé (S8567), config goopil du
+bench réduite à l'override topology (duplication 30,8 % → 0), image Docker non-root
+(sécurité A).
+
 ## Ordre d'exécution
 
 A → B → C (les scénarios A servent de base de mesure pour B et C).
 E est indépendante (peut passer après B ; requiert Docker/CI pour ext-amqp).
 D au fil de l'eau. Chaque phase validée explicitement avant exécution.
+
+**Statut final : A, B, D, E mergées ; C rejetée sur données (mimalloc). Plan clos.**

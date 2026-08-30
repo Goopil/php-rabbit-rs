@@ -13,11 +13,12 @@ nothing is lost between rounds.
   Phase A realistic Laravel benchmarks, Phase B dead-code sweep, Phase C mimalloc
   (evaluated, rejected on data), Phase D publisher.safety plumbing + invariant tests +
   multi-broker consumer fan-in, Phase E driver-level benchmark vs amqplib/amqp-ext
-  (in flight, PR pending at time of writing).
+  (merged as PR #35, 2026-08-30 — includes the local ext-amqp cross-check and the
+  publish safety variant matrix).
 
 ## Next — Round 2: consumer stall and reliability
 
-Full plan: `docs/plans/2026-08-30-consumer-stall-and-reliability.md` (written at round start).
+Full plan: `docs/plans/2026-08-30-consumer-stall-and-reliability.md`.
 
 Found by the Phase E driver-level benchmark; all three defects reproduce on demand and
 none is a delivery loss (messages stay `ready` in RabbitMQ; at-least-once holds).
@@ -69,23 +70,33 @@ criteria enforced by the harness.
 
 ## Round D — dispatch gap investigation
 
-Motivation: the headline structural finding of the perf-gap campaign. Even after
-Round 2 fixes the consumer side (worker goopil may already beat vladimir once the
-stall tax is removed), dispatch stays ~2.5× behind at framework level (12 761 vs
-32 030 ops/s; 2.96× at transport level in Phase A).
+Motivation: the publish-side gap is now precisely localized. In fire-and-forget
+rabbit-rs already leads (framework: 76 794 vs 31 182 ops/s vs vladimir, ~2.46×;
+transport: ~2.8×) — nothing to optimize there. The whole remaining gap is the
+**safe per-message confirm+mandatory path**: 0.31× vladimir at framework level
+(9 772 vs 31 182 ops/s, same-session interleaved), 0.28× at transport level
+(8 213 vs 29 648). goopil's own safety ladder prices it: blind 76.8k → unsafe
+62.5k (×1.23) → safe 9.8k (×6.4) — the unsafe→safe step is the target.
+Secondary target: batch-confirm at transport level, 0.68× vs bunny/amqplib.
 
-Precondition: Round 2 landed and re-benched (clean baseline, no stall tax).
+Precondition: Round 2 landed and re-benched (clean consumer baseline).
 
-Scope: profile the publisher path end to end — flamegraphs plus per-stage breakdown
-(PHP extension boundary, pump, batching, confirms, socket write) — then either
-implement targeted optimizations (with re-bench proof) or document the ceiling with
-data.
+Scope: profile the safe publish path end to end — flamegraphs plus per-stage
+breakdown (PHP extension boundary, pump hand-off per message, confirm waiter,
+mandatory-return handling, socket write) — then either implement targeted
+optimizations (with re-bench proof) or document the ceiling with data.
 
 Success criteria: root cause documented with measurements; either an implemented,
 bench-validated optimization or a documented, quantified ceiling.
 
 ## Parked (no round yet)
 
+- **Per-queue publish safety**: `publisher.safety` is a connection-level setting
+  (ConfigNormalizer validates safe|unsafe|blind; the core applies one SafetyMode
+  per connection/vhost). Several Laravel connections (same broker, distinct
+  vhosts) already give per-vhost safety today. A true per-queue safety inside one
+  connection would be a core config-surface extension — arbitrate alongside
+  Round D.
 - Publish latency excludes the terminal flush (comment if ever reported).
 - Re-fetch acquisition blocks on all brokers when a source retires — semantics match
   mono-broker behavior and are documented; revisit only if an async retire is needed.
