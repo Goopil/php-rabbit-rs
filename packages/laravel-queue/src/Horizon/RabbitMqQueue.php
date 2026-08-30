@@ -16,36 +16,73 @@ use Laravel\Horizon\JobPayload;
 
 class RabbitMqQueue extends BaseRabbitMqQueue
 {
-    protected mixed $lastPushed = null;
-
     public function push($job, $data = '', $queue = null)
     {
-        $this->lastPushed = $job;
+        $queueName = $this->queueName($queue);
+        $payload = (new JobPayload($this->createPayload($job, $queueName, $data)))->prepare($job)->value;
 
-        $payload = $this->createPayload($job, $this->queueName($queue), $data);
+        $this->event($queueName, new JobPending($payload));
 
-        return $this->pushRaw($payload, $queue);
-    }
-
-    public function pushRaw($payload, $queue = null, array $options = [])
-    {
-        $payload = (new JobPayload($payload))->prepare($this->lastPushed ?? null)->value;
-
-        $this->event($this->queueName($queue), new JobPending($payload));
-
-        return tap(parent::pushRaw($payload, $queue, $options), function () use ($queue, $payload): void {
-            $this->event($this->queueName($queue), new JobPushed($payload));
-        });
+        return $this->enqueueUsing(
+            $job,
+            $payload,
+            $queue,
+            null,
+            fn (string $payload, ?string $queue): string => $this->publishHorizonPayload($payload, $queue),
+        );
     }
 
     public function later($delay, $job, $data = '', $queue = null)
     {
-        $payload = (new JobPayload($this->createPayload($job, $this->queueName($queue), $data)))->prepare($job)->value;
+        $queueName = $this->queueName($queue);
+        $payload = (new JobPayload($this->createPayload($job, $queueName, $data, $delay)))->prepare($job)->value;
 
-        $this->event($this->queueName($queue), new JobPending($payload));
+        $this->event($queueName, new JobPending($payload));
 
-        return tap(parent::laterRawFromPayload($delay, $payload, $queue), function () use ($queue, $payload): void {
-            $this->event($this->queueName($queue), new JobPushed($payload));
+        return $this->enqueueUsing(
+            $job,
+            $payload,
+            $queue,
+            $delay,
+            fn (string $payload, ?string $queue, mixed $delay): string => $this->publishHorizonPayload(
+                $payload,
+                $queue,
+                $this->delayMilliseconds($delay),
+            ),
+        );
+    }
+
+    /**
+     * Prepares Horizon-aware payloads for batched jobs and marks them as
+     * pending in the dashboard before the native batch publication.
+     *
+     * @param  list<mixed>  $jobs
+     * @return list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>
+     */
+    protected function prepareBatch(array $jobs, mixed $data, mixed $queue): array
+    {
+        return array_map(function (array $prepared) use ($queue) {
+            $payload = (new JobPayload($prepared['payload']))->prepare($prepared['job'])->value;
+            $prepared['native']['payload'] = $payload;
+            $this->event($this->queueName($queue), new JobPending($payload));
+
+            return [...$prepared, 'payload' => $payload];
+        }, parent::prepareBatch($jobs, $data, $queue));
+    }
+
+    /**
+     * Publishes the native batch, then marks every job as pushed in the
+     * dashboard once the publication succeeded.
+     *
+     * @param  list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>  $messages
+     * @return list<string>
+     */
+    protected function publishBatch(array $messages, mixed $queue): array
+    {
+        return tap(parent::publishBatch($messages, $queue), function () use ($messages, $queue): void {
+            foreach ($messages as $message) {
+                $this->event($this->queueName($queue), new JobPushed($message['payload']));
+            }
         });
     }
 
@@ -72,6 +109,19 @@ class RabbitMqQueue extends BaseRabbitMqQueue
     public function deleteReserved(string $queue, BaseRabbitMqJob $job): void
     {
         $this->event($queue, new JobDeleted($job, $job->getRawBody()));
+    }
+
+    private function publishHorizonPayload(string $payload, ?string $queue, ?int $delayMs = null): string
+    {
+        $queueName = $this->queueName($queue);
+
+        $result = $delayMs === null
+            ? $this->publish($payload, $queue, ['content_type' => self::CONTENT_TYPE_JSON])
+            : $this->publish($payload, $queue, ['content_type' => self::CONTENT_TYPE_JSON], $delayMs);
+
+        $this->event($queueName, new JobPushed($payload));
+
+        return $result;
     }
 
     protected function event(string $queue, object $event): void
