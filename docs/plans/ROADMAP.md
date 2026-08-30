@@ -225,13 +225,14 @@ parallel from F1 onward because it only depends on a release cycle, not on code.
 - Publish latency excludes the terminal flush (comment if ever reported).
 - Re-fetch acquisition blocks on all brokers when a source retires — semantics match
   mono-broker behavior and are documented; revisit only if an async retire is needed.
-- **ZTS decision (open, blocks 1.0)**: `support-zts: true` is announced
-  (root `composer.json`) but unproven — the process-global `RuntimeRegistry` is
-  shared across PHP threads, the CI ZTS job is advisory-only (`continue-on-error`)
-  and release ZTS artifacts only get an `extension_loaded` smoke test.
-  Option A (recommended for V1, plan Task 20): drop ZTS from the release matrix
-  (16 → 8 assets) and re-introduce in V2 with thread isolation + a blocking ZTS CI
-  job + real concurrency tests. Option B: implement TSRM-aware isolation now.
+- **ZTS decision (APPLIED for V1, plan Task 20 — Option A)**: ZTS was
+  unproven — the process-global `RuntimeRegistry` is shared across PHP threads,
+  the CI ZTS job was advisory-only (`continue-on-error`) and release ZTS
+  artifacts only got an `extension_loaded` smoke test. Applied for V1: ZTS
+  dropped from the release matrix (16 → 8 assets, `support-zts: false` in the
+  root `composer.json`) and the advisory ZTS CI job removed. Revisit in V2 with
+  thread isolation (TSRM-aware registry) + a blocking ZTS CI job + real
+  concurrency tests.
 - **Known minor items from the audit, deliberately unscheduled**:
   `try_publish_hot` is a pure passthrough of `try_publish` (the announced hot path
   does not exist yet); `frame_max = 1 MiB` is hardcoded in `transport/lapin.rs`;

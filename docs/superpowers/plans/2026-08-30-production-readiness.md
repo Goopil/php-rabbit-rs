@@ -1481,7 +1481,7 @@ git commit -m "docs: align stats stub, README, guides with the implementation"
 
 **Decision (recommended — Option A):** remove ZTS from the V1 scope and reintroduce it in V2 with per-thread isolation + blocking CI + real concurrency tests.
 
-- [ ] **Step 1: Write the failing consistency check**
+- [x] **Step 1: Write the failing consistency check**
 
 Add to `scripts/verify-pie-naming.sh` (created by Task 13) a check that the matrix declared in `release/pie-matrix.json` contains no `zts` entry as long as `support-zts` is removed:
 
@@ -1492,7 +1492,7 @@ if grep -qi 'zts' release/pie-matrix.json; then
 fi
 ```
 
-- [ ] **Step 2: Apply Option A**
+- [x] **Step 2: Apply Option A**
 
 1. Root `composer.json`: `"support-zts": false` in the `php-ext` section.
 2. `release/pie-matrix.json`: remove the 8 ZTS entries.
@@ -1500,12 +1500,12 @@ fi
 4. `.github/workflows/ci.yml`: remove the advisory ZTS job.
 5. `docs/distribution.md` + `docs/installation.md`: document "NTS only in V1; ZTS planned for V2" with the justification (process-global registry, TSRM isolation not implemented).
 
-- [ ] **Step 3: Verify the release matrix**
+- [x] **Step 3: Verify the release matrix**
 
 Run: `./scripts/verify-pie-naming.sh && rtk composer validate --strict`
 Expected: PASS. Also check `release/validate-distribution.sh` if it references ZTS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add composer.json release .github docs
@@ -1515,7 +1515,6 @@ git commit -m "build: drop unproven ZTS from the V1 release matrix (revisit in V
 > **Option B (rejected for V1, to document in the PR):** implement per-thread
 > isolation (TSRM-aware registry), make the CI ZTS job blocking and add concurrency
 > tests — estimated cost several weeks, deferred.
-
 ---
 
 ## Exit criteria toward 1.0
@@ -1524,7 +1523,7 @@ git commit -m "build: drop unproven ZTS from the V1 release matrix (revisit in V
 - [ ] All P1 tasks delivered; the `pie install` chain validated on a real release (Task 13).
 - [ ] Task 12 (TLS) validated on the 3-node lab with handshake, untrusted CA, and SNI.
 - [ ] `./scripts/check.sh` green + Pint/PHPStan 0 errors + non-regressed coverage (Codecov).
-- [ ] ZTS: decision settled and applied (Task 20 — Option A by default).
+- [x] ZTS: decision settled and applied (Task 20 — Option A by default).
 - [ ] 1.0 CHANGELOG written, version constraints aligned, docs consistent.
 - [ ] Certification of CLI, FPM, and the 4 advertised Octane servers (overflow: `scripts/test-octane.sh` on each runtime).
 - [ ] Round 2 (stall/pre-fill/clear) root-caused and re-bench compared to the Phase E archives.

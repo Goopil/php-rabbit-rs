@@ -3,6 +3,9 @@ set -euo pipefail
 
 # package-pie-binary.sh — package a single PIE release artifact.
 #
+# V1 ships NTS binaries only (plan Task 20, Option A): --ts accepts nts and
+# rejects zts until TSRM isolation lands in V2. See docs/distribution.md.
+#
 # Usage:
 #   ./scripts/package-pie-binary.sh \
 #       --version 1.2.0 \
@@ -19,6 +22,8 @@ set -euo pipefail
 #   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
 #   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip.sha256
 #   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.sbom.json
+#
+# V1 matrix: 8 artifacts (2 PHP × 2 arch × 2 libc, NTS only).
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXTENSION_NAME="rabbit_rs"
@@ -44,7 +49,7 @@ Options:
   --php <ver>         PHP major.minor, e.g. 8.4 or 8.5
   --arch <arch>       x86_64 or arm64
   --libc <libc>       glibc or musl
-  --ts <mode>         nts or zts
+  --ts <mode>         nts (V1 is NTS-only; zts is not distributed)
   --so <path>         Path to the compiled rabbit_rs.so
   --self-test         Run internal self-test (no .so needed) and exit
   -h, --help          Show this help
@@ -85,7 +90,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
     VALID_PHP="8.4 8.5"
     VALID_ARCH="x86_64 arm64"
     VALID_LIBC="glibc musl"
-    VALID_TS="nts zts"
+    VALID_TS="nts"
 
     for pv in ${VALID_PHP}; do
         for ar in ${VALID_ARCH}; do
@@ -101,7 +106,7 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
             done
         done
     done
-    ok "naming logic for all 16 combinations"
+    ok "naming logic for all 8 V1 combinations"
 
     # Validate version semver
     V="1.2.3"
@@ -138,15 +143,15 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
     done
 
     # Validate ts
-    for ts in nts zts; do
+    for ts in nts; do
         case "${ts}" in
-            nts|zts) : ;;
+            nts) : ;;
             *) fail "ts ${ts} should be valid" ;;
         esac
     done
-    for ts in debug pthread; do
+    for ts in zts debug pthread; do
         case "${ts}" in
-            nts|zts) fail "ts ${ts} should be invalid" ;;
+            nts) fail "ts ${ts} should be invalid" ;;
             *) : ;;
         esac
     done
@@ -166,11 +171,11 @@ if [[ "${SELF_TEST}" -eq 1 ]]; then
             done
         done
     done
-    ok "SBOM naming logic for all 16 combinations"
+    ok "SBOM naming logic for all 8 V1 combinations"
 
     ok "validation logic for version, arch, libc, ts"
     echo ""
-    echo "Self-test passed (16 artifacts)."
+    echo "Self-test passed (8 V1 artifacts, NTS only)."
     exit 0
 fi
 
@@ -221,8 +226,9 @@ esac
 # --- validate thread safety --------------------------------------------------
 
 case "${TS}" in
-    nts|zts) : ;;
-    *) fail "unsupported thread-safety: ${TS} (expected nts or zts)" ;;
+    nts) : ;;
+    zts) fail "unsupported thread-safety: zts (V1 is NTS-only, plan Task 20 — ZTS is planned for V2)" ;;
+    *) fail "unsupported thread-safety: ${TS} (expected nts)" ;;
 esac
 
 # --- validate shared object path ---------------------------------------------

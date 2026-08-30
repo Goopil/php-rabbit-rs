@@ -73,8 +73,8 @@ support_nts="$(jq -r '.["php-ext"]."support-nts"' "${ROOT_COMPOSER}")"
 support_zts="$(jq -r '.["php-ext"]."support-zts"' "${ROOT_COMPOSER}")"
 [[ "${support_nts}" == "true" ]] \
     || fail "support-nts is '${support_nts}', expected 'true'"
-[[ "${support_zts}" == "true" ]] \
-    || fail "support-zts is '${support_zts}', expected 'true'"
+[[ "${support_zts}" == "false" ]] \
+    || fail "support-zts is '${support_zts}', expected 'false' (ZTS is out of the V1 release matrix, plan Task 20)"
 ok "support-nts: ${support_nts}, support-zts: ${support_zts}"
 
 echo "==> Checking OS families"
@@ -119,8 +119,8 @@ ok "major versions match: ${cargo_major}"
 
 echo "==> Checking PIE matrix"
 matrix_count="$(jq -r '.matrix | length' "${PIE_MATRIX}")"
-[[ "${matrix_count}" -eq 16 ]] \
-    || fail "PIE matrix must have exactly 16 entries, found ${matrix_count}"
+[[ "${matrix_count}" -eq 8 ]] \
+    || fail "PIE matrix must have exactly 8 entries, found ${matrix_count}"
 ok "PIE matrix entries: ${matrix_count}"
 
 echo "==> Checking PIE matrix uniqueness and values"
@@ -135,8 +135,7 @@ expected_arch="arm64
 x86_64"
 expected_libc="glibc
 musl"
-expected_ts="nts
-zts"
+expected_ts="nts"
 
 [[ "${php_values}" == "${expected_php}" ]] \
     || fail "PHP versions are ${php_values//$'\n'/, }, expected 8.4,8.5"
@@ -145,13 +144,13 @@ zts"
 [[ "${libc_values}" == "${expected_libc}" ]] \
     || fail "libc values are ${libc_values//$'\n'/, }, expected glibc,musl"
 [[ "${ts_values}" == "${expected_ts}" ]] \
-    || fail "thread_safety values are ${ts_values//$'\n'/, }, expected nts,zts"
+    || fail "thread_safety values are ${ts_values//$'\n'/, }, expected nts (ZTS excluded in V1)"
 ok "PIE matrix values are correct"
 
 unique_suffixes="$(jq -r '.matrix[].artifact_suffix' "${PIE_MATRIX}" | sort -u | wc -l | tr -d ' ')"
-[[ "${unique_suffixes}" -eq 16 ]] \
-    || fail "artifact_suffix entries must all be unique, found ${unique_suffixes} unique out of 16"
-ok "All 16 artifact suffixes are unique"
+[[ "${unique_suffixes}" -eq 8 ]] \
+    || fail "artifact_suffix entries must all be unique, found ${unique_suffixes} unique out of 8"
+ok "All 8 artifact suffixes are unique"
 
 echo "==> Checking glibc minimum"
 min_glibc="$(jq -r '.minimum_glibc' "${PIE_MATRIX}")"
