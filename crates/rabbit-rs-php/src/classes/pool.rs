@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use super::{
     consumer::Consumer,
-    exception::{client_exception, rabbit_exception},
+    exception::{backpressure_exception, client_exception, rabbit_exception},
 };
 use crate::callbacks::CallbackSlot;
 use crate::conversion;
@@ -30,6 +30,10 @@ use rabbit_rs_core::{
 const BUFFER_THRESHOLD: usize = 64;
 /// Maximum time to wait before flushing the buffer.
 const BUFFER_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+/// Maximum number of buffered publish requests before flushing is forced.
+const PUBLISH_BUFFER_MAX_MESSAGES: usize = 4096;
+/// Maximum cumulative buffered payload bytes before flushing is forced.
+const PUBLISH_BUFFER_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// Native `RabbitMQ` connection and operation pool.
 #[php_class]
@@ -44,6 +48,7 @@ pub struct Pool {
     last_connection_states: std::sync::Mutex<HashMap<String, (String, i64)>>,
     last_backpressure_total: std::sync::Mutex<u64>,
     publish_buffer: std::sync::Mutex<Vec<conversion::NativePublish>>,
+    publish_buffer_bytes: std::sync::Mutex<usize>,
     last_flush: std::sync::Mutex<std::time::Instant>,
 }
 
@@ -76,6 +81,7 @@ impl Pool {
             last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
             publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
+            publish_buffer_bytes: std::sync::Mutex::new(0),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
         })
     }
@@ -109,12 +115,50 @@ impl Pool {
         })?;
 
         let message_id = publish.request.properties.message_id.as_ref().to_owned();
+        let payload_bytes = publish.request.payload.len();
 
         let mut buffer = self
             .publish_buffer
             .lock()
             .expect("publish buffer mutex poisoned");
+        let mut buffered_bytes = *self
+            .publish_buffer_bytes
+            .lock()
+            .expect("publish buffer bytes mutex poisoned");
+
+        if buffer.len() >= PUBLISH_BUFFER_MAX_MESSAGES
+            || buffered_bytes + payload_bytes > PUBLISH_BUFFER_MAX_BYTES
+        {
+            // Best-effort flush to make room. A failed flush re-buffers every
+            // already-accepted message (they are never dropped); the re-check
+            // below then surfaces explicit backpressure instead of leaking a
+            // transport error the caller did not cause.
+            drop(buffer);
+            let _ = self.flush();
+            buffer = self
+                .publish_buffer
+                .lock()
+                .expect("publish buffer mutex poisoned");
+            buffered_bytes = *self
+                .publish_buffer_bytes
+                .lock()
+                .expect("publish buffer bytes mutex poisoned");
+            if buffer.len() >= PUBLISH_BUFFER_MAX_MESSAGES
+                || buffered_bytes + payload_bytes > PUBLISH_BUFFER_MAX_BYTES
+            {
+                return backpressure_exception(&format!(
+                    "publish buffer is full ({} messages, {} buffered bytes); retry after flush",
+                    buffer.len(),
+                    buffered_bytes,
+                ));
+            }
+        }
+
         buffer.push(publish);
+        *self
+            .publish_buffer_bytes
+            .lock()
+            .expect("publish buffer bytes mutex poisoned") += payload_bytes;
 
         let should_flush = buffer.len() >= BUFFER_THRESHOLD
             || self
@@ -126,6 +170,11 @@ impl Pool {
         if should_flush {
             let publishes = std::mem::take(&mut *buffer);
             drop(buffer);
+            *self
+                .publish_buffer_bytes
+                .lock()
+                .expect("publish buffer bytes mutex poisoned") -=
+                Self::buffered_payload_bytes(&publishes);
             *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
             self.flush_publishes(publishes)?;
         }
@@ -143,12 +192,7 @@ impl Pool {
     /// contract, a later transport failure is a silent loss.
     pub fn flush(&self) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::flush")?;
-        let publishes = std::mem::take(
-            &mut *self
-                .publish_buffer
-                .lock()
-                .expect("publish buffer mutex poisoned"),
-        );
+        let publishes = self.take_publish_buffer();
         if !publishes.is_empty() {
             *self.last_flush.lock().expect("last_flush mutex poisoned") = std::time::Instant::now();
             self.flush_publishes(publishes)?;
@@ -370,8 +414,49 @@ impl Pool {
             last_connection_states: std::sync::Mutex::new(HashMap::new()),
             last_backpressure_total: std::sync::Mutex::new(0),
             publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
+            publish_buffer_bytes: std::sync::Mutex::new(0),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
         }
+    }
+
+    /// Total payload bytes of the given buffered publications.
+    fn buffered_payload_bytes(publishes: &[conversion::NativePublish]) -> usize {
+        publishes
+            .iter()
+            .map(|publish| publish.request.payload.len())
+            .sum()
+    }
+
+    /// Drains the publish buffer, keeping the byte counter in sync.
+    fn take_publish_buffer(&self) -> Vec<conversion::NativePublish> {
+        let mut buffer = self
+            .publish_buffer
+            .lock()
+            .expect("publish buffer mutex poisoned");
+        let publishes = std::mem::take(&mut *buffer);
+        drop(buffer);
+        *self
+            .publish_buffer_bytes
+            .lock()
+            .expect("publish buffer bytes mutex poisoned") -=
+            Self::buffered_payload_bytes(&publishes);
+        publishes
+    }
+
+    /// Re-buffers publications whose flush failed, keeping the byte counter in
+    /// sync. Re-buffered publications may exceed the buffer ceiling: they were
+    /// already accepted (a `message_id` was returned) and are never dropped.
+    fn rebuffer_publishes(&self, publishes: Vec<conversion::NativePublish>) {
+        let bytes = Self::buffered_payload_bytes(&publishes);
+        let mut buffer = self
+            .publish_buffer
+            .lock()
+            .expect("publish buffer mutex poisoned");
+        buffer.extend(publishes);
+        *self
+            .publish_buffer_bytes
+            .lock()
+            .expect("publish buffer bytes mutex poisoned") += bytes;
     }
 
     fn flush_publishes(&self, publishes: Vec<conversion::NativePublish>) -> PhpResult<()> {
@@ -419,10 +504,7 @@ impl Pool {
                 // duplicates are permitted and identifiable via `message_id`.
                 // A closing pool must not re-buffer.
                 if !matches!(error.kind(), ClientErrorKind::Closed) {
-                    self.publish_buffer
-                        .lock()
-                        .expect("publish buffer mutex poisoned")
-                        .extend(publishes);
+                    self.rebuffer_publishes(publishes);
                 }
                 client_exception(&error)
             }

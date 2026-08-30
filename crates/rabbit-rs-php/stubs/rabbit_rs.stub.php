@@ -32,10 +32,16 @@ final class Pool
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      * @noinspection PhpUnusedParameterInspection
      *
+     * Publishes one message, returning its stable message identifier.
+     *
      * @param array{broker: string, exchange: string, routing_key: string, payload: string, message_id: string, content_type?: string, correlation_id?: string, delay_ms?: int, timeout_ms?: int, headers?: array<string, bool|int|float|string|null>} $message
      *
      * Payload and all headers are limited to 1 MiB and 64 KiB per call respectively.
      * Headers are flat, contain at most 128 entries, and timeout_ms is between 1 and 86,400,000.
+     *
+     * @throws \Goopil\RabbitRs\BackpressureException when the bounded publish
+     *   buffer is full (outage with sustained traffic); retry with the same
+     *   message later. Already-buffered messages are never dropped.
      */
     public function publish(array $message): string
     {

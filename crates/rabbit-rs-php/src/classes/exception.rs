@@ -32,6 +32,12 @@ pub(crate) fn rabbit_exception<T>(message: impl Into<String>) -> PhpResult<T> {
     ))
 }
 
+pub(crate) fn backpressure_exception<T>(message: &str) -> PhpResult<T> {
+    Err(PhpException::from_class::<BackpressureException>(
+        message.to_owned(),
+    ))
+}
+
 pub(crate) fn client_exception<T>(error: &ClientError) -> PhpResult<T> {
     let message = error.to_string();
     match error.kind() {
