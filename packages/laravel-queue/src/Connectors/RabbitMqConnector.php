@@ -62,6 +62,12 @@ final class RabbitMqConnector implements ConnectorInterface
             throw new InvalidArgumentException('block_for exceeds the supported millisecond range');
         }
 
+        $autoSubscribe = $config['auto_subscribe']
+            ?? ($this->normalizedConfig['auto_subscribe'] ?? false);
+        if (! is_bool($autoSubscribe)) {
+            throw new InvalidArgumentException('auto_subscribe must be a boolean');
+        }
+
         $worker = $config['worker'] ?? 'default';
         $class = $worker === 'horizon'
             ? HorizonRabbitMqQueue::class
@@ -75,6 +81,7 @@ final class RabbitMqConnector implements ConnectorInterface
             workerProfiles: $this->workerProfiles,
             blockForMilliseconds: ($blockFor ?? 0) * 1000,
             publisherConfig: $this->normalizedConfig['publisher'],
+            autoSubscribe: $autoSubscribe,
         );
     }
 

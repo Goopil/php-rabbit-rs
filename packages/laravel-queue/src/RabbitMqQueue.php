@@ -16,6 +16,7 @@ use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
+use Illuminate\Contracts\Queue\ClearableQueue;
 use Illuminate\Contracts\Queue\Queue as QueueContract;
 use Illuminate\Queue\Attributes\Delay;
 use Illuminate\Queue\Queue;
@@ -28,7 +29,7 @@ use InvalidArgumentException;
  * Method count is dictated by the Illuminate\Contracts\Queue\Queue interface
  * and Laravel's Queue base class. Splitting would add indirection on the hot path.
  */
-class RabbitMqQueue extends Queue implements QueueContract
+class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
 {
     protected const CONTENT_TYPE_JSON = 'application/json';
 
@@ -50,6 +51,7 @@ class RabbitMqQueue extends Queue implements QueueContract
         private readonly WorkerProfileResolver $workerProfiles = new WorkerProfileResolver([]),
         private readonly int $blockForMilliseconds = 0,
         array $publisherConfig = [],
+        private readonly bool $autoSubscribe = false,
     ) {
         $this->dispatchAfterCommit = $dispatchAfterCommit;
         $this->messages = $messages ?? new MessageMapper($publisherConfig);
@@ -135,18 +137,25 @@ class RabbitMqQueue extends Queue implements QueueContract
         return null;
     }
 
-    public function clear($queue = null): void
+    public function clear($queue = null): int
     {
         $queueName = $this->queueName($queue);
         $route = $this->route($queueName);
 
         try {
+            // The native purge does not surface the AMQP message count, so the
+            // pending count is measured before purging: this is the number of
+            // jobs the purge removes (messages racing the purge are counted
+            // but may survive). queue:clear sums the returned counts.
+            $purged = $this->pool->size($route['broker'], $queueName);
             $this->pool->clear($route['broker'], $queueName);
         } catch (BackpressureException | ConnectionException $exception) {
             throw $exception;
         } catch (NativeException $exception) {
             throw QueueException::fromNative($exception);
         }
+
+        return $purged;
     }
 
     public function push($job, $data = '', $queue = null)
@@ -351,9 +360,17 @@ class RabbitMqQueue extends Queue implements QueueContract
                 ?? $this->defaultQueue;
         } else {
             $queueName = $this->queueName($queue);
-            $profile = $this->workerProfiles->profileForQueue($queueName);
+            $profile = $this->workerProfiles->profileForQueue($queueName)
+                ?? ($this->workerProfiles->hasProfile($queueName) ? $queueName : null);
             if ($profile === null) {
-                throw new InvalidArgumentException("No worker profile subscribes to queue '{$queueName}'");
+                if (! $this->autoSubscribe) {
+                    throw new InvalidArgumentException(
+                        "No worker profile subscribes to queue '{$queueName}'. "
+                        ."Configure workers.*.subscriptions.*.queue={$queueName} or enable auto_subscribe.",
+                    );
+                }
+
+                $profile = $this->workerProfiles->registerAutoProfile($queueName);
             }
         }
         try {

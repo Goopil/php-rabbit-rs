@@ -217,6 +217,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Auto Subscribe
+    |--------------------------------------------------------------------------
+    |
+    | Controls how pop() resolves plain queue names that no worker profile
+    | subscribes to (e.g. `queue:work --queue=emails` where no workers.*
+    | subscription references the 'emails' queue).
+    |
+    | When false (default), pop() fails with an actionable error telling you
+    | to declare the queue in workers.*.subscriptions.*.queue.
+    |
+    | When true, pop() builds an implicit worker profile for the requested
+    | queue on the fly (process-local, cached per queue name and reused on
+    | subsequent pops) with a single subscription using the default broker,
+    | weight 1, and the default prefetch. The implicit profile is requested
+    | from the native pool by name ('__auto__.<queue>'), so the pool must be
+    | able to resolve runtime-registered profiles.
+    |
+    */
+
+    'auto_subscribe' => (bool) env('RABBIT_RS_AUTO_SUBSCRIBE', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Publisher
     |--------------------------------------------------------------------------
     |
