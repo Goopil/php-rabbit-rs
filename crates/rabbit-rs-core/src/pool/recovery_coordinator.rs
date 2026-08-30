@@ -1,4 +1,9 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    collections::HashSet,
+    error::Error,
+    fmt,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -19,6 +24,12 @@ use super::connection_actor::{ConnectionActor, ConnectionActorClosed, Connection
 
 type SharedPublisher = Arc<Mutex<Option<PublisherHandle>>>;
 type SharedConsumers = Arc<Mutex<std::collections::HashMap<String, ConsumerSetHandle>>>;
+/// Worker profiles explicitly requested through the client pool, shared
+/// between the pool and every coordinator.
+type RequestedProfiles = Arc<StdMutex<HashSet<String>>>;
+/// Serializes consumer establishment between recovery generations and
+/// on-demand acquisition so a profile is never established twice.
+type EstablishLock = Arc<Mutex<()>>;
 
 /// Orchestrates end-to-end recovery for one broker connection.
 ///
@@ -34,6 +45,8 @@ pub struct RecoveryCoordinatorHandle {
     actor: ConnectionActorHandle,
     publisher: SharedPublisher,
     consumers: SharedConsumers,
+    context: Arc<CoordinatorContext>,
+    establish_lock: EstablishLock,
     state: watch::Receiver<ConnectionState>,
     close_tx: mpsc::Sender<CloseCommand>,
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -79,6 +92,10 @@ pub struct RecoveryCoordinatorConfig {
     pub config: Arc<ValidatedConfig>,
     /// Shared metrics registry.
     pub metrics: Metrics,
+    /// Worker profiles explicitly requested through the client pool. Only
+    /// these profiles get consumer channels and `basic_consume` on each
+    /// recovery generation; declared-but-unrequested profiles stay dormant.
+    pub requested_profiles: RequestedProfiles,
 }
 
 impl RecoveryCoordinator {
@@ -121,27 +138,32 @@ impl RecoveryCoordinator {
 
         let publisher: SharedPublisher = Arc::new(Mutex::new(None));
         let consumers: SharedConsumers = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let establish_lock: EstablishLock = Arc::new(Mutex::new(()));
 
-        let context = CoordinatorContext {
+        let context = Arc::new(CoordinatorContext {
             broker: config.broker,
             topology_plan: config.topology_plan,
             publisher_config: config.publisher_config,
             config: config.config,
             metrics: config.metrics,
-        };
+            requested_profiles: config.requested_profiles,
+        });
 
         let join = tokio::spawn(run_coordinator(
             actor.clone(),
-            context,
+            context.clone(),
             close_rx,
             publisher.clone(),
             consumers.clone(),
+            establish_lock.clone(),
         ));
 
         RecoveryCoordinatorHandle {
             actor,
             publisher,
             consumers,
+            context,
+            establish_lock,
             state,
             close_tx,
             join: Arc::new(Mutex::new(Some(join))),
@@ -155,6 +177,7 @@ struct CoordinatorContext {
     publisher_config: PublisherConfig,
     config: Arc<ValidatedConfig>,
     metrics: Metrics,
+    requested_profiles: RequestedProfiles,
 }
 
 impl RecoveryCoordinatorHandle {
@@ -221,16 +244,59 @@ impl RecoveryCoordinatorHandle {
     /// coordinator's broker. Callers that consume from several brokers must
     /// merge the per-broker sets (see `ClientPool::consumer`).
     ///
+    /// Only requested profiles are ever established. A profile requested
+    /// after the last recovery generation is established on demand by this
+    /// call while the connection is ready, so late consumer acquisition does
+    /// not wait for a reconnection. When on-demand establishment fails, the
+    /// connection loss is reported to the actor so the re-establishment is
+    /// retried through the deterministic recovery sequence with backoff,
+    /// mirroring the recovery-generation failure path.
+    ///
     /// # Errors
     ///
     /// Returns a typed consumer or coordinator error.
     pub async fn consumer(&self, profile: &str) -> Result<ConsumerSetHandle, CoordinatorError> {
-        if let Some(handle) = self.consumers.lock().await.get(profile).cloned() {
+        let not_ready =
+            || CoordinatorError::new(format!("consumer profile '{profile}' is not ready"));
+        let ConnectionState::Ready { generation } = self.state.borrow().clone() else {
+            return Err(not_ready());
+        };
+        if let Some(handle) = self.consumers.lock().await.get(profile).cloned()
+            && handle.generation() == generation
+        {
             return Ok(handle);
         }
-        Err(CoordinatorError::new(format!(
-            "consumer profile '{profile}' is not ready"
-        )))
+        if !is_requested(&self.context, profile) {
+            return Err(not_ready());
+        }
+        match establish_requested_profile(
+            &self.actor,
+            &self.context,
+            &self.publisher,
+            &self.consumers,
+            &self.establish_lock,
+            profile,
+            generation,
+        )
+        .await
+        {
+            Ok(()) => self
+                .consumers
+                .lock()
+                .await
+                .get(profile)
+                .cloned()
+                .ok_or_else(not_ready),
+            Err(error) => {
+                let _ = self
+                    .actor
+                    .connection_lost(TransportError::connection(format!(
+                        "consumer establishment failed: {error}"
+                    )))
+                    .await;
+                Err(error)
+            }
+        }
     }
 
     /// Reports connection loss to the underlying actor.
@@ -267,10 +333,11 @@ impl RecoveryCoordinatorHandle {
 
 async fn run_coordinator(
     actor: ConnectionActorHandle,
-    context: CoordinatorContext,
+    context: Arc<CoordinatorContext>,
     mut close_rx: mpsc::Receiver<CloseCommand>,
     publisher: SharedPublisher,
     consumers: SharedConsumers,
+    establish_lock: EstablishLock,
 ) {
     let mut state = actor.subscribe();
     actor.start().await.expect("connection actor started");
@@ -296,6 +363,7 @@ async fn run_coordinator(
                                 generation,
                                 &publisher,
                                 &consumers,
+                                &establish_lock,
                             ) => r,
                             close = close_rx.recv() => {
                                 if let Some(CloseCommand { completed }) = close {
@@ -371,6 +439,7 @@ async fn recover_generation(
     generation: u64,
     publisher: &SharedPublisher,
     consumers: &SharedConsumers,
+    establish_lock: &EstablishLock,
 ) -> Result<(), CoordinatorError> {
     // Step 1: Open publisher channel.
     let publisher_channel: Arc<dyn PublisherChannel> = Arc::from(
@@ -415,71 +484,149 @@ async fn recover_generation(
     drop(pub_guard);
 
     // Step 4: Re-establish consumers (open channels → QoS → basic_consume → update_generation).
-    let connection_key = crate::pool::ConnectionKey::from_config(&context.config);
-    let delay_strategy = compile_delay_strategy(&context.config);
-
-    let pub_handle = publisher.lock().await.clone();
+    //
+    // Only profiles explicitly requested through the client pool are
+    // established; declared-but-unrequested profiles stay dormant so a
+    // publishing process never holds unacked messages on queues it does not
+    // consume from (issue #49). The deterministic recovery order —
+    // connection, channels, exchanges, queues, bindings, QoS, then
+    // consumers — is preserved.
+    let requested = requested_snapshot(context);
     for worker in context.config.worker_profiles() {
-        let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
-        for (index, sub_config) in worker.subscriptions.iter().enumerate() {
-            if sub_config.broker != context.broker.name {
-                continue;
-            }
-            let consumer_channel: Arc<dyn ConsumerChannel> = Arc::from(
-                actor
-                    .open_consumer()
-                    .await
-                    .map_err(|_| CoordinatorError::new("failed to open consumer channel"))?,
-            );
-            let channel_id = u16::try_from(index.saturating_add(1)).unwrap_or(u16::MAX);
-            let mut sub = Subscription::new(
-                sub_config.name.clone(),
-                connection_key,
-                sub_config.queue.clone(),
-                consumer_channel,
-            )
-            .generation(generation)
-            .prefetch(sub_config.prefetch)
-            .channel_id(channel_id)
-            .policy(SubscriptionPolicy::new(
-                sub_config.weight,
-                sub_config.priority_class,
-                sub_config.starvation_after,
-            ))
-            .early_ack(sub_config.early_ack)
-            .no_ack(sub_config.no_ack)
-            .max_buffered_bytes(sub_config.max_buffered_bytes)
-            .delay_strategy(delay_strategy.clone());
-
-            if let Some(publisher) = &pub_handle {
-                sub = sub.delayed_publisher(
-                    publisher.clone(),
-                    crate::publisher::Destination::new(
-                        sub_config.queue.clone(),
-                        sub_config.queue.clone(),
-                    ),
-                );
-            }
-
-            subscriptions.push(sub);
-        }
-
-        if subscriptions.is_empty() {
+        if !requested.contains(&worker.name) {
             continue;
         }
-
-        let consumer = ConsumerSet::spawn_with_metrics(subscriptions, context.metrics.clone())
-            .await
-            .map_err(|error| CoordinatorError::new(format!("consumer spawn failed: {error}")))?;
-
-        let mut guard = consumers.lock().await;
-        if let Some(old) = guard.insert(worker.name.clone(), consumer) {
-            let _ = old.close().await;
-        }
-        drop(guard);
+        establish_requested_profile(
+            actor,
+            context,
+            publisher,
+            consumers,
+            establish_lock,
+            &worker.name,
+            generation,
+        )
+        .await?;
     }
 
     Ok(())
+}
+
+/// Establishes one requested worker profile for the given generation.
+///
+/// The established consumer set handle is registered in `consumers`; callers
+/// that need the handle fetch it from the map afterwards. Consumer set
+/// handles close on drop, so this function never returns a redundant clone
+/// that a caller could drop by accident.
+///
+/// Does nothing when the profile is not requested or declares no
+/// subscriptions on this coordinator's broker. Concurrent establishment
+/// attempts (recovery generation and on-demand acquisition) are serialized
+/// by `establish_lock` and observe each other's registrations, so a profile
+/// is never established twice for one generation.
+async fn establish_requested_profile(
+    actor: &ConnectionActorHandle,
+    context: &CoordinatorContext,
+    publisher: &SharedPublisher,
+    consumers: &SharedConsumers,
+    establish_lock: &EstablishLock,
+    profile: &str,
+    generation: u64,
+) -> Result<(), CoordinatorError> {
+    if !is_requested(context, profile) {
+        return Ok(());
+    }
+    let _establishing = establish_lock.lock().await;
+    if consumers
+        .lock()
+        .await
+        .get(profile)
+        .is_some_and(|handle| handle.generation() == generation)
+    {
+        return Ok(());
+    }
+
+    let Some(worker) = context.config.worker(profile).cloned() else {
+        return Ok(());
+    };
+    let connection_key = crate::pool::ConnectionKey::from_config(&context.config);
+    let delay_strategy = compile_delay_strategy(&context.config);
+    let pub_handle = publisher.lock().await.clone();
+
+    let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
+    for (index, sub_config) in worker.subscriptions.iter().enumerate() {
+        if sub_config.broker != context.broker.name {
+            continue;
+        }
+        let consumer_channel: Arc<dyn ConsumerChannel> = Arc::from(
+            actor
+                .open_consumer()
+                .await
+                .map_err(|_| CoordinatorError::new("failed to open consumer channel"))?,
+        );
+        let channel_id = u16::try_from(index.saturating_add(1)).unwrap_or(u16::MAX);
+        let mut sub = Subscription::new(
+            sub_config.name.clone(),
+            connection_key,
+            sub_config.queue.clone(),
+            consumer_channel,
+        )
+        .generation(generation)
+        .prefetch(sub_config.prefetch)
+        .channel_id(channel_id)
+        .policy(SubscriptionPolicy::new(
+            sub_config.weight,
+            sub_config.priority_class,
+            sub_config.starvation_after,
+        ))
+        .early_ack(sub_config.early_ack)
+        .no_ack(sub_config.no_ack)
+        .max_buffered_bytes(sub_config.max_buffered_bytes)
+        .delay_strategy(delay_strategy.clone());
+
+        if let Some(publisher) = &pub_handle {
+            sub = sub.delayed_publisher(
+                publisher.clone(),
+                crate::publisher::Destination::new(
+                    sub_config.queue.clone(),
+                    sub_config.queue.clone(),
+                ),
+            );
+        }
+
+        subscriptions.push(sub);
+    }
+
+    if subscriptions.is_empty() {
+        return Ok(());
+    }
+
+    let consumer = ConsumerSet::spawn_with_metrics(subscriptions, context.metrics.clone())
+        .await
+        .map_err(|error| CoordinatorError::new(format!("consumer spawn failed: {error}")))?;
+
+    let mut guard = consumers.lock().await;
+    if let Some(old) = guard.insert(profile.to_owned(), consumer) {
+        let _ = old.close().await;
+    }
+    drop(guard);
+
+    Ok(())
+}
+
+fn is_requested(context: &CoordinatorContext, profile: &str) -> bool {
+    context
+        .requested_profiles
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(profile)
+}
+
+fn requested_snapshot(context: &CoordinatorContext) -> HashSet<String> {
+    context
+        .requested_profiles
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> TransportError {
