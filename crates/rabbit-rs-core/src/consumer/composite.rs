@@ -510,6 +510,7 @@ mod tests {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            consumer: crate::config::ConsumerConfigSection::default(),
             queue_type: QueueKind::Quorum,
             queue_durable: true,
         }

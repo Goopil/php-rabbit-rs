@@ -6,9 +6,10 @@ use std::{
 
 use bytes::Bytes;
 use rabbit_rs_core::{
+    client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
-        TopologyMode,
+        BrokerConfig, Config, ConsumerConfigSection, Credentials, Endpoint, PublisherConfigSection,
+        SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     consumer::{
         ConsumerErrorKind, ConsumerSet, DeliveryState, Settlement, Subscription, SubscriptionId,
@@ -38,6 +39,26 @@ mod helper {
         }
     }
 
+    pub fn worker_profile(name: &str, broker_name: &str, queue: &str) -> WorkerProfile {
+        WorkerProfile {
+            name: name.to_owned(),
+            subscriptions: vec![SubscriptionConfig {
+                name: queue.to_owned(),
+                broker: broker_name.to_owned(),
+                queue: queue.to_owned(),
+                weight: 1,
+                priority_class: 0,
+                prefetch: 8,
+                starvation_after: Duration::from_secs(30),
+                max_buffered_bytes: 64 * 1024 * 1024,
+                max_message_bytes: None,
+                early_ack: false,
+                no_ack: false,
+            }],
+            scheduler: SchedulerConfig::weighted_fair(),
+        }
+    }
+
     pub fn connection_key(name: &str, vhost: &str) -> ConnectionKey {
         let config = Config {
             brokers: vec![broker(name, vhost)],
@@ -47,6 +68,7 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
             queue_type: QueueKind::Quorum,
             queue_durable: true,
         }
@@ -1605,4 +1627,51 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
     assert_eq!(errors.last().expect("last error").delivery_tag, 300);
 
     let _ = handle.close().await;
+}
+
+// ---------------------------------------------------------------------------
+// Consumer acquisition deadline (issue #45)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
+    let transport = Arc::new(MockTransport::default());
+    // The connect gate is never released and no connect result is pushed: the
+    // coordinator never leaves Connecting — a black-holed broker with no
+    // connect timeout. The acquisition must fail at the deadline instead of
+    // blocking forever.
+    let _gate = transport.push_connect_gate();
+
+    let config = Config {
+        brokers: vec![broker("b", "/")],
+        workers: vec![worker_profile("main", "b", "main.jobs")],
+        topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+        consumer: ConsumerConfigSection {
+            // Minimum valid value (validation bounds wait_timeout to 1s..24h).
+            wait_timeout: Duration::from_secs(1),
+        },
+    };
+
+    let pool = ClientPool::new(
+        Arc::new(config.validate().expect("valid config")),
+        transport,
+    );
+
+    let started = tokio::time::Instant::now();
+    let result = pool.consumer("main").await;
+
+    let Err(error) = result else {
+        panic!("acquisition must not succeed against a black-holed broker");
+    };
+    assert!(
+        matches!(error.kind(), ClientErrorKind::Transport),
+        "deadline expiry must surface as a typed transport error: {error:?}"
+    );
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
 }

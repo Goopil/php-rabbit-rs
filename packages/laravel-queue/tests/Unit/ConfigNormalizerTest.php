@@ -16,6 +16,7 @@ describe('package defaults', function (): void {
             ->and($publishedConfig['publisher']['confirms'])->toBeTrue()
             ->and($publishedConfig['publisher']['mandatory'])->toBeTrue()
             ->and(30000)->toBe($publishedConfig['publisher']['confirm_timeout'])
+            ->and(30000)->toBe($publishedConfig['consumers']['wait_timeout'])
             ->and('quorum')->toBe($publishedConfig['topology']['queue']['type'])
             ->and($publishedConfig['topology']['queue']['durable'])->toBeTrue()
             ->and($publishedConfig['topology']['queue']['delivery_limit'])->toBeNull()
@@ -97,6 +98,9 @@ describe('native normalization', function (): void {
                 'mandatory' => true,
                 'confirm_timeout' => 30000,
             ],
+            'consumer' => [
+                'wait_timeout' => 30000,
+            ],
             'queue_type' => 'quorum',
             'queue_durable' => true,
         ])->toBe($normalized['native'])
@@ -168,6 +172,43 @@ describe('publisher section', function (): void {
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('publisher.confirm_timeout');
+
+        ConfigNormalizer::normalize($config);
+    });
+});
+
+describe('consumer section', function (): void {
+    it('maps consumer wait_timeout to the native config', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['wait_timeout' => 5000];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect(5000)->toBe($normalized['native']['consumer']['wait_timeout']);
+    });
+
+    it('defaults the consumer wait_timeout to thirty seconds', function (): void {
+        $normalized = ConfigNormalizer::normalize(configValidConfig());
+
+        expect(30000)->toBe($normalized['native']['consumer']['wait_timeout']);
+    });
+
+    it('rejects a zero consumer wait_timeout', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['wait_timeout' => 0];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('consumers.wait_timeout');
+
+        ConfigNormalizer::normalize($config);
+    });
+
+    it('rejects a consumer wait_timeout beyond twenty-four hours', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['wait_timeout' => 86_400_001];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('consumers.wait_timeout');
 
         ConfigNormalizer::normalize($config);
     });

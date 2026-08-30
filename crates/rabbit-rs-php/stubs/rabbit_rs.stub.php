@@ -22,6 +22,12 @@ final class Pool
      * Implemented by the ext-rabbit_rs native extension.
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      * @noinspection PhpUnusedParameterInspection
+     *
+     * The $config array follows the normalized native configuration schema.
+     * The optional `consumer.wait_timeout` key (integer milliseconds,
+     * default 30000, bounded 1000..86400000) caps how long consumer()
+     * blocks while a broker connection becomes ready before failing with a
+     * ConnectionException.
      */
     public function __construct(array $config)
     {

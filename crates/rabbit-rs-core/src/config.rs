@@ -487,6 +487,26 @@ impl Default for PublisherConfigSection {
     }
 }
 
+/// Consumer acquisition settings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConsumerConfigSection {
+    /// Maximum wall-clock time a caller waits for a consumer handle to become
+    /// ready (connection + topology + `basic_consume`) before a typed
+    /// transport error is returned. Prevents unbounded blocking on
+    /// black-holed brokers.
+    #[serde(deserialize_with = "deserialize_duration_millis")]
+    pub wait_timeout: Duration,
+}
+
+impl Default for ConsumerConfigSection {
+    fn default() -> Self {
+        Self {
+            wait_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
 /// Unvalidated user configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -502,6 +522,8 @@ pub struct Config {
     pub delivery_limit: Option<u32>,
     #[serde(default)]
     pub publisher: PublisherConfigSection,
+    #[serde(default)]
+    pub consumer: ConsumerConfigSection,
     #[serde(default = "default_queue_type")]
     pub queue_type: QueueKind,
     #[serde(default = "default_true")]
@@ -603,6 +625,15 @@ impl Config {
 
         Self::validate_delay(&self.delay)?;
 
+        if self.consumer.wait_timeout < Duration::from_secs(1)
+            || self.consumer.wait_timeout > Duration::from_hours(24)
+        {
+            return Err(ConfigError::new(
+                "consumer.wait_timeout",
+                "wait_timeout must be between 1 second and 24 hours",
+            ));
+        }
+
         let fingerprint = ConfigFingerprint::calculate(&self);
 
         Ok(ValidatedConfig {
@@ -613,6 +644,7 @@ impl Config {
             dead_letter: self.dead_letter,
             delivery_limit: self.delivery_limit,
             publisher: self.publisher,
+            consumer: self.consumer,
             queue_type: self.queue_type,
             queue_durable: self.queue_durable,
             fingerprint,
@@ -662,6 +694,7 @@ pub struct ValidatedConfig {
     dead_letter: Option<DeadLetterConfig>,
     delivery_limit: Option<u32>,
     publisher: PublisherConfigSection,
+    consumer: ConsumerConfigSection,
     queue_type: QueueKind,
     queue_durable: bool,
     fingerprint: ConfigFingerprint,
@@ -713,6 +746,11 @@ impl ValidatedConfig {
     #[must_use]
     pub const fn publisher(&self) -> PublisherConfigSection {
         self.publisher
+    }
+
+    #[must_use]
+    pub const fn consumer(&self) -> ConsumerConfigSection {
+        self.consumer
     }
 
     #[must_use]
@@ -804,6 +842,7 @@ impl ConfigFingerprint {
         }
 
         hash_publisher(&mut digest, &config.publisher);
+        hash_consumer(&mut digest, &config.consumer);
 
         hash_value(
             &mut digest,
@@ -895,6 +934,11 @@ fn hash_publisher(digest: &mut Sha256, publisher: &PublisherConfigSection) {
     digest.update(publisher.confirm_timeout.as_millis().to_be_bytes());
 }
 
+fn hash_consumer(digest: &mut Sha256, consumer: &ConsumerConfigSection) {
+    hash_value(digest, "consumer");
+    digest.update(consumer.wait_timeout.as_millis().to_be_bytes());
+}
+
 fn hash_value(digest: &mut Sha256, value: &str) {
     digest.update(value.len().to_be_bytes());
     digest.update(value.as_bytes());
@@ -975,9 +1019,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
-        SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify,
-        TopologyMode, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, Credentials, DelayConfig, Endpoint,
+        PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig,
+        TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -1026,6 +1070,7 @@ mod tests {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
             queue_type: QueueKind::Quorum,
             queue_durable: true,
         }
@@ -1346,6 +1391,84 @@ mod tests {
         assert!(publisher.confirms);
         assert!(publisher.mandatory);
         assert_eq!(publisher.confirm_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn consumer_section_defaults_to_thirty_seconds() {
+        let validated = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+
+        assert_eq!(validated.consumer().wait_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn deserializes_consumer_wait_timeout_from_milliseconds() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external",
+            "consumer": {
+                "wait_timeout": 5000
+            }
+        }))
+        .expect("consumer section deserializes");
+
+        let validated = candidate.validate().expect("valid config");
+        assert_eq!(validated.consumer().wait_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn rejects_consumer_wait_timeout_below_one_second() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.consumer.wait_timeout = Duration::from_millis(999);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "consumer.wait_timeout");
+    }
+
+    #[test]
+    fn rejects_consumer_wait_timeout_above_twenty_four_hours() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.consumer.wait_timeout = Duration::from_secs(24 * 60 * 60 + 1);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "consumer.wait_timeout");
+    }
+
+    #[test]
+    fn consumer_section_is_part_of_the_fingerprint() {
+        let base = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+        let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        changed.consumer.wait_timeout = Duration::from_secs(31);
+        let changed = changed.validate().unwrap();
+
+        assert_ne!(base.fingerprint(), changed.fingerprint());
     }
 
     #[test]

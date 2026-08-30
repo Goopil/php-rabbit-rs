@@ -354,61 +354,67 @@ impl ClientPool {
         // started so that every subscription's broker has a recovery coordinator
         // running. The coordinator for each broker only creates consumers for
         // subscriptions that belong to that broker (see `recover_generation`).
-        let brokers = worker_brokers(&worker);
-        for broker in &brokers {
-            self.coordinator(broker).await?;
-        }
+        let wait_timeout = self.config.consumer().wait_timeout;
+        let profile_owned = profile.to_owned();
+        let acquisition = async {
+            let brokers = worker_brokers(&worker);
+            for broker in &brokers {
+                self.coordinator(broker).await?;
+            }
 
-        // Compose the profile's consumer from every broker's coordinator: each
-        // source multiplexes the subscriptions of one broker, and the composite
-        // merges deliveries fairly while routing every settlement back to the
-        // broker the delivery came from.
-        let mut sources = Vec::with_capacity(brokers.len());
-        for broker in &brokers {
-            let coordinator = self.coordinator(broker).await?;
-            let consumer = loop {
-                if self.is_closed() {
-                    return Err(ClientError::closed());
-                }
-                if let Ok(consumer) = coordinator.consumer(profile).await {
-                    break consumer;
-                }
-                // Wait for any state transition (including Ready so we can retry
-                // without blocking when the state hasn't left Ready yet).
-                coordinator
-                    .wait_for_state(|state| {
-                        matches!(
-                            state,
-                            crate::recovery::ConnectionState::Ready { .. }
-                                | crate::recovery::ConnectionState::Recovering { .. }
-                                | crate::recovery::ConnectionState::Connecting { .. }
-                                | crate::recovery::ConnectionState::FailedPermanent { .. }
-                                | crate::recovery::ConnectionState::Closed
-                        )
-                    })
-                    .await;
-                if self.is_closed() {
-                    return Err(ClientError::closed());
-                }
-                if matches!(
-                    coordinator.state(),
-                    crate::recovery::ConnectionState::FailedPermanent { .. }
-                ) {
-                    return Err(ClientError::transport(&TransportError::connection(
-                        "broker connection failed permanently",
-                    )));
-                }
-                if matches!(
-                    coordinator.state(),
-                    crate::recovery::ConnectionState::Closed
-                ) {
-                    return Err(ClientError::closed());
-                }
-            };
-            sources.push(consumer);
-        }
+            // Compose the profile's consumer from every broker's coordinator:
+            // each source multiplexes the subscriptions of one broker, and the
+            // composite merges deliveries fairly while routing every
+            // settlement back to the broker the delivery came from.
+            let mut sources = Vec::with_capacity(brokers.len());
+            for broker in &brokers {
+                let coordinator = self.coordinator(broker).await?;
+                let consumer = loop {
+                    if self.is_closed() {
+                        return Err(ClientError::closed());
+                    }
+                    if let Ok(consumer) = coordinator.consumer(&profile_owned).await {
+                        break consumer;
+                    }
+                    match coordinator.state() {
+                        crate::recovery::ConnectionState::FailedPermanent { .. } => {
+                            return Err(ClientError::transport(&TransportError::connection(
+                                "broker connection failed permanently",
+                            )));
+                        }
+                        crate::recovery::ConnectionState::Closed => {
+                            return Err(ClientError::closed());
+                        }
+                        // Consumers are populated while the state stays Ready,
+                        // so retry without blocking; the yield keeps the
+                        // acquisition deadline enforceable while the recovery
+                        // generation completes.
+                        crate::recovery::ConnectionState::Ready { .. } => {
+                            tokio::task::yield_now().await;
+                        }
+                        // Connecting, Recovering, and Disconnected can only
+                        // produce a consumer through a state transition: wait
+                        // for the next one instead of spinning hot, so the
+                        // deadline — and other tasks — can make progress.
+                        _ => {
+                            coordinator.wait_for_transition().await;
+                        }
+                    }
+                };
+                sources.push(consumer);
+            }
 
-        let consumer = ConsumerHandle::from_sources(sources);
+            Ok(ConsumerHandle::from_sources(sources))
+        };
+
+        let consumer = tokio::time::timeout(wait_timeout, acquisition)
+            .await
+            .map_err(|_elapsed| {
+                ClientError::transport(&TransportError::connection(format!(
+                    "consumer profile '{profile}' did not become ready within {wait_timeout:?}"
+                )))
+            })??;
+
         if self.commit(generation, &self.consumers, profile, consumer.clone()) {
             Ok(consumer)
         } else {

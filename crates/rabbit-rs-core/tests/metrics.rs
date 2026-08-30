@@ -43,6 +43,7 @@ fn connection_key() -> ConnectionKey {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            consumer: rabbit_rs_core::config::ConsumerConfigSection::default(),
             queue_type: QueueKind::Quorum,
             queue_durable: true,
         }

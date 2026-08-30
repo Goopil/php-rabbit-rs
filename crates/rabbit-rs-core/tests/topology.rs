@@ -3,9 +3,9 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, Credentials, DeadLetterConfig, DelayConfig, Endpoint,
-        PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode,
-        ValidatedConfig, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, Credentials, DeadLetterConfig, DelayConfig,
+        Endpoint, PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig,
+        TopologyMode, ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
@@ -97,6 +97,7 @@ mod helper {
                 dead_letter: None,
                 delivery_limit: None,
                 publisher: PublisherConfigSection::default(),
+                consumer: ConsumerConfigSection::default(),
                 queue_type: QueueKind::Quorum,
                 queue_durable: true,
             }
@@ -134,6 +135,7 @@ mod helper {
             dead_letter: None,
             delivery_limit: None,
             publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
             queue_type: QueueKind::Quorum,
             queue_durable: true,
         }

@@ -9,6 +9,8 @@ use InvalidArgumentException;
 final class ConfigNormalizer
 {
     private const DEFAULT_AMQP_PORT = 5672;
+    private const DEFAULT_CONSUMER_WAIT_TIMEOUT_MS = 30_000;
+    private const MAX_CONSUMER_WAIT_TIMEOUT_MS = 86_400_000;
     private const MSG_MUST_BE_ARRAY = 'must be an array';
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
     private const MSG_NO_ACK = '.no_ack';
@@ -31,6 +33,7 @@ final class ConfigNormalizer
         $brokerNames = array_fill_keys(array_column($brokers, 'name'), true);
         $topology = self::topology($config['topology'] ?? []);
         $publisher = self::publisher($config['publisher'] ?? []);
+        $consumers = self::consumers($config['consumers'] ?? []);
         $bestEffort = self::boolean($config['best_effort'] ?? false, 'best_effort');
 
         return [
@@ -42,6 +45,7 @@ final class ConfigNormalizer
                 'dead_letter' => $topology['dead_letter'],
                 'delivery_limit' => $topology['queue']['delivery_limit'],
                 'publisher' => $publisher,
+                'consumer' => $consumers,
                 'queue_type' => $topology['queue']['type'],
                 'queue_durable' => $topology['queue']['durable'],
             ],
@@ -457,6 +461,29 @@ final class ConfigNormalizer
         }
 
         return $mode;
+    }
+
+    /**
+     * @return array{wait_timeout: int}
+     */
+    private static function consumers(mixed $consumers): array
+    {
+        if (! is_array($consumers)) {
+            self::invalid('consumers', self::MSG_MUST_BE_ARRAY);
+        }
+
+        $waitTimeout = $consumers['wait_timeout'] ?? self::DEFAULT_CONSUMER_WAIT_TIMEOUT_MS;
+        if (! is_int($waitTimeout) || $waitTimeout < 1) {
+            self::invalid('consumers.wait_timeout', 'must be a positive integer');
+        }
+        if ($waitTimeout > self::MAX_CONSUMER_WAIT_TIMEOUT_MS) {
+            self::invalid(
+                'consumers.wait_timeout',
+                'must be at most '.self::MAX_CONSUMER_WAIT_TIMEOUT_MS,
+            );
+        }
+
+        return ['wait_timeout' => $waitTimeout];
     }
 
     /**

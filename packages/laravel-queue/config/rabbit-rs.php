@@ -267,6 +267,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Consumers
+    |--------------------------------------------------------------------------
+    |
+    | Controls how long the driver waits for a consumer handle to become
+    | ready (connection + topology + consume registration) before failing.
+    |
+    | wait_timeout: Milliseconds to wait when acquiring a consumer handle.
+    |               Must be between 1 000 (1 second) and 86 400 000 (24
+    |               hours). Prevents worker processes from freezing forever
+    |               against an unreachable broker — on expiry the acquisition
+    |               fails with a connection error that can be retried.
+    |
+    */
+
+    'consumers' => [
+        'wait_timeout' => (int) env('RABBIT_RS_CONSUMER_WAIT_TIMEOUT', 30000),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Delayed Messages
     |--------------------------------------------------------------------------
     |
