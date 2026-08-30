@@ -48,7 +48,9 @@ pub(crate) fn client_exception<T>(error: &ClientError) -> PhpResult<T> {
 
 pub(crate) fn consumer_exception<T>(error: &ConsumerError) -> PhpResult<T> {
     match error.kind() {
-        ConsumerErrorKind::Transport | ConsumerErrorKind::StaleGeneration => Err(
+        ConsumerErrorKind::Transport
+        | ConsumerErrorKind::StaleGeneration
+        | ConsumerErrorKind::SourceReplaced => Err(
             PhpException::from_class::<ConnectionException>(error.to_string()),
         ),
         ConsumerErrorKind::Closed

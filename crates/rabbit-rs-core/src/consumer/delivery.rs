@@ -421,6 +421,11 @@ pub enum Settlement {
 pub enum ConsumerErrorKind {
     Closed,
     StaleGeneration,
+    /// A composite consumer lost one of its broker sources (its set was
+    /// replaced by a recovery generation). The signal surfaces once; the
+    /// caller should re-fetch the consumer from the pool to resume
+    /// deliveries from that broker.
+    SourceReplaced,
     AlreadySettled,
     AlreadySettling,
     SettlementInProgress,

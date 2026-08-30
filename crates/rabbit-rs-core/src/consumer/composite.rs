@@ -37,11 +37,13 @@ use crate::metrics::MetricsSnapshot;
 ///   recovering does not block consumption from the others: when one source
 ///   closes (its set was replaced by a newer generation or the pool closed),
 ///   it is retired from the rotation and the remaining sources keep
-///   delivering. Errors other than closure surface to the caller, which is
-///   the signal to re-fetch the consumer from the pool; a re-fetch rebuilds
-///   the composite from every coordinator's current set without duplicating
-///   subscriptions. When the last source is retired, calls fail with a
-///   closed-consumer error.
+///   delivering. The retire surfaces a one-shot
+///   [`ConsumerErrorKind::SourceReplaced`] signal (see [`Self::next`] and
+///   [`Self::try_next`]): the caller should re-fetch the consumer from the
+///   pool, which rebuilds the composite from every coordinator's current set
+///   without duplicating subscriptions. Errors other than closure and the
+///   retire signal surface to the caller as well. When the last source is
+///   retired, calls fail with a closed-consumer error.
 /// - **Close**: closing the composite fans out to every underlying set.
 #[derive(Clone)]
 pub struct ConsumerHandle {
@@ -52,7 +54,14 @@ struct CompositeInner {
     sources: Vec<ConsumerSetHandle>,
     retired: Vec<AtomicBool>,
     round_robin: AtomicUsize,
+    /// One-slot stash for errors that must surface once: mid-drain batch
+    /// errors and the one-shot re-fetch signal pushed when a source is
+    /// retired while others remain live.
     pending_error: Mutex<Option<ConsumerError>>,
+    /// Set when [`ConsumerHandle::close`] was called by the owner: source
+    /// closures observed afterwards are expected teardown, not a broker
+    /// replacement, so no re-fetch signal is pushed.
+    closed_by_caller: AtomicBool,
 }
 
 impl ConsumerHandle {
@@ -73,6 +82,7 @@ impl ConsumerHandle {
                 retired,
                 round_robin: AtomicUsize::new(0),
                 pending_error: Mutex::new(None),
+                closed_by_caller: AtomicBool::new(false),
             }),
         }
     }
@@ -165,13 +175,14 @@ impl ConsumerHandle {
     /// in round-robin order.
     ///
     /// Returns `Ok(Some(delivery))` when one is available, `Ok(None)` when
-    /// every live source is empty, or `Err` when a source surfaces an error
-    /// or every source is retired.
+    /// every live source is empty, or `Err` when a source surfaces an error,
+    /// a source was retired (one-shot re-fetch signal), or every source is
+    /// retired.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the consumer is closed or a source error
-    /// is encountered.
+    /// Returns a typed error when the consumer is closed, a source error is
+    /// encountered, or a source was retired while others remain live.
     pub fn try_next(&self) -> Result<Option<Delivery>, ConsumerError> {
         if self.inner.sources.len() == 1 {
             return self.inner.sources[0].try_next();
@@ -179,12 +190,10 @@ impl ConsumerHandle {
         let Some(rotation) = self.rotation() else {
             return Err(ConsumerError::closed());
         };
-        let mut live = 0_usize;
         for index in rotation {
             if self.is_retired(index) {
                 continue;
             }
-            live += 1;
             match self.inner.sources[index].try_next() {
                 Ok(Some(delivery)) => return Ok(Some(delivery)),
                 Ok(None) => {}
@@ -194,10 +203,11 @@ impl ConsumerHandle {
                 Err(error) => return Err(error),
             }
         }
-        if live == 0 {
-            return Err(self
-                .take_pending_error()
-                .unwrap_or_else(ConsumerError::closed));
+        if self.all_retired() {
+            return Err(ConsumerError::closed());
+        }
+        if let Some(error) = self.take_pending_error() {
+            return Err(error);
         }
         Ok(None)
     }
@@ -250,11 +260,11 @@ impl ConsumerHandle {
             }
         }
         if batch.is_empty() {
-            if let Some(error) = self.take_pending_error() {
-                return Err(error);
-            }
             if self.all_retired() {
                 return Err(ConsumerError::closed());
+            }
+            if let Some(error) = self.take_pending_error() {
+                return Err(error);
             }
         }
         Ok(batch)
@@ -264,12 +274,17 @@ impl ConsumerHandle {
     ///
     /// Sources are polled in round-robin order (the starting source rotates
     /// on every call), so a broker cannot starve another. When a source is
-    /// closed it is retired and the remaining sources keep delivering; when
-    /// every source is retired, this returns a closed-consumer error.
+    /// closed it is retired and the remaining sources keep delivering; the
+    /// retire surfaces a one-shot [`ConsumerErrorKind::SourceReplaced`]
+    /// signal instead of leaving the caller parked on a degraded consumer —
+    /// re-fetch the consumer from the pool to resume deliveries from the
+    /// replaced broker. When every source is retired, this returns a
+    /// closed-consumer error.
     ///
     /// # Errors
     ///
-    /// Returns a typed source, transport, or closed-consumer error.
+    /// Returns a typed source, transport, re-fetch-signal, or
+    /// closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
         if self.inner.sources.len() == 1 {
             return self.inner.sources[0].next().await;
@@ -290,11 +305,22 @@ impl ConsumerHandle {
                 Ok(delivery) => return Ok(delivery),
                 Err(error) if error.kind() == ConsumerErrorKind::Closed => {
                     self.retire(index);
+                    // Wake a caller parked on a degraded composite: if other
+                    // sources remain live, surface the one-shot re-fetch
+                    // signal instead of waiting on them indefinitely.
+                    if !self.all_retired()
+                        && let Some(pending) = self.take_pending_error()
+                    {
+                        return Err(pending);
+                    }
                 }
                 Err(error) => return Err(error),
             }
         }
         // Every live source resolved without delivering — all were retired.
+        if self.all_retired() {
+            return Err(ConsumerError::closed());
+        }
         Err(self
             .take_pending_error()
             .unwrap_or_else(ConsumerError::closed))
@@ -350,10 +376,19 @@ impl ConsumerHandle {
     /// Closes every underlying set and wakes all pending calls to
     /// [`Self::next`].
     ///
+    /// Source closures observed after this call are expected teardown: no
+    /// re-fetch signal is pushed and any pending signal is discarded.
+    ///
     /// # Errors
     ///
     /// Returns the first typed error raised by an underlying set close.
     pub async fn close(&self) -> Result<(), ConsumerError> {
+        self.inner.closed_by_caller.store(true, Ordering::Release);
+        *self
+            .inner
+            .pending_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let mut first_error = None;
         for source in &self.inner.sources {
             if let Err(error) = source.close().await {
@@ -378,8 +413,35 @@ impl ConsumerHandle {
         self.inner.retired[index].load(Ordering::Acquire)
     }
 
+    /// Retires a source from the rotation. Idempotent.
+    ///
+    /// The first retire of a source — while other sources remain live and
+    /// the owner has not closed the composite — pushes a one-shot
+    /// [`ConsumerErrorKind::SourceReplaced`] signal onto the pending slot so
+    /// the caller learns a broker's set was replaced (typically by a
+    /// recovery generation) and can re-fetch the consumer. The signal is
+    /// delivered once by [`Self::next`], [`Self::try_next`], or
+    /// [`Self::try_next_batch`], then the composite goes quiet again.
     fn retire(&self, index: usize) {
-        self.inner.retired[index].store(true, Ordering::Release);
+        if self.inner.retired[index].swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if self.all_retired() || self.inner.closed_by_caller.load(Ordering::Acquire) {
+            // Terminal state or expected teardown: the closed error is the
+            // signal, not a degradation notice.
+            return;
+        }
+        let mut pending = self
+            .inner
+            .pending_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.is_none() {
+            *pending = Some(ConsumerError::new(
+                ConsumerErrorKind::SourceReplaced,
+                "broker source replaced by recovery; re-fetch consumer",
+            ));
+        }
     }
 
     fn all_retired(&self) -> bool {
@@ -656,6 +718,18 @@ mod tests {
             .expect("remaining source keeps delivering");
         assert_eq!(live.payload, Bytes::from_static(b"from-first-3"));
 
+        // The retire surfaces a one-shot re-fetch signal: exactly one error,
+        // then the composite goes quiet again.
+        let refetch = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+            .await
+            .expect("retire must not hang the composite")
+            .expect_err("retire must surface a one-shot re-fetch signal");
+        assert_eq!(refetch.kind(), ConsumerErrorKind::SourceReplaced);
+        assert!(
+            refetch.to_string().contains("re-fetch"),
+            "signal must tell the caller to re-fetch, got: {refetch}"
+        );
+
         // With the retired source gone and the remaining source idle, next()
         // parks waiting for work instead of failing closed (the retire is
         // stable: the closed source is never polled again, no panic).
@@ -686,6 +760,122 @@ mod tests {
         );
 
         // The composite handle stays usable: close fans out without error.
+        consumer.close().await.expect("composite close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retiring_a_source_surfaces_exactly_one_refetch_signal() {
+        let first = MockTransport::default();
+        let second = MockTransport::default();
+        first.push_delivery(Ok(delivery(1, b"from-first")));
+        second.push_delivery(Ok(delivery(1, b"from-second")));
+
+        let left = ConsumerSet::spawn(vec![
+            subscription(&first, "jobs-first", connection_key("first")).await,
+        ])
+        .await
+        .expect("first source set");
+        let right = ConsumerSet::spawn(vec![
+            subscription(&second, "jobs-second", connection_key("second")).await,
+        ])
+        .await
+        .expect("second source set");
+        let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Drain everything so the close is observed deterministically: the
+        // remaining source has nothing buffered and its stream is parked, so
+        // the retired source's closure is the first thing `next()` sees.
+        while consumer.try_next().expect("drain").is_some() {}
+
+        // A clean close via recovery (the coordinator replaced the broker's
+        // set) retires the source: the composite must surface the re-fetch
+        // signal instead of going quiet.
+        right.close().await.expect("close second source");
+        let signal = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+            .await
+            .expect("retire must not hang the composite")
+            .expect_err("retire must surface a one-shot re-fetch signal");
+        assert_eq!(signal.kind(), ConsumerErrorKind::SourceReplaced);
+        assert!(
+            signal.to_string().contains("re-fetch"),
+            "signal must tell the caller to re-fetch, got: {signal}"
+        );
+
+        // One-shot: subsequent observations are quiet — no spam, no spin, and
+        // the composite is not closed while the other source remains live.
+        assert!(
+            matches!(consumer.try_next(), Ok(None)),
+            "the signal must be delivered exactly once"
+        );
+        assert!(
+            matches!(consumer.try_next_batch(4), Ok(batch) if batch.is_empty()),
+            "the signal must not repeat through the batch API"
+        );
+        let idle = tokio::time::timeout(Duration::from_millis(100), consumer.next()).await;
+        assert!(
+            idle.is_err(),
+            "the live source must keep the composite waiting after the signal"
+        );
+
+        consumer.close().await.expect("composite close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refetch_signal_never_masks_the_closed_terminal_state() {
+        let first = MockTransport::default();
+        let second = MockTransport::default();
+        first.push_delivery(Ok(delivery(1, b"from-first")));
+        second.push_delivery(Ok(delivery(1, b"from-second")));
+
+        let left = ConsumerSet::spawn(vec![
+            subscription(&first, "jobs-first", connection_key("first")).await,
+        ])
+        .await
+        .expect("first source set");
+        let right = ConsumerSet::spawn(vec![
+            subscription(&second, "jobs-second", connection_key("second")).await,
+        ])
+        .await
+        .expect("second source set");
+        let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        while consumer.try_next().expect("drain").is_some() {}
+
+        // Both sets close before the signal is consumed (e.g. every broker
+        // recovered at once): the composite must still settle on Closed —
+        // the re-fetch signal is a degradation notice, never the terminal
+        // state.
+        right.close().await.expect("close second source");
+        left.close().await.expect("close first source");
+
+        // The first async wake observes one closure while the other source is
+        // not yet retired, so the signal surfaces once; the next call must
+        // report the terminal Closed state.
+        let signal = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+            .await
+            .expect("closure must wake the waiter")
+            .expect_err("closure wakes the waiter");
+        assert_eq!(signal.kind(), ConsumerErrorKind::SourceReplaced);
+        let closed = consumer
+            .next()
+            .await
+            .expect_err("all sources retired must surface closed");
+        assert_eq!(closed.kind(), ConsumerErrorKind::Closed);
+        let stable = consumer.next().await.expect_err("closed state is stable");
+        assert_eq!(stable.kind(), ConsumerErrorKind::Closed);
+
+        // The synchronous observations see both closures in one scan: Closed
+        // directly, the pending signal must not shadow the terminal state.
+        assert!(
+            matches!(consumer.try_next(), Err(error) if error.kind() == ConsumerErrorKind::Closed)
+        );
+        assert!(
+            matches!(consumer.try_next_batch(4), Err(error) if error.kind() == ConsumerErrorKind::Closed)
+        );
+
         consumer.close().await.expect("composite close");
     }
 
