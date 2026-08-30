@@ -1559,3 +1559,50 @@ async fn no_ack_defaults_to_false_in_consume_request() {
 
     let _ = handle.close().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn settlement_errors_never_stall_the_actor_when_never_drained() {
+    let transport = MockTransport::default();
+    // 300 deliveries, each acknowledged with a failing ack. Each failure
+    // produces a SettlementError; 300 > 256 (error channel capacity).
+    transport.push_consumer_result(Ok(())); // set_qos
+    transport.push_consumer_result(Ok(())); // consume
+    for tag in 1..=300u64 {
+        transport.push_delivery(Ok(delivery(tag, b"payload")));
+        transport.push_consumer_result(Err(TransportError::connection("ack-failure")));
+    }
+
+    let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await;
+    let handle = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
+        .await
+        .unwrap();
+
+    // Consume and acknowledge the 300 messages without ever draining the
+    // errors. The bounded error channel must never stall the actor loop.
+    let consume_all = async {
+        for tag in 1..=300u64 {
+            let delivery = handle.next().await.expect("delivery must keep flowing");
+            assert_eq!(delivery.delivery_tag(), tag);
+            handle
+                .try_settle(delivery.inner_token().clone(), Settlement::Ack)
+                .expect("settle enqueued");
+            tokio::time::advance(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), consume_all)
+        .await
+        .expect("actor must not stall while settlement errors are never drained");
+
+    // Let the last settlement result land before draining.
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    // The actor did not stall: the error buffer is full but bounded, with the
+    // oldest errors dropped and the newest kept.
+    let errors = handle.drain_errors();
+    assert_eq!(errors.len(), 256, "oldest errors dropped, newest kept");
+    assert_eq!(errors.last().expect("last error").delivery_tag, 300);
+
+    let _ = handle.close().await;
+}

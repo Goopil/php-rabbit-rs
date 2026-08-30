@@ -117,6 +117,7 @@ struct ActorState {
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
+    error_rx: flume::Receiver<SettlementError>,
     metrics: Metrics,
 }
 
@@ -126,6 +127,7 @@ impl ActorState {
         commands: mpsc::Sender<ConsumerCommand>,
         buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
         error_tx: flume::Sender<SettlementError>,
+        error_rx: flume::Receiver<SettlementError>,
         metrics: Metrics,
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
@@ -178,6 +180,7 @@ impl ActorState {
             commands,
             buffer_tx,
             error_tx,
+            error_rx,
             metrics,
         }
     }
@@ -331,6 +334,19 @@ impl ActorState {
         self.source_errors.push_back(error);
     }
 
+    /// Records a settlement error without ever blocking the actor.
+    ///
+    /// The error channel is bounded (`ERROR_CHANNEL_CAPACITY`). When full, the
+    /// oldest error is dropped to make room — the actor must never stall
+    /// waiting for the embedder to drain, matching the documented contract of
+    /// `ConsumerHandle::drain_errors`.
+    fn record_settlement_error(&mut self, error: SettlementError) {
+        if self.error_tx.is_full() {
+            let _ = self.error_rx.try_recv();
+        }
+        let _ = self.error_tx.send(error);
+    }
+
     fn drain_pending(&mut self) {
         while let Some((subscription, delivery)) = self.pending_incoming.front() {
             let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
@@ -389,16 +405,25 @@ fn record_consumer_buffer_metrics(state: &ActorState) {
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
     mut receiver: mpsc::Receiver<ConsumerCommand>,
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
+    error_rx: flume::Receiver<SettlementError>,
     metrics: Metrics,
     dispatch_notify: Arc<tokio::sync::Notify>,
 ) {
-    let mut state = ActorState::new(subscriptions, commands, buffer_tx, error_tx, metrics);
+    let mut state = ActorState::new(
+        subscriptions,
+        commands,
+        buffer_tx,
+        error_tx,
+        error_rx,
+        metrics,
+    );
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
     loop {
@@ -458,7 +483,7 @@ pub(crate) async fn run_actor(
                 }) => {
                     let Some(channel_key) = state.channel_key_for(&token.subscription) else {
                         token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: token.delivery_tag,
                             subscription: token.subscription.clone(),
                             kind: ConsumerErrorKind::InvalidSubscription,
@@ -468,7 +493,7 @@ pub(crate) async fn run_actor(
                         continue;
                     };
                     if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: token.delivery_tag,
                             subscription: token.subscription.clone(),
                             kind: ConsumerErrorKind::AlreadySettling,
@@ -489,7 +514,7 @@ pub(crate) async fn run_actor(
                 Some(ConsumerCommand::SettleThrough { token }) => {
                     let Some(channel_key) = state.channel_key_for(&token.subscription) else {
                         token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: token.delivery_tag,
                             subscription: token.subscription.clone(),
                             kind: ConsumerErrorKind::InvalidSubscription,
@@ -499,7 +524,7 @@ pub(crate) async fn run_actor(
                         continue;
                     };
                     if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: token.delivery_tag,
                             subscription: token.subscription.clone(),
                             kind: ConsumerErrorKind::AlreadySettling,
@@ -510,7 +535,7 @@ pub(crate) async fn run_actor(
                     }
                     let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
                         token.settling.store(false, std::sync::atomic::Ordering::Release);
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: token.delivery_tag,
                             subscription: token.subscription.clone(),
                             kind: ConsumerErrorKind::Transport,
@@ -541,7 +566,7 @@ pub(crate) async fn run_actor(
                         }
                         Err(error) => {
                             token.settling.store(false, std::sync::atomic::Ordering::Release);
-                            let _ = state.error_tx.send(SettlementError {
+                            state.record_settlement_error(SettlementError {
                                 delivery_tag: token.delivery_tag,
                                 subscription: token.subscription.clone(),
                                 kind: error.kind(),
@@ -650,7 +675,7 @@ pub(crate) async fn run_actor(
                             .token
                             .state
                             .store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: settlement_result.token.delivery_tag,
                             subscription: settlement_result.token.subscription.clone(),
                             kind: error.kind(),
@@ -663,7 +688,7 @@ pub(crate) async fn run_actor(
                             .token
                             .state
                             .store(DeliveryState::Pending as u8, std::sync::atomic::Ordering::Release);
-                        let _ = state.error_tx.send(SettlementError {
+                        state.record_settlement_error(SettlementError {
                             delivery_tag: settlement_result.token.delivery_tag,
                             subscription: settlement_result.token.subscription.clone(),
                             kind: error.kind(),
@@ -741,7 +766,7 @@ pub(crate) async fn run_actor(
                 }
 
                 if let Err(error) = &settle_through_result.result {
-                    let _ = state.error_tx.send(SettlementError {
+                    state.record_settlement_error(SettlementError {
                         delivery_tag: settle_through_result.target_tag,
                         subscription: settle_through_result
                             .affected_tokens
@@ -771,7 +796,7 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
             DeliveryState::Lost as u8,
             std::sync::atomic::Ordering::Release,
         );
-        let _ = state.error_tx.send(SettlementError {
+        state.record_settlement_error(SettlementError {
             delivery_tag: params.token.delivery_tag,
             subscription: params.token.subscription.clone(),
             kind: ConsumerErrorKind::InvalidSubscription,
@@ -995,7 +1020,7 @@ fn launch_settle_through(
             DeliveryState::Lost as u8,
             std::sync::atomic::Ordering::Release,
         );
-        let _ = state.error_tx.send(SettlementError {
+        state.record_settlement_error(SettlementError {
             delivery_tag: params.token.delivery_tag,
             subscription: params.token.subscription.clone(),
             kind: ConsumerErrorKind::InvalidSubscription,

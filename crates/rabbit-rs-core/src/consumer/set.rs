@@ -23,6 +23,10 @@ use crate::{
 
 const COMMAND_CAPACITY: usize = 256;
 const BUFFER_CAPACITY_MULTIPLIER: usize = 2;
+/// Upper bound on retained settlement errors. When full, the actor drops the
+/// oldest errors instead of blocking — the consumer loop must never stall
+/// waiting for the embedder to call `drain_errors`.
+const ERROR_CHANNEL_CAPACITY: usize = 256;
 
 pub struct Subscription {
     pub(crate) id: SubscriptionId,
@@ -217,7 +221,7 @@ impl ConsumerSet {
             usize::try_from(total_prefetch).unwrap_or(usize::MAX) * BUFFER_CAPACITY_MULTIPLIER;
         let (buffer_tx, buffer_rx) =
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
-        let (error_tx, error_rx) = flume::bounded::<SettlementError>(256);
+        let (error_tx, error_rx) = flume::bounded::<SettlementError>(ERROR_CHANNEL_CAPACITY);
         let dispatch_notify = Arc::new(Notify::new());
 
         tokio::spawn(run_actor(
@@ -226,6 +230,9 @@ impl ConsumerSet {
             commands.clone(),
             buffer_tx,
             error_tx,
+            // The actor keeps its own receiver for drop-oldest; the handle
+            // drains through the original receiver below.
+            error_rx.clone(),
             metrics.clone(),
             dispatch_notify.clone(),
         ));

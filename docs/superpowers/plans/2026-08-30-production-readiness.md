@@ -49,7 +49,7 @@
 
 **Context:** `error_tx` is a `flume::bounded(256)` but the actor uses the **blocking** send (`state.error_tx.send(...)`). If PHP never calls `drain_errors()`, after 256 settlement errors the consumer actor blocks its thread: no more dispatch, no more settlement. The `drain_errors` doc (`set.rs:309-311`) claims a drop-oldest behavior that does not exist.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add at the end of `crates/rabbit-rs-core/tests/consumer.rs` (reuses the module-level helpers `subscription`, `connection_key`, `delivery` already present, cf. `settlement_error_surfaces_via_drain_errors` line 1473):
 
@@ -92,12 +92,12 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer settlement_errors_never_stall`
 Expected: FAIL (stall timeout or error length ≠ 256) — the blocking send freezes the actor.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `crates/rabbit-rs-core/src/consumer/actor.rs`, add to `ActorState` a cloned receiver (flume allows cloning; the bounded capacity applies to queued messages, not to the receiver count) and the helper method:
 
@@ -125,12 +125,12 @@ let (error_tx, error_rx) = flume::bounded::<SettlementError>(ERROR_CHANNEL_CAPAC
 // The actor keeps its own receiver for drop-oldest.
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer`
 Expected: PASS (all consumer tests, including the new one).
 
-- [ ] **Step 5: Run the full quality gate and commit**
+- [x] **Step 5: Run the full quality gate and commit**
 
 Run: `rtk cargo fmt --all && rtk ./scripts/check.sh`
 Expected: PASS.
