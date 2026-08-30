@@ -156,7 +156,7 @@ git commit -m "fix(core): make consumer settlement error channel non-blocking wi
 
 **Context:** `publish_buffer: std::sync::Mutex<Vec<NativePublish>>` (`pool.rs:46`) grows without a ceiling: every failed flush re-buffers its messages (`pool.rs:420-425`). In a prolonged outage with sustained traffic, unbounded memory growth on the PHP process side (the core's 64 MiB budget does not bound this application buffer).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to the extension Pest suite (lifecycle tests file, cf. existing structure `crates/rabbit-rs-php/tests/` — the `testing_pool()` mock is injected via the `extension-tests` feature):
 
@@ -185,12 +185,12 @@ it('raises backpressure when the publish buffer is full and cannot flush', funct
 
 Adapt the mock helper name to the existing pattern of the extension Pest tests (the test pool exposes a blocked transport to force the flush failure — cf. `crates/rabbit-rs-php/src/testing.rs` for the actual mock API).
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `rtk ./scripts/test-extension.sh`
 Expected: FAIL — either the test has no blocked transport, or `publish()` never reaches `BackpressureException` (unbounded buffer).
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `crates/rabbit-rs-php/src/classes/exception.rs`, add next to `client_exception` (line 35):
 
@@ -244,7 +244,7 @@ buffer.push(publish);
 
 Maintain the byte counter at both points where the buffer changes: `publish()` (push) and the failed-flush re-buffer (`pool.rs:420-425`). The re-buffering of **already accepted** messages is allowed to exceed capacity (they already received a `message_id` — dropping them would be a silent loss); in that case new `publish()` calls receive `BackpressureException` until the buffer drops back below the ceiling.
 
-- [ ] **Step 4: Update the stub docblock**
+- [x] **Step 4: Update the stub docblock**
 
 In `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, section `publish()`:
 
@@ -258,7 +258,7 @@ In `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, section `publish()`:
  */
 ```
 
-- [ ] **Step 5: Run tests and check benchmark non-regression**
+- [x] **Step 5: Run tests and check benchmark non-regression**
 
 Run: `rtk ./scripts/test-extension.sh && rtk ./scripts/check.sh`
 Expected: PASS.
@@ -271,7 +271,7 @@ Run: `cd benchmarks/driver-bench && (see README § run) ./run.sh --smoke rabbit-
 Expected: throughput within the archives variance (`runs/phase-e/`) — no
 regression > 5%.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/rabbit-rs-php
