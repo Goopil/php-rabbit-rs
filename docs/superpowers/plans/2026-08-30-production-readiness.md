@@ -1190,7 +1190,15 @@ git commit -m "ci: validate PIE asset resolution end-to-end with unified naming"
 
 **Context:** (1) `queue:clear rabbit-rs` fails because `ClearableQueue` is not declared although `clear()` exists. (2) `pop()` throws if the requested queue is not a subscription of a worker profile — major deviation from the Laravel convention (`queue:work --queue=emails`).
 
-- [ ] **Step 1: Write the failing tests**
+**Status: delivered on branch `task/55-clearable-queue`.** Adaptations made while implementing:
+
+- Laravel 13's `queue:clear` sums `clear()` return values (`$carry + $queue->clear($name)`), so a void `clear()` would TypeError at runtime even with the interface declared. `clear()` now returns the number of purged jobs: the pending count measured before the purge (the native purge does not surface the AMQP message count; messages racing the purge are counted but may survive).
+- The implicit profile name is `__auto__.<queue>` instead of a shared `__auto__`: the consumer cache in `RabbitMqQueue` is keyed by profile name, so a shared name would collide across different auto-subscribed queues. The per-queue suffix keeps the plan's "process-local cache per queue name" semantics.
+- `pop()` also resolves plain worker profile names (the plan's "neither a known profile nor a subscription" precondition), so `pop('worker-profile')` resolves like the null-queue path already did.
+- The plan's Feature sketch goes through `queue()->connection('rabbit-rs')`, but the connector builds the resolver and the pool from one shared config source, so the auto-subscribe path cannot be exercised through the manager with fakes. The feature tests instead construct the queue/connector directly (extension-free, `QueueWorkerTest` bootstrap pattern) with a fake pool seeded with the implicit profile, asserting the dedicated `__auto__.<queue>` consumer request, queue mapping, reuse, and config precedence.
+- Native side unchanged (Task 14 is PHP-only per plan): `Pool::consumer()` resolves profiles from the pool configuration, so end-to-end auto-subscribe additionally requires native runtime profile registration; documented in `docs/laravel.md` and the config file.
+
+- [x] **Step 1: Write the failing tests**
 
 ```php
 // tests/Unit/ClearableQueueTest.php
@@ -1214,23 +1222,23 @@ it('rejects a plain queue without auto_subscribe', function () {
 })->throws(RuntimeException::class);
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Unit/ClearableQueueTest.php tests/Feature/AutoSubscribeTest.php`
-Expected: FAIL.
+Expected: FAIL. (Observed: interface missing, unknown `$autoSubscribe` parameter, undefined `auto_subscribe` normalizer key, void `clear()`.)
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 1. `class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue` (`Illuminate\Contracts\Queue\ClearableQueue`).
 2. `pop($queue, $index = 0)`: if the `queue` value is neither a known profile nor a subscription, and `auto_subscribe => true`: build on the fly an implicit profile `{name: "__auto__", subscriptions: [{broker: default, queue: $queue, weight: 1, prefetch: default}]}` (process-local cache per queue name, reused on subsequent pops) and continue the existing path. If `auto_subscribe => false`: keep the current error with an improved message ("configure workers.*.subscriptions.*.queue=emails or enable auto_subscribe").
 3. `config/rabbit-rs.php`: `'auto_subscribe' => false` (opt-in, documented).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest && rtk ./scripts/check.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/laravel-queue
