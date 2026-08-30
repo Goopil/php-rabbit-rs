@@ -3,13 +3,13 @@
     reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
 )]
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use super::{
+    bridge::EventBridge,
     consumer::Consumer,
     exception::{backpressure_exception, client_exception, rabbit_exception},
 };
-use crate::callbacks::CallbackSlot;
 use crate::conversion;
 use ext_php_rs::{
     boxed::ZBox,
@@ -22,7 +22,6 @@ use rabbit_rs_core::{
     config::SafetyMode,
     pool::{ConnectionHandle, ConnectionKey},
     publisher::{PublishOutcome, PublishRequest},
-    recovery::ConnectionState,
     runtime::RuntimeRegistry,
 };
 
@@ -43,10 +42,7 @@ pub struct Pool {
     handle: Arc<ConnectionHandle>,
     client: Arc<ClientPool>,
     pid: u32,
-    connection_state_callback: CallbackSlot,
-    backpressure_callback: CallbackSlot,
-    last_connection_states: std::sync::Mutex<HashMap<String, (String, i64)>>,
-    last_backpressure_total: std::sync::Mutex<u64>,
+    bridge: Arc<EventBridge>,
     publish_buffer: std::sync::Mutex<Vec<conversion::NativePublish>>,
     publish_buffer_bytes: std::sync::Mutex<usize>,
     last_flush: std::sync::Mutex<std::time::Instant>,
@@ -71,15 +67,13 @@ impl Pool {
             )
         })?;
         let client = handle.client(config.clone());
+        let bridge = EventBridge::shared(&client);
 
         Ok(Self {
             handle,
             client,
             pid: std::process::id(),
-            connection_state_callback: CallbackSlot::new(),
-            backpressure_callback: CallbackSlot::new(),
-            last_connection_states: std::sync::Mutex::new(HashMap::new()),
-            last_backpressure_total: std::sync::Mutex::new(0),
+            bridge,
             publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
             publish_buffer_bytes: std::sync::Mutex::new(0),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
@@ -89,20 +83,21 @@ impl Pool {
     /// Registers a PHP callback invoked when a broker connection state changes.
     ///
     /// The callback receives `(string $broker, string $state, int $generation)`.
-    /// It is invoked synchronously on the PHP thread during `stats()`.
+    /// It is invoked synchronously on the PHP thread during publish, consume,
+    /// and `stats()` operations.
     pub fn onConnectionState(&self, callback: &Zval) -> PhpResult<()> {
-        self.connection_state_callback
-            .set(callback.shallow_clone())?;
-        Ok(())
+        self.bridge
+            .set_connection_state_callback(callback.shallow_clone())
     }
 
     /// Registers a PHP callback invoked when publisher backpressure is detected.
     ///
     /// The callback receives `(string $broker, int $inFlight, int $capacity)`.
-    /// It is invoked synchronously on the PHP thread during `stats()`.
+    /// It is invoked synchronously on the PHP thread during publish, consume,
+    /// and `stats()` operations.
     pub fn onBackpressure(&self, callback: &Zval) -> PhpResult<()> {
-        self.backpressure_callback.set(callback.shallow_clone())?;
-        Ok(())
+        self.bridge
+            .set_backpressure_callback(callback.shallow_clone())
     }
 
     /// Publishes one message and returns its stable message identifier.
@@ -179,6 +174,7 @@ impl Pool {
             self.flush_publishes(publishes)?;
         }
 
+        self.bridge.drain();
         Ok(message_id)
     }
 
@@ -202,6 +198,7 @@ impl Pool {
         {
             return client_exception(&error);
         }
+        self.bridge.drain();
         Ok(())
     }
 
@@ -223,8 +220,14 @@ impl Pool {
             .runtime()
             .block_on(self.client.publish_batch(requests))
         {
-            Ok(outcomes) => outcomes.into_iter().map(publish_message_id).collect(),
-            Err(error) => client_exception(&error),
+            Ok(outcomes) => {
+                self.bridge.drain();
+                outcomes.into_iter().map(publish_message_id).collect()
+            }
+            Err(error) => {
+                self.bridge.drain();
+                client_exception(&error)
+            }
         }
     }
 
@@ -240,6 +243,7 @@ impl Pool {
                 handle,
                 self.handle.runtime().clone(),
                 self.pid,
+                Arc::clone(&self.bridge),
             )),
             Err(error) => client_exception(&error),
         }
@@ -305,8 +309,7 @@ impl Pool {
             metrics.settlement_latency.percentile_ns(99.0),
         )?;
 
-        self.invoke_connection_state_callbacks();
-        self.invoke_backpressure_callback(metrics.backpressure_total);
+        self.bridge.drain();
 
         Ok(stats)
     }
@@ -407,12 +410,9 @@ impl Pool {
     pub(crate) fn for_testing(handle: Arc<ConnectionHandle>, client: Arc<ClientPool>) -> Self {
         Self {
             handle,
+            bridge: EventBridge::shared(&client),
             client,
             pid: std::process::id(),
-            connection_state_callback: CallbackSlot::new(),
-            backpressure_callback: CallbackSlot::new(),
-            last_connection_states: std::sync::Mutex::new(HashMap::new()),
-            last_backpressure_total: std::sync::Mutex::new(0),
             publish_buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
             publish_buffer_bytes: std::sync::Mutex::new(0),
             last_flush: std::sync::Mutex::new(std::time::Instant::now()),
@@ -521,89 +521,5 @@ impl Pool {
             return rabbit_exception(format!("{operation} cannot use a closed pool"));
         }
         Ok(())
-    }
-
-    fn invoke_connection_state_callbacks(&self) {
-        let states = self.client.connection_states();
-
-        // Collect all changed states under the lock, then release before invoking
-        // callbacks to prevent deadlock when a callback re-enters stats().
-        let pending: Vec<(String, String, i64, (String, i64))> = {
-            let mut last_states = self
-                .last_connection_states
-                .lock()
-                .expect("connection state mutex poisoned");
-            states
-                .iter()
-                .filter_map(|(broker, state)| {
-                    let (state_name, generation) = connection_state_parts(state);
-                    let current = (state_name.clone(), generation);
-                    let changed = last_states
-                        .get(broker)
-                        .is_none_or(|previous| *previous != current);
-                    if changed {
-                        last_states.insert(broker.clone(), current.clone());
-                        Some((broker.clone(), state_name, generation, current))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }; // Lock released here
-
-        for (broker, state_name, generation, _) in pending {
-            let _ = self.connection_state_callback.invoke_unlocked(vec![
-                &broker.as_str(),
-                &state_name,
-                &generation,
-            ]);
-        }
-    }
-
-    fn invoke_backpressure_callback(&self, current_backpressure: u64) {
-        // Determine under lock whether the backpressure metric changed, then
-        // release the lock before invoking the callback to prevent deadlock
-        // when the callback re-enters stats().
-        let should_invoke = {
-            let mut last = self
-                .last_backpressure_total
-                .lock()
-                .expect("backpressure mutex poisoned");
-            if current_backpressure > *last {
-                *last = current_backpressure;
-                true
-            } else {
-                false
-            }
-        }; // Lock released here
-
-        if should_invoke {
-            let (in_flight, capacity) = self.client.publisher_utilization();
-            let _ = self.backpressure_callback.invoke_unlocked(vec![
-                &"global".to_string(),
-                &i64::try_from(in_flight).unwrap_or(i64::MAX),
-                &i64::try_from(capacity).unwrap_or(i64::MAX),
-            ]);
-        }
-    }
-}
-
-fn connection_state_parts(state: &ConnectionState) -> (String, i64) {
-    match state {
-        ConnectionState::Disconnected => ("disconnected".to_string(), 0),
-        ConnectionState::Connecting { attempt } => ("connecting".to_string(), i64::from(*attempt)),
-        ConnectionState::Ready { generation } => (
-            "ready".to_string(),
-            i64::try_from(*generation).unwrap_or(i64::MAX),
-        ),
-        ConnectionState::Recovering {
-            attempt,
-            retry_in: _,
-            reason: _,
-        } => ("recovering".to_string(), i64::from(*attempt)),
-        ConnectionState::FailedPermanent { kind: _, reason: _ } => {
-            ("failed_permanent".to_string(), 0)
-        }
-        ConnectionState::Closed => ("closed".to_string(), 0),
     }
 }

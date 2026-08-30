@@ -14,7 +14,7 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 - **Connection-generation-aware ACKs** — stale ACKs are rejected so RabbitMQ redelivers
 - **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers
 - **Weighted-fair scheduler** — multiple subscriptions per worker with configurable weights, priority classes, and starvation protection
-- **Backpressure events** — `BackpressureDetected` fires when the publisher's bounded buffer is full
+- **Backpressure events** — `BackpressureDetected` fires during publish and consume operations when the publisher's bounded buffer is full
 - **Octane support** — consumers are flushed per-request and pools reloaded on worker restart
 - **Quorum queues by default** — durable, delivery-limit-aware topology out of the box
 - **Laravel Horizon support** — Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs; coexists with existing Redis queues
@@ -496,6 +496,8 @@ Both Redis and Rabbit RS connections can run in the same Horizon instance. Redis
 If Horizon is not installed, set `RABBIT_RS_WORKER=default` (the default). The `horizon` mode requires `laravel/horizon` to be installed.
 
 ## Events
+
+Native events are drained synchronously on the PHP thread during `publish()`, `publishBatch()`, `flush()`, consumer `next()`/`tryNext()`/`nextBatch()`, and `stats()` calls — no polling required.
 
 | Event | Fired when | Payload |
 | ----- | ---------- | ------- |

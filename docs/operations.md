@@ -231,7 +231,7 @@ data:
     done
 ```
 
-Alternatively, listen for the `ConnectionStateChanged` and `BackpressureDetected` events and push metrics to your monitoring system:
+Alternatively, listen for the `ConnectionStateChanged` and `BackpressureDetected` events and push metrics to your monitoring system. Native events fire during publish and consume operations (`publish()`, `publishBatch()`, consumer `next()`/`tryNext()`/`nextBatch()`, and `stats()`), so no polling is required:
 
 ```php
 use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
