@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Livrer l'écosystème Rabbit RS : l'extension PHP rabbit_rs et le package goopil/rabbit-rs-laravel, performants, at-least-once et capables de mutualiser publication et consommation sur plusieurs vhosts avec reconnexion automatique.
+**Goal:** Deliver the Rabbit RS ecosystem: the rabbit_rs PHP extension and the goopil/rabbit-rs-laravel package, performant, at-least-once, and able to pool publishing and consuming across multiple vhosts with automatic reconnection.
 
-**Architecture:** Un workspace Rust contient rabbit-rs-core et l'extension rabbit-rs-php construisant ext-rabbit_rs. Le package Composer goopil/rabbit-rs-laravel adapte cette API aux contrats Laravel Queue sans remplacer Illuminate\Queue\Worker. Les connexions et channels sont pilotés par des acteurs Tokio par processus PHP, tandis qu'un laboratoire RabbitMQ reproductible valide performances et scénarios de panne.
+**Architecture:** A Rust workspace contains rabbit-rs-core and the rabbit-rs-php extension building ext-rabbit_rs. The Composer package goopil/rabbit-rs-laravel adapts this API to the Laravel Queue contracts without replacing Illuminate\Queue\Worker. Connections and channels are driven by Tokio actors per PHP process, while a reproducible RabbitMQ lab validates performance and failure scenarios.
 
 **Tech Stack:** Rust 1.96, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, PIE 1.5+, Composer, Packagist, Laravel 12/13, Pest, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus.
 
@@ -12,92 +12,92 @@
 
 ---
 
-## Règles d'exécution
+## Execution rules
 
-- Appliquer @superpowers:test-driven-development à chaque comportement.
-- Utiliser @superpowers:systematic-debugging à tout échec inattendu.
-- Exécuter @superpowers:verification-before-completion avant chaque jalon.
-- Ne jamais transporter de valeur Zend dans un thread Rust.
-- Garder Lapin derrière l'interface Transport.
-- Préserver les changements utilisateur non liés.
-- Un commit logique après chaque tâche verte.
-- Ne pas figer les valeurs de batching ou de prefetch avant le jalon benchmark.
-- Conserver dans une capacité globale bornée les publications non envoyées ou ambiguës pendant une coupure, puis les rejouer automatiquement avec le même message_id et la deadline originale après recovery.
-- Ne pas présenter cette rétention mémoire comme durable : un crash du processus nécessite un outbox externe pour garantir le replay.
+- Apply @superpowers:test-driven-development to every behavior.
+- Use @superpowers:systematic-debugging for any unexpected failure.
+- Run @superpowers:verification-before-completion before every milestone.
+- Never carry a Zend value into a Rust thread.
+- Keep Lapin behind the Transport interface.
+- Preserve unrelated user changes.
+- One logical commit after each green task.
+- Do not freeze batching or prefetch values before the benchmark milestone.
+- Keep unsent or ambiguous publications in an overall bounded capacity during an outage, then replay them automatically with the same message_id and the original deadline after recovery.
+- Do not present this in-memory retention as durable: a process crash requires an external outbox to guarantee the replay.
 
-## Avancement
+## Progress
 
-**Dernière mise à jour :** 23 août 2026
+**Last updated:** August 23, 2026
 
-**Branche d'implémentation :** Goopil/feat-horizon
+**Implementation branch:** Goopil/feat-horizon
 
-**Prochaine étape :** Milestone F — Distribution et documentation.
+**Next step:** Milestone F — Distribution and documentation.
 
-- [x] Task 1 — Workspace Rust/PHP reproductible (`4f2a997`).
-- [x] Task 2 — Configuration normalisée et validée (`c324929`).
-- [x] Task 3 — Scheduler pondéré sans famine (`17804d0`).
-- [x] Task 4 — Runtime par processus sûr après fork (`ca5dd36`).
-- [x] Task 5 — Abstraction Transport, mock scriptable et Lapin (`71680e1`).
-- [x] Task 6 — Acteur de connexion et recovery déterministe (`70d5b59`).
-- [x] Task 7 — Topologie declare, verify et external (`7ff2de9`).
-- [x] Task 8 — Publisher borné, batching, confirms et mandatory returns (`90d3089`).
-- [x] Task 9 — Délais par plugin et fallback TTL (`bae220b`).
-- [x] Task 9 bis — Rétention bornée et replay publisher après reconnexion (`241f77d`).
-- [x] Task 10 — ConsumerSet et jetons de delivery (`380a95d`).
-- [x] Task 11 — Compteurs attempts et poison-message (`eb35412`).
-- [x] Task 12 — Snapshot de métriques et gate du Milestone A (`21aedee`).
-- [x] Task 13 — Définir l'API et les stubs PHP du Milestone B.
-- [x] Task 14 — Tester conversions, erreurs et transitions PHP.
-- [x] Task 15 — Certifier le cycle de vie CLI, fork et FPM.
-- [x] Task 16 — Initialiser le package et sa configuration.
-- [x] Task 17 — Enregistrer le connecteur et le pool partagé.
-- [x] Task 18 — Implémenter push, later et bulk.
-- [x] Task 19 — Implémenter RabbitMqJob.
-- [x] Task 20 — Brancher pop sur un profil multi-vhost.
-- [x] Task 21 — Implémenter size, clear et monitoring (`d8bafcf`).
-- [x] Task 22 — Ajouter événements natifs et commande de diagnostic (`950819b`).
-- [x] Task 23 — Ajouter la commande multiprocessus progressive (`de8d8bf`).
-- [x] Task 24 — Certifier Octane (`4f04b63`).
-- [x] Task 25 — Créer le cluster RabbitMQ de test.
-- [x] Task 26 — Écrire les tests d'intégration end-to-end.
-- [x] Task 27 — Écrire les scénarios de panne (chaos/fault injection).
-- [x] Task 28 — Implémenter le coordinateur de recovery (`ad652c7`).
-- [x] Task 29 — Implémenter le delay routing côté éditeur (`e844375`, `89bff5f`).
-- [x] Task 30 — Câbler la DLQ et les arguments de queue génériques (`7d62e0c`).
-- [x] Task 31 — Câbler le TLS end-to-end (`e6881d3`).
-- [x] Task 32 — Câbler le nettoyage des consumers et éviter les fuites de channels.
-- [x] Task 33 — Dispatcher les events Laravel depuis l'extension native (`9213d0d`, `c7ea2ad`).
-- [x] Task 34 — Exposer les métriques consumer et latences (`31e5676`, `6f41c7f`).
-- [x] Task 35 — Câbler la config publisher (confirms, mandatory, timeout) end-to-end (`c8261ec`).
-- [x] Task 36 — Câbler le lifecycle Octane complet (`e20a69b`).
-- [x] Task 37 — Câbler le WorkCommand et tester le supervisor end-to-end (`9c0e036`, `356b71b`, `7a68c6f`).
-- [x] Task 38 — Créer bench-native (`ae9c668`, `7f13f98`).
-- [x] Task 39 — Créer l'application bench-laravel (`3fb9fc4`, `8d56ee8`, `e43cb68`).
-- [x] Task 40 — Calibrer les defaults et figer les budgets (`6ec500e`, `6546f4c`).
-- [x] Task 41 — Préparer les packages Rabbit RS et la matrice PIE (`aa2e7d2`).
-- [x] Task 42 — Ajouter la CI et la publication synchronisée (`f04dbd8`, `f7f374e`, `e2e742c`).
-- [x] Task 43 — Documenter installation, configuration et exploitation (`0712948`, `aa14daf`).
+- [x] Task 1 — Reproducible Rust/PHP workspace (`4f2a997`).
+- [x] Task 2 — Normalized and validated configuration (`c324929`).
+- [x] Task 3 — Weighted starvation-free scheduler (`17804d0`).
+- [x] Task 4 — Per-process runtime safe after fork (`ca5dd36`).
+- [x] Task 5 — Transport abstraction, scriptable mock and Lapin (`71680e1`).
+- [x] Task 6 — Connection actor and deterministic recovery (`70d5b59`).
+- [x] Task 7 — Declare, verify and external topology (`7ff2de9`).
+- [x] Task 8 — Bounded publisher, batching, confirms and mandatory returns (`90d3089`).
+- [x] Task 9 — Plugin delays and TTL fallback (`bae220b`).
+- [x] Task 9 bis — Bounded retention and publisher replay after reconnection (`241f77d`).
+- [x] Task 10 — ConsumerSet and delivery tokens (`380a95d`).
+- [x] Task 11 — Attempts counters and poison-message handling (`eb35412`).
+- [x] Task 12 — Metrics snapshot and Milestone A gate (`21aedee`).
+- [x] Task 13 — Define the PHP API and stubs of Milestone B.
+- [x] Task 14 — Test PHP conversions, errors and transitions.
+- [x] Task 15 — Certify the CLI, fork and FPM lifecycle.
+- [x] Task 16 — Initialize the package and its configuration.
+- [x] Task 17 — Register the connector and the shared pool.
+- [x] Task 18 — Implement push, later and bulk.
+- [x] Task 19 — Implement RabbitMqJob.
+- [x] Task 20 — Wire pop to a multi-vhost profile.
+- [x] Task 21 — Implement size, clear and monitoring (`d8bafcf`).
+- [x] Task 22 — Add native events and a diagnostic command (`950819b`).
+- [x] Task 23 — Add the progressive multiprocess command (`de8d8bf`).
+- [x] Task 24 — Certify Octane (`4f04b63`).
+- [x] Task 25 — Create the RabbitMQ test cluster.
+- [x] Task 26 — Write end-to-end integration tests.
+- [x] Task 27 — Write failure scenarios (chaos/fault injection).
+- [x] Task 28 — Implement the recovery coordinator (`ad652c7`).
+- [x] Task 29 — Implement publisher-side delay routing (`e844375`, `89bff5f`).
+- [x] Task 30 — Wire the DLQ and generic queue arguments (`7d62e0c`).
+- [x] Task 31 — Wire TLS end-to-end (`e6881d3`).
+- [x] Task 32 — Wire consumer cleanup and prevent channel leaks.
+- [x] Task 33 — Dispatch Laravel events from the native extension (`9213d0d`, `c7ea2ad`).
+- [x] Task 34 — Expose consumer metrics and latencies (`31e5676`, `6f41c7f`).
+- [x] Task 35 — Wire publisher config (confirms, mandatory, timeout) end-to-end (`c8261ec`).
+- [x] Task 36 — Wire the full Octane lifecycle (`e20a69b`).
+- [x] Task 37 — Wire the WorkCommand and test the supervisor end-to-end (`9c0e036`, `356b71b`, `7a68c6f`).
+- [x] Task 38 — Create bench-native (`ae9c668`, `7f13f98`).
+- [x] Task 39 — Create the bench-laravel application (`3fb9fc4`, `8d56ee8`, `e43cb68`).
+- [x] Task 40 — Calibrate the defaults and freeze the budgets (`6ec500e`, `6546f4c`).
+- [x] Task 41 — Prepare the Rabbit RS packages and the PIE matrix (`aa2e7d2`).
+- [x] Task 42 — Add CI and synchronized publishing (`f04dbd8`, `f7f374e`, `e2e742c`).
+- [x] Task 43 — Document installation, configuration and operations (`0712948`, `aa14daf`).
 
-**Toutes les tasks (1–43) sont complètes.** Le plan d'implémentation est terminé.
+**All tasks (1–43) are complete.** The implementation plan is finished.
 
-## Milestone H — Support Laravel Horizon
+## Milestone H — Laravel Horizon support
 
-Ce jalon ajoute l'intégration Laravel Horizon au package `goopil/rabbit-rs-laravel` pour que les jobs Rabbit RS apparaissent dans le dashboard Horizon aux côtés des jobs Redis. RabbitMQ reste le transport ; Redis est utilisé par Horizon pour le tracking et le dashboard. Aucun changement au Rust core ou à l'extension PHP.
+This milestone adds Laravel Horizon integration to the `goopil/rabbit-rs-laravel` package so that Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs. RabbitMQ remains the transport; Redis is used by Horizon for tracking and the dashboard. No change to the Rust core or the PHP extension.
 
-- [x] Task H1 — Retirer `final` de `RabbitMqQueue` et `RabbitMqJob` (`feec698`).
-- [x] Task H2 — Ajouter les fakes Horizon (events + JobPayload) au bootstrap de test (`feec698`).
-- [x] Task H3 — Créer `Horizon\RabbitMqQueue` avec event dispatching (`feb50f5`).
-- [x] Task H4 — Créer `Horizon\RabbitMqJob` avec `deleteReserved()` (`92d7742`).
-- [x] Task H5 — Câbler la résolution dynamique dans le connector par `worker` config (`ddb75a0`).
-- [x] Task H6 — Ajouter la clé `worker` à la config et `suggest laravel/horizon` (`9b75901`).
+- [x] Task H1 — Remove `final` from `RabbitMqQueue` and `RabbitMqJob` (`feec698`).
+- [x] Task H2 — Add the Horizon fakes (events + JobPayload) to the test bootstrap (`feec698`).
+- [x] Task H3 — Create `Horizon\RabbitMqQueue` with event dispatching (`feb50f5`).
+- [x] Task H4 — Create `Horizon\RabbitMqJob` with `deleteReserved()` (`92d7742`).
+- [x] Task H5 — Wire dynamic resolution in the connector by `worker` config (`ddb75a0`).
+- [x] Task H6 — Add the `worker` config key and `suggest laravel/horizon` (`9b75901`).
 
-**Toutes les tasks (H1–H6) sont complètes.** 207 tests PHP passent (545 assertions), 193 tests Rust passent.
+**All tasks (H1–H6) are complete.** 207 PHP tests pass (545 assertions), 193 Rust tests pass.
 
-## Milestone D2 — Recovery, delay et topology (gaps d'implémentation)
+## Milestone D2 — Recovery, delay and topology (implementation gaps)
 
-Ce jalon corrige les gaps identifiés par l'audit du 16 août 2026 : le coordinateur de recovery manquant, le delay routing côté éditeur non branché, et la DLQ/arguments génériques non câblés.
+This milestone fixes the gaps identified by the August 16, 2026 audit: the missing recovery coordinator, the unwired publisher-side delay routing, and the unwired DLQ/generic arguments.
 
-### Task 28: Implémenter le coordinateur de recovery
+### Task 28: Implement the recovery coordinator
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/pool/recovery_coordinator.rs
@@ -107,40 +107,40 @@ Ce jalon corrige les gaps identifiés par l'audit du 16 août 2026 : le coordina
 - Modify: crates/rabbit-rs-core/src/consumer/set.rs
 - Create: crates/rabbit-rs-core/tests/recovery_coordinator.rs
 
-**Contexte :**
+**Context:**
 
-Les primitives de recovery sont complètes (`ConnectionActor` avec backoff/génération, `PublisherActor` avec replay buffer borné, `TopologyReconciler` avec replay par génération, `ConsumerActor` avec `UpdateGeneration`), mais aucun coordinateur ne les relie. Le `ClientPool` ouvre les connections paresseusement et n'observe jamais leur perte. Les tests de chaos recréent les pools manuellement après chaque panne.
+The recovery primitives are complete (`ConnectionActor` with backoff/generation, `PublisherActor` with bounded replay buffer, `TopologyReconciler` with per-generation replay, `ConsumerActor` with `UpdateGeneration`), but no coordinator links them. The `ClientPool` opens connections lazily and never observes their loss. The chaos tests recreate pools manually after every failure.
 
 **Step 1: Write failing recovery coordinator tests**
 
-Scénarios de test (mock transport, pas de broker réel) :
+Test scenarios (mock transport, no real broker):
 
-1. Une connection est perdue → `PublisherActor` reçoit `Recovering` → les unconfirmed enters dans le replay buffer → la connection est rétablie → `TopologyReconciler` rejoue → `PublisherActor` reçoit `Ready { topology_restored: true }` → replay est flushé → les messages sont délivrés.
-2. Une connection est perdue → `ConsumerActor` reçoit `UpdateGeneration` après reconnexion → les deliveries de l'ancienne génération sont rejetées (`StaleGeneration`) → le broker redelivre.
-3. Ordre déterministe vérifié : connection → channels → exchanges → queues → bindings → QoS → consumers → publisher replay.
-4. Perte pendant le recovery → le coordinateur annule et relance.
-5. Erreur permanente (credentials) → `FailedPermanent` → le coordinateur ne boucle pas.
+1. A connection is lost → `PublisherActor` receives `Recovering` → unconfirmed messages enter the replay buffer → the connection is re-established → `TopologyReconciler` replays → `PublisherActor` receives `Ready { topology_restored: true }` → the replay is flushed → messages are delivered.
+2. A connection is lost → `ConsumerActor` receives `UpdateGeneration` after reconnection → deliveries from the old generation are rejected (`StaleGeneration`) → the broker redelivers.
+3. Deterministic order verified: connection → channels → exchanges → queues → bindings → QoS → consumers → publisher replay.
+4. Loss during recovery → the coordinator cancels and restarts.
+5. Permanent error (credentials) → `FailedPermanent` → the coordinator does not loop.
 
 **Step 2: Verify failure**
 
 Run: cargo test -p rabbit-rs-core --test recovery_coordinator
 
-Expected: FAIL — le coordinateur n'existe pas encore.
+Expected: FAIL — the coordinator does not exist yet.
 
 **Step 3: Implement the recovery coordinator**
 
-Le coordinateur est une task par broker qui :
+The coordinator is one task per broker that:
 
-1. Spawne un `ConnectionActor` et souscrit à son `watch::Receiver<ConnectionState>`.
-2. Sur `ConnectionLost` (erreur de transport détectée) → `ConnectionActor::connection_lost(error)` → émet `PublisherConnectionEvent::Recovering` au `PublisherActor` du broker.
-3. Sur `ConnectionState::Ready { generation }` → ouvre un nouveau `PublisherChannel`, exécute `TopologyReconciler::reconcile(channel, plan, generation)`, puis émet `PublisherConnectionEvent::Ready { generation, channel, topology_restored: true }` au `PublisherActor`.
-4. Pour les consumers → ouvre de nouveaux `ConsumerChannel`, ré-applique QoS, ré-émet `basic_consume`, et appelle `ConsumerHandle::update_generation` pour chaque subscription.
-5. Enforce l'ordre déterministe : connection → channels → exchanges → queues → bindings → QoS → consumers → publisher replay.
+1. Spawns a `ConnectionActor` and subscribes to its `watch::Receiver<ConnectionState>`.
+2. On `ConnectionLost` (detected transport error) → `ConnectionActor::connection_lost(error)` → emits `PublisherConnectionEvent::Recovering` to the broker's `PublisherActor`.
+3. On `ConnectionState::Ready { generation }` → opens a new `PublisherChannel`, executes `TopologyReconciler::reconcile(channel, plan, generation)`, then emits `PublisherConnectionEvent::Ready { generation, channel, topology_restored: true }` to the `PublisherActor`.
+4. For consumers → opens new `ConsumerChannel`s, re-applies QoS, re-emits `basic_consume`, and calls `ConsumerHandle::update_generation` for each subscription.
+5. Enforces the deterministic order: connection → channels → exchanges → queues → bindings → QoS → consumers → publisher replay.
 
-Le `ClientPool` doit :
-- Spawner un coordinateur par broker à l'initialisation de la connection.
-- Stocker le `ConnectionActorHandle` et le `JoinHandle` du coordinateur.
-- Sur `close()`, annuler le coordinateur et l'acteur de connection.
+The `ClientPool` must:
+- Spawn a coordinator per broker at connection initialization.
+- Store the `ConnectionActorHandle` and the coordinator's `JoinHandle`.
+- On `close()`, cancel the coordinator and the connection actor.
 
 **Step 4: Verify**
 
@@ -150,10 +150,10 @@ Expected: PASS.
 
 **Step 5: Update chaos tests to remove manual pool recreation**
 
-Modifier `crates/rabbit-rs-core/tests/chaos/reconnect.rs` :
-- Supprimer le pattern de recréation de `ClientPool` après chaque panne.
-- Les tests doivent créer un seul `ClientPool`, injecter la panne, et vérifier que le pool se rétablit automatiquement.
-- `missing = 0` doit être maintenu sans intervention manuelle.
+Modify `crates/rabbit-rs-core/tests/chaos/reconnect.rs`:
+- Remove the `ClientPool` recreation pattern after each failure.
+- The tests must create a single `ClientPool`, inject the failure, and verify that the pool recovers automatically.
+- `missing = 0` must be maintained without manual intervention.
 
 Run: cargo test -p rabbit-rs-core --features integration --test chaos_reconnect
 
@@ -170,7 +170,7 @@ Expected: PASS.
     git add crates
     git commit -m "feat(core): wire recovery coordinator end-to-end"
 
-### Task 29: Implémenter le delay routing côté éditeur
+### Task 29: Implement publisher-side delay routing
 
 **Files:**
 - Modify: crates/rabbit-rs-core/src/transport.rs
@@ -188,21 +188,21 @@ Expected: PASS.
 - Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
 - Modify: packages/laravel-queue/tests/Integration/DelayedJobTest.php
 
-**Contexte :**
+**Context:**
 
-Le `DelayRouter` existe et est testé, mais il n'est branché que dans `release()` du consumer. Côté éditeur, `later()` pose le header `x-delay` sur l'exchange original — effet no-op. Les exchanges `x-delayed-message` ne peuvent pas être déclarés car `ExchangeSpec` n'a pas d'arguments. Les TTL delay queues ne sont jamais déclarées. `DelayConfig` n'est pas dans `ValidatedConfig`. La config Laravel n'expose pas de section delay.
+The `DelayRouter` exists and is tested, but it is only wired in the consumer's `release()`. On the publisher side, `later()` sets the `x-delay` header on the original exchange — a no-op effect. The `x-delayed-message` exchanges cannot be declared because `ExchangeSpec` has no arguments. The TTL delay queues are never declared. `DelayConfig` is not in `ValidatedConfig`. The Laravel config exposes no delay section.
 
 **Step 1: Write failing publisher delay tests**
 
-Scénarios :
+Scenarios:
 
-1. `publish()` avec `delay_ms > 0` en mode Plugin → le message est publié sur l'exchange `x-delayed-message` (pas l'exchange original) avec le header `x-delay`.
-2. `publish()` avec `delay_ms > 0` en mode TTL → le message est publié sur une TTL queue avec `x-message-ttl` et dead-letter vers la destination originale.
-3. `publish()` avec `delay_ms = 0` → pas de routing spécial (comportement normal).
-4. L'exchange `x-delayed-message` est déclaré par le `TopologyReconciler` quand le mode Plugin est actif.
-5. Les TTL queues sont déclarées paresseusement (on-demand) par le publisher.
-6. `DelayConfig` est validé et désérialisé depuis la config.
-7. `DelayMode::Auto` détecte le plugin et fallback TTL si absent.
+1. `publish()` with `delay_ms > 0` in Plugin mode → the message is published to the `x-delayed-message` exchange (not the original exchange) with the `x-delay` header.
+2. `publish()` with `delay_ms > 0` in TTL mode → the message is published to a TTL queue with `x-message-ttl` and dead-lettered to the original destination.
+3. `publish()` with `delay_ms = 0` → no special routing (normal behavior).
+4. The `x-delayed-message` exchange is declared by the `TopologyReconciler` when Plugin mode is active.
+5. The TTL queues are declared lazily (on-demand) by the publisher.
+6. `DelayConfig` is validated and deserialized from config.
+7. `DelayMode::Auto` detects the plugin and falls back to TTL if absent.
 
 **Step 2: Verify failure**
 
@@ -212,38 +212,38 @@ Expected: FAIL.
 
 **Step 3: Implement exchange arguments and delayed exchange support**
 
-- Ajouter `arguments: BTreeMap<String, HeaderValue>` à `ExchangeSpec`.
-- Ajouter `ExchangeKind::Delayed(ExchangeKind)` qui émet `x-delayed-message` comme type d'exchange et `x-delayed-type` comme argument (avec le type sous-jacent : direct, topic, etc.).
-- Mettre à jour `lapin.rs::declare_exchange()` pour passer les arguments au lieu de `FieldTable::default()`.
-- Le `TopologyReconciler` doit déclarer l'exchange `x-delayed-message` (nom `rabbit-rs.delayed` ou `{exchange}.delayed`) quand le mode Plugin est sélectionné.
+- Add `arguments: BTreeMap<String, HeaderValue>` to `ExchangeSpec`.
+- Add `ExchangeKind::Delayed(ExchangeKind)` which emits `x-delayed-message` as the exchange type and `x-delayed-type` as an argument (with the underlying type: direct, topic, etc.).
+- Update `lapin.rs::declare_exchange()` to pass the arguments instead of `FieldTable::default()`.
+- The `TopologyReconciler` must declare the `x-delayed-message` exchange (name `rabbit-rs.delayed` or `{exchange}.delayed`) when Plugin mode is selected.
 
 **Step 4: Wire DelayRouter into the publisher path**
 
-- Le `PublisherActor` (ou `ClientPool::publish()`) doit détecter `delay_ms > 0`, résoudre la `DelayStrategy` via `DelayStrategyResolver`, appeler `DelayRouter::route()`, et publier vers l'exchange/queue différée au lieu de l'original.
-- En mode TTL, déclarer paresseusement la TTL queue avant la première publication différée (idempotent via cache).
-- En mode Plugin, l'exchange différée est déclaré par le `TopologyReconciler` lors du recovery.
+- The `PublisherActor` (or `ClientPool::publish()`) must detect `delay_ms > 0`, resolve the `DelayStrategy` via `DelayStrategyResolver`, call `DelayRouter::route()`, and publish to the delayed exchange/queue instead of the original.
+- In TTL mode, lazily declare the TTL queue before the first delayed publish (idempotent via cache).
+- In Plugin mode, the delayed exchange is declared by the `TopologyReconciler` during recovery.
 
 **Step 5: Add DelayConfig to ValidatedConfig**
 
-- Ajouter `delay: DelayConfig` à `Config` et `ValidatedConfig`.
-- Désérialiser `mode` (auto/plugin/ttl), `buckets`, `max_buckets`, `queue_expiry_margin`, `detection_timeout`.
-- Valider : buckets non vide, ≤ max_buckets, sans zéro, detection_timeout borné.
+- Add `delay: DelayConfig` to `Config` and `ValidatedConfig`.
+- Deserialize `mode` (auto/plugin/ttl), `buckets`, `max_buckets`, `queue_expiry_margin`, `detection_timeout`.
+- Validate: buckets non-empty, ≤ max_buckets, without zero, detection_timeout bounded.
 
 **Step 6: Wire DelayConfig through ClientPool**
 
-- Le `ClientPool` doit instancier un `DelayStrategyResolver` par broker et le passer au publisher et consumer.
-- Le `ConsumerSet` doit recevoir la `DelayStrategy` résolue (au lieu du hardcoded `Plugin`).
-- Le `ClientPool::consumer()` doit appeler `.delayed_publisher()` et `.delay_strategy()` sur chaque subscription.
+- The `ClientPool` must instantiate a `DelayStrategyResolver` per broker and pass it to the publisher and consumer.
+- The `ConsumerSet` must receive the resolved `DelayStrategy` (instead of the hardcoded `Plugin`).
+- `ClientPool::consumer()` must call `.delayed_publisher()` and `.delay_strategy()` on each subscription.
 
 **Step 7: Expose delay config in Laravel**
 
-- Ajouter une section `delay` à `config/rabbit-rs.php` : `mode`, `buckets`, `max_buckets`, `queue_expiry_margin`, `detection_timeout`.
-- `ConfigNormalizer` doit mapper cette section vers la config native.
+- Add a `delay` section to `config/rabbit-rs.php`: `mode`, `buckets`, `max_buckets`, `queue_expiry_margin`, `detection_timeout`.
+- `ConfigNormalizer` must map this section to the native config.
 
 **Step 8: Un-skip and fix the Laravel integration test**
 
-- Supprimer `markTestSkipped` de `test_later_publishes_and_consumes_after_delay`.
-- Le test doit publier avec `later(2, ...)` et vérifier que le job n'est pas immédiatement disponible, puis l'est après le délai.
+- Remove `markTestSkipped` from `test_later_publishes_and_consumes_after_delay`.
+- The test must publish with `later(2, ...)` and verify that the job is not immediately available, then is after the delay.
 
 **Step 9: Verify**
 
@@ -257,7 +257,7 @@ Expected: PASS.
     git add crates packages
     git commit -m "feat(core): wire publisher-side delay routing and config"
 
-### Task 30: Câbler la DLQ et les arguments de queue génériques
+### Task 30: Wire the DLQ and generic queue arguments
 
 **Files:**
 - Modify: crates/rabbit-rs-core/src/transport.rs
@@ -269,18 +269,18 @@ Expected: PASS.
 - Modify: packages/laravel-queue/config/rabbit-rs.php
 - Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
 
-**Contexte :**
+**Context:**
 
-La compilation DLQ (`TopologyPlan::compile` avec `DeadLetterDefinition`) est implémentée et testée en Rust, mais n'est pas configurable via `ValidatedConfig`. La config Laravel expose `dead_letter => null` et `delivery_limit => 20` mais ces valeurs sont validées puis droppées. `QueueSpec` n'a pas d'arguments génériques pour `x-delivery-limit`, `x-max-priority`, etc.
+The DLQ compilation (`TopologyPlan::compile` with `DeadLetterDefinition`) is implemented and tested in Rust, but is not configurable via `ValidatedConfig`. The Laravel config exposes `dead_letter => null` and `delivery_limit => 20` but these values are validated then dropped. `QueueSpec` has no generic arguments for `x-delivery-limit`, `x-max-priority`, etc.
 
 **Step 1: Write failing DLQ config tests**
 
-Scénarios :
+Scenarios:
 
-1. Config avec `dead_letter` non-null → `ValidatedConfig` contient un `DeadLetterConfig` → `TopologyDefinition` est compilé avec `with_dead_letter` → le `TopologyReconciler` déclare le DLX, la DLQ et le binding.
-2. Config avec `delivery_limit: 20` → `QueueSpec` contient `x-delivery-limit: 20` → le `TopologyReconciler` déclare la queue avec cet argument.
-3. Config sans `dead_letter` → pas de DLQ (comportement par défaut).
-4. `ConfigNormalizer` Laravel mappe `topology.dead_letter` et `topology.queue.delivery_limit` vers la config native.
+1. Config with non-null `dead_letter` → `ValidatedConfig` contains a `DeadLetterConfig` → `TopologyDefinition` is compiled with `with_dead_letter` → the `TopologyReconciler` declares the DLX, the DLQ and the binding.
+2. Config with `delivery_limit: 20` → `QueueSpec` contains `x-delivery-limit: 20` → the `TopologyReconciler` declares the queue with this argument.
+3. Config without `dead_letter` → no DLQ (default behavior).
+4. The Laravel `ConfigNormalizer` maps `topology.dead_letter` and `topology.queue.delivery_limit` to the native config.
 
 **Step 2: Verify failure**
 
@@ -290,21 +290,21 @@ Expected: FAIL.
 
 **Step 3: Add generic queue arguments**
 
-- Ajouter `arguments: BTreeMap<String, HeaderValue>` à `QueueSpec` (en plus des champs structurés existants).
-- Mettre à jour `lapin.rs::declare_queue()` pour fusionner les arguments structurés (DLX, TTL, etc.) et les arguments génériques.
-- Ajouter `delivery_limit: Option<u32>` à `QueueSpec` → émet `x-delivery-limit`.
+- Add `arguments: BTreeMap<String, HeaderValue>` to `QueueSpec` (in addition to the existing structured fields).
+- Update `lapin.rs::declare_queue()` to merge the structured arguments (DLX, TTL, etc.) and the generic arguments.
+- Add `delivery_limit: Option<u32>` to `QueueSpec` → emits `x-delivery-limit`.
 
 **Step 4: Add DeadLetterConfig to ValidatedConfig**
 
-- Créer `DeadLetterConfig` struct : `enabled: bool`, `exchange: String`, `queue: String`, `routing_key: Option<String>`.
-- Ajouter `dead_letter: Option<DeadLetterConfig>` à `Config`/`ValidatedConfig`.
-- Wire : `ValidatedConfig.dead_letter` → `TopologyDefinition::with_dead_letter` → `TopologyPlan::compile` → `TopologyReconciler::reconcile`.
+- Create a `DeadLetterConfig` struct: `enabled: bool`, `exchange: String`, `queue: String`, `routing_key: Option<String>`.
+- Add `dead_letter: Option<DeadLetterConfig>` to `Config`/`ValidatedConfig`.
+- Wire: `ValidatedConfig.dead_letter` → `TopologyDefinition::with_dead_letter` → `TopologyPlan::compile` → `TopologyReconciler::reconcile`.
 
 **Step 5: Wire Laravel config to native config**
 
-- `ConfigNormalizer` doit transformer `topology.dead_letter` (null ou array avec `exchange`, `queue`, `routing_key`) vers la config native `dead_letter`.
-- `ConfigNormalizer` doit transformer `topology.queue.delivery_limit` vers la config native (field `delivery_limit` sur les queues).
-- Le connector doit passer ces valeurs à la config native du `Pool`.
+- `ConfigNormalizer` must transform `topology.dead_letter` (null or array with `exchange`, `queue`, `routing_key`) to the native `dead_letter` config.
+- `ConfigNormalizer` must transform `topology.queue.delivery_limit` to the native config (field `delivery_limit` on queues).
+- The connector must pass these values to the `Pool`'s native config.
 
 **Step 6: Verify**
 
@@ -318,17 +318,17 @@ Expected: PASS.
     git add crates packages
     git commit -m "feat(core): wire DLQ config and generic queue arguments"
 
-Checkpoint Milestone D2 (Tasks 28-30) — 16 août 2026 :
+Milestone D2 checkpoint (Tasks 28-30) — August 16, 2026:
 
-- **Task 28** (`ad652c7`) : `RecoveryCoordinator` créé dans `pool/recovery_coordinator.rs`. Le coordinator spawn un `ConnectionActor` par broker, souscrit à son `watch::Receiver<ConnectionState>`, et orchestre le recovery déterministe : connection → channels → topology → QoS → consumers → publisher replay. `ClientPool` spawn un coordinator par broker au lieu d'ouvrir les connections directement. 5 tests dans `recovery_coordinator.rs`. Le `close` peut interrompre une recovery bloquée via `tokio::select!`. Les tests `client_pool.rs` ont été adaptés (le comportement de fermeture explicite des channels non committed est maintenant géré par la connection close en cascade).
+- **Task 28** (`ad652c7`): `RecoveryCoordinator` created in `pool/recovery_coordinator.rs`. The coordinator spawns a `ConnectionActor` per broker, subscribes to its `watch::Receiver<ConnectionState>`, and orchestrates the deterministic recovery: connection → channels → topology → QoS → consumers → publisher replay. `ClientPool` spawns a coordinator per broker instead of opening connections directly. 5 tests in `recovery_coordinator.rs`. `close` can interrupt a stuck recovery via `tokio::select!`. The `client_pool.rs` tests were adapted (the explicit closure behavior of non-committed channels is now handled by the cascading connection close).
 
-- **Task 29** (`e844375`, `89bff5f`) : `DelayConfig` ajouté à `Config`/`ValidatedConfig` avec serde. `ExchangeSpec` gagne un champ `arguments` et `ExchangeKind::Delayed` pour les exchanges `x-delayed-message`. Le `PublisherActor` route les messages avec `delay_ms > 0` via `DelayRouter` : mode Plugin publie sur l'exchange différée avec le header `x-delay`, mode TTL publie sur une TTL queue avec dead-letter vers la destination originale. Les TTL queues sont déclarées paresseusement par le publisher. Le `RecoveryCoordinator` compile la `DelayStrategy` depuis la config et la passe au publisher et aux consumers. La config Laravel expose une section `delay` (mode, buckets, max_buckets, queue_expiry_margin, detection_timeout). `DelayedJobTest` est un-skipped. 8 tests dans `publisher_delay.rs`. Le `delayed_publisher()` ne hardcode plus `DelayStrategy::Plugin` — la strategy est set séparément via `.delay_strategy()`. Le coordinator passe le publisher handle et la destination à chaque consumer subscription.
+- **Task 29** (`e844375`, `89bff5f`): `DelayConfig` added to `Config`/`ValidatedConfig` with serde. `ExchangeSpec` gains an `arguments` field and `ExchangeKind::Delayed` for `x-delayed-message` exchanges. The `PublisherActor` routes messages with `delay_ms > 0` via `DelayRouter`: Plugin mode publishes to the delayed exchange with the `x-delay` header, TTL mode publishes to a TTL queue dead-lettered to the original destination. TTL queues are declared lazily by the publisher. The `RecoveryCoordinator` compiles the `DelayStrategy` from config and passes it to the publisher and consumers. The Laravel config exposes a `delay` section (mode, buckets, max_buckets, queue_expiry_margin, detection_timeout). `DelayedJobTest` is un-skipped. 8 tests in `publisher_delay.rs`. `delayed_publisher()` no longer hardcodes `DelayStrategy::Plugin` — the strategy is set separately via `.delay_strategy()`. The coordinator passes the publisher handle and destination to each consumer subscription.
 
-- **Task 30** (`7d62e0c`) : `DeadLetterConfig` ajouté à `Config`/`ValidatedConfig`. `QueueSpec` gagne `delivery_limit` et `arguments` génériques. `lapin.rs::declare_queue()` émet `x-delivery-limit` et fusionne les arguments génériques. `ClientPool::build_topology_plan()` wire le `dead_letter` et `delivery_limit` depuis la config vers le `TopologyPlan`. `ConfigNormalizer` mappe `topology.dead_letter` et `topology.queue.delivery_limit` vers la config native. 11 tests dans `dlq_topology.rs`. 6 nouveaux tests `ConfigNormalizerTest`.
+- **Task 30** (`7d62e0c`): `DeadLetterConfig` added to `Config`/`ValidatedConfig`. `QueueSpec` gains `delivery_limit` and generic `arguments`. `lapin.rs::declare_queue()` emits `x-delivery-limit` and merges generic arguments. `ClientPool::build_topology_plan()` wires `dead_letter` and `delivery_limit` from config to the `TopologyPlan`. `ConfigNormalizer` maps `topology.dead_letter` and `topology.queue.delivery_limit` to the native config. 11 tests in `dlq_topology.rs`. 6 new `ConfigNormalizerTest` tests.
 
-- **Résultat global** : 177 tests Rust + 101 tests PHP passent. Quality gate `./scripts/check.sh` vert. Clippy clean. Fmt clean.
+- **Overall result**: 177 Rust tests + 101 PHP tests pass. Quality gate `./scripts/check.sh` green. Clippy clean. Fmt clean.
 
-### Task 31: Câbler le TLS end-to-end
+### Task 31: Wire TLS end-to-end
 
 **Files:**
 - Modify: crates/rabbit-rs-core/src/transport.rs
@@ -338,18 +338,18 @@ Checkpoint Milestone D2 (Tasks 28-30) — 16 août 2026 :
 - Modify: packages/laravel-queue/src/Config/ConfigNormalizer.php
 - Create: crates/rabbit-rs-core/tests/tls.rs
 
-**Contexte :**
+**Context:**
 
-`TlsConfig` existe avec `enabled` et `server_name`, mais `server_name` n'est jamais lu par le transport. Le scheme `amqps` est posé via l'URI, mais aucune configuration de connecteur TLS (SNI, CA certs, cert client, mode de vérification) n'est passée à Lapin. Aucun test TLS n'existe.
+`TlsConfig` exists with `enabled` and `server_name`, but `server_name` is never read by the transport. The `amqps` scheme is set via the URI, but no TLS connector configuration (SNI, CA certs, client cert, verification mode) is passed to Lapin. No TLS test exists.
 
 **Step 1: Write failing TLS tests**
 
-Scénarios :
+Scenarios:
 
-1. `tls.enabled = true` + `server_name = "rabbit.example.com"` → l'URI utilise `amqps://` et `server_name` est passé à Lapin pour SNI.
-2. `tls.enabled = false` → l'URI utilise `amqp://`.
-3. `tls.enabled = true` sans `server_name` → utilise le premier host comme SNI.
-4. Config avec `ca_cert`, `client_cert`, `client_key` → passés au connecteur TLS.
+1. `tls.enabled = true` + `server_name = "rabbit.example.com"` → the URI uses `amqps://` and `server_name` is passed to Lapin for SNI.
+2. `tls.enabled = false` → the URI uses `amqp://`.
+3. `tls.enabled = true` without `server_name` → uses the first host as SNI.
+4. Config with `ca_cert`, `client_cert`, `client_key` → passed to the TLS connector.
 
 **Step 2: Verify failure**
 
@@ -359,15 +359,15 @@ Expected: FAIL.
 
 **Step 3: Implement TLS connector configuration**
 
-- Étendre `TlsConfig` : ajouter `ca_cert: Option<PathBuf>`, `client_cert: Option<PathBuf>`, `client_key: Option<PathBuf>`, `verify: Option<TlsVerify>` (default `Peer`).
-- Mettre à jour `lapin.rs` : utiliser `ConnectionProperties::with_ssl` ou construire un `tls::Connector` rustls avec SNI (`server_name`), CA, cert client.
-- Utiliser `server_name` pour SNI quand fourni, sinon le premier host.
-- Garder le scheme `amqps` dans l'URI quand `enabled`.
+- Extend `TlsConfig`: add `ca_cert: Option<PathBuf>`, `client_cert: Option<PathBuf>`, `client_key: Option<PathBuf>`, `verify: Option<TlsVerify>` (default `Peer`).
+- Update `lapin.rs`: use `ConnectionProperties::with_ssl` or build a rustls `tls::Connector` with SNI (`server_name`), CA, client cert.
+- Use `server_name` for SNI when provided, otherwise the first host.
+- Keep the `amqps` scheme in the URI when `enabled`.
 
 **Step 4: Expose TLS settings in Laravel config**
 
-- Ajouter `ca_cert`, `client_cert`, `client_key`, `verify` à `config/rabbit-rs.php` sous `brokers.default.tls`.
-- `ConfigNormalizer` doit mapper ces champs vers la config native.
+- Add `ca_cert`, `client_cert`, `client_key`, `verify` to `config/rabbit-rs.php` under `brokers.default.tls`.
+- `ConfigNormalizer` must map these fields to the native config.
 
 **Step 5: Verify**
 
@@ -381,32 +381,32 @@ Expected: PASS.
     git add crates packages
     git commit -m "feat(core): wire TLS connector configuration end-to-end"
 
-Checkpoint après TLS end-to-end du 16 août 2026 :
+TLS end-to-end checkpoint of August 16, 2026:
 
-- `TlsConfig` étendu avec `ca_cert`, `client_cert`, `client_key` (chemins `PathBuf`) et `verify: TlsVerify` (`Peer` par défaut, `None` pour skip).
-- `TlsVerify` ajouté comme enum serde `snake_case` avec `#[default] Peer`.
-- `BrokerConfig::effective_server_name()` résout le SNI : `tls.server_name` si fourni, sinon le premier host.
-- `lapin.rs::connect()` utilise `Connection::connect_with_config` avec un `OwnedTLSConfig` construit depuis la config quand TLS est activé (CA cert en PEM, client cert/key en PKCS#8).
-- `connection_uri` rendue publique pour les tests.
-- Le `ConfigFingerprint` inclut `ca_cert`, `client_cert`, `client_key` et `verify` pour différencier les configs TLS.
-- La config Laravel expose `ca_cert`, `client_cert`, `client_key`, `verify` sous `brokers.default.tls`.
-- `ConfigNormalizer` valide et mappe ces champs vers la config native.
-- 10 tests Rust dans `tls.rs`, 3 nouveaux tests `ConfigNormalizerTest`.
-- `./scripts/check.sh` : PASS, 187 tests Rust + 104 tests PHP, Clippy clean, Fmt clean.
+- `TlsConfig` extended with `ca_cert`, `client_cert`, `client_key` (`PathBuf` paths) and `verify: TlsVerify` (`Peer` default, `None` to skip).
+- `TlsVerify` added as a `snake_case` serde enum with `#[default] Peer`.
+- `BrokerConfig::effective_server_name()` resolves the SNI: `tls.server_name` if provided, otherwise the first host.
+- `lapin.rs::connect()` uses `Connection::connect_with_config` with an `OwnedTLSConfig` built from the config when TLS is enabled (CA cert in PEM, client cert/key in PKCS#8).
+- `connection_uri` made public for tests.
+- The `ConfigFingerprint` includes `ca_cert`, `client_cert`, `client_key` and `verify` to differentiate TLS configs.
+- The Laravel config exposes `ca_cert`, `client_cert`, `client_key`, `verify` under `brokers.default.tls`.
+- `ConfigNormalizer` validates and maps these fields to the native config.
+- 10 Rust tests in `tls.rs`, 3 new `ConfigNormalizerTest` tests.
+- `./scripts/check.sh`: PASS, 187 Rust tests + 104 PHP tests, Clippy clean, Fmt clean.
 
-Checkpoint après consumer cleanup du 16 août 2026 :
+Consumer cleanup checkpoint of August 16, 2026:
 
-- `ConsumerHandle::Drop` implémenté dans `consumer/set.rs` : envoie `ConsumerCommand::Close` via `try_send` (best-effort, non-bloquant) quand le dernier clone est droppé, empêchant les fuites de channels AMQP en process long (Octane, daemons) même si `close()` n'est jamais appelé explicitement.
-- `Consumer::__destruct()` ajouté à l'extension PHP : appelle `close()` si pas déjà fermé, guard anti-fork.
-- `RabbitMqQueue::closeConsumers()` et `__destruct()` ajoutés : ferment tous les consumers cachés et vident le cache, empêchant l'accumulation de channels entre requêtes Octane.
-- `OctaneLifecycle::flush()`, `reload()` et `stop()` appellent `closeConsumersOnResolvedQueues()` qui itère les connections `rabbit-rs` résolues du `QueueManager` et ferme les consumers de chaque `RabbitMqQueue`.
-- Le mock `Consumer` PHP track `closeCalls` et le mock `Pool` crée un nouveau consumer quand le précédent est fermé.
-- 6 tests Rust dans `consumer_cleanup.rs` (drop ferme les channels, multiple subscriptions, pas de double-close, idempotent across clones, next après drop retourne une erreur typée, in-flight delivery).
-- 6 tests PHP dans `RabbitMqQueueCleanupTest` (closeConsumers ferme tous, clears le cache, idempotent, safe sans consumers, __destruct, pop crée un nouveau consumer).
-- 4 nouveaux tests PHP dans `OctaneLifecycleTest` (flush/reload/stop ferment les consumers, flush sans queue manager).
-- `./scripts/check.sh` : PASS, 193 tests Rust + 114 tests PHP, Clippy clean, Fmt clean.
+- `ConsumerHandle::Drop` implemented in `consumer/set.rs`: sends `ConsumerCommand::Close` via `try_send` (best-effort, non-blocking) when the last clone is dropped, preventing AMQP channel leaks in long-lived processes (Octane, daemons) even if `close()` is never explicitly called.
+- `Consumer::__destruct()` added to the PHP extension: calls `close()` if not already closed, with a fork guard.
+- `RabbitMqQueue::closeConsumers()` and `__destruct()` added: close all cached consumers and empty the cache, preventing channel accumulation between Octane requests.
+- `OctaneLifecycle::flush()`, `reload()` and `stop()` call `closeConsumersOnResolvedQueues()` which iterates the resolved `rabbit-rs` connections of the `QueueManager` and closes the consumers of each `RabbitMqQueue`.
+- The PHP `Consumer` mock tracks `closeCalls` and the `Pool` mock creates a new consumer when the previous one is closed.
+- 6 Rust tests in `consumer_cleanup.rs` (drop closes channels, multiple subscriptions, no double-close, idempotent across clones, next after drop returns a typed error, in-flight delivery).
+- 6 PHP tests in `RabbitMqQueueCleanupTest` (closeConsumers closes all, clears the cache, idempotent, safe without consumers, __destruct, pop creates a new consumer).
+- 4 new PHP tests in `OctaneLifecycleTest` (flush/reload/stop close the consumers, flush without a queue manager).
+- `./scripts/check.sh`: PASS, 193 Rust tests + 114 PHP tests, Clippy clean, Fmt clean.
 
-### Task 32: Câbler le nettoyage des consumers et éviter les fuites de channels
+### Task 32: Wire consumer cleanup and prevent channel leaks
 
 **Files:**
 - Modify: crates/rabbit-rs-core/src/consumer/set.rs
@@ -415,18 +415,18 @@ Checkpoint après consumer cleanup du 16 août 2026 :
 - Modify: packages/laravel-queue/src/Octane/OctaneLifecycle.php
 - Create: crates/rabbit-rs-core/tests/consumer_cleanup.rs
 
-**Contexte :**
+**Context:**
 
-`RabbitMqQueue` cache les `Consumer` dans `$this->consumers` mais n'appelle jamais `close()`. Pas de `__destruct`. `ConsumerHandle` n'a pas de `Drop` qui envoie `Close`. En process long (Octane, daemons), les channels AMQP fuient.
+`RabbitMqQueue` caches `Consumer`s in `$this->consumers` but never calls `close()`. No `__destruct`. `ConsumerHandle` has no `Drop` that sends `Close`. In long-lived processes (Octane, daemons), AMQP channels leak.
 
 **Step 1: Write failing consumer cleanup tests**
 
-Scénarios :
+Scenarios:
 
-1. `RabbitMqQueue::__destruct()` → appelle `$consumer->close()` pour chaque consumer caché → les channels sont fermés.
-2. `ConsumerHandle::Drop` → envoie `Close` au actor (best-effort) → les channels sont fermés même si PHP ne appelle pas `close()`.
-3. `OctaneLifecycle::flush()` → ferme les consumers de la queue courante (pas seulement le pool factory).
-4. Après `close()`, `pop()` retourne `null` ou lève une erreur typée (pas de panic).
+1. `RabbitMqQueue::__destruct()` → calls `$consumer->close()` for each cached consumer → the channels are closed.
+2. `ConsumerHandle::Drop` → sends `Close` to the actor (best-effort) → the channels are closed even if PHP does not call `close()`.
+3. `OctaneLifecycle::flush()` → closes the consumers of the current queue (not just the pool factory).
+4. After `close()`, `pop()` returns `null` or throws a typed error (no panic).
 
 **Step 2: Verify failure**
 
@@ -436,14 +436,14 @@ Expected: FAIL.
 
 **Step 3: Implement Rust-side Drop safety net**
 
-- Implémenter `Drop` pour `ConsumerHandle` : envoie `ConsumerCommand::Close` (best-effort, non-bloquant via `try_send`).
-- Assurer que le `Close` handler dans l'actor ferme les channels même si reçu via Drop.
+- Implement `Drop` for `ConsumerHandle`: sends `ConsumerCommand::Close` (best-effort, non-blocking via `try_send`).
+- Ensure the `Close` handler in the actor closes the channels even when received via Drop.
 
 **Step 4: Implement PHP-side cleanup**
 
-- `Consumer` PHP : ajouter `__destruct()` qui appelle `close()` si pas déjà fermé.
-- `RabbitMqQueue` : ajouter `closeConsumers()` qui ferme tous les consumers cachés, et `__destruct()` qui l'appelle.
-- `OctaneLifecycle::flush()` : appeler `closeConsumers()` sur la queue courante (si disponible).
+- PHP `Consumer`: add `__destruct()` that calls `close()` if not already closed.
+- `RabbitMqQueue`: add `closeConsumers()` that closes all cached consumers, and `__destruct()` that calls it.
+- `OctaneLifecycle::flush()`: call `closeConsumers()` on the current queue (if available).
 
 **Step 5: Verify**
 
@@ -457,7 +457,7 @@ Expected: PASS.
     git add crates packages
     git commit -m "fix(core): wire consumer cleanup and prevent channel leaks"
 
-### Task 33: Dispatcher les events Laravel depuis l'extension native
+### Task 33: Dispatch Laravel events from the native extension
 
 **Files:**
 - Modify: crates/rabbit-rs-php/src/classes/pool.rs
@@ -471,18 +471,18 @@ Expected: PASS.
 - Modify: packages/laravel-queue/src/Events/BackpressureDetected.php
 - Create: packages/laravel-queue/tests/Feature/NativeEventDispatchTest.php
 
-**Contexte :**
+**Context:**
 
-`ConnectionStateChanged` et `BackpressureDetected` sont définis mais jamais dispatchés. Il n'existe pas de mécanisme FFI pour signaler les changements d'état de Rust vers PHP. Les events sont du dead code.
+`ConnectionStateChanged` and `BackpressureDetected` are defined but never dispatched. There is no FFI mechanism to signal state changes from Rust to PHP. The events are dead code.
 
 **Step 1: Write failing event dispatch tests**
 
-Scénarios :
+Scenarios:
 
-1. Une connection est perdue → l'event `ConnectionStateChanged` est dispatché avec `state = "recovering"`.
-2. La connection est rétablie → l'event `ConnectionStateChanged` est dispatché avec `state = "ready"` et `generation` incrémenté.
-3. Le publisher atteint la capacité → l'event `BackpressureDetected` est dispatché avec `inFlight` et `capacity`.
-4. Les events sont dispatchés via le système d'events Laravel (Event::dispatch).
+1. A connection is lost → the `ConnectionStateChanged` event is dispatched with `state = "recovering"`.
+2. The connection is restored → the `ConnectionStateChanged` event is dispatched with `state = "ready"` and incremented `generation`.
+3. The publisher reaches capacity → the `BackpressureDetected` event is dispatched with `inFlight` and `capacity`.
+4. The events are dispatched via the Laravel event system (Event::dispatch).
 
 **Step 2: Verify failure**
 
@@ -492,15 +492,15 @@ Expected: FAIL.
 
 **Step 3: Implement FFI callback mechanism**
 
-- Côté Rust (PHP extension) : enregistrer des callbacks PHP (closures) via `Pool::onConnectionState(callback)` et `Pool::onBackpressure(callback)`.
-- Stocker les callbacks dans le `Pool` PHP (Zend objects, jamais en threads Rust — les callbacks sont invoqués sur le thread PHP via `block_on`).
-- Le `ConnectionActor` publie `ConnectionState` via `watch` ; le `Pool` PHP poll le `watch::Receiver` lors des opérations synchrones et invoque le callback si l'état a changé.
-- Le `Metrics` atomic `backpressure_total` peut être comparé entre deux appels à `stats()` pour détecter le backpressure et invoquer le callback.
+- Rust side (PHP extension): register PHP callbacks (closures) via `Pool::onConnectionState(callback)` and `Pool::onBackpressure(callback)`.
+- Store the callbacks in the PHP `Pool` (Zend objects, never in Rust threads — callbacks are invoked on the PHP thread via `block_on`).
+- The `ConnectionActor` publishes `ConnectionState` via `watch`; the PHP `Pool` polls the `watch::Receiver` during synchronous operations and invokes the callback if the state changed.
+- The atomic `Metrics` `backpressure_total` can be compared between two `stats()` calls to detect backpressure and invoke the callback.
 
 **Step 4: Wire events in Laravel**
 
-- `RabbitMqServiceProvider` : enregistrer les callbacks par défaut qui dispatch les events Laravel.
-- `RabbitMqQueue` : exposer `onConnectionState()` et `onBackpressure()` pour override.
+- `RabbitMqServiceProvider`: register the default callbacks that dispatch the Laravel events.
+- `RabbitMqQueue`: expose `onConnectionState()` and `onBackpressure()` for override.
 
 **Step 5: Verify**
 
@@ -513,7 +513,7 @@ Expected: PASS.
     git add crates packages
     git commit -m "feat(laravel): dispatch native events for connection state and backpressure"
 
-### Task 34: Exposer les métriques consumer et latences
+### Task 34: Expose consumer metrics and latencies
 
 **Files:**
 - Modify: crates/rabbit-rs-php/src/classes/pool.rs
@@ -521,18 +521,18 @@ Expected: PASS.
 - Modify: packages/laravel-queue/src/Console/RabbitMqStatusCommand.php
 - Modify: packages/laravel-queue/tests/Feature/RabbitMqStatusCommandTest.php
 
-**Contexte :**
+**Context:**
 
-3 compteurs (`deliveries_total`, `acks_total`, `rejects_total`) et 2 histogrammes (`confirmation_latency`, `settlement_latency`) sont collectés en Rust mais non exposés à PHP. Le status command ne montre que les métriques éditeur.
+3 counters (`deliveries_total`, `acks_total`, `rejects_total`) and 2 histograms (`confirmation_latency`, `settlement_latency`) are collected in Rust but not exposed to PHP. The status command only shows publisher metrics.
 
 **Step 1: Write failing metrics tests**
 
-Scénarios :
+Scenarios:
 
-1. `Pool::stats()` inclut `deliveries_total`, `acks_total`, `rejects_total`.
-2. `Pool::stats()` inclut `confirmation_latency_p50`, `confirmation_latency_p95`, `confirmation_latency_p99`.
-3. `Pool::stats()` inclut `settlement_latency_p50`, `settlement_latency_p95`, `settlement_latency_p99`.
-4. `RabbitMqStatusCommand` affiche les métriques consumer et les latences.
+1. `Pool::stats()` includes `deliveries_total`, `acks_total`, `rejects_total`.
+2. `Pool::stats()` includes `confirmation_latency_p50`, `confirmation_latency_p95`, `confirmation_latency_p99`.
+3. `Pool::stats()` includes `settlement_latency_p50`, `settlement_latency_p95`, `settlement_latency_p99`.
+4. `RabbitMqStatusCommand` displays the consumer metrics and latencies.
 
 **Step 2: Verify failure**
 
@@ -542,9 +542,9 @@ Expected: FAIL.
 
 **Step 3: Expose metrics to PHP**
 
-- `pool.rs::stats()` : ajouter `deliveries_total`, `acks_total`, `rejects_total` depuis `MetricsSnapshot`.
-- `pool.rs::stats()` : calculer percentiles (p50/p95/p99) depuis les histogrammes atomiques et les exposer.
-- `RabbitMqStatusCommand` : afficher les nouvelles métriques.
+- `pool.rs::stats()`: add `deliveries_total`, `acks_total`, `rejects_total` from `MetricsSnapshot`.
+- `pool.rs::stats()`: compute percentiles (p50/p95/p99) from the atomic histograms and expose them.
+- `RabbitMqStatusCommand`: display the new metrics.
 
 **Step 4: Verify**
 
@@ -557,7 +557,7 @@ Expected: PASS.
     git add crates packages
     git commit -m "feat(metrics): expose consumer metrics and latency histograms to PHP"
 
-### Task 35: Câbler la config publisher (confirms, mandatory, timeout)
+### Task 35: Wire the publisher config (confirms, mandatory, timeout)
 
 **Files:**
 - Modify: crates/rabbit-rs-core/src/config.rs
@@ -567,19 +567,19 @@ Expected: PASS.
 - Modify: packages/laravel-queue/config/rabbit-rs.php
 - Modify: packages/laravel-queue/src/Support/MessageMapper.php
 
-**Contexte :**
+**Context:**
 
-`publisher.confirms` et `publisher.mandatory` dans la config Laravel sont normalisés mais jamais passés au native `Pool`. `normalized['publisher']` n'arrive pas à `Pool::__construct()`. `confirm_timeout` est hardcoded à 30s. `timeout_ms` n'est pas envoyé par défaut dans `MessageMapper::map()`.
+`publisher.confirms` and `publisher.mandatory` in the Laravel config are normalized but never passed to the native `Pool`. `normalized['publisher']` does not reach `Pool::__construct()`. `confirm_timeout` is hardcoded to 30s. `timeout_ms` is not sent by default in `MessageMapper::map()`.
 
 **Step 1: Write failing config publisher tests**
 
-Scénarios :
+Scenarios:
 
-1. Config avec `publisher.confirms = false` → le publisher n'active pas `confirm_select`.
-2. Config avec `publisher.confirms = true` → le publisher active `confirm_select`.
-3. Config avec `publisher.mandatory = false` → `basic_publish` avec `mandatory = false`.
-4. Config avec `publisher.confirm_timeout = 5000` → le timeout de confirm est 5s.
-5. `MessageMapper::map()` inclut `timeout_ms` depuis la config publisher par défaut.
+1. Config with `publisher.confirms = false` → the publisher does not activate `confirm_select`.
+2. Config with `publisher.confirms = true` → the publisher activates `confirm_select`.
+3. Config with `publisher.mandatory = false` → `basic_publish` with `mandatory = false`.
+4. Config with `publisher.confirm_timeout = 5000` → the confirm timeout is 5s.
+5. `MessageMapper::map()` includes `timeout_ms` from the publisher config by default.
 
 **Step 2: Verify failure**
 
@@ -589,11 +589,11 @@ Expected: FAIL.
 
 **Step 3: Wire publisher config to native**
 
-- `ConfigNormalizer` : inclure `publisher` dans `normalized['native']` (pas seulement dans `normalized['publisher']`).
-- Le native `Config` doit désérialiser `publisher.confirms`, `publisher.mandatory`, `publisher.confirm_timeout`.
-- `PublisherConfig` dans `config.rs` : désérialiser depuis config au lieu de hardcoder.
-- `client.rs::publisher_config()` : lire depuis la config validée.
-- `MessageMapper::map()` : inclure `timeout_ms` par défaut depuis `publisher.confirm_timeout` quand pas explicitement fourni.
+- `ConfigNormalizer`: include `publisher` in `normalized['native']` (not only in `normalized['publisher']`).
+- The native `Config` must deserialize `publisher.confirms`, `publisher.mandatory`, `publisher.confirm_timeout`.
+- `PublisherConfig` in `config.rs`: deserialize from config instead of hardcoding.
+- `client.rs::publisher_config()`: read from the validated config.
+- `MessageMapper::map()`: include `timeout_ms` by default from `publisher.confirm_timeout` when not explicitly provided.
 
 **Step 4: Verify**
 
@@ -606,25 +606,25 @@ Expected: PASS.
     git add crates packages
     git commit -m "fix(core): wire publisher config (confirms, mandatory, timeout) end-to-end"
 
-### Task 36: Câbler le lifecycle Octane complet
+### Task 36: Wire the full Octane lifecycle
 
 **Files:**
 - Modify: packages/laravel-queue/src/RabbitMqServiceProvider.php
 - Modify: packages/laravel-queue/src/Octane/OctaneLifecycle.php
 - Modify: packages/laravel-queue/tests/Feature/OctaneLifecycleTest.php
 
-**Contexte :**
+**Context:**
 
-Seul `flush()` (no-op) est branché via `$app->terminating()`. `reload()` et `stop()` ne sont pas hookés aux events Octane. Les consumers cachés dans `RabbitMqQueue::$consumers` ne sont pas nettoyés entre requêtes Octane.
+Only `flush()` (a no-op) is wired via `$app->terminating()`. `reload()` and `stop()` are not hooked to the Octane events. The consumers cached in `RabbitMqQueue::$consumers` are not cleaned up between Octane requests.
 
 **Step 1: Write failing Octane lifecycle tests**
 
-Scénarios :
+Scenarios:
 
-1. Quand Octane reload est déclenché → `OctaneLifecycle::reload()` est appelé → les pools sont flushés.
-2. Quand Octane worker stop est déclenché → `OctaneLifecycle::stop()` est appelé → les pools sont flushés et fermés.
-3. Après `flush()` en fin de requête Octane → les consumers de la queue courante sont fermés (pas seulement le pool factory).
-4. Le service provider enregistre les hooks Octane correctement quand `Laravel\Octane\Octane::class` existe.
+1. When Octane reload is triggered → `OctaneLifecycle::reload()` is called → the pools are flushed.
+2. When Octane worker stop is triggered → `OctaneLifecycle::stop()` is called → the pools are flushed and closed.
+3. After `flush()` at the end of an Octane request → the current queue's consumers are closed (not just the pool factory).
+4. The service provider registers the Octane hooks correctly when `Laravel\Octane\Octane::class` exists.
 
 **Step 2: Verify failure**
 
@@ -634,11 +634,11 @@ Expected: FAIL.
 
 **Step 3: Wire Octane hooks**
 
-- `RabbitMqServiceProvider::registerOctaneLifecycle()` :
-  - Enregistrer `flush()` sur `Octane::tick()` ou `terminating` (déjà fait).
-  - Enregistrer `reload()` sur l'event `WorkerReload` d'Octane.
-  - Enregistrer `stop()` sur l'event `WorkerStopping` d'Octane.
-- `OctaneLifecycle::flush()` : appeler `closeConsumers()` sur la queue courante en plus du flush du pool factory (dépend de Task 32).
+- `RabbitMqServiceProvider::registerOctaneLifecycle()`:
+  - Register `flush()` on `Octane::tick()` or `terminating` (already done).
+  - Register `reload()` on the Octane `WorkerReload` event.
+  - Register `stop()` on the Octane `WorkerStopping` event.
+- `OctaneLifecycle::flush()`: call `closeConsumers()` on the current queue in addition to flushing the pool factory (depends on Task 32).
 
 **Step 4: Verify**
 
@@ -651,7 +651,7 @@ Expected: PASS.
     git add packages
     git commit -m "fix(laravel): wire full Octane lifecycle (reload, stop, consumer cleanup)"
 
-### Task 37: Câbler le WorkCommand et tester le supervisor end-to-end
+### Task 37: Wire the WorkCommand and test the supervisor end-to-end
 
 **Files:**
 - Modify: packages/laravel-queue/src/Console/RabbitMqWorkCommand.php
@@ -660,19 +660,19 @@ Expected: PASS.
 - Modify: packages/laravel-queue/tests/Feature/RabbitMqWorkCommandTest.php
 - Create: packages/laravel-queue/tests/Feature/WorkerSupervisorIntegrationTest.php
 
-**Contexte :**
+**Context:**
 
-`--rabbit-rs-worker={i}` est émis par le supervisor mais jamais consommé. La méthode `run()` (supervision, crash detection, restart, signaux) n'est pas testée end-to-end.
+`--rabbit-rs-worker={i}` is emitted by the supervisor but never consumed. The `run()` method (supervision, crash detection, restart, signals) is not tested end-to-end.
 
 **Step 1: Write failing supervisor integration tests**
 
-Scénarios :
+Scenarios:
 
-1. Le supervisor spawn N workers → chaque worker reçoit `--rabbit-rs-worker={i}` → l'option est consommée pour le logging/metrics.
-2. Un worker crash → le supervisor le redémarre avec backoff.
-3. SIGTERM au supervisor → les workers sont arrêtés proprement.
-4. `maxRestarts` atteint → le supervisor retourne `EXIT_MAX_RESTARTS`.
-5. `--rabbit-rs-worker` est visible dans les logs du worker.
+1. The supervisor spawns N workers → each worker receives `--rabbit-rs-worker={i}` → the option is consumed for logging/metrics.
+2. A worker crashes → the supervisor restarts it with backoff.
+3. SIGTERM to the supervisor → the workers are stopped cleanly.
+4. `maxRestarts` reached → the supervisor returns `EXIT_MAX_RESTARTS`.
+5. `--rabbit-rs-worker` is visible in the worker's logs.
 
 **Step 2: Verify failure**
 
@@ -682,13 +682,13 @@ Expected: FAIL.
 
 **Step 3: Implement option consumption**
 
-- Créer un `WorkCommandExtension` (ou override `getOptions()` sur le `WorkCommand`) qui reconnait `--rabbit-rs-worker` et l'utilise pour le logging/metrics.
-- Le `WorkerSupervisor::buildChildCommand()` doit passer l'option correctement.
+- Create a `WorkCommandExtension` (or override `getOptions()` on the `WorkCommand`) that recognizes `--rabbit-rs-worker` and uses it for logging/metrics.
+- `WorkerSupervisor::buildChildCommand()` must pass the option correctly.
 
 **Step 4: Implement end-to-end tests**
 
-- Tester `run()` avec mock processes (ou real processes avec un script PHP minimal).
-- Vérifier crash detection, restart, backoff, signal handling, graceful shutdown.
+- Test `run()` with mock processes (or real processes with a minimal PHP script).
+- Verify crash detection, restart, backoff, signal handling, graceful shutdown.
 
 **Step 5: Verify**
 
@@ -701,157 +701,157 @@ Expected: PASS.
     git add packages
     git commit -m "fix(laravel): wire WorkCommand option and test supervisor end-to-end"
 
-Ce lot a été exécuté dans le worktree dédié `.worktrees/strict-audit-stabilization` sur la branche `fix/strict-audit-stabilization`. Les corrections déterministes issues des audits des 31 juillet et 1er août sont terminées ; les qualifications nécessitant un environnement de production représentatif sont reportées aux jalons dédiés et ne bloquent pas le démarrage de la Task 16.
+This batch was executed in the dedicated worktree `.worktrees/strict-audit-stabilization` on the branch `fix/strict-audit-stabilization`. The deterministic fixes from the July 31 and August 1 audits are complete; qualifications requiring a representative production environment are deferred to dedicated milestones and do not block the start of Task 16.
 
-Périmètre initial des constats actifs :
+Initial scope of the active findings:
 
-- dispatch transactionnel des deliveries face aux waiters expirés ou annulés ;
-- propagation de `message_id` et `correlation_id`, consumer tag canonique, rollback partiel de `ConsumerSet`, deadline de delayed release et état terminal après erreur de settlement ;
-- commit générationnel de `ClientPool` face à `close()` sans mutex tenu pendant les opérations réseau ;
-- budget global de 2 s pour la fermeture des clients, acteurs et runtime Tokio ;
-- alignement des configurations et defaults core : scheduler, famine, attempts, jitter et publication mandatory ;
-- confidentialité de `ConnectionKey` dans les identifiants, statistiques, erreurs et sorties `Debug` ;
-- bornes PHP sur batches, payloads cumulés, headers, profondeur et timeouts, avec chemins d'erreur précis ;
-- headers AMQP typés et propriétés de delivery conservées jusqu'à l'API PHP ;
-- profils PHPT/FPM séparés, avec qualifications RabbitMQ-chaos, plateformes et performance reportées aux jalons dédiés.
+- transactional dispatch of deliveries against expired or cancelled waiters;
+- propagation of `message_id` and `correlation_id`, canonical consumer tag, partial rollback of `ConsumerSet`, delayed release deadline and terminal state after settlement error;
+- generational commit of `ClientPool` against `close()` without holding a mutex during network operations;
+- global 2 s budget for closing clients, actors and the Tokio runtime;
+- alignment of core configurations and defaults: scheduler, starvation, attempts, jitter and mandatory publishing;
+- confidentiality of `ConnectionKey` in identifiers, statistics, errors and `Debug` output;
+- PHP bounds on batches, cumulative payloads, headers, depth and timeouts, with precise error paths;
+- typed AMQP headers and delivery properties preserved up to the PHP API;
+- separate PHPT/FPM profiles, with RabbitMQ-chaos, platform and performance qualifications deferred to dedicated milestones.
 
-État du lot clôturé au 1 août 2026 :
+State of the batch closed on August 1, 2026:
 
-- [x] dispatch et cycle de vie des deliveries sécurisés, propriétés AMQP conservées et rollback partiel appliqué ;
-- [x] `ClientPool` atomique face à `close()` avec initialisations réseau hors des registres ;
-- [x] shutdown à budget global de 2 s, defaults core alignés et identités publiques expurgées ;
-- [x] bornes et types de la frontière PHP ;
-- **Report non bloquant** — laboratoire RabbitMQ-chaos et matrice plateformes ;
-- **Report non bloquant** — baseline de performance.
+- [x] delivery dispatch and lifecycle secured, AMQP properties preserved and partial rollback applied;
+- [x] `ClientPool` atomic against `close()` with network initializations outside the registries;
+- [x] shutdown with a global 2 s budget, core defaults aligned and public identities redacted;
+- [x] bounds and types of the PHP boundary;
+- **Non-blocking deferral** — RabbitMQ-chaos lab and platform matrix;
+- **Non-blocking deferral** — performance baseline.
 
-Qualifications différées et critères de reprise :
+Deferred qualifications and resumption criteria:
 
-- **RabbitMQ réel et chaos — Milestone D, Tasks 25–27 :** reprendre après le package Laravel du Milestone C, en créant d'abord le cluster, puis les tests d'intégration et enfin les scénarios de panne. La qualification at-least-once exige `missing = 0` et le comptage explicite des messages attendus, uniques, dupliqués et manquants ;
-- **Performance — Milestone E, Tasks 28–30 :** établir d'abord la baseline de microbenchmarks FFI, conversion et batch issue de l'audit, puis exécuter les comparaisons Laravel et calibrer les defaults et budgets. Aucun seuil ne doit être fixé avant mesure sur une machine de référence documentée ;
-- **Plateformes — Milestone F, Tasks 31–32 :** qualifier PHP 8.4/8.5, x86_64/ARM64, glibc/musl et NTS/ZTS avec la matrice PIE de 16 combinaisons, puis construire et smoke-tester chaque combinaison en CI.
+- **Real RabbitMQ and chaos — Milestone D, Tasks 25–27:** resume after the Laravel package of Milestone C, first creating the cluster, then the integration tests and finally the failure scenarios. The at-least-once qualification requires `missing = 0` and the explicit counting of expected, unique, duplicated and missing messages;
+- **Performance — Milestone E, Tasks 28–30:** first establish the FFI, conversion and batch microbenchmark baseline from the audit, then run the Laravel comparisons and calibrate the defaults and budgets. No threshold may be set before measurement on a documented reference machine;
+- **Platforms — Milestone F, Tasks 31–32:** qualify PHP 8.4/8.5, x86_64/ARM64, glibc/musl and NTS/ZTS with the 16-combination PIE matrix, then build and smoke-test each combination in CI.
 
-Constats déjà corrigés à verrouiller par non-régression :
+Already-fixed findings to be locked in by non-regression:
 
-- transition publisher `Recovering` vers `Ready` pour une même génération ;
-- historique `source_errors` borné ;
-- settlement `Reject` disponible ;
-- credentials Lapin construits sans concaténation d'URI exposable.
+- publisher transition from `Recovering` to `Ready` for the same generation;
+- bounded `source_errors` history;
+- `Reject` settlement available;
+- Lapin credentials built without exposable URI concatenation.
 
-Baseline initiale du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Initial baseline of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk ./scripts/check.sh` : PASS, 112 tests Rust et validation Composer stricte ;
-- `rtk cargo build -p rabbit-rs-php --release --features extension-tests` : PASS ;
-- `rtk ./scripts/test-extension.sh` : PASS, 9 PHPT sur 9 ;
-- `rtk ./scripts/test-fpm.sh` : PASS, laboratoire FPM à deux workers ;
-- la build de distribution sans `extension-tests` reste distincte de la build PHPT afin de ne pas exposer `testing_pool()` dans l'artefact publié.
+- `rtk ./scripts/check.sh`: PASS, 112 Rust tests and strict Composer validation;
+- `rtk cargo build -p rabbit-rs-php --release --features extension-tests`: PASS;
+- `rtk ./scripts/test-extension.sh`: PASS, 9 of 9 PHPT;
+- `rtk ./scripts/test-fpm.sh`: PASS, two-worker FPM lab;
+- the distribution build without `extension-tests` remains distinct from the PHPT build so as not to expose `testing_pool()` in the published artifact.
 
-Checkpoint après sécurisation core du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Core hardening checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk ./scripts/check.sh` : PASS, 141 tests Rust, Clippy sans warning et validation Composer stricte ;
-- `rtk ./scripts/test-extension.sh` : PASS, 9 PHPT sur 9 ;
-- `rtk ./scripts/test-fpm.sh` : PASS, laboratoire FPM à deux workers ;
-- les tests couvrent le budget de shutdown partagé, la fermeture post-fork sans réacquisition, les courses de fermeture, la reprise publisher de même génération, la borne `source_errors`, le scheduler canonique et sa migration legacy, les defaults attempts/jitter/mandatory et l'absence d'empreinte de credentials dans les identifiants publics.
+- `rtk ./scripts/check.sh`: PASS, 141 Rust tests, Clippy without warnings and strict Composer validation;
+- `rtk ./scripts/test-extension.sh`: PASS, 9 of 9 PHPT;
+- `rtk ./scripts/test-fpm.sh`: PASS, two-worker FPM lab;
+- the tests cover the shared shutdown budget, post-fork closure without reacquisition, closure races, same-generation publisher recovery, the `source_errors` bound, the canonical scheduler and its legacy migration, the attempts/jitter/mandatory defaults and the absence of credential fingerprints in public identifiers.
 
-Checkpoint après bornage de la frontière PHP du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+PHP boundary bounding checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk ./scripts/check.sh` : PASS, 153 tests Rust dont 143 core, Clippy sans warning et validation Composer stricte ;
-- `rtk ./scripts/test-extension.sh` : PASS, 11 PHPT sur 11 ;
-- `rtk ./scripts/test-fpm.sh` : PASS, laboratoire FPM à deux workers ;
-- les batches sont bornés à 256 messages et 1 Mio de payload cumulé, les headers à 128 entrées et 64 Kio cumulés par appel, et `timeout_ms` à 24 h avec addition contrôlée ;
-- les types AMQP scalaires sont conservés, les headers PHP publiés restent plats et les structures broker imbriquées comme `x-death` sont omises des métadonnées sans masquer les scalaires ;
-- les PHPT couvrent ACK, retour mandatory, timeout de confirmation, erreur transport typée, backpressure, settlements, fermeture active et chemins d'erreur `messages[index]`.
+- `rtk ./scripts/check.sh`: PASS, 153 Rust tests of which 143 core, Clippy without warnings and strict Composer validation;
+- `rtk ./scripts/test-extension.sh`: PASS, 11 of 11 PHPT;
+- `rtk ./scripts/test-fpm.sh`: PASS, two-worker FPM lab;
+- batches are bounded to 256 messages and 1 MiB of cumulative payload, headers to 128 entries and 64 KiB cumulative per call, and `timeout_ms` to 24 h with checked addition;
+- scalar AMQP types are preserved, published PHP headers remain flat and nested broker structures like `x-death` are omitted from metadata without hiding scalars;
+- the PHPT cover ACK, mandatory return, confirm timeout, typed transport error, backpressure, settlements, active closure and `messages[index]` error paths.
 
-Checkpoint après initialisation du package Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Laravel package bootstrap checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
-- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 12 tests et 34 assertions ;
-- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 12 tests et 34 assertions ;
-- `rtk ./scripts/check.sh` : PASS ;
-- la configuration publiée applique les defaults confirms/mandatory, quorum durable et absence de DLQ applicative, puis normalise brokers, routes et workers vers le format natif avec erreurs par chemin et sans fuite de secrets.
+- `rtk composer validate --strict` in `packages/laravel-queue`: PASS;
+- PHPUnit with Laravel 13.23, Testbench 11 and PHPUnit 12: PASS, 12 tests and 34 assertions;
+- PHPUnit with Laravel 12.64, Testbench 10 and PHPUnit 11: PASS, 12 tests and 34 assertions;
+- `rtk ./scripts/check.sh`: PASS;
+- the published config applies the confirms/mandatory defaults, durable quorum and absence of application DLQ, then normalizes brokers, routes and workers to the native format with per-path errors and no secret leaks.
 
-Checkpoint après enregistrement du connecteur Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Laravel connector registration checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 24 tests et 53 assertions ;
-- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 24 tests et 53 assertions ;
-- `rtk ./scripts/check.sh` : PASS ;
-- le connecteur `rabbit-rs` partage un pool natif process-local par empreinte de configuration normalisée, invalide son cache après fork et ne conserve pas les valeurs liées à une requête ;
-- `RabbitMqQueue` est introduit comme squelette contractuel afin que `Queue::connection()` puisse appliquer immédiatement le conteneur et le nom de connexion ; ses opérations restent réservées à la Task 18.
+- PHPUnit with Laravel 13.23, Testbench 11 and PHPUnit 12: PASS, 24 tests and 53 assertions;
+- PHPUnit with Laravel 12.64, Testbench 10 and PHPUnit 11: PASS, 24 tests and 53 assertions;
+- `rtk ./scripts/check.sh`: PASS;
+- the `rabbit-rs` connector shares a process-local native pool per normalized config fingerprint, invalidates its cache after fork and holds no request-bound values;
+- `RabbitMqQueue` is introduced as a contractual skeleton so that `Queue::connection()` can immediately apply the container and connection name; its operations remain reserved for Task 18.
 
-Checkpoint après implémentation des publications Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Laravel publication implementation checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
-- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 38 tests et 100 assertions ;
-- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 38 tests et 100 assertions ;
-- `rtk ./scripts/check.sh` : PASS ;
-- `push`, `pushRaw`, `later` et `bulk` transmettent des enveloppes natives à identifiant UUID stable, résolvent les routes et les placeholders de queue, préservent les payloads bruts et utilisent un seul appel natif par batch immédiat ou différé ;
-- la publication reste pilotée par `Illuminate\Queue\Queue` pour les payloads, événements et transactions, avec délais en millisecondes, erreurs natives génériques traduites en `QueueException` et backpressure/connexion conservées comme erreurs dédiées.
+- `rtk composer validate --strict` in `packages/laravel-queue`: PASS;
+- PHPUnit with Laravel 13.23, Testbench 11 and PHPUnit 12: PASS, 38 tests and 100 assertions;
+- PHPUnit with Laravel 12.64, Testbench 10 and PHPUnit 11: PASS, 38 tests and 100 assertions;
+- `rtk ./scripts/check.sh`: PASS;
+- `push`, `pushRaw`, `later` and `bulk` transmit native envelopes with a stable UUID identifier, resolve routes and queue placeholders, preserve raw payloads and use a single native call per immediate or delayed batch;
+- publishing remains driven by `Illuminate\Queue\Queue` for payloads, events and transactions, with delays in milliseconds, generic native errors translated to `QueueException` and backpressure/connection kept as dedicated errors.
 
-Checkpoint après adaptation des deliveries en jobs Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Delivery-to-Laravel-job adaptation checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
-- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 46 tests et 135 assertions ;
-- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 46 tests et 135 assertions ;
-- `rtk ./scripts/check.sh` : PASS ;
-- `RabbitMqJob` met en cache le payload, le `message_id` et `attempts`, acquitte ou libère la delivery une seule fois et abandonne le handle natif uniquement après une transition réussie ;
-- les tests couvrent la remise immédiate par `basic.reject(requeue=true)`, la republication différée en millisecondes, la remontée d'une erreur d'ACK et la séquence Laravel ACK, callback `failed`, puis événement `JobFailed` ; `pop` reste réservé à la Task 20.
+- `rtk composer validate --strict` in `packages/laravel-queue`: PASS;
+- PHPUnit with Laravel 13.23, Testbench 11 and PHPUnit 12: PASS, 46 tests and 135 assertions;
+- PHPUnit with Laravel 12.64, Testbench 10 and PHPUnit 11: PASS, 46 tests and 135 assertions;
+- `rtk ./scripts/check.sh`: PASS;
+- `RabbitMqJob` caches the payload, `message_id` and `attempts`, acknowledges or releases the delivery exactly once and abandons the native handle only after a successful transition;
+- the tests cover immediate requeue via `basic.reject(requeue=true)`, delayed republishing in milliseconds, surfacing an ACK error and the Laravel ACK, `failed` callback, then `JobFailed` event sequence; `pop` remains reserved for Task 20.
 
-Checkpoint après branchement de la consommation multi-vhost Laravel du 1 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Multi-vhost Laravel consumption wiring checkpoint of August 1, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ;
-- PHPUnit avec Laravel 13.23, Testbench 11 et PHPUnit 12 : PASS, 57 tests et 159 assertions ;
-- PHPUnit avec Laravel 12.64, Testbench 10 et PHPUnit 11 : PASS, 57 tests et 159 assertions ;
-- `rtk ./scripts/check.sh` : PASS ;
-- `RabbitMqQueue::pop()` résout la valeur Laravel `queue` comme un profil worker, réutilise son consumer natif agrégé et délègue en un appel `next()` la sélection pondérée entre brokers et vhosts ;
-- les subscriptions `enabled=false` sont exclues avant la création du pool, `block_for` est converti de secondes en millisecondes avec borne d'overflow, et l'alias natif de subscription restitue le vrai nom de queue au `RabbitMqJob` ;
-- les tests couvrent deux vhosts, trois subscriptions actives, un profil inconnu, une subscription désactivée, un timeout sans job et la traduction des erreurs natives ; la sélection fine de plusieurs aliases reste réservée à `rabbit-rs:work` et les opérations d'administration à la Task 21.
+- `rtk composer validate --strict` in `packages/laravel-queue`: PASS;
+- PHPUnit with Laravel 13.23, Testbench 11 and PHPUnit 12: PASS, 57 tests and 159 assertions;
+- PHPUnit with Laravel 12.64, Testbench 10 and PHPUnit 11: PASS, 57 tests and 159 assertions;
+- `rtk ./scripts/check.sh`: PASS;
+- `RabbitMqQueue::pop()` resolves the Laravel `queue` value as a worker profile, reuses its aggregated native consumer and delegates in a single `next()` call the weighted selection across brokers and vhosts;
+- subscriptions with `enabled=false` are excluded before pool creation, `block_for` is converted from seconds to milliseconds with an overflow bound, and the native subscription alias returns the real queue name to `RabbitMqJob`;
+- the tests cover two vhosts, three active subscriptions, an unknown profile, a disabled subscription, a timeout without job and the translation of native errors; fine-grained selection of multiple aliases remains reserved for `rabbit-rs:work` and admin operations for Task 21.
 
-Checkpoint après administration et monitoring du 15 août 2026 sur macOS ARM64 avec PHP 8.4.21 :
+Administration and monitoring checkpoint of August 15, 2026 on macOS ARM64 with PHP 8.4.21:
 
-- `rtk cargo fmt --all -- --check` : PASS ; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` : PASS ; `rtk cargo test --workspace --all-targets` : PASS, 153 tests Rust ;
-- `rtk composer validate --strict` dans `packages/laravel-queue` : PASS ; PHPUnit (sans ext-rabbit_rs) : PASS, 65 tests et 172 assertions ;
-- `queue_size` et `purge_queue` ajoutés au trait `TopologyChannel` avec implémentations Lapin (passive declare / queue_purge) et Mock ; `ClientPool::queue_size` et `ClientPool::purge_queue` exposent les opérations au niveau client ;
-- `Pool::size()` et `Pool::clear()` ajoutés à l'extension native PHP et au stub ;
-- `RabbitMqQueue::size()` et `RabbitMqQueue::clear()` résolvent la route configurée et délèguent au pool natif ; `pendingSize` délègue à `size`, `delayedSize` et `reservedSize` retournent 0, `creationTimeOfOldestPendingJob` retourne null (AMQP ne distingue pas ces états) ;
-- les tests couvrent size par route et par défaut, clear par route et par défaut, size à zéro, échec native traduit en QueueException, et refus sans route configurée.
+- `rtk cargo fmt --all -- --check`: PASS; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS; `rtk cargo test --workspace --all-targets`: PASS, 153 Rust tests;
+- `rtk composer validate --strict` in `packages/laravel-queue`: PASS; PHPUnit (without ext-rabbit_rs): PASS, 65 tests and 172 assertions;
+- `queue_size` and `purge_queue` added to the `TopologyChannel` trait with Lapin (passive declare / queue_purge) and Mock implementations; `ClientPool::queue_size` and `ClientPool::purge_queue` expose the operations at client level;
+- `Pool::size()` and `Pool::clear()` added to the native PHP extension and the stub;
+- `RabbitMqQueue::size()` and `RabbitMqQueue::clear()` resolve the configured route and delegate to the native pool; `pendingSize` delegates to `size`, `delayedSize` and `reservedSize` return 0, `creationTimeOfOldestPendingJob` returns null (AMQP does not distinguish these states);
+- the tests cover size per route and default, clear per route and default, size at zero, native failure translated to QueueException, and refusal without a configured route.
 
-Checkpoint après le cluster RabbitMQ de test du 15 août 2026 sur macOS ARM64 (Colima/Docker) :
+Test RabbitMQ cluster checkpoint of August 15, 2026 on macOS ARM64 (Colima/Docker):
 
-- `rtk ./scripts/check.sh` : PASS, 153 tests Rust et validation Composer ;
-- cluster 3 nœuds RabbitMQ 4.2.9 (Alpine) avec peer discovery `rabbit_peer_discovery_classic_config`, Erlang cookie partagé, `cluster_partition_handling = pause_minority` et quorum queues opérationnelles ;
-- plugin `rabbitmq_delayed_message_exchange` v4.2.0 (SHA-256 vérifié) pour le profil `with-plugin` ; profil `without-plugin` sans plugin pour tester le fallback TTL ;
-- 2 vhosts (`/orders-eu`, `/billing`), utilisateur limité `rabbit_rs` (management) et admin `admin` (administrator) avec permissions restreintes ;
-- Toxiproxy 2.12.0 intercepte les AMQP ports 5672–5674 pour l'injection de fautes ; Prometheus v3.5.0 scrape les 3 nœuds ;
-- `./scripts/lab-up.sh` démarre le lab, `./scripts/lab-ready.sh` vérifie readiness (cluster, vhosts, quorum, permissions, Prometheus, Toxiproxy, plugin), `./scripts/lab-down.sh` arrête proprement ;
-- toutes les images sont épinglées par digest SHA-256.
+- `rtk ./scripts/check.sh`: PASS, 153 Rust tests and Composer validation;
+- 3-node RabbitMQ 4.2.9 (Alpine) cluster with `rabbit_peer_discovery_classic_config` peer discovery, shared Erlang cookie, `cluster_partition_handling = pause_minority` and working quorum queues;
+- `rabbitmq_delayed_message_exchange` plugin v4.2.0 (SHA-256 verified) for the `with-plugin` profile; `without-plugin` profile without the plugin to test the TTL fallback;
+- 2 vhosts (`/orders-eu`, `/billing`), limited user `rabbit_rs` (management) and admin `admin` (administrator) with restricted permissions;
+- Toxiproxy 2.12.0 intercepts the AMQP ports 5672–5674 for fault injection; Prometheus v3.5.0 scrapes the 3 nodes;
+- `./scripts/lab-up.sh` starts the lab, `./scripts/lab-ready.sh` verifies readiness (cluster, vhosts, quorum, permissions, Prometheus, Toxiproxy, plugin), `./scripts/lab-down.sh` shuts down cleanly;
+- all images are pinned by SHA-256 digest.
 
-Checkpoint après les tests d'intégration end-to-end du 15 août 2026 sur macOS ARM64 (Colima/Docker) :
+End-to-end integration tests checkpoint of August 15, 2026 on macOS ARM64 (Colima/Docker):
 
-- `rtk cargo fmt --all -- --check` : PASS ; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` : PASS ; `rtk cargo test --workspace --all-targets` : PASS, 153 tests Rust ;
-- 8 tests d'intégration Rust via `cargo test -p rabbit-rs-core --features integration` : publish_confirm_then_consume_and_ack, release_zero_requeues_and_redispatches, two_vhosts_in_one_consumer_set, bulk_publish_then_consume_all, declare_quorum_queue_succeeds, declare_classic_queue_succeeds, verify_passive_does_not_create, external_mode_emits_no_commands ;
-- tests d'intégration Laravel (QueueWorkerTest, DelayedJobTest) créés dans `tests/Integration/` avec testsuite dédiée ; skip automatique si ext-rabbit_rs n'est pas chargée ;
-- `scripts/test-integration.sh` démarre le lab, attend readiness, exécute les tests Rust et Laravel, puis arrête le lab ;
-- feature Cargo `integration` protège les tests Rust nécessitant un broker réel ; les tests déclarent les queues via `TopologyReconciler` avant publication ;
-- permissions `rabbit_rs` mises à jour pour permettre la déclaration de queues de test (`^(amq\.|rabbit-rs-it-)`) ;
-- phpunit.xml séparé en testsuites "Rabbit RS Laravel" et "Rabbit RS Integration" pour isoler les tests nécessitant un broker.
+- `rtk cargo fmt --all -- --check`: PASS; `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings`: PASS; `rtk cargo test --workspace --all-targets`: PASS, 153 Rust tests;
+- 8 Rust integration tests via `cargo test -p rabbit-rs-core --features integration`: publish_confirm_then_consume_and_ack, release_zero_requeues_and_redispatches, two_vhosts_in_one_consumer_set, bulk_publish_then_consume_all, declare_quorum_queue_succeeds, declare_classic_queue_succeeds, verify_passive_does_not_create, external_mode_emits_no_commands;
+- Laravel integration tests (QueueWorkerTest, DelayedJobTest) created in `tests/Integration/` with a dedicated testsuite; automatic skip if ext-rabbit_rs is not loaded;
+- `scripts/test-integration.sh` starts the lab, waits for readiness, runs the Rust and Laravel tests, then stops the lab;
+- the Cargo `integration` feature guards the Rust tests requiring a real broker; the tests declare the queues via `TopologyReconciler` before publishing;
+- `rabbit_rs` permissions updated to allow declaring test queues (`^(amq\.|rabbit-rs-it-)`);
+- phpunit.xml split into "Rabbit RS Laravel" and "Rabbit RS Integration" testsuites to isolate tests requiring a broker.
 
-Checkpoint après correction des tests d'intégration Laravel du 16 août 2026 sur macOS ARM64 (Colima/Docker) :
+Laravel integration tests fix checkpoint of August 16, 2026 on macOS ARM64 (Colima/Docker):
 
-- les tests `push()`, `later()` et `bulk()` passaient `null` comme queue, résolu en `"default"` par le connecteur, causant NO_ROUTE (AMQP 312) car aucune queue nommée `"default"` n'existait ; correction : passer le nom de queue unique explicitement ;
-- `partitionJobsByAfterCommit` corrigé de `private` à `protected` pour la compatibilité Laravel 13 ;
-- helpers `declareQueue()`/`deleteQueue()` ajoutés à `IntegrationTestCase` via l'API de management RabbitMQ ;
-- `test_later_publishes_and_consumes_after_delay` marqué skipped car le `DelayRouter` n'est pas encore branché dans le chemin de publication (uniquement dans `release()` du consumer) ;
-- `scripts/test-integration.sh` enrichi : build/install de ext-rabbit_rs, vérification du chargement, installe des dépendances composer ;
-- résultat : 8 tests Rust + 7 tests Laravel (1 skipped) PASS, quality gate `./scripts/check.sh` PASS.
+- the `push()`, `later()` and `bulk()` tests passed `null` as the queue, resolved to `"default"` by the connector, causing NO_ROUTE (AMQP 312) because no queue named `"default"` existed; fix: pass the unique queue name explicitly;
+- `partitionJobsByAfterCommit` fixed from `private` to `protected` for Laravel 13 compatibility;
+- `declareQueue()`/`deleteQueue()` helpers added to `IntegrationTestCase` via the RabbitMQ management API;
+- `test_later_publishes_and_consumes_after_delay` marked skipped because the `DelayRouter` was not yet wired into the publishing path (only in the consumer's `release()`);
+- `scripts/test-integration.sh` enriched: build/install of ext-rabbit_rs, loading verification, composer dependency installation;
+- result: 8 Rust tests + 7 Laravel tests (1 skipped) PASS, quality gate `./scripts/check.sh` PASS.
 
-Le gate du Milestone A exécute `./scripts/check.sh` avec succès : formatage Rust, Clippy sans warning, 100 tests Rust et validation Composer. Le worktree est propre au commit `21aedee`.
+The Milestone A gate runs `./scripts/check.sh` successfully: Rust formatting, Clippy without warnings, 100 Rust tests and Composer validation. The worktree is clean at commit `21aedee`.
 
-Le checkpoint de la Task 13 vérifie 100 tests Rust et 2 tests PHPT, ainsi que le formatage Rust, Clippy sans warning, le lint du stub PHP et la validation Composer stricte.
+The Task 13 checkpoint verifies 100 Rust tests and 2 PHPT tests, plus Rust formatting, Clippy without warnings, the PHP stub lint and strict Composer validation.
 
-Le checkpoint de la Task 14 vérifie 111 tests Rust et 7 tests PHPT, ainsi que le formatage Rust, Clippy sans warning et la validation Composer stricte. Les scénarios PHPT déterministes utilisent une feature Cargo de test et n'exposent aucune fixture dans le binaire distribué.
+The Task 14 checkpoint verifies 111 Rust tests and 7 PHPT tests, plus Rust formatting, Clippy without warnings and strict Composer validation. The deterministic PHPT scenarios use a Cargo test feature and expose no fixture in the distributed binary.
 
-Le checkpoint de la Task 15 clôt le Milestone B avec 112 tests Rust, 9 tests PHPT et un laboratoire FPM à deux workers. Il vérifie la réutilisation des handles dans un processus, leur remplacement après fermeture, l'invalidation sans blocage après `pcntl_fork`, l'isolation des workers FPM et la fermeture du registre à l'arrêt du module.
+The Task 15 checkpoint closes Milestone B with 112 Rust tests, 9 PHPT tests and a two-worker FPM lab. It verifies handle reuse within a process, their replacement after closure, invalidation without blocking after `pcntl_fork`, FPM worker isolation and registry closure at module shutdown.
 
-## Arborescence cible
+## Target layout
 
     Cargo.toml
     composer.json
@@ -901,9 +901,9 @@ Le checkpoint de la Task 15 clôt le Milestone B avec 112 tests Rust, 9 tests PH
     scripts/
     docs/
 
-## Milestone A — Fondations et noyau Rust
+## Milestone A — Foundations and Rust core
 
-### Task 1: Initialiser le workspace reproductible
+### Task 1: Initialize the reproducible workspace
 
 **Files:**
 - Create: Cargo.toml
@@ -920,7 +920,7 @@ Le checkpoint de la Task 15 clôt le Milestone B avec 112 tests Rust, 9 tests PH
 
 **Step 1: Write the failing workspace smoke check**
 
-Créer scripts/check.sh avec :
+Create scripts/check.sh with:
 
     #!/usr/bin/env bash
     set -euo pipefail
@@ -933,13 +933,13 @@ Créer scripts/check.sh avec :
 
 Run: ./scripts/check.sh
 
-Expected: FAIL parce que le workspace et les crates ne sont pas encore déclarés.
+Expected: FAIL because the workspace and crates are not yet declared.
 
 **Step 3: Add the minimal workspace**
 
-Déclarer resolver = "2", les deux members et les dépendances partagées. Épingler une toolchain Rust stable connue dans rust-toolchain.toml. Le crate rabbit-rs-core doit compiler sans dépendance PHP. Le crate rabbit-rs-php doit être un cdylib dépendant du core.
+Declare resolver = "2", the two members and the shared dependencies. Pin a known stable Rust toolchain in rust-toolchain.toml. The rabbit-rs-core crate must compile without any PHP dependency. The rabbit-rs-php crate must be a cdylib depending on the core.
 
-Le composer.json racine représente le package PIE, pas le package Laravel :
+The root composer.json represents the PIE package, not the Laravel package:
 
     {
         "name": "goopil/rabbit-rs-native",
@@ -959,7 +959,7 @@ Le composer.json racine représente le package PIE, pas le package Laravel :
         }
     }
 
-.gitattributes exclut des archives Composer les benchmarks, le lab et les documents non requis par PIE.
+.gitattributes excludes from the Composer archives the benchmarks, the lab and the documents not required by PIE.
 
 **Step 4: Run the check**
 
@@ -972,7 +972,7 @@ Expected: PASS.
     git add Cargo.toml Cargo.lock composer.json .gitattributes rust-toolchain.toml .gitignore crates scripts/check.sh
     git commit -m "build: bootstrap native RabbitMQ workspace"
 
-### Task 2: Modéliser et valider la configuration native
+### Task 2: Model and validate the native configuration
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/config.rs
@@ -982,18 +982,18 @@ Expected: PASS.
 
 **Step 1: Write failing tests**
 
-Ajouter des tests pour :
+Add tests for:
 
-- rejeter un broker sans hôte ;
-- rejeter prefetch = 0 ;
-- rejeter `scheduler.max_in_flight` inférieur à un prefetch ;
-- rejeter une durée `starvation_after` nulle et appliquer 30 s par défaut ;
-- rejeter un mode de topologie inconnu ;
-- normaliser l'ordre des hôtes ;
-- masquer les secrets dans Debug ;
-- produire la même empreinte pour deux configurations équivalentes.
+- rejecting a broker without a host;
+- rejecting prefetch = 0;
+- rejecting `scheduler.max_in_flight` lower than a prefetch;
+- rejecting a zero `starvation_after` duration and applying the 30 s default;
+- rejecting an unknown topology mode;
+- normalizing the host order;
+- masking secrets in Debug;
+- producing the same fingerprint for two equivalent configurations.
 
-Structure publique minimale :
+Minimal public structure:
 
     pub struct BrokerConfig {
         pub name: String,
@@ -1023,17 +1023,17 @@ Structure publique minimale :
         External,
     }
 
-> **Note (2026-08-29) :** le champ `max_in_flight` de `SchedulerConfig` décrit ci-dessus a depuis été supprimé (tracé par le plan consumer-tuning, PR #29). Ce document reste un record point-in-time.
+> **Note (2026-08-29):** the `max_in_flight` field of `SchedulerConfig` described above has since been removed (tracked by the consumer-tuning plan, PR #29). This document remains a point-in-time record.
 
 **Step 2: Verify failure**
 
 Run: cargo test -p rabbit-rs-core config::tests
 
-Expected: FAIL avec types ou fonctions absents.
+Expected: FAIL with missing types or functions.
 
 **Step 3: Implement minimal validated types**
 
-Utiliser serde pour l'entrée, secrecy pour les secrets et une représentation canonique sans secret pour l'empreinte. Retourner ConfigError avec un chemin de champ exploitable par Laravel.
+Use serde for input, secrecy for secrets and a canonical secret-free representation for the fingerprint. Return ConfigError with a field path usable by Laravel.
 
 **Step 4: Verify**
 
@@ -1046,7 +1046,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add validated connection and worker configuration"
 
-### Task 3: Implémenter le scheduler multi-queue déterministe
+### Task 3: Implement the deterministic multi-queue scheduler
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/consumer/mod.rs
@@ -1056,16 +1056,16 @@ Expected: PASS.
 
 **Step 1: Write failing scheduler tests**
 
-Tester :
+Test:
 
-- une seule subscription ;
-- deux subscriptions de poids 8 et 2 sur 10 000 choix ;
-- une queue vide qui ne consomme pas son crédit ;
-- le retour d'une queue précédemment vide ;
-- priorité haute sans famine de la priorité basse ;
-- résultat identique avec une horloge et une séquence identiques.
+- a single subscription;
+- two subscriptions with weights 8 and 2 over 10,000 picks;
+- an empty queue that does not consume its credit;
+- the return of a previously empty queue;
+- high priority without starving the low priority;
+- identical result with an identical clock and sequence.
 
-Interface :
+Interface:
 
     pub trait Scheduler {
         fn register(&mut self, id: SubscriptionId, policy: SubscriptionPolicy);
@@ -1082,20 +1082,20 @@ Expected: FAIL.
 
 **Step 3: Implement deficit weighted round-robin**
 
-Séparer priority_class et weight. Ajouter un aging borné pour qu'une classe basse prête finisse par être choisie. Ne pas ajouter de prefetch adaptatif.
+Separate priority_class and weight. Add bounded aging so a ready low class eventually gets picked. Do not add adaptive prefetch.
 
 **Step 4: Verify distribution**
 
 Run: cargo test -p rabbit-rs-core --test scheduler_fairness
 
-Expected: PASS avec erreur de distribution sous la tolérance définie dans le test.
+Expected: PASS with distribution error under the tolerance defined in the test.
 
 **Step 5: Commit**
 
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add starvation-safe weighted scheduler"
 
-### Task 4: Rendre le runtime sûr après fork
+### Task 4: Make the runtime safe after fork
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/runtime.rs
@@ -1106,13 +1106,13 @@ Expected: PASS avec erreur de distribution sous la tolérance définie dans le t
 
 **Step 1: Write failing lifecycle tests**
 
-Injecter un PidProvider de test et vérifier :
+Inject a test PidProvider and verify:
 
-- création paresseuse ;
-- réutilisation dans le même PID ;
-- invalidation de tous les handles après changement de PID ;
-- une configuration différente ne partage pas le pool ;
-- close est idempotent.
+- lazy creation;
+- reuse within the same PID;
+- invalidation of all handles after a PID change;
+- a different configuration does not share the pool;
+- close is idempotent.
 
 **Step 2: Verify failure**
 
@@ -1128,7 +1128,7 @@ Expected: FAIL.
         pools: HashMap<ConnectionKey, Arc<ConnectionHandle>>,
     }
 
-Le runtime ne doit être créé ni dans une statique globale initialisée au chargement, ni avant la première acquisition après fork. Utiliser OnceLock uniquement pour le verrou du registre, pas pour une socket ou un runtime hérité.
+The runtime must be created neither in a global static initialized at load time, nor before the first acquisition after fork. Use OnceLock only for the registry lock, never for an inherited socket or runtime.
 
 **Step 4: Verify**
 
@@ -1141,7 +1141,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add fork-safe per-process runtime registry"
 
-### Task 5: Isoler Lapin derrière un transport testable
+### Task 5: Isolate Lapin behind a testable transport
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/transport.rs
@@ -1152,7 +1152,7 @@ Expected: PASS.
 
 **Step 1: Write a compile-failing contract test**
 
-Définir les capacités minimales :
+Define the minimal capabilities:
 
     #[async_trait]
     pub trait Transport: Send + Sync {
@@ -1166,7 +1166,7 @@ Définir les capacités minimales :
         async fn close(&self) -> Result<()>;
     }
 
-Les traits de channels doivent couvrir declare, passive verify, bind, publish, confirm, return, qos, consume, ack et reject.
+The channel traits must cover declare, passive verify, bind, publish, confirm, return, qos, consume, ack and reject.
 
 **Step 2: Verify failure**
 
@@ -1176,7 +1176,7 @@ Expected: FAIL.
 
 **Step 3: Implement MockTransport then LapinTransport**
 
-Commencer par le mock scriptable. Adapter ensuite Lapin sans exposer ses types hors du module transport/lapin.rs.
+Start with the scriptable mock. Then adapt Lapin without exposing its types outside the transport/lapin.rs module.
 
 **Step 4: Verify**
 
@@ -1189,7 +1189,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): abstract AMQP transport behind testable traits"
 
-### Task 6: Construire la machine de connexion et de recovery
+### Task 6: Build the connection and recovery state machine
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/recovery.rs
@@ -1199,15 +1199,15 @@ Expected: PASS.
 
 **Step 1: Write failing state-machine tests**
 
-Avec le temps Tokio suspendu, vérifier :
+With paused Tokio time, verify:
 
-- Disconnected vers Connecting puis Ready ;
-- backoff 100 ms, 200 ms, 400 ms avec jitter injecté ;
-- plafond 30 s ;
-- erreur d'authentification permanente ;
-- perte de connexion Ready vers Recovering ;
-- fermeture pendant le backoff ;
-- génération incrémentée après recovery.
+- Disconnected to Connecting then Ready;
+- backoff 100 ms, 200 ms, 400 ms with injected jitter;
+- 30 s cap;
+- permanent authentication error;
+- connection loss Ready to Recovering;
+- closure during backoff;
+- generation incremented after recovery.
 
 **Step 2: Verify failure**
 
@@ -1217,20 +1217,20 @@ Expected: FAIL.
 
 **Step 3: Implement ConnectionActor**
 
-Toutes les opérations passent par un canal mpsc borné. Les états et raisons sont publiés via watch. Le générateur de jitter et l'horloge sont injectables.
+All operations go through a bounded mpsc channel. States and reasons are published via watch. The jitter generator and clock are injectable.
 
 **Step 4: Verify**
 
 Run: cargo test -p rabbit-rs-core --test recovery_state_machine
 
-Expected: PASS sans attente réelle.
+Expected: PASS without real waiting.
 
 **Step 5: Commit**
 
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add deterministic connection recovery actor"
 
-### Task 7: Déclarer ou vérifier la topologie
+### Task 7: Declare or verify the topology
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/topology/mod.rs
@@ -1240,18 +1240,18 @@ Expected: PASS sans attente réelle.
 
 **Step 1: Write failing topology tests**
 
-Vérifier :
+Verify:
 
-- ordre exchange, queue, binding ;
-- quorum durable par défaut ;
-- classic explicite ;
-- declare idempotent ;
-- verify passif sans création ;
-- external sans commande de déclaration ;
-- aucune DLQ applicative dans la configuration par défaut ;
-- DLX, DLQ et bindings déclarés seulement après activation explicite ;
-- incompatibilité remontée comme erreur permanente ;
-- replay complet après nouvelle génération.
+- exchange, queue, binding order;
+- durable quorum by default;
+- classic explicit;
+- declare idempotent;
+- verify passive without creation;
+- external without declaration command;
+- no application DLQ in the default configuration;
+- DLX, DLQ and bindings declared only after explicit activation;
+- incompatibility surfaced as a permanent error;
+- full replay after a new generation.
 
 **Step 2: Verify failure**
 
@@ -1261,7 +1261,7 @@ Expected: FAIL.
 
 **Step 3: Implement TopologyPlan and Reconciler**
 
-Compiler la configuration en plan immuable avant toute I/O. Refuser les combinaisons quorum exclusive ou auto_delete. Ne pas tenter de créer des policies RabbitMQ.
+Compile the configuration into an immutable plan before any I/O. Reject exclusive quorum or auto_delete combinations. Do not attempt to create RabbitMQ policies.
 
 **Step 4: Verify**
 
@@ -1274,7 +1274,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add declarative and externally managed topology modes"
 
-### Task 8: Implémenter batching, confirms et mandatory returns
+### Task 8: Implement batching, confirms and mandatory returns
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/publisher/mod.rs
@@ -1285,18 +1285,18 @@ Expected: PASS.
 
 **Step 1: Write failing publisher tests**
 
-Tester :
+Test:
 
-- flush à max_messages ;
-- flush à max_bytes ;
-- flush au timer ;
-- ACK de plusieurs séquences ;
-- NACK ciblé ;
-- basic.return avant ACK ;
-- timeout ;
-- buffer plein retourne Backpressure ;
-- coupure avant confirm classe la séquence Ambiguous dans le ledger interne ;
-- message_id conservé lors d'une republication.
+- flush at max_messages;
+- flush at max_bytes;
+- flush at the timer;
+- ACK of multiple sequences;
+- targeted NACK;
+- basic.return before ACK;
+- timeout;
+- full buffer returns Backpressure;
+- outage before confirm classifies the sequence Ambiguous in the internal ledger;
+- message_id preserved on republication.
 
 **Step 2: Verify failure**
 
@@ -1319,9 +1319,9 @@ Expected: FAIL.
         Ambiguous { message_id: String },
     }
 
-L'acteur possède le ledger de séquences. Il ne résout pas un ACK routé avant d'avoir traité le flux basic.return correspondant.
+The actor owns the sequence ledger. It does not resolve a routed ACK before having processed the corresponding basic.return stream.
 
-À ce stade, Ambiguous est un état interne. La tâche 9 bis remplace sa résolution immédiate par une rétention bornée et un replay automatique après recovery.
+At this stage, Ambiguous is an internal state. Task 9 bis replaces its immediate resolution with bounded retention and automatic replay after recovery.
 
 **Step 4: Verify**
 
@@ -1334,7 +1334,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add bounded batched publisher confirms"
 
-### Task 9: Ajouter les délais plugin et TTL
+### Task 9: Add plugin and TTL delays
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/topology/delay.rs
@@ -1344,16 +1344,16 @@ Expected: PASS.
 
 **Step 1: Write failing delay tests**
 
-Tester :
+Test:
 
-- auto choisit x-delayed-message si disponible ;
-- auto retombe sur TTL si le plugin est absent ;
-- plugin obligatoire échoue sans plugin ;
-- TTL arrondit au bucket supérieur ;
-- nombre maximal de buckets ;
-- nom stable de queue TTL ;
-- x-expires supérieur au TTL ;
-- délai négatif rejeté.
+- auto picks x-delayed-message if available;
+- auto falls back to TTL if the plugin is absent;
+- mandatory plugin fails without the plugin;
+- TTL rounds up to the bucket;
+- maximum number of buckets;
+- stable TTL queue name;
+- x-expires greater than the TTL;
+- negative delay rejected.
 
 **Step 2: Verify failure**
 
@@ -1368,7 +1368,7 @@ Expected: FAIL.
         TtlBuckets(TtlBucketPlan),
     }
 
-La détection du plugin doit être bornée dans le temps et mise en cache par génération de connexion.
+Plugin detection must be time-bounded and cached per connection generation.
 
 **Step 4: Verify**
 
@@ -1381,7 +1381,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add delayed exchange and TTL fallback"
 
-### Task 9 bis: Rejouer les publications après reconnexion
+### Task 9 bis: Replay publications after reconnection
 
 **Files:**
 - Modify: crates/rabbit-rs-core/src/publisher/mod.rs
@@ -1392,32 +1392,32 @@ Expected: PASS.
 
 **Step 1: Write failing publisher recovery tests**
 
-Vérifier :
+Verify:
 
-- une publication acceptée pendant Recovering reste suspendue et part après Ready ;
-- un message encore dans le batch au moment de la coupure est conservé ;
-- une publication envoyée sans confirm est classée Ambiguous, replacée dans le buffer et automatiquement republiée ;
-- la republication conserve exactement le message_id, la destination, les propriétés, le payload en Bytes et la deadline originale ;
-- le nouveau channel active publisher confirms avant tout replay ;
-- le replay ne commence qu'après la restauration de topologie pour la nouvelle génération ;
-- un confirm tardif provenant de l'ancienne génération est ignoré et l'attente n'est résolue qu'une fois ;
-- plusieurs coupures successives ne dupliquent pas une entrée dans le ledger de replay ;
-- ACK, NACK et basic.return restent terminaux après replay ;
-- l'expiration de la deadline pendant la coupure retourne Timeout sans publier après Ready ;
-- une erreur permanente de reconnexion termine toutes les attentes concernées sans boucle de retry ;
-- la capacité globale couvre commandes, batches, replay et confirms en vol ; lorsqu'elle est atteinte, try_publish retourne Backpressure même si l'acteur continue de drainer son canal mpsc ;
-- la fermeture explicite réveille toutes les attentes avec une erreur typée ;
-- aucun test ne promet un replay après crash du processus, le buffer étant volontairement mémoire-only.
+- a publication accepted during Recovering stays suspended and leaves after Ready;
+- a message still in the batch at the time of the outage is kept;
+- a publication sent without confirm is classified Ambiguous, placed back in the buffer and automatically republished;
+- the republication keeps exactly the message_id, destination, properties, Bytes payload and original deadline;
+- the new channel activates publisher confirms before any replay;
+- the replay starts only after topology restoration for the new generation;
+- a late confirm from the old generation is ignored and the waiter is resolved only once;
+- several successive outages do not duplicate an entry in the replay ledger;
+- ACK, NACK and basic.return remain terminal after replay;
+- deadline expiry during the outage returns Timeout without publishing after Ready;
+- a permanent reconnection error resolves all concerned waiters without a retry loop;
+- the overall capacity covers commands, batches, replay and in-flight confirms; when reached, try_publish returns Backpressure even if the actor keeps draining its mpsc channel;
+- explicit closure wakes all waiters with a typed error;
+- no test promises a replay after process crash, the buffer being deliberately memory-only.
 
 **Step 2: Verify failure**
 
 Run: cargo test -p rabbit-rs-core --test publisher_recovery
 
-Expected: FAIL parce que connection_lost résout actuellement les séquences Ambiguous et détruit le batch.
+Expected: FAIL because connection_lost currently resolves Ambiguous sequences and destroys the batch.
 
 **Step 3: Implement the suspended publisher lifecycle**
 
-Ajouter au publisher les phases Ready et Suspended. Le coordinateur de connexion transmet uniquement des événements bornés et ordonnés :
+Add to the publisher the Ready and Suspended phases. The connection coordinator transmits only bounded, ordered events:
 
     enum PublisherConnectionEvent {
         Recovering { generation: u64 },
@@ -1429,34 +1429,34 @@ Ajouter au publisher les phases Ready et Suspended. Le coordinateur de connexion
         FailedPermanent { generation: u64, error: TransportError },
     }
 
-Au passage vers Recovering, annuler les futures de confirm de l'ancienne génération, retirer leurs entrées du ledger actif et replacer les PublishRequest complets dans une deque de replay. Ne pas résoudre les waiters Ambiguous. Les payloads restent des Bytes afin que cette transition ne copie pas leur contenu.
+On transition to Recovering, cancel the old generation's confirm futures, remove their entries from the active ledger and place the complete PublishRequests back into a replay deque. Do not resolve the Ambiguous waiters. Payloads remain Bytes so this transition does not copy their content.
 
-Le ledger doit conserver pour chaque publication la requête originale, son waiter, sa deadline absolue, sa génération d'envoi et un identifiant interne unique. Une entrée ne peut exister qu'une fois entre batch, replay et confirms en vol. Une nouvelle séquence AMQP est attribuée à chaque republication, sans modifier message_id.
+The ledger must keep for each publication the original request, its waiter, its absolute deadline, its send generation and a unique internal identifier. An entry may exist only once across batch, replay and in-flight confirms. A new AMQP sequence is assigned on each republication, without changing message_id.
 
-PublisherHandle acquiert par try_acquire_owned un permit d'un Semaphore dimensionné à la capacité globale avant d'accepter la commande. Le permit suit l'entrée jusqu'à son état terminal ; le simple drainage du mpsc ne libère donc pas de capacité pendant une coupure.
+PublisherHandle acquires via try_acquire_owned a permit from a Semaphore sized to the overall capacity before accepting the command. The permit follows the entry until its terminal state; merely draining the mpsc therefore does not release capacity during an outage.
 
-Lors de Ready, rejeter les générations anciennes ou identiques, vérifier topology_restored, activer confirm_select sur le nouveau channel, puis rejouer d'abord la deque existante avant les nouvelles commandes. La deadline originale est vérifiée avant chaque tentative et utilisée pour le timeout de confirm. Une erreur recoverable replace l'entrée une seule fois en replay ; NACK, return, timeout, erreur permanente et fermeture sont terminaux.
+On Ready, reject old or identical generations, verify topology_restored, activate confirm_select on the new channel, then replay the existing deque first before new commands. The original deadline is checked before each attempt and used for the confirm timeout. A recoverable error places the entry back in replay only once; NACK, return, timeout, permanent error and closure are terminal.
 
-Le ConnectionActor reste seul responsable du backoff et de l'ouverture réseau. Il ne republie rien lui-même ; après la réconciliation de topologie, le coordinateur lui fournit le nouveau PublisherChannel et la génération au PublisherActor.
+The ConnectionActor remains solely responsible for backoff and network opening. It republishes nothing itself; after topology reconciliation, the coordinator hands the new PublisherChannel and generation to the PublisherActor.
 
 **Step 4: Verify targeted behavior**
 
 Run: cargo test -p rabbit-rs-core --test publisher_recovery
 
-Expected: PASS sans attente réelle grâce au temps Tokio suspendu.
+Expected: PASS without real waiting thanks to paused Tokio time.
 
 **Step 5: Verify publisher regressions**
 
 Run: cargo test -p rabbit-rs-core --test publisher_safety --test publisher_recovery
 
-Expected: PASS. Adapter publisher_safety pour considérer Ambiguous comme un état interne rejoué, et non comme un résultat utilisateur immédiat.
+Expected: PASS. Adapt publisher_safety to treat Ambiguous as an internal replayed state, not an immediate user outcome.
 
 **Step 6: Commit**
 
     git add crates/rabbit-rs-core docs/plans
     git commit -m "feat(core): replay publishes after connection recovery"
 
-### Task 10: Implémenter ConsumerSet et les jetons de delivery
+### Task 10: Implement ConsumerSet and delivery tokens
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/consumer/set.rs
@@ -1466,18 +1466,18 @@ Expected: PASS. Adapter publisher_safety pour considérer Ambiguous comme un ét
 
 **Step 1: Write failing consumer tests**
 
-Tester :
+Test:
 
-- plusieurs subscriptions sur deux connexions ;
-- scheduler choisissant le prochain buffer prêt ;
-- budget global max_in_flight ;
-- prefetch par subscription ;
-- ACK sur bonne génération ;
-- rejet d'un ACK ancien ;
-- release(0) appelle basic.reject avec requeue=true ;
-- release différé publie, confirme, puis ACK ;
-- échec de publication différée n'ACK pas ;
-- fermeture réveille next avec une erreur typée.
+- several subscriptions over two connections;
+- the scheduler picking the next ready buffer;
+- the global max_in_flight budget;
+- prefetch per subscription;
+- ACK on the right generation;
+- rejection of a stale ACK;
+- release(0) calls basic.reject with requeue=true;
+- delayed release publishes, confirms, then ACKs;
+- a failed delayed publication does not ACK;
+- closure wakes next with a typed error.
 
 **Step 2: Verify failure**
 
@@ -1496,7 +1496,7 @@ Expected: FAIL.
         token: DeliveryToken,
     }
 
-Le token contient connection key, génération, channel id et delivery tag. Ses transitions Pending, Acked, Rejected et Lost sont atomiques et terminales.
+The token contains the connection key, generation, channel id and delivery tag. Its Pending, Acked, Rejected and Lost transitions are atomic and terminal.
 
 **Step 4: Verify**
 
@@ -1509,7 +1509,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): add multiplexed consumers and safe delivery tokens"
 
-### Task 11: Ajouter les compteurs attempts et poison-message
+### Task 11: Add attempts counters and poison-message handling
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/consumer/attempts.rs
@@ -1518,14 +1518,14 @@ Expected: PASS.
 
 **Step 1: Write failing attempts tests**
 
-Cas :
+Cases:
 
-- première acquisition = 1 ;
-- x-acquired-count prioritaire sur redelivered bool ;
-- x-delivery-count lu pour les échecs quorum ;
-- release différé incrémente le compteur applicatif ;
-- limite atteinte produit MaxAttempts ;
-- classic sans compteur utilise le fallback documenté.
+- first acquisition = 1;
+- x-acquired-count takes precedence over the redelivered bool;
+- x-delivery-count read for quorum failures;
+- delayed release increments the application counter;
+- limit reached produces MaxAttempts;
+- classic without a counter uses the documented fallback.
 
 **Step 2: Verify failure**
 
@@ -1535,7 +1535,7 @@ Expected: FAIL.
 
 **Step 3: Implement AttemptsResolver**
 
-Centraliser toute interprétation des headers. Ne pas disperser les règles RabbitMQ dans la couche PHP.
+Centralize all header interpretation. Do not scatter RabbitMQ rules into the PHP layer.
 
 **Step 4: Verify**
 
@@ -1548,7 +1548,7 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): preserve Laravel-compatible delivery attempts"
 
-### Task 12: Exposer un snapshot de métriques sans backend
+### Task 12: Expose a metrics snapshot without a backend
 
 **Files:**
 - Create: crates/rabbit-rs-core/src/metrics.rs
@@ -1559,7 +1559,7 @@ Expected: PASS.
 
 **Step 1: Write failing metric tests**
 
-Vérifier que publish, confirm, return, delivery, ACK, reject, reconnect et backpressure mettent à jour les bons compteurs. Vérifier qu'un snapshot ne bloque pas les acteurs et ne contient aucun secret.
+Verify that publish, confirm, return, delivery, ACK, reject, reconnect and backpressure update the right counters. Verify that a snapshot does not block the actors and contains no secret.
 
 **Step 2: Verify failure**
 
@@ -1569,7 +1569,7 @@ Expected: FAIL.
 
 **Step 3: Implement atomics and histograms**
 
-Garder une API de snapshot sérialisable. Ne dépendre ni de Prometheus ni d'OpenTelemetry dans rabbit-rs-core.
+Keep a serializable snapshot API. Depend on neither Prometheus nor OpenTelemetry in rabbit-rs-core.
 
 **Step 4: Verify**
 
@@ -1588,9 +1588,9 @@ Expected: PASS.
     git add crates/rabbit-rs-core
     git commit -m "feat(core): expose transport metrics snapshots"
 
-## Milestone B — Extension PHP
+## Milestone B — PHP extension
 
-### Task 13: Définir l'API et les stubs PHP
+### Task 13: Define the PHP API and stubs
 
 **Files:**
 - Create: crates/rabbit-rs-php/src/classes/mod.rs
@@ -1604,7 +1604,7 @@ Expected: PASS.
 
 **Step 1: Write failing reflection tests**
 
-Créer PHPT vérifiant l'existence de :
+Create PHPT verifying the existence of:
 
     Goopil\RabbitRs\Pool
     Goopil\RabbitRs\Consumer
@@ -1613,9 +1613,9 @@ Créer PHPT vérifiant l'existence de :
     Goopil\RabbitRs\BackpressureException
     Goopil\RabbitRs\ConnectionException
 
-Vérifier aussi que extension_loaded('rabbit_rs') est vrai et que phpversion('rabbit_rs') correspond à la version Cargo et au tag de release.
+Also verify that extension_loaded('rabbit_rs') is true and that phpversion('rabbit_rs') matches the Cargo version and the release tag.
 
-API minimale :
+Minimal API:
 
     final class Pool {
         public function __construct(array $config);
@@ -1647,9 +1647,9 @@ Expected: FAIL.
 
 **Step 3: Implement thin ext-php-rs classes**
 
-À ce checkpoint, les trois classes opérationnelles sont volontairement sans état et toutes leurs opérations échouent avec l'exception de base stable. La Task 14 introduira les handles natifs validés. Ne pas exposer Lapin.
+At this checkpoint, the three operational classes are deliberately stateless and all their operations fail with the stable base exception. Task 14 will introduce the validated native handles. Do not expose Lapin.
 
-`ext-php-rs` 0.15.15 conserve tels quels les identifiants de paramètres Rust dans les arguments nommés PHP. Les méthodes frontières gardent donc les noms contractuels PHP, y compris `timeoutMs` et `delayMs`, puis consomment explicitement leurs paramètres inutilisés avant l'initialisation des handles natifs.
+`ext-php-rs` 0.15.15 keeps Rust parameter identifiers as-is in PHP named arguments. Boundary methods therefore keep the contractual PHP names, including `timeoutMs` and `delayMs`, then explicitly consume their unused parameters before initializing the native handles.
 
 **Step 4: Verify**
 
@@ -1662,7 +1662,7 @@ Expected: PASS.
     git add crates/rabbit-rs-php scripts/test-extension.sh
     git commit -m "feat(extension): expose native pool publisher and consumer API"
 
-### Task 14: Tester conversions, erreurs et transitions PHP
+### Task 14: Test PHP conversions, errors and transitions
 
 **Files:**
 - Create: crates/rabbit-rs-php/tests/phpt/config_validation.phpt
@@ -1673,17 +1673,17 @@ Expected: PASS.
 
 **Step 1: Add failing PHPT cases**
 
-Inclure payload binaire avec octets nuls, headers imbriqués autorisés, taille maximale, configuration invalide, double ACK, opération après close et message d'erreur expurgé.
+Include binary payload with null bytes, allowed nested headers, maximum size, invalid configuration, double ACK, operation after close and redacted error message.
 
 **Step 2: Verify failure**
 
 Run: ./scripts/test-extension.sh
 
-Expected: FAIL sur les cas non implémentés.
+Expected: FAIL on the unimplemented cases.
 
 **Step 3: Implement converters and guards**
 
-Définir une liste exacte des types AMQP supportés. Refuser les ressources, objets arbitraires et structures récursives.
+Define an exact list of supported AMQP types. Reject resources, arbitrary objects and recursive structures.
 
 **Step 4: Verify**
 
@@ -1696,7 +1696,7 @@ Expected: PASS.
     git add crates/rabbit-rs-php
     git commit -m "test(extension): harden PHP value conversion and handle states"
 
-### Task 15: Certifier le cycle de vie CLI, fork et FPM
+### Task 15: Certify the CLI, fork and FPM lifecycle
 
 **Files:**
 - Create: crates/rabbit-rs-php/tests/phpt/pid_registry.phpt
@@ -1708,23 +1708,23 @@ Expected: PASS.
 
 **Step 1: Write failing process lifecycle tests**
 
-Vérifier :
+Verify:
 
-- deux Pool équivalents dans un PID partagent le connection key ;
-- pcntl_fork invalide le handle hérité dans l'enfant ;
-- l'enfant crée un nouveau registre ;
-- deux requêtes FPM du même worker réutilisent le pool ;
-- deux workers FPM n'annoncent pas le même PID ou handle.
+- two equivalent Pools in one PID share the connection key;
+- pcntl_fork invalidates the inherited handle in the child;
+- the child creates a new registry;
+- two FPM requests of the same worker reuse the pool;
+- two FPM workers do not announce the same PID or handle.
 
 **Step 2: Verify failure**
 
 Run: ./scripts/test-fpm.sh
 
-Expected: FAIL avant instrumentation et garde PID.
+Expected: FAIL before instrumentation and PID guard.
 
 **Step 3: Implement lifecycle hooks**
 
-Ajouter uniquement les hooks nécessaires à l'arrêt de module/processus. Ne jamais ouvrir de connexion dans MINIT.
+Add only the hooks necessary for module/process shutdown. Never open a connection in MINIT.
 
 **Step 4: Verify**
 
@@ -1743,9 +1743,9 @@ Expected: PASS.
     git add crates/rabbit-rs-php scripts
     git commit -m "feat(extension): make native pools safe across PHP process lifecycles"
 
-## Milestone C — Package Laravel
+## Milestone C — Laravel package
 
-### Task 16: Initialiser le package et sa configuration
+### Task 16: Initialize the package and its configuration
 
 **Files:**
 - Create: packages/laravel-queue/composer.json
@@ -1758,7 +1758,7 @@ Expected: PASS.
 
 **Step 1: Write failing package tests**
 
-Tester la publication de configuration, la validation des brokers/routes/workers, les defaults quorum/confirm/mandatory, l'absence de DLQ applicative par défaut, le masquage des secrets et l'erreur si ext-rabbit_rs manque.
+Test configuration publishing, brokers/routes/workers validation, the quorum/confirm/mandatory defaults, the absence of an application DLQ by default, secret masking and the error when ext-rabbit_rs is missing.
 
 **Step 2: Verify failure**
 
@@ -1768,9 +1768,9 @@ Expected: FAIL.
 
 **Step 3: Implement package skeleton**
 
-Utiliser le namespace Goopil\RabbitRs\Laravel, illuminate/queue et Orchestra Testbench avec une matrice Composer Laravel 12/13. Le package porte exactement le nom goopil/rabbit-rs-laravel et exige PHP ^8.4, ext-rabbit_rs avec la même version majeure, et illuminate/queue ^12.0 || ^13.0.
+Use the Goopil\RabbitRs\Laravel namespace, illuminate/queue and Orchestra Testbench with a Composer Laravel 12/13 matrix. The package bears exactly the name goopil/rabbit-rs-laravel and requires PHP ^8.4, ext-rabbit_rs with the same major version, and illuminate/queue ^12.0 || ^13.0.
 
-Le composer.json du package contient au minimum :
+The package composer.json contains at minimum:
 
     {
         "name": "goopil/rabbit-rs-laravel",
@@ -1798,7 +1798,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): bootstrap native RabbitMQ queue package"
 
-### Task 17: Enregistrer le connecteur et le pool partagé
+### Task 17: Register the connector and the shared pool
 
 **Files:**
 - Create: packages/laravel-queue/src/Connectors/RabbitMqConnector.php
@@ -1809,7 +1809,7 @@ Expected: PASS.
 
 **Step 1: Write failing connector tests**
 
-Vérifier Queue::connection retourne le driver, deux résolutions équivalentes partagent le handle de pool, une empreinte différente crée un autre handle et aucune Request n'est retenue.
+Verify Queue::connection returns the driver, two equivalent resolutions share the pool handle, a different fingerprint creates another handle and no Request is retained.
 
 **Step 2: Verify failure**
 
@@ -1819,7 +1819,7 @@ Expected: FAIL.
 
 **Step 3: Implement connector and factory**
 
-Enregistrer le nom rabbit-rs. Le factory transmet une configuration normalisée immuable à Goopil\RabbitRs\Pool. Créer le squelette contractuel de RabbitMqQueue afin que Laravel puisse appliquer setConnectionName et setContainer ; laisser ses opérations non implémentées jusqu'à la Task 18.
+Register the rabbit-rs name. The factory passes an immutable normalized configuration to Goopil\RabbitRs\Pool. Create the contractual skeleton of RabbitMqQueue so that Laravel can apply setConnectionName and setContainer; leave its operations unimplemented until Task 18.
 
 **Step 4: Verify**
 
@@ -1832,7 +1832,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): register native RabbitMQ queue connector"
 
-### Task 18: Implémenter push, later et bulk
+### Task 18: Implement push, later and bulk
 
 **Files:**
 - Modify: packages/laravel-queue/src/RabbitMqQueue.php
@@ -1846,17 +1846,17 @@ Expected: PASS.
 
 **Step 1: Write failing Queue publish tests**
 
-Tester :
+Test:
 
-- push sérialise le payload Laravel ;
-- pushRaw conserve le payload ;
-- message_id UUID stable ;
-- onQueue alimente le routing key ;
-- later passe le délai en millisecondes ;
-- bulk appelle publishBatch une seule fois ;
-- basic.return devient QueueException ;
-- backpressure devient une exception dédiée ;
-- dispatch_after_commit reste géré par la classe Queue de Laravel.
+- push serializes the Laravel payload;
+- pushRaw preserves the payload;
+- stable UUID message_id;
+- onQueue feeds the routing key;
+- later passes the delay in milliseconds;
+- bulk calls publishBatch only once;
+- basic.return becomes QueueException;
+- backpressure becomes a dedicated exception;
+- dispatch_after_commit remains handled by the Laravel Queue class.
 
 **Step 2: Verify failure**
 
@@ -1866,7 +1866,7 @@ Expected: FAIL.
 
 **Step 3: Implement minimal publishing adapter**
 
-Étendre Illuminate\Queue\Queue et implémenter Illuminate\Contracts\Queue\Queue. Ne pas dupliquer createPayload. Résoudre la route nommée avec fallback `default`, réutiliser l'UUID du payload Laravel comme `message_id` et conserver les événements, délais et callbacks transactionnels de Laravel autour des appels natifs simples ou batchés.
+Extend Illuminate\Queue\Queue and implement Illuminate\Contracts\Queue\Queue. Do not duplicate createPayload. Resolve the named route with the `default` fallback, reuse the Laravel payload UUID as `message_id` and preserve Laravel's events, delays and transactional callbacks around the simple or batched native calls.
 
 **Step 4: Verify**
 
@@ -1879,7 +1879,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): publish immediate delayed and bulk jobs"
 
-### Task 19: Implémenter RabbitMqJob
+### Task 19: Implement RabbitMqJob
 
 **Files:**
 - Create: packages/laravel-queue/src/Jobs/RabbitMqJob.php
@@ -1888,17 +1888,17 @@ Expected: PASS.
 
 **Step 1: Write failing job tests**
 
-Tester :
+Test:
 
-- getRawBody ;
-- getJobId ;
-- attempts ;
-- delete appelle ACK une fois ;
-- release(0) appelle basic.reject avec requeue=true via le handle natif ;
-- release(10) appelle release(10000) ;
-- double delete sans effet dangereux ;
-- exception d'ACK remonte comme connexion perdue ;
-- failed job suit la séquence Laravel.
+- getRawBody;
+- getJobId;
+- attempts;
+- delete calls ACK once;
+- release(0) calls basic.reject with requeue=true via the native handle;
+- release(10) calls release(10000);
+- double delete with no dangerous effect;
+- an ACK exception surfaces as a lost connection;
+- failed job follows the Laravel sequence.
 
 **Step 2: Verify failure**
 
@@ -1908,7 +1908,7 @@ Expected: FAIL.
 
 **Step 3: Implement Job adapter**
 
-Étendre Illuminate\Queue\Jobs\Job. Garder Delivery privé et libérer son handle après transition terminale.
+Extend Illuminate\Queue\Jobs\Job. Keep Delivery private and release its handle after the terminal transition.
 
 **Step 4: Verify**
 
@@ -1921,7 +1921,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): map native deliveries to Laravel jobs"
 
-### Task 20: Brancher pop sur un profil multi-vhost
+### Task 20: Wire pop to a multi-vhost profile
 
 **Files:**
 - Create: packages/laravel-queue/src/Support/WorkerProfileResolver.php
@@ -1931,9 +1931,9 @@ Expected: PASS.
 
 **Step 1: Write failing feature test**
 
-Configurer deux brokers/vhosts et trois subscriptions. Vérifier qu'un seul appel pop sur le profil main peut rendre des jobs des trois sources, avec bons connectionName, queue et attempts.
+Configure two brokers/vhosts and three subscriptions. Verify that a single pop call on the main profile can yield jobs from all three sources, with correct connectionName, queue and attempts.
 
-Tester aussi un profil inconnu, une subscription désactivée et un timeout sans job.
+Also test an unknown profile, a disabled subscription and a timeout without job.
 
 **Step 2: Verify failure**
 
@@ -1943,7 +1943,7 @@ Expected: FAIL.
 
 **Step 3: Implement aggregate pop**
 
-La valeur queue de la connexion Laravel référence par défaut le nom du profil worker. Documenter que la sélection fine de plusieurs aliases par option --queue arrive avec rabbit-rs:work ; ne pas simuler une boucle bloquante queue par queue.
+The Laravel connection's queue value references the worker profile name by default. Document that fine-grained multi-alias selection via the --queue option arrives with rabbit-rs:work; do not simulate a blocking per-queue loop.
 
 **Step 4: Verify**
 
@@ -1956,7 +1956,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): consume multi-vhost worker profiles"
 
-### Task 21: Implémenter size, clear et monitoring
+### Task 21: Implement size, clear and monitoring
 
 **Files:**
 - Create: packages/laravel-queue/tests/Unit/RabbitMqQueueAdminTest.php
@@ -1964,7 +1964,7 @@ Expected: PASS.
 
 **Step 1: Write failing admin tests**
 
-Vérifier size agrégé et par route, clear explicite, refus de clear sans permission de configuration, et métriques Monitor.
+Verify aggregate and per-route size, explicit clear, clear refusal without configuration permission, and Monitor metrics.
 
 **Step 2: Verify failure**
 
@@ -1974,7 +1974,7 @@ Expected: FAIL.
 
 **Step 3: Implement bounded admin operations**
 
-Ne pas utiliser l'API HTTP management pour le chemin critique. Les commandes AMQP passives suffisent pour size lorsque disponibles.
+Do not use the HTTP management API for the critical path. Passive AMQP commands suffice for size when available.
 
 **Step 4: Verify**
 
@@ -1987,7 +1987,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): add queue administration and monitoring"
 
-### Task 22: Ajouter événements natifs et commande de diagnostic
+### Task 22: Add native events and a diagnostic command
 
 **Files:**
 - Create: packages/laravel-queue/src/Events/ConnectionStateChanged.php
@@ -1998,7 +1998,7 @@ Expected: PASS.
 
 **Step 1: Write failing command tests**
 
-Vérifier sortie humaine et JSON, absence de secrets, états par broker/vhost, buffers, confirms et génération.
+Verify human and JSON output, absence of secrets, per-broker/vhost states, buffers, confirms and generation.
 
 **Step 2: Verify failure**
 
@@ -2008,7 +2008,7 @@ Expected: FAIL.
 
 **Step 3: Implement status adapter**
 
-La commande rabbit-rs:status lit seulement Pool::stats. Elle ne doit ni reconnecter ni modifier la topologie sauf option explicite future.
+The rabbit-rs:status command only reads Pool::stats. It must neither reconnect nor modify the topology except for an explicit future option.
 
 **Step 4: Verify**
 
@@ -2021,7 +2021,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): expose native connection diagnostics"
 
-### Task 23: Ajouter la commande multiprocessus progressive
+### Task 23: Add the progressive multiprocess command
 
 **Files:**
 - Create: packages/laravel-queue/src/Console/RabbitMqWorkCommand.php
@@ -2032,7 +2032,7 @@ Expected: PASS.
 
 **Step 1: Write failing supervisor tests**
 
-Tester construction de la commande enfant, workers = 1 et workers > 1, propagation SIGTERM/SIGINT, redémarrage avec backoff, arrêt propre, max restarts et codes de sortie.
+Test child command construction, workers = 1 and workers > 1, SIGTERM/SIGINT propagation, restart with backoff, clean shutdown, max restarts and exit codes.
 
 **Step 2: Verify failure**
 
@@ -2042,7 +2042,7 @@ Expected: FAIL.
 
 **Step 3: Implement orchestration only**
 
-Chaque enfant exécute queue:work avec une connexion/profil déterminé. Utiliser Symfony Process. Ne pas appeler des handlers de job depuis le superviseur.
+Each child runs queue:work with a determined connection/profile. Use Symfony Process. Do not call job handlers from the supervisor.
 
 **Step 4: Verify**
 
@@ -2055,7 +2055,7 @@ Expected: PASS.
     git add packages/laravel-queue
     git commit -m "feat(laravel): supervise multiple standard queue workers"
 
-### Task 24: Certifier Octane
+### Task 24: Certify Octane
 
 **Files:**
 - Create: packages/laravel-queue/src/Octane/OctaneLifecycle.php
@@ -2065,14 +2065,14 @@ Expected: PASS.
 
 **Step 1: Write failing lifecycle tests**
 
-Vérifier :
+Verify:
 
-- aucune Request conservée ;
-- deux requêtes réutilisent le même pool dans un worker ;
-- reload ferme le pool ;
-- worker stop draine dans la deadline ;
-- requête annulée ne laisse pas une attente PHP orpheline ;
-- pool indépendant par worker.
+- no Request retained;
+- two requests reuse the same pool within a worker;
+- reload closes the pool;
+- worker stop drains within the deadline;
+- a cancelled request leaves no orphaned PHP waiter;
+- independent pool per worker.
 
 **Step 2: Verify failure**
 
@@ -2082,7 +2082,7 @@ Expected: FAIL.
 
 **Step 3: Implement Octane hooks**
 
-Détecter Octane de manière optionnelle. Ne pas rendre laravel/octane obligatoire pour les utilisateurs FPM.
+Detect Octane optionally. Do not make laravel/octane mandatory for FPM users.
 
 **Step 4: Verify package tests**
 
@@ -2094,16 +2094,16 @@ Expected: PASS.
 
 Run: ./scripts/test-octane.sh --server=frankenphp && ./scripts/test-octane.sh --server=roadrunner && ./scripts/test-octane.sh --server=swoole && ./scripts/test-octane.sh --server=openswoole
 
-Expected: PASS pour chaque runtime certifié.
+Expected: PASS for each certified runtime.
 
 **Step 6: Commit**
 
     git add packages/laravel-queue scripts/test-octane.sh
     git commit -m "feat(laravel): support persistent Octane worker lifecycles"
 
-## Milestone D — Cluster, intégration et chaos
+## Milestone D — Cluster, integration and chaos
 
-### Task 25: Créer le cluster RabbitMQ de test
+### Task 25: Create the RabbitMQ test cluster
 
 **Files:**
 - Create: lab/rabbitmq/compose.yaml
@@ -2119,17 +2119,17 @@ Expected: PASS pour chaque runtime certifié.
 
 **Step 1: Write failing readiness check**
 
-Le script doit vérifier trois nœuds RabbitMQ 4.3, cluster sain, quorum leader, deux vhosts, utilisateurs limités, Prometheus et Toxiproxy.
+The script must verify three RabbitMQ 4.3 nodes, a healthy cluster, a quorum leader, two vhosts, limited users, Prometheus and Toxiproxy.
 
 **Step 2: Verify failure**
 
 Run: ./scripts/lab-up.sh && ./scripts/lab-ready.sh
 
-Expected: FAIL avant les services.
+Expected: FAIL before the services.
 
 **Step 3: Implement the lab**
 
-Épingler les images par version et digest lors de l'implémentation. Le Dockerfile télécharge une version épinglée de rabbitmq_delayed_message_exchange et vérifie son SHA-256. Fournir un profile Compose avec le plugin et un sans plugin.
+Pin the images by version and digest during implementation. The Dockerfile downloads a pinned version of rabbitmq_delayed_message_exchange and verifies its SHA-256. Provide a Compose profile with the plugin and one without.
 
 **Step 4: Verify**
 
@@ -2142,7 +2142,7 @@ Expected: PASS.
     git add lab scripts
     git commit -m "test: add reproducible three-node RabbitMQ lab"
 
-### Task 26: Écrire les tests d'intégration end-to-end
+### Task 26: Write the end-to-end integration tests
 
 **Files:**
 - Create: crates/rabbit-rs-core/tests/integration/publish_consume.rs
@@ -2153,29 +2153,29 @@ Expected: PASS.
 
 **Step 1: Write failing scenarios**
 
-Inclure :
+Include:
 
-- publish confirmé puis consume/ACK ;
-- mandatory return ;
-- quorum et classic ;
-- declare, verify et external ;
-- deux vhosts dans un ConsumerSet ;
-- release(0) par reject/requeue ;
-- release différé plugin ;
-- release différé TTL ;
-- failed job Laravel ;
-- bulk ;
+- confirmed publish then consume/ACK;
+- mandatory return;
+- quorum and classic;
+- declare, verify and external;
+- two vhosts in one ConsumerSet;
+- release(0) via reject/requeue;
+- delayed release plugin;
+- delayed release TTL;
+- failed Laravel job;
+- bulk;
 - TLS.
 
 **Step 2: Verify failure**
 
 Run: ./scripts/test-integration.sh
 
-Expected: FAIL avant branchement réel.
+Expected: FAIL before real wiring.
 
 **Step 3: Complete real transport integration**
 
-Remplacer uniquement les chemins encore mockés. Garder les assertions at-least-once explicites.
+Replace only the still-mocked paths. Keep the at-least-once assertions explicit.
 
 **Step 4: Verify**
 
@@ -2188,7 +2188,7 @@ Expected: PASS.
     git add crates packages scripts
     git commit -m "test: validate native Laravel queue flows against RabbitMQ"
 
-### Task 27: Écrire les scénarios de panne
+### Task 27: Write the failure scenarios
 
 **Files:**
 - Create: lab/rabbitmq/scenarios/
@@ -2198,29 +2198,29 @@ Expected: PASS.
 
 **Step 1: Write failing chaos assertions**
 
-Scénarios :
+Scenarios:
 
-- reset TCP avant confirm ;
-- reset TCP après confirm avant ACK ;
-- arrêt du leader quorum ;
-- redémarrage d'un nœud ;
-- partition du consumer ;
-- channel fermé pour erreur de topologie ;
-- plugin delay indisponible ;
-- credentials refusés ;
-- SIGTERM du worker avec jobs non acquittés.
+- TCP reset before confirm;
+- TCP reset after confirm before ACK;
+- quorum leader shutdown;
+- node restart;
+- consumer partition;
+- channel closed for topology error;
+- delay plugin unavailable;
+- refused credentials;
+- SIGTERM of the worker with unacknowledged jobs.
 
-Pour chaque scénario, compter messages attendus, uniques, doublons et manquants.
+For each scenario, count expected, unique, duplicated and missing messages.
 
 **Step 2: Verify failure**
 
 Run: ./scripts/test-chaos.sh
 
-Expected: FAIL jusqu'à implémentation complète du recovery.
+Expected: FAIL until the recovery is fully implemented.
 
 **Step 3: Fix one scenario at a time**
 
-Appliquer systematic-debugging. Ne jamais accepter un message manquant. Accepter les doublons uniquement dans les fenêtres ambiguës documentées.
+Apply systematic-debugging. Never accept a missing message. Accept duplicates only in the documented ambiguous windows.
 
 **Step 4: Verify**
 
@@ -2235,7 +2235,7 @@ Expected: PASS, missing = 0.
 
 ## Milestone E — Performance
 
-### Task 38: Créer bench-native
+### Task 38: Create bench-native
 
 **Files:**
 - Create: benchmarks/native/Cargo.toml
@@ -2249,17 +2249,17 @@ Expected: PASS, missing = 0.
 
 **Step 1: Add benchmark smoke tests**
 
-Les benchmarks doivent couvrir tailles 256 o, 1 Kio, 10 Kio, 100 Kio et 1 Mio, batch 1/16/64/256, confirms, coût scheduler et allocation. La baseline issue de l'audit mesure séparément le coût d'un appel à la frontière PHP/Rust, la conversion et la copie des payloads et headers, ainsi que la soumission des batches, sans broker lorsque celui-ci n'est pas nécessaire.
+The benchmarks must cover sizes 256 B, 1 KiB, 10 KiB, 100 KiB and 1 MiB, batches 1/16/64/256, confirms, scheduler cost and allocation. The audit baseline measures separately the cost of a call at the PHP/Rust boundary, the conversion and copy of payloads and headers, and the submission of batches, without a broker when not needed.
 
 **Step 2: Verify command**
 
 Run: cargo bench -p rabbit-rs-native-bench --no-run
 
-Expected: FAIL avant le crate benchmark.
+Expected: FAIL before the benchmark crate.
 
 **Step 3: Implement Criterion suites**
 
-Séparer microbench sans broker et bench transport avec le lab. Le harness PHP exerce l'extension compilée et distingue le coût fixe de la frontière FFI du coût de conversion selon le volume et la taille du batch. Enregistrer version, CPU, noyau, PHP, mode NTS/ZTS, RabbitMQ, payload et configuration dans chaque résultat.
+Separate the microbench without broker and the transport bench with the lab. The PHP harness exercises the compiled extension and distinguishes the fixed cost of the FFI boundary from the conversion cost by volume and batch size. Record version, CPU, kernel, PHP, NTS/ZTS mode, RabbitMQ, payload and configuration in each result.
 
 **Step 4: Verify**
 
@@ -2272,7 +2272,7 @@ Expected: PASS.
     git add Cargo.toml benchmarks/native
     git commit -m "perf: add native batching and transport benchmarks"
 
-### Task 39: Créer l'application bench-laravel
+### Task 39: Create the bench-laravel application
 
 **Files:**
 - Create: benchmarks/laravel/composer.json
@@ -2287,15 +2287,15 @@ Expected: PASS.
 
 **Step 1: Write failing benchmark contract test**
 
-Chaque driver doit exposer setup, publish, consume, reset et metrics avec les mêmes payloads et garanties configurables.
+Each driver must expose setup, publish, consume, reset and metrics with the same payloads and configurable guarantees.
 
-Drivers :
+Drivers:
 
-- rabbit-rs ;
-- php-amqplib direct ;
-- vyuldashev/laravel-queue-rabbitmq comme driver Laravel RabbitMQ de référence ;
-- Redis Laravel ;
-- database témoin.
+- rabbit-rs;
+- php-amqplib direct;
+- vyuldashev/laravel-queue-rabbitmq as the reference Laravel RabbitMQ driver;
+- Laravel Redis;
+- database control.
 
 **Step 2: Verify failure**
 
@@ -2305,20 +2305,20 @@ Expected: FAIL.
 
 **Step 3: Implement the harness**
 
-Mesurer throughput, p50/p95/p99 end-to-end, CPU, RSS, connexions, channels, doublons et pertes. Fournir modes CLI, FPM et Octane. Ne pas inclure SQS.
+Measure throughput, end-to-end p50/p95/p99, CPU, RSS, connections, channels, duplicates and losses. Provide CLI, FPM and Octane modes. Do not include SQS.
 
 **Step 4: Verify a short matrix**
 
 Run: benchmarks/laravel/scripts/run-matrix.sh --smoke
 
-Expected: PASS et fichier JSON de résultats.
+Expected: PASS and a JSON results file.
 
 **Step 5: Commit**
 
     git add benchmarks/laravel
     git commit -m "perf: add reproducible Laravel queue comparison lab"
 
-### Task 40: Calibrer les defaults et figer les budgets
+### Task 40: Calibrate the defaults and freeze the budgets
 
 **Files:**
 - Create: benchmarks/baselines/reference-machine.json
@@ -2331,19 +2331,19 @@ Expected: PASS et fichier JSON de résultats.
 
 Run: benchmarks/laravel/scripts/run-matrix.sh --full
 
-Expected: résultats complets et métadonnées de machine.
+Expected: full results and machine metadata.
 
 **Step 2: Analyze batch and prefetch sweeps**
 
-Comparer batch_messages, batch_bytes, flush interval, publisher channels, prefetch et max_in_flight. Examiner latence sous 50 %, 70 % et 90 % de saturation.
+Compare batch_messages, batch_bytes, flush interval, publisher channels, prefetch and max_in_flight. Examine latency at 50%, 70% and 90% of saturation.
 
 **Step 3: Set absolute and comparative gates**
 
-Écrire les objectifs mesurés de débit et p99 par profil de payload, ainsi que le gain minimal attendu face au driver PHP RabbitMQ. Ne pas inventer un seuil non mesuré.
+Write the measured throughput and p99 targets per payload profile, plus the minimum expected gain against the PHP RabbitMQ driver. Do not invent an unmeasured threshold.
 
 **Step 4: Update healthy defaults**
 
-Changer les defaults uniquement si les tests de fairness, mémoire et latence restent verts.
+Change the defaults only if the fairness, memory and latency tests stay green.
 
 **Step 5: Verify anti-regression check**
 
@@ -2356,9 +2356,9 @@ Expected: PASS.
     git add benchmarks/baselines docs/performance.md packages crates
     git commit -m "perf: calibrate safe queue and publisher defaults"
 
-## Milestone F — Distribution et documentation
+## Milestone F — Distribution and documentation
 
-### Task 41: Préparer les packages Rabbit RS et la matrice PIE
+### Task 41: Prepare the Rabbit RS packages and the PIE matrix
 
 **Files:**
 - Modify: composer.json
@@ -2371,64 +2371,64 @@ Expected: PASS.
 
 **Step 1: Write the failing distribution metadata check**
 
-Le script vérifie :
+The script verifies:
 
-- le package racine s'appelle goopil/rabbit-rs-native et son type est php-ext ;
-- extension-name vaut rabbit_rs ;
-- download-url-method contient seulement pre-packaged-binary ;
-- NTS et ZTS sont annoncés ;
-- Linux est la seule famille d'OS annoncée en V1 ;
-- le package Laravel s'appelle goopil/rabbit-rs-laravel ;
-- son namespace est Goopil\RabbitRs\Laravel ;
-- il exige ext-rabbit_rs avec la même version majeure ;
-- versions Cargo, extension PHP et tag de release sont cohérentes.
+- the root package is named goopil/rabbit-rs-native and its type is php-ext;
+- extension-name is rabbit_rs;
+- download-url-method contains only pre-packaged-binary;
+- NTS and ZTS are advertised;
+- Linux is the only OS family advertised in V1;
+- the Laravel package is named goopil/rabbit-rs-laravel;
+- its namespace is Goopil\RabbitRs\Laravel;
+- it requires ext-rabbit_rs with the same major version;
+- the Cargo, PHP extension and release tag versions are consistent.
 
 **Step 2: Verify failure**
 
 Run: ./scripts/validate-distribution.sh
 
-Expected: FAIL avant le manifeste et les contrôles.
+Expected: FAIL before the manifest and checks.
 
 **Step 3: Add the exact PIE matrix**
 
-release/pie-matrix.json contient exactement 16 combinaisons :
+release/pie-matrix.json contains exactly 16 combinations:
 
     PHP: 8.4, 8.5
     architecture: x86_64, arm64
     libc: glibc, musl
     thread safety: nts, zts
 
-Ne pas distribuer de build debug. Documenter la version minimale de glibc utilisée pour les artefacts glibc.
+Do not distribute debug builds. Document the minimum glibc version used for the glibc artifacts.
 
 **Step 4: Implement deterministic PIE packaging**
 
-scripts/package-pie-binary.sh reçoit version, PHP, architecture, libc, mode thread-safe et chemin du shared object. Il produit une archive ZIP conforme à PIE, par exemple :
+scripts/package-pie-binary.sh receives version, PHP, architecture, libc, thread-safe mode and the shared object path. It produces a PIE-compliant ZIP archive, for example:
 
     php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 
-L'archive contient rabbit_rs.so et aucune bibliothèque dynamique non documentée. Le script produit aussi le SHA-256 et refuse un nom, une ABI ou une architecture incohérents.
+The archive contains rabbit_rs.so and no undocumented dynamic library. The script also produces the SHA-256 and refuses an inconsistent name, ABI or architecture.
 
 **Step 5: Implement the Laravel split dry-run**
 
-scripts/split-laravel-package.sh extrait packages/laravel-queue, conserve son composer.json à la racine du résultat et refuse de publier si sa version majeure n'est pas compatible avec ext-rabbit_rs.
+scripts/split-laravel-package.sh extracts packages/laravel-queue, keeps its composer.json at the result root and refuses to publish if its major version is not compatible with ext-rabbit_rs.
 
 **Step 6: Verify**
 
 Run: ./scripts/validate-distribution.sh && ./scripts/package-pie-binary.sh --self-test && ./scripts/split-laravel-package.sh --dry-run
 
-Expected: PASS et matrice de 16 artefacts uniques.
+Expected: PASS and a matrix of 16 unique artifacts.
 
 **Step 7: Commit**
 
     git add composer.json .gitattributes packages/laravel-queue/composer.json release scripts
     git commit -m "build: define Rabbit RS PIE and Packagist packages"
 
-### Task 42: Ajouter la CI et la publication synchronisée
+### Task 42: Add CI and synchronized publication
 
-> **Statut :** Partiellement implémenté. Le workflow de release build/package/verify
-> existe, mais les étapes SBOM (CycloneDX via cargo-cyclonedx) et attestation
-> de provenance (actions/attest@v4) ont été ajoutées post-implémentation
-> initiale. Voir `docs/superpowers/plans/2026-08-17-release-sbom-attestation.md`.
+> **Status:** Partially implemented. The release build/package/verify workflow
+> exists, but the SBOM (CycloneDX via cargo-cyclonedx) and provenance
+> attestation (actions/attest@v4) steps were added after the initial
+> implementation. See `docs/superpowers/plans/2026-08-17-release-sbom-attestation.md`.
 
 **Files:**
 - Create: .github/workflows/rust.yml
@@ -2442,60 +2442,60 @@ Expected: PASS et matrice de 16 artefacts uniques.
 
 **Step 1: Write failing workflow and release checks**
 
-scripts/verify-release-assets.sh vérifie les 16 archives attendues, leurs SHA-256, SBOM, attestations, noms PIE et versions synchronisées. Il échoue si un artefact debug ou une plateforme non supportée est publiée.
+scripts/verify-release-assets.sh verifies the 16 expected archives, their SHA-256, SBOMs, attestations, PIE names and synchronized versions. It fails if a debug artifact or an unsupported platform is published.
 
 **Step 2: Validate before adding workflows**
 
 Run: actionlint && ./scripts/verify-release-assets.sh --fixtures release/pie-matrix.json
 
-Expected: FAIL avant workflows et fixtures.
+Expected: FAIL before workflows and fixtures.
 
 **Step 3: Add build and test jobs**
 
-Séparer tests Rust, PHPT, Laravel 12/13, intégration cluster, Octane et chaos programmé. Mettre en cache Cargo et Composer sans partager une extension construite entre deux ABI PHP.
+Separate Rust tests, PHPT, Laravel 12/13, cluster integration, Octane and scheduled chaos. Cache Cargo and Composer without sharing a built extension between two PHP ABIs.
 
 **Step 4: Build and smoke-test all PIE binaries**
 
-Pour chaque ligne de release/pie-matrix.json :
+For each line of release/pie-matrix.json:
 
-1. construire rabbit_rs.so avec la bonne ABI ;
-2. inspecter architecture et dépendances dynamiques ;
-3. charger l'extension avec php --ri rabbit_rs ;
-4. exécuter un smoke test publication/consommation ;
-5. créer l'archive PIE, le SHA-256 et la SBOM ;
-6. produire une attestation GitHub.
+1. build rabbit_rs.so with the right ABI;
+2. inspect architecture and dynamic dependencies;
+3. load the extension with php --ri rabbit_rs;
+4. run a publish/consume smoke test;
+5. create the PIE archive, the SHA-256 and the SBOM;
+6. produce a GitHub attestation.
 
-Les dépendances Rust, Lapin et rustls sont liées statiquement autant que possible.
+The Rust, Lapin and rustls dependencies are statically linked as much as possible.
 
 **Step 5: Publish a draft native release**
 
-Créer une GitHub Release en brouillon et immuable après publication. Attacher les 16 archives et leurs preuves. Ne pas publier le brouillon si une combinaison manque.
+Create a GitHub Release in draft and immutable after publication. Attach the 16 archives and their evidence. Do not publish the draft if a combination is missing.
 
 **Step 6: Split and tag the Laravel package**
 
-Le workflow split-laravel publie packages/laravel-queue dans le dépôt miroir goopil/rabbit-rs-laravel, en lecture seule, puis pousse exactement le même tag. Déclencher les mises à jour Packagist de goopil/rabbit-rs-native et goopil/rabbit-rs-laravel.
+The split-laravel workflow publishes packages/laravel-queue to the read-only goopil/rabbit-rs-laravel mirror repository, then pushes exactly the same tag. Trigger the Packagist updates of goopil/rabbit-rs-native and goopil/rabbit-rs-laravel.
 
 **Step 7: Verify installation as a user**
 
-Dans des conteneurs propres représentatifs :
+In clean representative containers:
 
     pie install goopil/rabbit-rs-native
     composer require goopil/rabbit-rs-laravel
     php --ri rabbit_rs
     php artisan rabbit-rs:status --json
 
-Expected: PIE sélectionne le bon binaire et Composer accepte la version de plateforme.
+Expected: PIE selects the right binary and Composer accepts the platform version.
 
 **Step 8: Publish only after synchronized verification**
 
-Publier la GitHub Release uniquement après validation des artefacts, du dépôt miroir, des deux métadonnées Packagist et du test d'installation utilisateur.
+Publish the GitHub Release only after validating the artifacts, the mirror repository, both Packagist metadata and the user installation test.
 
 **Step 9: Commit**
 
     git add .github scripts/verify-release-assets.sh
     git commit -m "ci: publish synchronized Rabbit RS releases"
 
-### Task 43: Documenter installation, configuration et exploitation
+### Task 43: Document installation, configuration and operations
 
 **Files:**
 - Create: README.md
@@ -2513,29 +2513,29 @@ Publier la GitHub Release uniquement après validation des artefacts, du dépôt
 
 **Step 1: Write documentation acceptance checklist**
 
-Le lecteur doit pouvoir :
+The reader must be able to:
 
-- installer l'extension avec pie install goopil/rabbit-rs-native ;
-- installer le bridge avec composer require goopil/rabbit-rs-laravel ;
-- utiliser PIE dans un Dockerfile sans image Rabbit RS dédiée ;
-- compiler localement avec Cargo pour contribuer ;
-- comprendre pourquoi Composer ne modifie pas le système PHP ;
-- déclarer deux vhosts ;
-- publier et lancer queue:work ;
-- choisir declare/verify/external ;
-- configurer quorum/classic ;
-- activer explicitement une DLQ applicative si elle est souhaitée ;
-- comprendre les doublons ;
-- activer plugin delay ou TTL ;
-- diagnostiquer une reconnexion ;
-- configurer Supervisor/Kubernetes ;
-- utiliser Octane sans retenir Request.
+- install the extension with pie install goopil/rabbit-rs-native;
+- install the bridge with composer require goopil/rabbit-rs-laravel;
+- use PIE in a Dockerfile without a dedicated Rabbit RS image;
+- build locally with Cargo to contribute;
+- understand why Composer does not alter the system PHP;
+- declare two vhosts;
+- publish and run queue:work;
+- choose declare/verify/external;
+- configure quorum/classic;
+- explicitly enable an application DLQ if desired;
+- understand duplicates;
+- enable the plugin delay or TTL;
+- diagnose a reconnection;
+- configure Supervisor/Kubernetes;
+- use Octane without retaining Request.
 
-Indiquer explicitement que PECL, les paquets Debian/RPM/APK, un plugin Composer installant des binaires et les images PHP complètes ne sont pas des canaux V1.
+State explicitly that PECL, Debian/RPM/APK packages, a Composer plugin installing binaries and full PHP images are not V1 channels.
 
 **Step 2: Add copy-paste examples**
 
-Tous les exemples sont exécutés en CI. Le README commence par les deux commandes d'installation et un exemple Laravel minimal.
+All examples are executed in CI. The README starts with the two installation commands and a minimal Laravel example.
 
 **Step 3: Verify links and examples**
 
@@ -2548,7 +2548,7 @@ Expected: PASS.
     git add README.md docs examples scripts/test-docs.sh
     git commit -m "docs: document Rabbit RS installation and operations"
 
-### Task 44: Effectuer la vérification de release
+### Task 44: Perform the release verification
 
 **Files:**
 - Create: docs/release-checklist.md
@@ -2570,7 +2570,7 @@ Expected: PASS.
 
 Run: ./scripts/test-integration.sh && ./scripts/test-chaos.sh
 
-Expected: PASS avec missing = 0.
+Expected: PASS with missing = 0.
 
 **Step 4: Run performance gate**
 
@@ -2582,51 +2582,51 @@ Expected: PASS.
 
 Run: ./scripts/verify-release-assets.sh --release-tag VERSION
 
-Expected: 16 archives valides, 16 checksums valides, SBOM et attestation présentes, aucun build debug.
+Expected: 16 valid archives, 16 valid checksums, SBOM and attestation present, no debug build.
 
 **Step 6: Verify fresh user installation**
 
-Exécuter dans la matrice de conteneurs propres :
+Run in the matrix of clean containers:
 
     pie install goopil/rabbit-rs-native:VERSION
     composer require goopil/rabbit-rs-laravel:^MAJOR
     php --ri rabbit_rs
 
-Expected: PASS sur les 16 combinaisons annoncées.
+Expected: PASS on the 16 advertised combinations.
 
 **Step 7: Record evidence**
 
-Ajouter versions, checksums, résultats, doublons observés, temps de recovery, URLs Packagist et tag du dépôt miroir dans docs/release-checklist.md.
+Add versions, checksums, results, observed duplicates, recovery times, Packagist URLs and the mirror repository tag to docs/release-checklist.md.
 
 **Step 8: Commit**
 
     git add CHANGELOG.md docs/release-checklist.md
     git commit -m "chore: record Rabbit RS release verification"
 
-## Critères de fin
+## Completion criteria
 
-- Tous les tests Rust, PHPT, PHPUnit et matrices Composer passent.
-- Les 16 artefacts PIE PHP 8.4/8.5, NTS/ZTS, glibc/musl et x86_64/ARM64 se chargent.
-- pie install goopil/rabbit-rs-native sélectionne et active le bon artefact.
-- composer require goopil/rabbit-rs-laravel valide ext-rabbit_rs sans modifier le système.
-- Les tags et versions goopil/rabbit-rs-native, goopil/rabbit-rs-laravel et ext-rabbit_rs sont synchronisés.
-- CLI, FPM, FrankenPHP, RoadRunner, Swoole et Open Swoole sont certifiés.
-- Un queue:work standard consomme un profil contenant plusieurs vhosts.
-- rabbit-rs:work supervise plusieurs queue:work sans réimplémenter Worker.
-- Le lab chaos ne constate aucune perte silencieuse sans recréation manuelle de pool.
-- Le recovery coordinator rétablit automatiquement connections, topology, publishers et consumers après une panne.
-- Les doublons des fenêtres ambiguës sont mesurés et documentés.
-- Le delay routing côté éditeur fonctionne en mode plugin et TTL fallback.
-- La DLQ applicative est configurable depuis la config Laravel et déclarée par le topology reconciler.
-- Les arguments de queue génériques (`x-delivery-limit`, etc.) sont câblés depuis la config Laravel.
-- Le TLS est configurable (SNI, CA, cert client) et testé end-to-end.
-- Les consumers sont proprement fermés (pas de fuite de channels en process long).
-- Les events Laravel (connection state, backpressure) sont dispatchés depuis l'extension native.
-- Les métriques consumer et les latences sont exposées dans le status command.
-- La config publisher (confirms, mandatory, timeout) est câblée depuis Laravel.
-- Le lifecycle Octane (reload, stop, consumer cleanup) est entièrement branché.
-- Le WorkCommand supervisor est testé end-to-end (crash, restart, signaux).
-- Les defaults de batch, prefetch et buffers proviennent des benchmarks.
-- Les budgets absolus et comparatifs sont versionnés.
-- Les logs et diagnostics ne révèlent aucun secret.
-- Le comportement at-least-once et l'obligation d'idempotence sont clairement documentés.
+- All Rust, PHPT, PHPUnit tests and Composer matrices pass.
+- The 16 PIE artifacts PHP 8.4/8.5, NTS/ZTS, glibc/musl and x86_64/ARM64 load.
+- pie install goopil/rabbit-rs-native selects and enables the right artifact.
+- composer require goopil/rabbit-rs-laravel validates ext-rabbit_rs without altering the system.
+- The goopil/rabbit-rs-native, goopil/rabbit-rs-laravel and ext-rabbit_rs tags and versions are synchronized.
+- CLI, FPM, FrankenPHP, RoadRunner, Swoole and Open Swoole are certified.
+- A standard queue:work consumes a profile containing several vhosts.
+- rabbit-rs:work supervises several queue:work without reimplementing Worker.
+- The chaos lab observes no silent loss without manual pool recreation.
+- The recovery coordinator automatically restores connections, topology, publishers and consumers after a failure.
+- Duplicates from ambiguous windows are measured and documented.
+- Publisher-side delay routing works in plugin mode and TTL fallback.
+- The application DLQ is configurable from the Laravel config and declared by the topology reconciler.
+- Generic queue arguments (`x-delivery-limit`, etc.) are wired from the Laravel config.
+- TLS is configurable (SNI, CA, client cert) and tested end-to-end.
+- Consumers are cleanly closed (no channel leaks in long-lived processes).
+- Laravel events (connection state, backpressure) are dispatched from the native extension.
+- Consumer metrics and latencies are exposed in the status command.
+- The publisher config (confirms, mandatory, timeout) is wired from Laravel.
+- The Octane lifecycle (reload, stop, consumer cleanup) is fully wired.
+- The WorkCommand supervisor is tested end-to-end (crash, restart, signals).
+- The batch, prefetch and buffer defaults come from benchmarks.
+- The absolute and comparative budgets are versioned.
+- Logs and diagnostics reveal no secret.
+- The at-least-once behavior and the idempotence requirement are clearly documented.

@@ -1,107 +1,107 @@
-# Audit strict — Plans Rabbit RS (design + implementation) vs code implémenté
+# Strict audit — Rabbit RS plans (design + implementation) vs implemented code
 
-**Date :** 31 juillet 2026
-**Auditeur :** euria-code
-**Périmètre :** `docs/plans/2026-07-30-rabbitmq-native-design.md`, `docs/plans/2026-07-30-rabbitmq-native-implementation.md`, code Tasks 1–12 (Milestone A terminé).
+**Date:** July 31, 2026
+**Auditor:** euria-code
+**Scope:** `docs/plans/2026-07-30-rabbitmq-native-design.md`, `docs/plans/2026-07-30-rabbitmq-native-implementation.md`, code of Tasks 1–12 (Milestone A complete).
 
-## Résumé exécutif
+## Executive summary
 
-L'architecture générale est saine : séparation core/extension/package, abstraction `Transport`, acteurs Tokio, tests déterministes. Le Milestone A passe son gate (100 tests, clippy, fmt). Cependant, l'audit révèle **5 bugs HIGH** (perte de données, deadlock, fuite mémoire), **7 problèmes MEDIUM** et **5 LOW**, plus **6 divergences** entre les plans et le code. La plupart des HIGH sont des bugs silencieux qui ne se manifesteront qu'en intégration réelle (Milestone D) ou en production.
+The overall architecture is sound: core/extension/package separation, `Transport` abstraction, Tokio actors, deterministic tests. Milestone A passes its gate (100 tests, clippy, fmt). However, the audit reveals **5 HIGH bugs** (data loss, deadlock, memory leak), **7 MEDIUM issues** and **5 LOW issues**, plus **6 divergences** between the plans and the code. Most HIGH items are silent bugs that will only manifest in real integration (Milestone D) or production.
 
-| Sévérité | Count | Bloquant ? |
+| Severity | Count | Blocking? |
 |----------|-------|------------|
-| 🔴 HIGH   | 5     | Oui — avant Milestone B |
-| 🟡 MEDIUM | 7     | Recommandé — avant Milestone C |
-| 🔵 LOW    | 5     | Non — backlog |
-| 🏗️ Architecture/dérive | 6 | Recommandé — avant Milestone B |
+| 🔴 HIGH   | 5     | Yes — before Milestone B |
+| 🟡 MEDIUM | 7     | Recommended — before Milestone C |
+| 🔵 LOW    | 5     | No — backlog |
+| 🏗️ Architecture/drift | 6 | Recommended — before Milestone B |
 
 ---
 
-## Bugs critiques (HIGH)
+## Critical bugs (HIGH)
 
-### #1 — AMQP `message_id` perdu à la consommation
+### #1 — AMQP `message_id` lost at consumption
 
-**Fichier :** `crates/rabbit-rs-core/src/transport/lapin.rs:251`
+**File:** `crates/rabbit-rs-core/src/transport/lapin.rs:251`
 
-`map_headers` n'extrait que `properties.headers()`. Les basic properties (`message_id`, `correlation_id`, `timestamp`, `delivery_mode`) sont jetées. Le `Delivery` Rust construit un ID synthétique `"generation:channel:delivery_tag"` qui **change à chaque redelivery**.
+`map_headers` only extracts `properties.headers()`. The basic properties (`message_id`, `correlation_id`, `timestamp`, `delivery_mode`) are discarded. The Rust `Delivery` builds a synthetic ID `"generation:channel:delivery_tag"` which **changes on every redelivery**.
 
-**Impact :** Laravel `getJobId()` doit retourner l'UUID stable posé par le publisher. Sans cela, les retries Laravel, le dédoublonnage et les failed jobs sont cassés.
+**Impact:** Laravel `getJobId()` must return the stable UUID set by the publisher. Without it, Laravel retries, deduplication, and failed jobs are broken.
 
-**Fix :** Étendre `Delivery` (transport) avec `message_id: Option<String>` et `correlation_id: Option<String>`, les extraire dans `map_delivery` depuis `delivery.properties`, et propager jusqu'au `Delivery` public du consumer.
+**Fix:** Extend the transport `Delivery` with `message_id: Option<String>` and `correlation_id: Option<String>`, extract them in `map_delivery` from `delivery.properties`, and propagate up to the public consumer `Delivery`.
 
-### #2 — Bug de rejet de génération dans le publisher
+### #2 — Generation rejection bug in the publisher
 
-**Fichier :** `crates/rabbit-rs-core/src/publisher/actor.rs:408`
+**File:** `crates/rabbit-rs-core/src/publisher/actor.rs:408`
 
 ```rust
-if generation <= state.generation {  // BUG: devrait être <
+if generation <= state.generation {  // BUG: should be <
 ```
 
-Si le coordinateur envoie `Recovering { generation: N }` puis `Ready { generation: N }` (même génération, cas normal), `suspend()` avance `self.generation` à `N`. Ensuite `Ready { generation: N }` est rejeté car `N <= N`. Le publisher ne reprend jamais.
+If the coordinator sends `Recovering { generation: N }` then `Ready { generation: N }` (same generation, normal case), `suspend()` advances `self.generation` to `N`. Then `Ready { generation: N }` is rejected because `N <= N`. The publisher never resumes.
 
-`connection_lost()` masque le bug en envoyant `generation: 0`, mais le vrai coordinateur (Task 6 `ConnectionActor`) enverra la génération réelle.
+`connection_lost()` masks the bug by sending `generation: 0`, but the real coordinator (Task 6 `ConnectionActor`) will send the actual generation.
 
-**Impact :** Après une recovery, le publisher reste suspendu indéfiniment. Toutes les publications en attente restent en replay sans jamais partir.
+**Impact:** After a recovery, the publisher stays suspended indefinitely. All pending publications remain in replay and never leave.
 
-**Fix :** Changer `<=` en `<`. Ajouter un test : `Recovering { generation: 3 }` puis `Ready { generation: 3 }` doit réussir.
+**Fix:** Change `<=` to `<`. Add a test: `Recovering { generation: 3 }` then `Ready { generation: 3 }` must succeed.
 
-### #3 — `SubscriptionId` n'a pas d'accesseur → consumer tag corrompu
+### #3 — `SubscriptionId` has no accessor → corrupted consumer tag
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/set.rs:133`
+**File:** `crates/rabbit-rs-core/src/consumer/set.rs:133`
 
 ```rust
 format!("rabbit-rs.{:?}", subscription.id)
 ```
 
-`SubscriptionId(String)` derive `Debug` → produit `rabbit-rs.SubscriptionId("orders_high")` avec le nom du struct et des quotes. Le tag AMQP contient des caractères invalides et un format unexpected.
+`SubscriptionId(String)` derives `Debug` → produces `rabbit-rs.SubscriptionId("orders_high")` with the struct name and quotes. The AMQP tag contains invalid characters and an unexpected format.
 
-**Impact :** Consumer tag illisible dans RabbitMQ Management, debugging difficile, potentiellement rejeté par certains brokers stricts.
+**Impact:** Unreadable consumer tag in RabbitMQ Management, difficult debugging, potentially rejected by some strict brokers.
 
-**Fix :** Ajouter `pub fn as_str(&self) -> &str { &self.0 }` à `SubscriptionId` et remplacer `{:?}` par `{}` via `as_str()`.
+**Fix:** Add `pub fn as_str(&self) -> &str { &self.0 }` to `SubscriptionId` and replace `{:?}` with `{}` via `as_str()`.
 
-### #4 — `source_errors` non borné — fuite mémoire
+### #4 — Unbounded `source_errors` — memory leak
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/actor.rs:56`
+**File:** `crates/rabbit-rs-core/src/consumer/actor.rs:56`
 
 ```rust
-source_errors: VecDeque<ConsumerError>,  // pas de limite
+source_errors: VecDeque<ConsumerError>,  // no limit
 ```
 
-Si un stream produit des erreurs en continu (connexion flappy) sans waiters pour les consommer, la mémoire croît indéfiniment. Le design exige « buffers bornés » partout.
+If a stream produces errors continuously (flappy connection) with no waiters to consume them, memory grows indefinitely. The design requires "bounded buffers" everywhere.
 
-**Impact :** OOM en production sur une connexion instable.
+**Impact:** OOM in production on an unstable connection.
 
-**Fix :** Borner à `max_in_flight` ou une constante (ex. 64). Quand la limite est atteinte, drop les anciennes erreurs ou mettre le stream en pause.
+**Fix:** Bound to `max_in_flight` or a constant (e.g. 64). When the limit is reached, drop old errors or pause the stream.
 
-### #5 — `RuntimeRegistry::acquire` peut bloquer indéfiniment
+### #5 — `RuntimeRegistry::acquire` can block indefinitely
 
-**Fichier :** `crates/rabbit-rs-core/src/runtime.rs:111`
+**File:** `crates/rabbit-rs-core/src/runtime.rs:111`
 
-`close_state` → `state.take()` drop le `Runtime` Tokio sous le `Mutex<Option<ProcessState>>`. Si des tâches (ConnectionActor, ConsumerActor) tournent encore, le drop du runtime bloque. Pas de `shutdown_timeout()` explicite.
+`close_state` → `state.take()` drops the Tokio `Runtime` under the `Mutex<Option<ProcessState>>`. If tasks (ConnectionActor, ConsumerActor) are still running, the runtime drop blocks. No explicit `shutdown_timeout()`.
 
-**Impact :** Après un fork, le processus enfant peut se bloquer au premier `acquire()` si des tâches du parent tournent encore. Deadlock possible.
+**Impact:** After a fork, the child process can hang on the first `acquire()` if parent tasks are still running. Possible deadlock.
 
-**Fix :** Utiliser `runtime.shutdown_timeout(Duration::from_secs(1))` avant de drop, ou séparer le drop hors du Mutex via `std::mem::take` + spawn un thread pour join.
+**Fix:** Use `runtime.shutdown_timeout(Duration::from_secs(1))` before dropping, or move the drop out of the Mutex via `std::mem::take` + spawn a thread to join.
 
 ---
 
-## Bugs modérés (MEDIUM)
+## Moderate bugs (MEDIUM)
 
-### #6 — Deadline hardcoded 30 s pour delayed release
+### #6 — Hardcoded 30 s deadline for delayed release
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/actor.rs:363`
+**File:** `crates/rabbit-rs-core/src/consumer/actor.rs:363`
 
 ```rust
 tokio::time::Instant::now() + Duration::from_secs(30)
 ```
 
-Non configurable. Si le broker est lent pendant recovery, le delayed release échoue par timeout sans retry.
+Not configurable. If the broker is slow during recovery, the delayed release fails by timeout with no retry.
 
-**Fix :** Remplacer par `state.config.publish_deadline` ou dériver du `confirm_timeout` du publisher.
+**Fix:** Replace with `state.config.publish_deadline` or derive it from the publisher's `confirm_timeout`.
 
-### #7 — Delivery perdue si waiter droppé
+### #7 — Delivery lost if waiter dropped
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/actor.rs:170`
+**File:** `crates/rabbit-rs-core/src/consumer/actor.rs:170`
 
 ```rust
 if waiter.send(Ok(item)).is_ok() {
@@ -109,135 +109,135 @@ if waiter.send(Ok(item)).is_ok() {
 }
 ```
 
-Si `send` échoue (waiter annulé côté Laravel), le message sort du buffer sans ack. Il reste unacked côté broker jusqu'à la prochaine déconnexion.
+If `send` fails (waiter cancelled on the Laravel side), the message leaves the buffer without an ack. It remains unacked on the broker side until the next disconnection.
 
-**Fix :** Si `send` échoue, re-pousser le `TransportDelivery` dans le buffer de la subscription et `mark_ready`.
+**Fix:** If `send` fails, push the `TransportDelivery` back into the subscription buffer and `mark_ready`.
 
-### #8 — `ConsumerSet::spawn` sans rollback
+### #8 — `ConsumerSet::spawn` without rollback
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/set.rs:121`
+**File:** `crates/rabbit-rs-core/src/consumer/set.rs:121`
 
-Si `set_qos` réussit pour la subscription 1 mais `consume` échoue pour la 2, les canaux déjà configurés restent ouverts. Pas de nettoyage.
+If `set_qos` succeeds for subscription 1 but `consume` fails for 2, the already-configured channels remain open. No cleanup.
 
-**Fix :** En cas d'erreur, fermer tous les canaux déjà ouverts avant de propager l'erreur.
+**Fix:** On error, close all already-opened channels before propagating the error.
 
-### #9 — URI avec credentials passée à Lapin
+### #9 — URI with credentials passed to Lapin
 
-**Fichier :** `crates/rabbit-rs-core/src/transport/lapin.rs:39`
+**File:** `crates/rabbit-rs-core/src/transport/lapin.rs:39`
 
-`Connection::connect(uri.as_str(), ...)` où l'URI contient `user:password@host`. Si Lapin log cette URI (error path, debug), le mot de passe fuite. Le design interdit « URI complète » dans les logs.
+`Connection::connect(uri.as_str(), ...)` where the URI contains `user:password@host`. If Lapin logs this URI (error path, debug), the password leaks. The design forbids "full URI" in logs.
 
-**Fix :** Construire l'URI sans credentials et passer `Credentials` séparément via les `ConnectionProperties` de Lapin, ou utiliser une URI opaque et logger uniquement `host:port/vhost`.
+**Fix:** Build the URI without credentials and pass `Credentials` separately via Lapin's `ConnectionProperties`, or use an opaque URI and log only `host:port/vhost`.
 
-### #10 — `PublishRequest::new` default `mandatory: false`
+### #10 — `PublishRequest::new` defaults `mandatory: false`
 
-**Fichier :** `crates/rabbit-rs-core/src/transport.rs:186`
+**File:** `crates/rabbit-rs-core/src/transport.rs:186`
 
-L'acteur override à `true`, mais l'API transport permet de publier sans mandatory. Un appel direct au transport (bypass acteur) perd le routage mandatory.
+The actor overrides it to `true`, but the transport API allows publishing without mandatory. A direct transport call (bypassing the actor) loses mandatory routing.
 
-**Fix :** Soit `mandatory: true` par défaut, soit marquer le constructeur `pub(crate)` et exiger un builder.
+**Fix:** Either default `mandatory: true`, or mark the constructor `pub(crate)` and require a builder.
 
-### #11 — Pas de `Reject` sur `Delivery` Rust
+### #11 — No `Reject` on the Rust `Delivery`
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/delivery.rs`
+**File:** `crates/rabbit-rs-core/src/consumer/delivery.rs`
 
-`Settlement` n'a que `Ack` et `Release(Duration)`. `reject(requeue=false)` (discard) n'est pas implémenté. L'API PHP Task 13 (`reject(bool $requeue)`) le requiert.
+`Settlement` only has `Ack` and `Release(Duration)`. `reject(requeue=false)` (discard) is not implemented. The Task 13 PHP API (`reject(bool $requeue)`) requires it.
 
-**Fix :** Ajouter `Settlement::Reject { requeue: bool }` et implémenter dans `settle`.
+**Fix:** Add `Settlement::Reject { requeue: bool }` and implement it in `settle`.
 
-### #12 — `DeliveryToken::settle` peut boucler sur erreur transport
+### #12 — `DeliveryToken::settle` can loop on transport error
 
-**Fichier :** `crates/rabbit-rs-core/src/consumer/delivery.rs:173`
+**File:** `crates/rabbit-rs-core/src/consumer/delivery.rs:173`
 
-Une erreur transport (non-stale) remet l'état à `Pending`, permettant un retry immédiat. Si la génération n'est pas encore updatée, le retry hit la même connexion morte → boucle jusqu'à ce que `UpdateGeneration` arrive. Pas de backoff ni de limite.
+A (non-stale) transport error resets the state to `Pending`, allowing an immediate retry. If the generation has not been updated yet, the retry hits the same dead connection → loop until `UpdateGeneration` arrives. No backoff or limit.
 
-**Fix :** Compter les retries et retourner `ConsumerErrorKind::Transport` après N tentatives, ou attendre un `UpdateGeneration` avant de permettre un nouveau `settle`.
-
----
-
-## Bugs mineurs (LOW)
-
-### #13 — `effective_priority` divise des nanos — `scheduler.rs:161`
-
-`as_nanos()` retourne `u128`. La conversion `i64` est gérée, mais avec `starvation_after = 30s`, le premier step n'arrive qu'après 30 s. Acceptable mais pas réglable depuis la config.
-
-### #14 — `ConnectionKey` contient un hash du password — `config.rs:341`
-
-SHA-256 inclut le password. Le `ConnectionKey` dérive `Debug`. Pas une fuite directe, mais si la clé est exposée dans des métriques, un attaquant connaissant l'algo pourrait tenter un rainbow table. Risque faible.
-
-### #15 — `publish_properties` encode tous les headers en `LongString` — `transport/lapin.rs:405`
-
-Même les booléens et entiers sortent en `LongString` (via `to_string().into_bytes()`). La relecture via `map_header_value` les décode en string. Round-trip perd le type original.
+**Fix:** Count retries and return `ConsumerErrorKind::Transport` after N attempts, or wait for an `UpdateGeneration` before allowing a new `settle`.
 
 ---
 
-## Divergences plan ↔ code (Architecture)
+## Minor bugs (LOW)
+
+### #13 — `effective_priority` divides nanos — `scheduler.rs:161`
+
+`as_nanos()` returns `u128`. The `i64` conversion is handled, but with `starvation_after = 30s`, the first step only arrives after 30 s. Acceptable but not configurable from config.
+
+### #14 — `ConnectionKey` contains a hash of the password — `config.rs:341`
+
+SHA-256 includes the password. `ConnectionKey` derives `Debug`. Not a direct leak, but if the key is exposed in metrics, an attacker knowing the algorithm could attempt a rainbow table. Low risk.
+
+### #15 — `publish_properties` encodes all headers as `LongString` — `transport/lapin.rs:405`
+
+Even booleans and integers come out as `LongString` (via `to_string().into_bytes()`). Reading back via `map_header_value` decodes them as strings. The round-trip loses the original type.
+
+---
+
+## Plan ↔ code divergences (Architecture)
 
 ### A1 — `SchedulerConfig` vs design
 
-Le design place `max_in_flight` dans la clé `scheduler` (`config/rabbit-rs.php`), mais le code Rust le met au niveau `WorkerProfile`. Le normalisateur Laravel devra traduire — risque de confusion.
+The design places `max_in_flight` in the `scheduler` key (`config/rabbit-rs.php`), but the Rust code puts it at the `WorkerProfile` level. The Laravel normalizer will have to translate — confusion risk.
 
-### A2 — `Settlement` n'expose pas `Reject`
+### A2 — `Settlement` does not expose `Reject`
 
-L'API PHP planifiée (Task 13) a `reject(bool $requeue)`, mais le Rust n'a que `Ack` et `Release(Duration)`. `reject(false)` (discard sans requeue) n'existe pas encore.
+The planned PHP API (Task 13) has `reject(bool $requeue)`, but Rust only has `Ack` and `Release(Duration)`. `reject(false)` (discard without requeue) does not exist yet.
 
-### A3 — `AttemptsResolver` default = aucune limite
+### A3 — `AttemptsResolver` default = no limit
 
-`Default::default()` donne `max_attempts: None`. Le design dit « delivery limit à 20 sauf policy externe ». Le défaut devrait être `NonZeroU32::new(20)`.
+`Default::default()` yields `max_attempts: None`. The design says "delivery limit of 20 unless external policy". The default should be `NonZeroU32::new(20)`.
 
-### A4 — Jitter à 50 % au lieu de 20 %
+### A4 — Jitter at 50% instead of 20%
 
-Le design dit « jitter 20 % », mais `EqualJitter` retourne 50–100 % du délai. Dérive silencieuse.
+The design says "20% jitter", but `EqualJitter` returns 50–100% of the delay. Silent drift.
 
-### A5 — `starvation_after` absent de `SubscriptionConfig`
+### A5 — `starvation_after` missing from `SubscriptionConfig`
 
-`SubscriptionPolicy::new()` panic si `starvation_after` est zéro, mais `SubscriptionConfig` ne fournit pas cette valeur. Le binding config→runtime devra combler ce gap ou panic.
+`SubscriptionPolicy::new()` panics if `starvation_after` is zero, but `SubscriptionConfig` does not provide this value. The config→runtime binding will have to fill this gap or panic.
 
-### A6 — `Delivery` n'expose pas l'AMQP `message_id`
+### A6 — `Delivery` does not expose the AMQP `message_id`
 
-Voir bug #1.
+See bug #1.
 
 ---
 
-## Plan d'implémentation
+## Implementation plan
 
-### Phase 1 — Fixes HIGH (avant tout travail sur le Milestone B)
+### Phase 1 — HIGH fixes (before any Milestone B work)
 
-| # | Tâche | Fichiers | Test requis | Effort |
-|---|-------|----------|-------------|--------|
-| 1 | Étendre `Delivery` transport avec `message_id` + `correlation_id`, extraire dans Lapin, propager au `Delivery` public | `transport.rs`, `transport/lapin.rs`, `consumer/delivery.rs`, `consumer/actor.rs` | `delivery_attempts.rs` : vérifier `message_id` stable après redelivery | 2 h |
-| 2 | Changer `<=` en `<` dans `handle_connection_event` Ready | `publisher/actor.rs:408` | `publisher_recovery.rs` : `Recovering { gen: 3 }` puis `Ready { gen: 3 }` réussit | 15 min |
-| 3 | Ajouter `SubscriptionId::as_str()`, remplacer `{:?}` par `as_str()` dans le consumer tag | `consumer/scheduler.rs`, `consumer/set.rs` | `consumer_semantics.rs` : tag ne contient pas `SubscriptionId(` | 15 min |
-| 4 | Borner `source_errors` à `max_in_flight.max(64)` | `consumer/actor.rs` | `consumer_semantics.rs` : 100 erreurs consécutives n'augmentent pas la mémoire au-delà de la borne | 30 min |
-| 5 | Appeler `shutdown_timeout` avant de drop le runtime, hors du Mutex | `runtime.rs` | `runtime.rs tests` : fork avec tâches en cours ne bloque pas | 1 h |
+| # | Task | Files | Required test | Effort |
+|---|------|-------|---------------|--------|
+| 1 | Extend transport `Delivery` with `message_id` + `correlation_id`, extract in Lapin, propagate to the public `Delivery` | `transport.rs`, `transport/lapin.rs`, `consumer/delivery.rs`, `consumer/actor.rs` | `delivery_attempts.rs`: verify `message_id` stable after redelivery | 2 h |
+| 2 | Change `<=` to `<` in `handle_connection_event` Ready | `publisher/actor.rs:408` | `publisher_recovery.rs`: `Recovering { gen: 3 }` then `Ready { gen: 3 }` succeeds | 15 min |
+| 3 | Add `SubscriptionId::as_str()`, replace `{:?}` with `as_str()` in the consumer tag | `consumer/scheduler.rs`, `consumer/set.rs` | `consumer_semantics.rs`: tag does not contain `SubscriptionId(` | 15 min |
+| 4 | Bound `source_errors` to `max_in_flight.max(64)` | `consumer/actor.rs` | `consumer_semantics.rs`: 100 consecutive errors do not grow memory beyond the bound | 30 min |
+| 5 | Call `shutdown_timeout` before dropping the runtime, outside the Mutex | `runtime.rs` | `runtime.rs tests`: fork with running tasks does not hang | 1 h |
 
-### Phase 2 — Fixes MEDIUM (pendant Milestone B)
+### Phase 2 — MEDIUM fixes (during Milestone B)
 
-| # | Tâche | Fichiers | Effort |
-|---|-------|----------|--------|
-| 6 | Configurer la deadline du delayed release | `consumer/actor.rs`, `consumer/set.rs` | 30 min |
-| 7 | Re-pousser la delivery si waiter droppé | `consumer/actor.rs` | 30 min |
-| 8 | Rollback des canaux ouverts en cas d'échec de `spawn` | `consumer/set.rs` | 45 min |
-| 9 | Passer les credentials hors URI à Lapin | `transport/lapin.rs` | 1 h |
-| 10 | `mandatory: true` par défaut sur `PublishRequest` | `transport.rs` | 15 min |
-| 11 | Ajouter `Settlement::Reject { requeue: bool }` | `consumer/delivery.rs`, `consumer/actor.rs` | 1 h |
-| 12 | Compteur de retries sur `DeliveryToken::settle` | `consumer/delivery.rs` | 45 min |
+| # | Task | Files | Effort |
+|---|------|-------|--------|
+| 6 | Configure the delayed release deadline | `consumer/actor.rs`, `consumer/set.rs` | 30 min |
+| 7 | Push the delivery back if the waiter is dropped | `consumer/actor.rs` | 30 min |
+| 8 | Roll back open channels on `spawn` failure | `consumer/set.rs` | 45 min |
+| 9 | Pass credentials to Lapin outside the URI | `transport/lapin.rs` | 1 h |
+| 10 | `mandatory: true` default on `PublishRequest` | `transport.rs` | 15 min |
+| 11 | Add `Settlement::Reject { requeue: bool }` | `consumer/delivery.rs`, `consumer/actor.rs` | 1 h |
+| 12 | Retry counter on `DeliveryToken::settle` | `consumer/delivery.rs` | 45 min |
 
-### Phase 3 — Fixes LOW + corrections de dérive (backlog)
+### Phase 3 — LOW fixes + drift corrections (backlog)
 
-| # | Tâche | Effort |
-|---|-------|--------|
-| 13 | Documenter le calcul aging dans le scheduler | 15 min |
-| 14 | Ne pas hasher le password dans `ConnectionKey` (ou ne pas exposer en Debug) | 30 min |
-| 15 | Encoder les headers selon leur type AMQP original | 1 h |
-| A1 | Aligner `max_in_flight` entre config design et code Rust | 30 min |
-| A3 | Défaut `AttemptsResolver` à 20 | 15 min |
-| A4 | Corriger `EqualJitter` à 20 % | 15 min |
-| A5 | Ajouter `starvation_after` à `SubscriptionConfig` | 30 min |
+| # | Task | Effort |
+|---|------|--------|
+| 13 | Document the aging computation in the scheduler | 15 min |
+| 14 | Do not hash the password in `ConnectionKey` (or do not expose in Debug) | 30 min |
+| 15 | Encode headers according to their original AMQP type | 1 h |
+| A1 | Align `max_in_flight` between design config and Rust code | 30 min |
+| A3 | Default `AttemptsResolver` to 20 | 15 min |
+| A4 | Fix `EqualJitter` to 20% | 15 min |
+| A5 | Add `starvation_after` to `SubscriptionConfig` | 30 min |
 
-### Vérification finale
+### Final verification
 
-Après Phase 1 :
+After Phase 1:
 ```sh
 rtk cargo fmt --all
 rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -245,27 +245,27 @@ rtk cargo test -p rabbit-rs-core
 rtk ./scripts/check.sh
 ```
 
-Après Phase 2 :
+After Phase 2:
 ```sh
 rtk cargo test -p rabbit-rs-core --test consumer_semantics --test publisher_recovery --test delivery_attempts
 rtk ./scripts/check.sh
 ```
 
-### Ordre suggéré
+### Suggested order
 
-1. **#2** (15 min, impact maximal, fix trivial)
-2. **#3** (15 min, fix trivial)
-3. **#1** (2 h, impact structurel mais nécessaire avant Milestone B)
-4. **#5** (1 h, sécurité fork)
-5. **#4** (30 min, fuite mémoire)
-6. Phase 2 en parallèle avec le Milestone B
-7. Phase 3 en backlog
+1. **#2** (15 min, maximum impact, trivial fix)
+2. **#3** (15 min, trivial fix)
+3. **#1** (2 h, structural impact but required before Milestone B)
+4. **#5** (1 h, fork safety)
+5. **#4** (30 min, memory leak)
+6. Phase 2 in parallel with Milestone B
+7. Phase 3 as backlog
 
 ---
 
-## Risques non couverts par cet audit
+## Risks not covered by this audit
 
-- **Tests d'intégration réelle manquants** : le Milestone A utilise uniquement le mock transport. Les bugs #1, #2 et #9 ne se manifesteront qu'avec un vrai broker (Milestone D).
-- **PHP extension non écrite** : l'API PHP (Task 13+) révélera d'autres gaps (types, conversion, lifecycle).
-- **Pas de fuzzing** : le scheduler, le batcher et le ledger de confirms sont des cibles idéales pour des tests de propriétés (proptest/quickcheck).
-- **Pas de benchmark** : les valeurs de batch/prefetch sont arbitraires. Le Milestone E doit les calibrer.
+- **Missing real integration tests**: Milestone A only uses the mock transport. Bugs #1, #2 and #9 will only manifest with a real broker (Milestone D).
+- **PHP extension not written yet**: the PHP API (Task 13+) will reveal further gaps (types, conversion, lifecycle).
+- **No fuzzing**: the scheduler, the batcher, and the confirms ledger are ideal targets for property tests (proptest/quickcheck).
+- **No benchmark**: batch/prefetch values are arbitrary. Milestone E must calibrate them.

@@ -22,7 +22,7 @@ were verified against the exact code. They are correctness/reliability issues, n
 | Supervisor orphans | Stop all children before returning `EXIT_MAX_RESTARTS`; propagate worker options |
 | Monitoring | Return non-zero exit code and log exception when stats collection fails |
 
-## Section 1 — Deadlock réentrant des callbacks
+## Section 1 — Reentrant callback deadlock
 
 ### Problem
 
@@ -59,7 +59,7 @@ Same pattern for `invoke_backpressure_callback` and `CallbackSlot::try_call`.
 - Callback that re-registers itself does not deadlock
 - Multiple concurrent `stats()` calls from different threads do not deadlock
 
-## Section 2 — Perte silencieuse après 20 redeliveries sans DLX
+## Section 2 — Silent loss after 20 redeliveries without DLX
 
 ### Problem
 
@@ -91,7 +91,7 @@ more invasive — the config validation is the minimal fix.
 - Config with `delivery_limit=20` and `dead_letter` set is accepted
 - Config with `delivery_limit=null` and `dead_letter=null` is accepted (no limit, no DLX needed)
 
-## Section 3 — Pools abandonnés sans fermeture
+## Section 3 — Abandoned pools without closure
 
 ### Problem
 
@@ -126,7 +126,7 @@ Same for `resetAfterFork()`.
 - `resetAfterFork()` calls `close()` on all pools when PID changes
 - Pools are not closed when PID hasn't changed (no fork)
 
-## Section 4 — Payload poison non validé
+## Section 4 — Unvalidated poison payload
 
 ### Problem
 

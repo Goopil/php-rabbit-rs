@@ -1202,7 +1202,7 @@ git commit -m "bench: update benchmarks for batcher removal"
 In `docs/plans/2026-07-30-rabbitmq-native-design.md`, line 102, remove:
 
 ```
-3. regroupe les commandes par destination et channel ;
+3. groups commands by destination and channel;
 ```
 
 Renumber subsequent steps (4→3, 5→4, 6→5, 7→6).
@@ -1212,13 +1212,13 @@ Renumber subsequent steps (4→3, 5→4, 6→5, 7→6).
 Line 108, replace:
 
 ```
-Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. Plusieurs requêtes Octane concurrentes peuvent être regroupées par l'acteur. La méthode publishBatch transmet un tableau complet en une seule traversée FFI et constitue le chemin rapide pour Laravel bulk.
+A reliable publish call waits for its confirmation before handing control back to PHP. The publishBatch method transmits a full array in a single FFI crossing and is the fast path for Laravel bulk.
 ```
 
 with:
 
 ```
-Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. La méthode publishBatch transmet un tableau complet en une seule traversée FFI et constitue le chemin rapide pour Laravel bulk.
+A reliable publish call waits for its confirmation before handing control back to PHP. The publishBatch method transmits a full array in a single FFI crossing and is the fast path for Laravel bulk.
 ```
 
 - [ ] **Step 3: Remove "batches" mention from capacity paragraph**
@@ -1226,13 +1226,13 @@ Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. L
 Line 112, replace:
 
 ```
-Cette capacité couvre les commandes en attente, les batches et les confirms en vol afin qu'un acteur qui draine son canal pendant une longue coupure ne puisse pas accumuler une mémoire non bornée.
+This capacity covers pending commands and in-flight confirms so that an actor draining its channel during a long outage cannot accumulate unbounded memory.
 ```
 
 with:
 
 ```
-Cette capacité couvre les commandes en attente et les confirms en vol afin qu'un acteur qui draine son canal pendant une longue coupure ne puisse pas accumuler une mémoire non bornée.
+This capacity covers pending commands and in-flight confirms so that an actor draining its channel during a long outage cannot accumulate unbounded memory.
 ```
 
 - [ ] **Step 4: Remove batch defaults from healthy values**
@@ -1240,8 +1240,8 @@ Cette capacité couvre les commandes en attente et les confirms en vol afin qu'u
 Remove lines 240-241:
 
 ```
-- batch maximal à 256 messages ou 1 Mio ;
-- flush à 1 ms ;
+- maximum batch of 256 messages or 1 MiB;
+- flush at 1 ms;
 ```
 
 - [ ] **Step 5: Remove batch calibration line**
@@ -1249,13 +1249,13 @@ Remove lines 240-241:
 Line 246, remove:
 
 ```
-Les valeurs de batch et prefetch doivent être calibrées par benchmark avant la V1 stable.
+Batch and prefetch values must be calibrated by benchmark before the stable V1.
 ```
 
 Replace with:
 
 ```
-Les valeurs de prefetch doivent être calibrées par benchmark avant la V1 stable.
+Prefetch values must be calibrated by benchmark before the stable V1.
 ```
 
 - [ ] **Step 6: Commit**

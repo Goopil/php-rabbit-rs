@@ -1,65 +1,65 @@
-# Production Readiness — Plan d'implémentation
+# Production Readiness — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Corriger les défauts bloquants identifiés par l'audit du 30 août 2026 et amener l'écosystème Rabbit RS (core Rust, extension PHP, package Laravel) au niveau production-ready / v1.0.
+**Goal:** Fix the blocking defects identified by the August 30, 2026 audit and bring the Rabbit RS ecosystem (Rust core, PHP extension, Laravel package) to production-ready / v1.0 level.
 
-**Architecture:** Trois couches : `rabbit-rs-core` (crate Rust indépendant), `rabbit-rs-php` (extension ext-php-rs), `goopil/rabbit-rs-laravel` (driver Laravel). Chaque tâche respecte la séparation des couches : le core ne connaît pas PHP, l'extension ne transporte que des valeurs possédées, le package Laravel n'accède au natif que via l'API des stubs.
+**Architecture:** Three layers: `rabbit-rs-core` (independent Rust crate), `rabbit-rs-php` (ext-php-rs extension), `goopil/rabbit-rs-laravel` (Laravel driver). Each task respects layer separation: the core knows nothing about PHP, the extension only carries owned values, the Laravel package accesses the native layer only through the stubs API.
 
-**Tech Stack:** Rust 1.96 (edition 2024, Tokio, Lapin 4.10, flume), ext-php-rs 0.15.15, PHP 8.4/8.5, Laravel 12/13, Pest, Orchestra Testbench, Docker Compose (lab RabbitMQ 3 nœuds).
+**Tech Stack:** Rust 1.96 (edition 2024, Tokio, Lapin 4.10, flume), ext-php-rs 0.15.15, PHP 8.4/8.5, Laravel 12/13, Pest, Orchestra Testbench, Docker Compose (3-node RabbitMQ lab).
 
-**Audit source:** évaluation du 30 août 2026 (voir `docs/plans/ROADMAP.md`, Round F, pour le résumé par couche et les notes de maturité).
+**Source audit:** evaluation of August 30, 2026 (see `docs/plans/ROADMAP.md`, Round F, for the per-layer summary and maturity notes).
 
-> **Réconciliation 2026-08-30 (après merge PR #35 / post-pump sur main) :** la
-> composition multi-broker consumer a atterri sur main (Phase D, commit `585c534`,
-> `ConsumerHandle` composé dans `consumer/composite.rs`, `ConsumerSetHandle` par
-> broker dans `consumer/set.rs`) — l'ancienne Task 8 est marquée livrée. La pump v2
-> a modifié les chemins publisher (`publish_blind` désormais à
-> `publisher/actor.rs:229`, budget à `publisher/mod.rs:245`). La Task 1 sert
-> d'hypothèse n°1 à l'investigation Round 2 P1 (stall ack-pipeline,
-> `docs/plans/2026-08-30-consumer-stall-and-reliability.md`). L'ordre d'exécution
-> convenu : Round 2 (avec Task 1) → Tasks 2-6 (P0) → Round C → Tasks 7-14 (P1) →
+> **Reconciliation 2026-08-30 (after PR #35 / post-pump merge on main):** the
+> multi-broker consumer composition landed on main (Phase D, commit `585c534`,
+> composed `ConsumerHandle` in `consumer/composite.rs`, per-broker
+> `ConsumerSetHandle` in `consumer/set.rs`) — the former Task 8 is marked delivered.
+> Pump v2 changed the publisher paths (`publish_blind` now at
+> `publisher/actor.rs:229`, budget at `publisher/mod.rs:245`). Task 1 serves as
+> hypothesis #1 for the Round 2 P1 investigation (ack-pipeline stall,
+> `docs/plans/2026-08-30-consumer-stall-and-reliability.md`). The agreed execution
+> order: Round 2 (with Task 1) → Tasks 2-6 (P0) → Round C → Tasks 7-14 (P1) →
 > Round E → Round D.
 
 ## Global Constraints
 
-- Rust 1.96, edition 2024, `#![forbid(unsafe_code)]` — jamais d'unsafe, jamais d'affaiblissement des lints workspace.
-- TDD obligatoire pour tout changement de comportement : test écrit d'abord, observé en échec, implémentation minimale, re-exécution.
-- Aucun sleep réel dans les tests Rust : temps Tokio suspendu (`#[tokio::test(start_paused = true)]`) + mock transport scriptable.
-- Aucune valeur Zend, objet PHP, callback ou état de conteneur Laravel retenu dans un thread Rust.
-- Livraison at-least-once : aucune perte silencieuse ; les doublons sont autorisés, identifiés et mesurables.
-- Les secrets (credentials, URI complète, certificats) ne fuient jamais dans `Debug`, erreurs, métriques ou logs.
-- Avant de clore chaque tâche : `rtk cargo fmt --all` puis `rtk ./scripts/check.sh` vert (full quality gate).
-- PHP : Pest (pas PHPUnit), `declare(strict_types=1)`, les tests Unit/Feature du package Laravel tournent **sans** l'extension.
-- Un commit logique par tâche verte, message conventionnel (`feat:`/`fix:`/`test:`/`docs:`/`ci:`/`chore:`).
+- Rust 1.96, edition 2024, `#![forbid(unsafe_code)]` — never unsafe, never weaken the workspace lints.
+- TDD mandatory for any behavior change: test written first, observed failing, minimal implementation, re-run.
+- No real sleeps in Rust tests: paused Tokio time (`#[tokio::test(start_paused = true)]`) + scriptable mock transport.
+- No Zend value, PHP object, callback, or Laravel container state held in a Rust thread.
+- At-least-once delivery: no silent loss; duplicates are permitted, identifiable, and measurable.
+- Secrets (credentials, full URI, certificates) never leak into `Debug`, errors, metrics, or logs.
+- Before closing each task: `rtk cargo fmt --all` then `rtk ./scripts/check.sh` green (full quality gate).
+- PHP: Pest (not PHPUnit), `declare(strict_types=1)`, the Laravel package Unit/Feature tests run **without** the extension.
+- One logical commit per green task, conventional message (`feat:`/`fix:`/`test:`/`docs:`/`ci:`/`chore:`).
 
 ---
 
-## Milestone P0 — Blocants production (correctness et sécurité)
+## Milestone P0 — Production blockers (correctness and safety)
 
-### Task 1: Rendre le canal d'erreurs consumer non bloquant (drop-oldest)
+### Task 1: Make the consumer error channel non-blocking (drop-oldest)
 
 **Files:**
-- Modify: `crates/rabbit-rs-core/src/consumer/actor.rs` (11 sites : lignes 461, 471, 492, 502, 513, 544, 653, 666, 744, 774, 998)
-- Modify: `crates/rabbit-rs-core/src/consumer/set.rs:218` (construction du canal flume)
+- Modify: `crates/rabbit-rs-core/src/consumer/actor.rs` (11 sites: lines 461, 471, 492, 502, 513, 544, 653, 666, 744, 774, 998)
+- Modify: `crates/rabbit-rs-core/src/consumer/set.rs:218` (flume channel construction)
 - Test: `crates/rabbit-rs-core/tests/consumer.rs`
 
 **Interfaces:**
-- Produces: `ActorState::record_settlement_error(&mut self, error: SettlementError)` — méthode privée interne, aucune API publique ne change.
+- Produces: `ActorState::record_settlement_error(&mut self, error: SettlementError)` — private internal method, no public API changes.
 
-**Contexte:** `error_tx` est un `flume::bounded(256)` mais l'acteur utilise le send **bloquant** (`state.error_tx.send(...)`). Si PHP n'appelle jamais `drain_errors()`, après 256 erreurs de settlement l'acteur consumer bloque son thread : plus de dispatch, plus de settlement. La doc de `drain_errors` (`set.rs:309-311`) prétend un drop-oldest qui n'existe pas.
+**Context:** `error_tx` is a `flume::bounded(256)` but the actor uses the **blocking** send (`state.error_tx.send(...)`). If PHP never calls `drain_errors()`, after 256 settlement errors the consumer actor blocks its thread: no more dispatch, no more settlement. The `drain_errors` doc (`set.rs:309-311`) claims a drop-oldest behavior that does not exist.
 
 - [ ] **Step 1: Write the failing test**
 
-Ajouter à la fin de `crates/rabbit-rs-core/tests/consumer.rs` (réutilise les helpers module-level `subscription`, `connection_key`, `delivery` déjà présents, cf. `settlement_error_surfaces_via_drain_errors` ligne 1473) :
+Add at the end of `crates/rabbit-rs-core/tests/consumer.rs` (reuses the module-level helpers `subscription`, `connection_key`, `delivery` already present, cf. `settlement_error_surfaces_via_drain_errors` line 1473):
 
 ```rust
 #[tokio::test(start_paused = true)]
 async fn settlement_errors_never_stall_the_actor_when_never_drained() {
     let transport = MockTransport::default();
 
-    // 300 deliveries, chacune acquittée avec un ack en échec. Chaque échec
-    // produit un SettlementError ; 300 > 256 (capacité du canal d'erreurs).
+    // 300 deliveries, each acknowledged with a failing ack. Each failure
+    // produces a SettlementError; 300 > 256 (error channel capacity).
     for tag in 1..=300u64 {
         transport.push_delivery(Ok(delivery(tag, b"payload")));
         transport.push_consumer_result(Ok(())); // set_qos
@@ -72,7 +72,7 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
         .await
         .unwrap();
 
-    // Consomme et acquitte les 300 messages sans jamais drainer les erreurs.
+    // Consume and acknowledge the 300 messages without ever draining the errors.
     for tag in 1..=300u64 {
         let delivery = handle.next().await.expect("delivery must keep flowing");
         assert_eq!(delivery.inner_token().delivery_tag(), tag);
@@ -83,7 +83,7 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
         tokio::task::yield_now().await;
     }
 
-    // L'acteur n'a pas stallé : le buffer d'erreurs est plein mais borné.
+    // The actor did not stall: the error buffer is full but bounded.
     let errors = handle.drain_errors();
     assert_eq!(errors.len(), 256, "oldest errors dropped, newest kept");
     assert_eq!(errors.last().expect("last error").delivery_tag, 300);
@@ -95,11 +95,11 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer settlement_errors_never_stall`
-Expected: FAIL (timeout de stall ou longueur d'erreurs ≠ 256) — le send bloquant fige l'acteur.
+Expected: FAIL (stall timeout or error length ≠ 256) — the blocking send freezes the actor.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Dans `crates/rabbit-rs-core/src/consumer/actor.rs`, ajouter au `ActorState` un receiver cloné (flume permet le clonage ; la capacité bornée porte sur les messages en file, pas sur le nombre de receivers) et la méthode helper :
+In `crates/rabbit-rs-core/src/consumer/actor.rs`, add to `ActorState` a cloned receiver (flume allows cloning; the bounded capacity applies to queued messages, not to the receiver count) and the helper method:
 
 ```rust
 /// Records a settlement error without ever blocking the actor.
@@ -116,19 +116,19 @@ fn record_settlement_error(&mut self, error: SettlementError) {
 }
 ```
 
-Puis remplacer les 11 occurrences `let _ = state.error_tx.send(SettlementError { ... });` par `state.record_settlement_error(SettlementError { ... });`.
+Then replace the 11 occurrences of `let _ = state.error_tx.send(SettlementError { ... });` with `state.record_settlement_error(SettlementError { ... });`.
 
-Dans la construction de `ActorState` (même fichier), conserver un clone du `error_rx` utilisé par `ConsumerHandle` :
+In the `ActorState` construction (same file), keep a clone of the `error_rx` used by `ConsumerHandle`:
 
 ```rust
 let (error_tx, error_rx) = flume::bounded::<SettlementError>(ERROR_CHANNEL_CAPACITY);
-// Le actor garde son propre receiver pour le drop-oldest.
+// The actor keeps its own receiver for drop-oldest.
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer`
-Expected: PASS (tous les tests consumer, y compris le nouveau).
+Expected: PASS (all consumer tests, including the new one).
 
 - [ ] **Step 5: Run the full quality gate and commit**
 
@@ -142,23 +142,23 @@ git commit -m "fix(core): make consumer settlement error channel non-blocking wi
 
 ---
 
-### Task 2: Borner le publish buffer de l'extension PHP
+### Task 2: Bound the PHP extension publish buffer
 
 **Files:**
-- Modify: `crates/rabbit-rs-php/src/classes/pool.rs` (constantes lignes 30-32, `publish_buffer` ligne 46, `publish()` lignes 103-134, re-buffer ligne 420-425)
+- Modify: `crates/rabbit-rs-php/src/classes/pool.rs` (constants lines 30-32, `publish_buffer` line 46, `publish()` lines 103-134, re-buffer lines 420-425)
 - Modify: `crates/rabbit-rs-php/src/classes/exception.rs:35` (helper)
-- Modify: `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` (docblock `publish()`)
-- Test: `packages/` — non ; test Pest extension via `crates/rabbit-rs-php/tests/` (Pest, feature `extension-tests`)
+- Modify: `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` (`publish()` docblock)
+- Test: `packages/` — no; extension Pest tests via `crates/rabbit-rs-php/tests/` (Pest, `extension-tests` feature)
 
 **Interfaces:**
-- Consomme: `conversion::NativePublish { broker: String, request: PublishRequest }` (`crates/rabbit-rs-php/src/conversion.rs:87-88`), payload accessible via `publish.request.payload.len()`.
-- Produces: erreur `Goopil\RabbitRs\BackpressureException` quand le buffer est plein — contrat documenté dans le stub.
+- Consumes: `conversion::NativePublish { broker: String, request: PublishRequest }` (`crates/rabbit-rs-php/src/conversion.rs:87-88`), payload accessible via `publish.request.payload.len()`.
+- Produces: `Goopil\RabbitRs\BackpressureException` error when the buffer is full — contract documented in the stub.
 
-**Contexte:** `publish_buffer: std::sync::Mutex<Vec<NativePublish>>` (`pool.rs:46`) croît sans plafond : chaque flush échoué re-buffers ses messages (`pool.rs:420-425`). En outage prolongé avec trafic soutenu, croissance mémoire non bornée côté process PHP (le budget 64 MiB du core ne borne pas ce buffer applicatif).
+**Context:** `publish_buffer: std::sync::Mutex<Vec<NativePublish>>` (`pool.rs:46`) grows without a ceiling: every failed flush re-buffers its messages (`pool.rs:420-425`). In a prolonged outage with sustained traffic, unbounded memory growth on the PHP process side (the core's 64 MiB budget does not bound this application buffer).
 
 - [ ] **Step 1: Write the failing test**
 
-Ajouter dans la suite Pest de l'extension (fichier des tests lifecycle, cf. structure existante `crates/rabbit-rs-php/tests/` — le mock `testing_pool()` est injecté via la feature `extension-tests`) :
+Add to the extension Pest suite (lifecycle tests file, cf. existing structure `crates/rabbit-rs-php/tests/` — the `testing_pool()` mock is injected via the `extension-tests` feature):
 
 ```php
 <?php
@@ -169,7 +169,7 @@ use Goopil\RabbitRs\testing_pool;
 it('raises backpressure when the publish buffer is full and cannot flush', function () {
     $pool = testing_pool()->with_blocked_transport();
 
-    // PUBLISH_BUFFER_MAX_MESSAGES = 4096 ; au-delà, publish() refuse.
+    // PUBLISH_BUFFER_MAX_MESSAGES = 4096; beyond that, publish() refuses.
     $message = ['broker' => 'default', 'exchange' => 'jobs', 'routing_key' => 'jobs',
         'payload' => str_repeat('x', 64)];
 
@@ -183,16 +183,16 @@ it('raises backpressure when the publish buffer is full and cannot flush', funct
 });
 ```
 
-Adapter le nom du helper de mock au patron existant des tests Pest de l'extension (le pool de test expose un transport bloqué pour forcer l'échec du flush — cf. `crates/rabbit-rs-php/src/testing.rs` pour l'API réelle du mock).
+Adapt the mock helper name to the existing pattern of the extension Pest tests (the test pool exposes a blocked transport to force the flush failure — cf. `crates/rabbit-rs-php/src/testing.rs` for the actual mock API).
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk ./scripts/test-extension.sh`
-Expected: FAIL — soit le test n'a pas de transport bloqué, soit `publish()` n'atteint jamais `BackpressureException` (buffer non borné).
+Expected: FAIL — either the test has no blocked transport, or `publish()` never reaches `BackpressureException` (unbounded buffer).
 
 - [ ] **Step 3: Write minimal implementation**
 
-Dans `crates/rabbit-rs-php/src/classes/exception.rs`, ajouter à côté de `client_exception` (ligne 35) :
+In `crates/rabbit-rs-php/src/classes/exception.rs`, add next to `client_exception` (line 35):
 
 ```rust
 pub(crate) fn backpressure_exception<T>(message: &str) -> PhpResult<T> {
@@ -202,7 +202,7 @@ pub(crate) fn backpressure_exception<T>(message: &str) -> PhpResult<T> {
 }
 ```
 
-Dans `crates/rabbit-rs-php/src/classes/pool.rs`, ajouter les constantes :
+In `crates/rabbit-rs-php/src/classes/pool.rs`, add the constants:
 
 ```rust
 /// Maximum number of buffered publish requests before flushing is forced.
@@ -211,9 +211,9 @@ const PUBLISH_BUFFER_MAX_MESSAGES: usize = 4096;
 const PUBLISH_BUFFER_MAX_BYTES: usize = 64 * 1024 * 1024;
 ```
 
-Ajouter au struct `Pool` un compteur d'octets borné `publish_buffer_bytes: std::sync::Mutex<usize>` (initialisé à 0 dans `__construct`), maintenu à chaque push/re-buffer/drain du buffer.
+Add to the `Pool` struct a bounded byte counter `publish_buffer_bytes: std::sync::Mutex<usize>` (initialized to 0 in `__construct`), maintained on every push/re-buffer/drain of the buffer.
 
-Dans `publish()` (après la conversion, avant le push), vérifier la capacité :
+In `publish()` (after conversion, before the push), check capacity:
 
 ```rust
 let payload_bytes = publish.request.payload.len();
@@ -226,7 +226,7 @@ let at_capacity = buffer.len() >= PUBLISH_BUFFER_MAX_MESSAGES
 
 if at_capacity {
     drop(buffer);
-    self.flush()?; // tente de faire de la place
+    self.flush()?; // attempt to make room
     let mut buffer = self.publish_buffer.lock().expect("publish buffer mutex poisoned");
     let bytes = *self.publish_buffer_bytes.lock().expect("publish buffer bytes mutex poisoned");
     if buffer.len() >= PUBLISH_BUFFER_MAX_MESSAGES
@@ -242,11 +242,11 @@ if at_capacity {
 buffer.push(publish);
 ```
 
-Maintenir le compteur d'octets aux deux points où le buffer change : `publish()` (push) et le re-buffer de flush échoué (`pool.rs:420-425`). Le re-buffer des messages **déjà acceptés** est autorisé à dépasser la capacité (ils ont déjà reçu un `message_id` — les dropper serait une perte silencieuse) ; dans ce cas les nouveaux `publish()` reçoivent `BackpressureException` jusqu'à ce que le buffer repasse sous le plafond.
+Maintain the byte counter at both points where the buffer changes: `publish()` (push) and the failed-flush re-buffer (`pool.rs:420-425`). The re-buffering of **already accepted** messages is allowed to exceed capacity (they already received a `message_id` — dropping them would be a silent loss); in that case new `publish()` calls receive `BackpressureException` until the buffer drops back below the ceiling.
 
 - [ ] **Step 4: Update the stub docblock**
 
-Dans `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, section `publish()` :
+In `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, section `publish()`:
 
 ```php
 /**
@@ -263,13 +263,13 @@ Dans `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, section `publish()` :
 Run: `rtk ./scripts/test-extension.sh && rtk ./scripts/check.sh`
 Expected: PASS.
 
-Le plafond du buffer touche le hot path de publication : lancer le scénario publish
-du driver-level bench (Phase E, mode blind + safe) et comparer au budget figé
-(`benchmarks/results/benchmark-results.json`, cf. plan Task 40 initial) :
+The buffer ceiling touches the publish hot path: run the publish scenario of the
+driver-level bench (Phase E, blind + safe modes) and compare against the frozen budget
+(`benchmarks/results/benchmark-results.json`, cf. initial Task 40 plan):
 
-Run: `cd benchmarks/driver-bench && (voir README § run) ./run.sh --smoke rabbit-rs`
-Expected: throughput dans la variance des archives (`runs/phase-e/`) — aucune
-régression > 5 %.
+Run: `cd benchmarks/driver-bench && (see README § run) ./run.sh --smoke rabbit-rs`
+Expected: throughput within the archives variance (`runs/phase-e/`) — no
+regression > 5%.
 
 - [ ] **Step 6: Commit**
 
@@ -280,35 +280,35 @@ git commit -m "fix(php-ext): bound the publish buffer with explicit backpressure
 
 ---
 
-### Task 3: Deadline et timeout sur l'attente de consumer
+### Task 3: Deadline and timeout on the consumer wait
 
 **Files:**
-- Modify: `crates/rabbit-rs-core/src/config.rs` (nouvelle section `ConsumerConfigSection`)
-- Modify: `crates/rabbit-rs-core/src/client.rs:330-410` (boucle d'attente dans `consumer()`, désormais composée par broker)
+- Modify: `crates/rabbit-rs-core/src/config.rs` (new `ConsumerConfigSection` section)
+- Modify: `crates/rabbit-rs-core/src/client.rs:330-410` (wait loop in `consumer()`, now composed per broker)
 - Modify: `crates/rabbit-rs-core/src/pool/key.rs` (fingerprint)
-- Modify: `crates/rabbit-rs-php/src/conversion.rs` (mapping config) et `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`
+- Modify: `crates/rabbit-rs-php/src/conversion.rs` (config mapping) and `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`
 - Modify: `packages/laravel-queue/config/rabbit-rs.php` + `packages/laravel-queue/src/Config/ConfigNormalizer.php`
 - Test: `crates/rabbit-rs-core/tests/consumer.rs` + `packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php`
 
 **Interfaces:**
-- Produces: `Config` gagne `consumer: ConsumerConfigSection { wait_timeout: Duration }` (serde `consumer.wait_timeout`, défaut 30 s, validé borné 1 s..=24 h) ; échéance → `ClientError` de kind `ClientErrorKind::Transport` — mappé en `ConnectionException` côté PHP (cf. `client_exception` dans `crates/rabbit-rs-php/src/classes/exception.rs:35`).
+- Produces: `Config` gains `consumer: ConsumerConfigSection { wait_timeout: Duration }` (serde `consumer.wait_timeout`, default 30 s, validated bounded 1 s..=24 h); expiry → `ClientError` of kind `ClientErrorKind::Transport` — mapped to `ConnectionException` on the PHP side (cf. `client_exception` in `crates/rabbit-rs-php/src/classes/exception.rs:35`).
 
-**Contexte:** `ClientPool::consumer()` (`client.rs:330+`) boucle indéfiniment quand le coordinator ne quitte jamais `Connecting`↔`Recovering` (broker black-holé, pas de connect timeout) : les workers FPM peuvent se figer sans échappatoire. Depuis la composition multi-broker (PR #35), la boucle d'attente `wait_for_state` se trouve dans la boucle de composition par broker (≈ lignes 371-410) — la deadline doit envelopper l'acquisition complète, toutes sources confondues.
+**Context:** `ClientPool::consumer()` (`client.rs:330+`) loops indefinitely when the coordinator never leaves `Connecting`↔`Recovering` (black-holed broker, no connect timeout): FPM workers can freeze with no escape hatch. Since the multi-broker composition (PR #35), the `wait_for_state` wait loop sits inside the per-broker composition loop (≈ lines 371-410) — the deadline must wrap the whole acquisition, across all sources.
 
 - [ ] **Step 1: Write the failing test (core)**
 
-Dans `crates/rabbit-rs-core/tests/consumer.rs` (ou un nouveau fichier `consumer_wait_deadline.rs`) :
+In `crates/rabbit-rs-core/tests/consumer.rs` (or a new `consumer_wait_deadline.rs` file):
 
 ```rust
 #[tokio::test(start_paused = true)]
 async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
     let transport = MockTransport::default();
-    // Aucun connect result poussé : le connect gate reste fermé pour toujours.
+    // No connect result pushed: the connect gate stays closed forever.
     let _gate = transport.push_connect_gate();
 
-    // Construire une config de base valide puis y injecter le timeout court,
-    // comme les tests existants de client.rs (cf. la construction du profil
-    // worker dans les tests unitaires de crates/rabbit-rs-core/src/client.rs).
+    // Build a valid base config then inject the short timeout,
+    // like the existing client.rs tests (cf. the worker profile construction
+    // in the unit tests of crates/rabbit-rs-core/src/client.rs).
     let base = Config {
         brokers: vec![helper::broker("b", "/")],
         workers: vec![worker_profile_with_subscription("main", "b", "main.jobs")],
@@ -341,16 +341,16 @@ async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
 }
 ```
 
-Adapter la construction du profil worker au helper existant (les tests de `client_pool` dans `crates/rabbit-rs-core/src/client.rs` montrent la construction complète).
+Adapt the worker profile construction to the existing helper (the `client_pool` tests in `crates/rabbit-rs-core/src/client.rs` show the full construction).
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core consumer_wait_deadline`
-Expected: FAIL — le champ `consumer` n'existe pas (compilation) puis la boucle ne termine jamais.
+Expected: FAIL — the `consumer` field does not exist (compilation) then the loop never terminates.
 
 - [ ] **Step 3: Implement the config section**
 
-Dans `crates/rabbit-rs-core/src/config.rs` :
+In `crates/rabbit-rs-core/src/config.rs`:
 
 ```rust
 /// Consumer acquisition settings.
@@ -371,18 +371,18 @@ impl Default for ConsumerConfigSection {
 }
 ```
 
-Ajouter `pub consumer: ConsumerConfigSection` au struct `Config` (avec `#[serde(default)]`) et le champ correspondant dans `ValidatedConfig`. Validation : `wait_timeout` borné `1 s..=24 h` avec `ConfigError` à chemin `consumer.wait_timeout`. Mettre à jour `ConnectionKey::from_config` / `ConfigFingerprint` pour inclure la valeur.
+Add `pub consumer: ConsumerConfigSection` to the `Config` struct (with `#[serde(default)]`) and the matching field in `ValidatedConfig`. Validation: `wait_timeout` bounded `1 s..=24 h` with `ConfigError` at path `consumer.wait_timeout`. Update `ConnectionKey::from_config` / `ConfigFingerprint` to include the value.
 
-Mettre à jour les littéraux `Config { ... }` des helpers de tests (`tests/consumer.rs::helper::connection_key` et autres sites) en ajoutant `consumer: ConsumerConfigSection::default(),`.
+Update the `Config { ... }` literals of test helpers (`tests/consumer.rs::helper::connection_key` and other sites) by adding `consumer: ConsumerConfigSection::default(),`.
 
 - [ ] **Step 4: Bound the acquisition**
 
-Dans `crates/rabbit-rs-core/src/client.rs::consumer()`, envelopper l'acquisition complète (la composition par broker et ses boucles `wait_for_state`, ≈ lignes 355-410) :
+In `crates/rabbit-rs-core/src/client.rs::consumer()`, wrap the whole acquisition (the per-broker composition and its `wait_for_state` loops, ≈ lines 355-410):
 
 ```rust
 let wait_timeout = self.config.consumer.wait_timeout;
 let consumer = tokio::time::timeout(wait_timeout, async {
-    // ... boucle existante inchangée (coordinator.consumer / wait_for_state /
+    // ... existing loop unchanged (coordinator.consumer / wait_for_state /
     // is_closed / FailedPermanent / Closed)
 })
 .await
@@ -393,18 +393,18 @@ let consumer = tokio::time::timeout(wait_timeout, async {
 })??;
 ```
 
-Avec le temps Tokio suspendu, `timeout` respecte `advance()` — le test reste déterministe.
+With paused Tokio time, `timeout` respects `advance()` — the test stays deterministic.
 
 - [ ] **Step 5: Wire through PHP and Laravel**
 
-- `crates/rabbit-rs-php/src/conversion.rs` : mapper la clé `consumer.wait_timeout` (entier ms, optionnel) vers la config native.
-- `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` : documenter la clé de config.
-- `packages/laravel-queue/config/rabbit-rs.php` : ajouter `'wait_timeout' => 30_000` sous une section `consumers` (ms).
-- `packages/laravel-queue/src/Config/ConfigNormalizer.php` : valider (int > 0, ≤ 86 400 000) et mapper vers `consumer.wait_timeout`.
+- `crates/rabbit-rs-php/src/conversion.rs`: map the `consumer.wait_timeout` key (integer ms, optional) to the native config.
+- `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`: document the config key.
+- `packages/laravel-queue/config/rabbit-rs.php`: add `'wait_timeout' => 30_000` under a `consumers` section (ms).
+- `packages/laravel-queue/src/Config/ConfigNormalizer.php`: validate (int > 0, ≤ 86 400 000) and map to `consumer.wait_timeout`.
 
 - [ ] **Step 6: Write the failing Laravel test, then pass it**
 
-Dans `packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php` :
+In `packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php`:
 
 ```php
 it('maps consumer wait_timeout to the native config', function () {
@@ -420,7 +420,7 @@ it('rejects a consumer wait_timeout outside the 1s..24h bound', function () {
 ```
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Unit/ConfigNormalizerTest.php`
-Expected: FAIL puis PASS après implémentation Step 5.
+Expected: FAIL then PASS after the Step 5 implementation.
 
 - [ ] **Step 7: Full gate and commit**
 
@@ -434,14 +434,14 @@ git commit -m "feat(core): bound consumer acquisition wait with a configurable d
 
 ---
 
-### Task 4: Échecs bruyants sur les fichiers TLS illisibles
+### Task 4: Loud failures on unreadable TLS files
 
 **Files:**
 - Modify: `crates/rabbit-rs-core/src/transport/lapin.rs:351-372` (`build_tls_config`, `build_tls_identity`)
-- Modify: `crates/rabbit-rs-core/src/transport/lapin.rs` (appelant de `build_tls_config` dans `connect()`)
-- Test: `crates/rabbit-rs-core/tests/transport_tuning.rs` (ou nouveau `tls_errors.rs`)
+- Modify: `crates/rabbit-rs-core/src/transport/lapin.rs` (caller of `build_tls_config` in `connect()`)
+- Test: `crates/rabbit-rs-core/tests/transport_tuning.rs` (or new `tls_errors.rs`)
 
-**Contexte:** `fs::read_to_string(path).ok()` et `fs::read(path).ok()?` retombent silencieusement quand un CA cert ou un couple client cert/key est illisible : la connexion part sans la CA prévue (sécurité dégradée en silence). `TlsVerify::None` et `server_name` (SNI) restent des champs validés mais non câblés — reportés à la Task 12 avec l'intégration TLS réelle ; cette tâche garantit qu'aucun fichier TLS configuré ne peut être silencieusement ignoré.
+**Context:** `fs::read_to_string(path).ok()` and `fs::read(path).ok()?` silently fall back when a CA cert or a client cert/key pair is unreadable: the connection starts without the intended CA (silently degraded security). `TlsVerify::None` and `server_name` (SNI) remain validated but unwired fields — deferred to Task 12 with real TLS integration; this task guarantees that no configured TLS file can be silently ignored.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -476,11 +476,11 @@ fn unreadable_tls_files_fail_loudly_instead_of_connecting_unprotected() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core unreadable_tls_files_fail_loudly`
-Expected: FAIL — l'erreur actuelle est une erreur de connexion réseau (CA ignorée), pas une erreur identifiant le fichier.
+Expected: FAIL — the current error is a network connection error (CA ignored), not an error identifying the file.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Dans `crates/rabbit-rs-core/src/transport/lapin.rs` :
+In `crates/rabbit-rs-core/src/transport/lapin.rs`:
 
 ```rust
 fn build_tls_config(config: &BrokerConfig) -> TransportResult<lapin::tcp::OwnedTLSConfig> {
@@ -525,7 +525,7 @@ fn build_tls_identity(
 }
 ```
 
-Adapter l'appelant dans `connect()` pour propager `TransportResult` (`?`). Vérifier que `TransportError` expose une variante de config (`config(...)`) — sinon ajouter une variante `Configuration { message }` dans `transport.rs` en suivant le style existant des erreurs typées.
+Adapt the caller in `connect()` to propagate `TransportResult` (`?`). Verify that `TransportError` exposes a config variant (`config(...)`) — otherwise add a `Configuration { message }` variant in `transport.rs` following the existing typed error style.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -544,18 +544,18 @@ git commit -m "fix(core): fail loudly on unreadable TLS certificate files"
 
 ---
 
-### Task 5: Horizon — respecter after-commit et câbler bulk()
+### Task 5: Horizon — honor after-commit and wire bulk()
 
 **Files:**
-- Modify: `packages/laravel-queue/src/RabbitMqQueue.php:261,289` (`prepareBatch` et `publishBatch` : `private` → `protected`)
+- Modify: `packages/laravel-queue/src/RabbitMqQueue.php:261,289` (`prepareBatch` and `publishBatch`: `private` → `protected`)
 - Modify: `packages/laravel-queue/src/Horizon/RabbitMqQueue.php` (push/later via `enqueueUsing`, override `prepareBatch`)
-- Test: `packages/laravel-queue/tests/Feature/HorizonAfterCommitTest.php` (nouveau)
+- Test: `packages/laravel-queue/tests/Feature/HorizonAfterCommitTest.php` (new)
 
-**Contexte:** En mode Horizon, `push()`/`later()` contournent `enqueueUsing` (appellent `createPayload` + `pushRaw`/`laterRawFromPayload` directement) : `after_commit` est ignoré — des jobs sont publiés alors que la transaction SQL n'est pas commitée (perte de jobs transactionnels). `bulk()` n'est pas surchargé : jobs bulk sans `JobPayload::prepare()` ni events Horizon, invisibles au dashboard.
+**Context:** In Horizon mode, `push()`/`later()` bypass `enqueueUsing` (they call `createPayload` + `pushRaw`/`laterRawFromPayload` directly): `after_commit` is ignored — jobs get published while the SQL transaction is not yet committed (transactional job loss). `bulk()` is not overridden: bulk jobs without `JobPayload::prepare()` nor Horizon events, invisible to the dashboard.
 
 - [ ] **Step 1: Write the failing test**
 
-`packages/laravel-queue/tests/Feature/HorizonAfterCommitTest.php` (avec les fakes Horizon du bootstrap existant) :
+`packages/laravel-queue/tests/Feature/HorizonAfterCommitTest.php` (with the existing bootstrap Horizon fakes):
 
 ```php
 <?php
@@ -592,20 +592,20 @@ it('pushes Horizon bulk jobs with prepared payloads and events', function () {
 });
 ```
 
-(Le mécanisme `swapNativePool` est un exemple : utiliser le patron de mock natif existant de `tests/bootstrap.php` — les fakes `Pool`/`Consumer` fidèles au contrat.)
+(The `swapNativePool` mechanism is an example: use the existing native mock pattern from `tests/bootstrap.php` — `Pool`/`Consumer` fakes faithful to the contract.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Feature/HorizonAfterCommitTest.php`
-Expected: FAIL — le job est publié dans la transaction (after_commit ignoré) et bulk ne déclenche pas les events.
+Expected: FAIL — the job is published inside the transaction (after_commit ignored) and bulk does not trigger the events.
 
 - [ ] **Step 3: Make the base batch helpers overridable**
 
-Dans `packages/laravel-queue/src/RabbitMqQueue.php`, remplacer `private function prepareBatch(...)` (ligne 261) et `private function publishBatch(...)` (ligne 289) par `protected function`. Aucun changement de signature ni de logique.
+In `packages/laravel-queue/src/RabbitMqQueue.php`, replace `private function prepareBatch(...)` (line 261) and `private function publishBatch(...)` (line 289) with `protected function`. No signature or logic change.
 
 - [ ] **Step 4: Rewrite the Horizon push/later/bulk path**
 
-Dans `packages/laravel-queue/src/Horizon/RabbitMqQueue.php` :
+In `packages/laravel-queue/src/Horizon/RabbitMqQueue.php`:
 
 ```php
 public function push($job, $data = '', $queue = null)
@@ -660,12 +660,12 @@ private function publishHorizonPayload(string $payload, ?string $queue, ?int $de
 }
 ```
 
-Supprimer la propriété `$lastPushed` et l'ancien `pushRaw` surchargé (le payload Horizon est maintenant préparé au niveau `push`/`later`/`prepareBatch`, avant `enqueueUsing`, de sorte que le callback publié au commit transporte déjà le payload préparé).
+Remove the `$lastPushed` property and the old overridden `pushRaw` (the Horizon payload is now prepared at the `push`/`later`/`prepareBatch` level, before `enqueueUsing`, so the callback published at commit already carries the prepared payload).
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Feature/HorizonAfterCommitTest.php && php vendor/bin/pest`
-Expected: PASS (nouveau test + aucune régression sur la suite existante y compris les tests Horizon H1-H6).
+Expected: PASS (new test + no regression on the existing suite including Horizon tests H1-H6).
 
 - [ ] **Step 6: Full gate and commit**
 
@@ -679,13 +679,13 @@ git commit -m "fix(laravel): honor after-commit and Horizon events for push, lat
 
 ---
 
-### Task 6: Alerte poison-message sur les défauts permissifs
+### Task 6: Poison-message warning on permissive defaults
 
 **Files:**
 - Modify: `packages/laravel-queue/src/RabbitMqServiceProvider.php` (boot)
-- Test: `packages/laravel-queue/tests/Feature/PoisonMessageWarningTest.php` (nouveau)
+- Test: `packages/laravel-queue/tests/Feature/PoisonMessageWarningTest.php` (new)
 
-**Contexte:** Par défaut `topology.queue.delivery_limit => null` et `topology.dead_letter => null` (`config/rabbit-rs.php:329-331`) : un message qui crashe le worker avant settlement est redelivré à l'infini. La protection est opt-in sans aucun signal. On n'impose pas de nouveau défaut (breaking change) mais on alerte en production.
+**Context:** By default `topology.queue.delivery_limit => null` and `topology.dead_letter => null` (`config/rabbit-rs.php:329-331`): a message that crashes the worker before settlement is redelivered forever. The protection is opt-in with no signal. We do not impose a new default (breaking change) but we warn in production.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -717,11 +717,11 @@ it('does not warn when delivery_limit is configured', function () {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Feature/PoisonMessageWarningTest.php`
-Expected: FAIL — aucun warning émis.
+Expected: FAIL — no warning emitted.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Dans `packages/laravel-queue/src/RabbitMqServiceProvider.php::boot()`, à la première résolution d'une connexion `rabbit-rs` (via le connector, une fois par empreinte de config) :
+In `packages/laravel-queue/src/RabbitMqServiceProvider.php::boot()`, at the first resolution of a `rabbit-rs` connection (via the connector, once per config fingerprint):
 
 ```php
 if (
@@ -739,7 +739,7 @@ if (
 }
 ```
 
-Déclencher le warning une seule fois par process (flag statique ou propriété du connector partagé). La clé `production_warning` (défaut `true`) est ajoutée à `config/rabbit-rs.php` avec un commentaire.
+Trigger the warning only once per process (static flag or shared connector property). The `production_warning` key (default `true`) is added to `config/rabbit-rs.php` with a comment.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -755,28 +755,28 @@ git commit -m "feat(laravel): warn on unbounded redelivery defaults in productio
 
 ---
 
-## Milestone P1 — Durcissement
+## Milestone P1 — Hardening
 
-### Task 7: Établissement paresseux des consumers par profile demandé
+### Task 7: Lazy consumer establishment for requested profiles only
 
 **Files:**
 - Modify: `crates/rabbit-rs-core/src/pool/recovery_coordinator.rs:406` (`recover_generation`)
-- Modify: `crates/rabbit-rs-core/src/client.rs` (registre des profiles demandés)
-- Test: `crates/rabbit-rs-core/tests/consumer.rs` (nouveau test)
+- Modify: `crates/rabbit-rs-core/src/client.rs` (registry of requested profiles)
+- Test: `crates/rabbit-rs-core/tests/consumer.rs` (new test)
 
-**Contexte:** `recover_generation` boucle sur **tous** les `worker_profiles()` de la config (`recovery_coordinator.rs:406`) : un process purement publisher déclare des worker profiles ouvre des channels + `basic_consume` sur toutes les queues à chaque reconnexion et retient des messages non-ackés (jusqu'à prefetch par queue) — blocage invisible de queues et redeliveries inutiles.
+**Context:** `recover_generation` loops over **all** `worker_profiles()` of the config (`recovery_coordinator.rs:406`): a purely publishing process that declares worker profiles opens channels + `basic_consume` on all queues at each reconnection and holds unacked messages (up to prefetch per queue) — invisible blocking of queues and pointless redeliveries.
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
 #[tokio::test(start_paused = true)]
 async fn only_requested_worker_profiles_are_consumed() {
-    // Config avec deux worker profiles : "main" (queue main.jobs) et
-    // "side" (queue side.jobs), sur le même broker mock.
+    // Config with two worker profiles: "main" (queue main.jobs) and
+    // "side" (queue side.jobs), on the same mock broker.
     let transport = MockTransport::default();
-    // ... construction du pool via les helpers existants de client.rs ...
+    // ... pool construction via the existing client.rs helpers ...
 
-    // Le process demande uniquement le profil "main".
+    // The process only requests the "main" profile.
     let _handle = pool.consumer("main").await.expect("main consumer");
 
     tokio::time::advance(Duration::from_millis(10)).await;
@@ -796,23 +796,23 @@ async fn only_requested_worker_profiles_are_consumed() {
 }
 ```
 
-(Vérifier le variant exact de `TransportOperation` pour `basic_consume` dans `crates/rabbit-rs-core/src/transport/mock.rs` et adapter le pattern matching.)
+(Verify the exact `TransportOperation` variant for `basic_consume` in `crates/rabbit-rs-core/src/transport/mock.rs` and adapt the pattern matching.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core only_requested_worker_profiles`
-Expected: FAIL — `side.jobs` est consommé malgré l'absence de demande.
+Expected: FAIL — `side.jobs` is consumed despite no request.
 
 - [ ] **Step 3: Write minimal implementation**
 
-1. Dans `crates/rabbit-rs-core/src/client.rs`, ajouter `requested_profiles: std::sync::Mutex<std::collections::HashSet<String>>` au `ClientPool`. `consumer(profile)` insère le profile dans le set **avant** de déclencher les coordinators.
-2. Partager le set avec chaque coordinator (passé à la construction, `Arc<Mutex<HashSet<String>>>`).
-3. Dans `recover_generation` (`recovery_coordinator.rs:406`), filtrer `worker_profiles()` : ne traiter que les profiles présents dans le set demandé. Un profile ajouté après une reconnexion est établi au prochain appel `coordinator.consumer(profile)` (la boucle d'attente de `client.consumer()` retente déjà).
+1. In `crates/rabbit-rs-core/src/client.rs`, add `requested_profiles: std::sync::Mutex<std::collections::HashSet<String>>` to `ClientPool`. `consumer(profile)` inserts the profile into the set **before** triggering the coordinators.
+2. Share the set with each coordinator (passed at construction, `Arc<Mutex<HashSet<String>>>`).
+3. In `recover_generation` (`recovery_coordinator.rs:406`), filter `worker_profiles()`: only process the profiles present in the requested set. A profile added after a reconnection is established at the next `coordinator.consumer(profile)` call (the `client.consumer()` wait loop already retries).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `rtk cargo test -p rabbit-rs-core && rtk ./scripts/check.sh`
-Expected: PASS (attention aux tests existants qui attendaient un établissement eager — les adapter si leur intention est préservée).
+Expected: PASS (watch out for existing tests that expected eager establishment — adapt them if their intent is preserved).
 
 - [ ] **Step 5: Commit**
 
@@ -823,36 +823,36 @@ git commit -m "feat(core): lazily establish consumers only for requested worker 
 
 ---
 
-### Task 8: Composition multi-broker du consumer — LIVRÉE SUR MAIN
+### Task 8: Multi-broker consumer composition — DELIVERED ON MAIN
 
-**Statut : terminée en amont.** Livrée par la Phase D post-pump (PR #35, commit
-`585c534` « compose multi-broker consumers from all coordinators ») :
+**Status: completed upstream.** Delivered by the post-pump Phase D (PR #35, commit
+`585c534` "compose multi-broker consumers from all coordinators"):
 
-- `crates/rabbit-rs-core/src/consumer/composite.rs` — `pub struct ConsumerHandle` :
-  le handle composé qui merge les livraisons des sources multi-brokers avec une
-  sélection équitable et route chaque settlement vers le broker source.
-- `crates/rabbit-rs-core/src/consumer/set.rs:284` — `pub struct ConsumerSetHandle` :
-  le handle par broker (renommé depuis l'ancien `ConsumerHandle`).
-- `ClientPool::consumer()` (`client.rs:330`) retourne désormais le handle composé.
-- Semantics documentées : `docs/` — commit `39ced65` « document multi-broker
-  consumer semantics ».
+- `crates/rabbit-rs-core/src/consumer/composite.rs` — `pub struct ConsumerHandle`:
+  the composed handle that merges deliveries from multi-broker sources with fair
+  selection and routes each settlement to its source broker.
+- `crates/rabbit-rs-core/src/consumer/set.rs:284` — `pub struct ConsumerSetHandle`:
+  the per-broker handle (renamed from the old `ConsumerHandle`).
+- `ClientPool::consumer()` (`client.rs:330`) now returns the composed handle.
+- Documented semantics: `docs/` — commit `39ced65` "document multi-broker
+  consumer semantics".
 
-**Vérification d'adéquation avec l'audit :** l'écart identifié (« seul le 1er
-broker est consommé, `client.rs:414-417` ») n'existe plus. Le test multi-brokers
-prévu par cette task reste pertinent comme non-régression : si un scenario similaire
-est souhaité, l'écrire en s'appuyant sur `composite.rs` et les tests existants
-(`tests/consumer.rs`, section composite). Aucun code à écrire pour cette task.
+**Adequacy check against the audit:** the identified gap ("only the 1st
+broker is consumed, `client.rs:414-417`") no longer exists. The multi-broker test
+planned by this task remains relevant as a non-regression: if a similar scenario
+is desired, write it on top of `composite.rs` and the existing tests
+(`tests/consumer.rs`, composite section). No code to write for this task.
 
 ---
 
-### Task 9: Mesurer les doublons de livraison
+### Task 9: Measure delivery duplicates
 
 **Files:**
-- Modify: `crates/rabbit-rs-core/src/consumer/actor.rs` (chemin de dispatch, où `attempts` est résolu)
-- Modify: `crates/rabbit-rs-core/src/metrics.rs:145-147` (aucun changement de signature — wiring uniquement)
-- Test: `crates/rabbit-rs-core/tests/consumer.rs` (nouveau test)
+- Modify: `crates/rabbit-rs-core/src/consumer/actor.rs` (dispatch path, where `attempts` is resolved)
+- Modify: `crates/rabbit-rs-core/src/metrics.rs:145-147` (no signature change — wiring only)
+- Test: `crates/rabbit-rs-core/tests/consumer.rs` (new test)
 
-**Contexte:** `record_duplicate()` (`metrics.rs:145`) n'est jamais appelé : `duplicate_count` est toujours 0 alors que le contrat projet exige des doublons « identifiables and measurable ». Le snapshot expose un compteur mort, trompeur pour l'exploitation.
+**Context:** `record_duplicate()` (`metrics.rs:145`) is never called: `duplicate_count` is always 0 while the project contract requires duplicates to be "identifiable and measurable". The snapshot exposes a dead counter, misleading for operations.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -888,12 +888,12 @@ Expected: FAIL — `duplicate_count == 0`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Dans le chemin de dispatch de `consumer/actor.rs` (là où `attempts` est résolu via `AttemptsResolver`), après résolution : si `attempts > 1` (redelivered flag, `x-acquired-count`, ou `x-delivery-count` > 1 — la source exacte est déjà centralisée dans `consumer/attempts.rs`), appeler `self.metrics.record_duplicate()` (le `Metrics` partagé de l'acteur). Un seul appel par livraison redelivrée.
+In the dispatch path of `consumer/actor.rs` (where `attempts` is resolved via `AttemptsResolver`), after resolution: if `attempts > 1` (redelivered flag, `x-acquired-count`, or `x-delivery-count` > 1 — the exact source is already centralized in `consumer/attempts.rs`), call `self.metrics.record_duplicate()` (the actor's shared `Metrics`). One call per redelivered delivery.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `rtk cargo test -p rabbit-rs-core && rtk ./scripts/check.sh`
-Expected: PASS. Compléter l'assertion du test (`duplicate_count == 1`, `deliveries_total == 2`).
+Expected: PASS. Complete the test assertions (`duplicate_count == 1`, `deliveries_total == 2`).
 
 - [ ] **Step 5: Commit**
 
@@ -904,22 +904,22 @@ git commit -m "feat(core): count redelivered messages as duplicates in metrics"
 
 ---
 
-### Task 10: Drainer les events natifs depuis publish() et next()
+### Task 10: Drain native events from publish() and next()
 
 **Files:**
 - Create: `crates/rabbit-rs-php/src/classes/bridge.rs`
-- Modify: `crates/rabbit-rs-php/src/classes/pool.rs` (déplace les callbacks/états vers le bridge)
-- Modify: `crates/rabbit-rs-php/src/classes/consumer.rs` (déclenche le bridge dans `next()`/`tryNext()`/`nextBatch()`)
-- Modify: `packages/laravel-queue/src/RabbitMqQueue.php` + README (drain au pop)
+- Modify: `crates/rabbit-rs-php/src/classes/pool.rs` (move callbacks/states to the bridge)
+- Modify: `crates/rabbit-rs-php/src/classes/consumer.rs` (trigger the bridge in `next()`/`tryNext()`/`nextBatch()`)
+- Modify: `packages/laravel-queue/src/RabbitMqQueue.php` + README (drain on pop)
 - Test: `crates/rabbit-rs-php/tests/` (Pest) + `packages/laravel-queue/tests/Feature/NativeEventDispatchTest.php`
 
-**Contexte:** Les callbacks `onConnectionState`/`onBackpressure` ne sont invoqués que pendant `stats()` (`pool.rs:263-264`) — or le driver n'appelle jamais `stats()` en régime normal. `ConnectionStateChanged`/`BackpressureDetected` sont inopérants en production alors que le README (`packages/laravel-queue/README.md:17`) et `docs/operations.md:231` promettent le contraire.
+**Context:** The `onConnectionState`/`onBackpressure` callbacks are only invoked during `stats()` (`pool.rs:263-264`) — yet the driver never calls `stats()` in normal operation. `ConnectionStateChanged`/`BackpressureDetected` are ineffective in production while the README (`packages/laravel-queue/README.md:17`) and `docs/operations.md:231` promise the opposite.
 
 - [ ] **Step 1: Write the failing test (extension)**
 
 ```php
 it('invokes connection state callbacks during publish and consume without stats()', function () {
-    $pool = testing_pool()->with_failing_transport(); // transport qui tombe
+    $pool = testing_pool()->with_failing_transport(); // transport that dies
 
     $states = [];
     $pool->onConnectionState(function (string $broker, string $state, int $generation) use (&$states) {
@@ -934,11 +934,11 @@ it('invokes connection state callbacks during publish and consume without stats(
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk ./scripts/test-extension.sh`
-Expected: FAIL — `$states` vide sans `stats()`.
+Expected: FAIL — `$states` empty without `stats()`.
 
 - [ ] **Step 3: Extract an EventBridge**
 
-`crates/rabbit-rs-php/src/classes/bridge.rs` :
+`crates/rabbit-rs-php/src/classes/bridge.rs`:
 
 ```rust
 /// Shared event bridge: owns the PHP callbacks and last-seen state so both
@@ -954,21 +954,21 @@ pub(crate) struct EventBridge {
 }
 ```
 
-Déplacer `invoke_connection_state_callbacks` et `invoke_backpressure_callbacks` (actuellement méthodes de `Pool`, `pool.rs:443-505`) vers `EventBridge` en implémentations `Arc<EventBridge>`. `Pool` et `Consumer` détiennent `Arc<EventBridge>` (constructeur `Consumer::new` gagne un paramètre `bridge: Arc<EventBridge>` — mise à jour de tous les appels). Invariant préservé : mutex relâchés avant invocation des callbacks (anti-deadlock, cf. `callbacks.rs:1-24` et `CallbackDeadlockTest.php`).
+Move `invoke_connection_state_callbacks` and `invoke_backpressure_callbacks` (currently `Pool` methods, `pool.rs:443-505`) to `EventBridge` as `Arc<EventBridge>` implementations. `Pool` and `Consumer` hold `Arc<EventBridge>` (the `Consumer::new` constructor gains a `bridge: Arc<EventBridge>` parameter — update all call sites). Invariant preserved: mutexes released before callback invocation (anti-deadlock, cf. `callbacks.rs:1-24` and `CallbackDeadlockTest.php`).
 
-Déclencher `bridge.drain(...)` :
-- dans `Pool::publish()` et `Pool::publishBatch()` (après flush),
-- dans `Consumer::next()`/`tryNext()`/`nextBatch()` (avant de bloquer sur l'attente),
-- toujours dans `stats()` (comportement existant).
+Trigger `bridge.drain(...)`:
+- in `Pool::publish()` and `Pool::publishBatch()` (after flush),
+- in `Consumer::next()`/`tryNext()`/`nextBatch()` (before blocking on the wait),
+- still in `stats()` (existing behavior).
 
 - [ ] **Step 4: Wire the Laravel driver**
 
-Dans `packages/laravel-queue/src/RabbitMqQueue.php::pop()`, avant le `next()` : aucun changement nécessaire côté PHP (l'extension draine nativement) ; en revanche **corriger les docs** : `README.md:17` et `docs/operations.md:231` deviennent exacts avec ce comportement — vérifier et ajuster la formulation (« events fire during publish and consume operations »).
+In `packages/laravel-queue/src/RabbitMqQueue.php::pop()`, before `next()`: no PHP-side change needed (the extension drains natively); however **fix the docs**: `README.md:17` and `docs/operations.md:231` become accurate with this behavior — verify and adjust the wording ("events fire during publish and consume operations").
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `rtk ./scripts/test-extension.sh && cd packages/laravel-queue && php vendor/bin/pest`
-Expected: PASS (y compris `CallbackDeadlockTest` et `NativeEventDispatchTest`).
+Expected: PASS (including `CallbackDeadlockTest` and `NativeEventDispatchTest`).
 
 - [ ] **Step 6: Full gate and commit**
 
@@ -982,59 +982,55 @@ git commit -m "feat(php-ext): drain native events on publish and consume paths"
 
 ---
 
-### Task 11: Borner le mode Blind en octets
+### Task 11: Bound the Blind mode in bytes
 
 **Files:**
 - Modify: `crates/rabbit-rs-core/src/publisher/actor.rs:229` (`publish_blind`, post-pump v2)
-- Modify: `crates/rabbit-rs-core/src/publisher/pump.rs` (intake de la pump blind)
+- Modify: `crates/rabbit-rs-core/src/publisher/pump.rs` (blind pump intake)
 - Test: `crates/rabbit-rs-core/tests/blind_pump.rs`
 
-**Contexte:** `publish_blind` n'acquiert ni sémaphore ni byte budget : la borne mémoire est un nombre de messages (1024 intake + 2048 in-flight). 1024 payloads de 50 MB passent — incohérent avec Safe/Unsafe qui bornent nombre et octets. Le builder `with_byte_budget` existe déjà (`publisher/mod.rs:245`) pour les modes confirmés — le réutiliser.
+**Context:** `publish_blind` acquires neither semaphore nor byte budget: the memory bound is a message count (1024 intake + 2048 in-flight). 1024 payloads of 50 MB pass — inconsistent with Safe/Unsafe which bound both count and bytes. The `with_byte_budget` builder already exists (`publisher/mod.rs:245`) for confirmed modes — reuse it.
 
 - [ ] **Step 1: Write the failing test**
 
-Dans `crates/rabbit-rs-core/tests/blind_pump.rs` :
+In `crates/rabbit-rs-core/tests/blind_pump.rs`:
 
 ```rust
 #[tokio::test(start_paused = true)]
 async fn blind_publish_respects_the_byte_budget() {
-    // Capacity de la pump réduite pour le test ; payload de taille
-    // volontairement > budget_bytes / capacité.
+    // Pump capacity reduced for the test; payload size deliberately
+    // > budget_bytes / capacity.
     let pump = BlindPump::spawn_with_budget(/* budget_bytes: */ 1024 * 1024, /* capacity: */ 4);
 
     let oversized = vec![0u8; 512 * 1024];
-    // 3 x 512 KiB = 1.5 MiB > 1 MiB : la 4e publication doit être rejetée.
+    // 3 x 512 KiB = 1.5 MiB > 1 MiB: the 4th publish must be rejected.
     for _ in 0..3 {
-        pump.try_publish_blind(/* request avec payload oversized */).expect("within budget");
+        pump.try_publish_blind(/* request with oversized payload */).expect("within budget");
     }
     let error = pump.try_publish_blind(/* request */).expect_err("over byte budget");
     assert!(matches!(error, PublishError::Backpressure { .. }));
 }
 ```
 
-(Adapter aux constructeurs réels de `publisher/pump.rs` et aux types `PublishRequest`/`PublishError`.)
+(Adapt to the actual constructors of `publisher/pump.rs` and the `PublishRequest`/`PublishError` types.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core blind_publish_respects_the_byte_budget`
-Expected: FAIL — la 4e publication est acceptée.
+Expected: FAIL — the 4th publish is accepted.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Ajouter un budget bytes atomique à la pump blind (même sémantique que le budget
-des modes confirmés — réutiliser le builder `with_byte_budget` de
-`publisher/mod.rs:245`) : incrémenté à l'intake (`checked_add`, overflow →
-`Backpressure`), décrémenté à la sortie du transport. Appliquer dans
-`publish_blind` (`publisher/actor.rs:229`) AVANT l'insertion dans l'intake flume.
+Add an atomic byte budget to the blind pump (same semantics as the confirmed-mode budget — reuse the `with_byte_budget` builder from `publisher/mod.rs:245`): incremented at intake (`checked_add`, overflow → `Backpressure`), decremented at transport exit. Apply in `publish_blind` (`publisher/actor.rs:229`) BEFORE inserting into the intake flume.
 
 - [ ] **Step 4: Run tests and check benchmark non-regression**
 
 Run: `rtk cargo test -p rabbit-rs-core && rtk ./scripts/check.sh`
 Expected: PASS.
 
-Le mode blind est le chemin le plus rapide du publish — vérifier la non-régression
-sur le scénario fire-and-forget du driver bench (comparer aux archives
-`runs/phase-e/`, tolérance 5 %).
+Blind mode is the fastest publish path — verify non-regression on the fire-and-forget
+scenario of the driver bench (compare against the `runs/phase-e/` archives, 5%
+tolerance).
 
 - [ ] **Step 5: Commit**
 
@@ -1045,56 +1041,56 @@ git commit -m "fix(core): enforce byte budget on blind publish pump"
 
 ---
 
-### Task 12: TLS d'intégration — SNI et verify, lab TLS
+### Task 12: Integration TLS — SNI and verify, TLS lab
 
 **Files:**
-- Modify: `crates/rabbit-rs-core/src/transport/lapin.rs` (`server_name` → SNI, `verify` → mode de vérification)
-- Modify: `lab/rabbitmq/` (profil TLS : certificates auto-signés, ports amqps 5675+)
-- Modify: `crates/rabbit-rs-core/tests/` (nouveau `tls_integration.rs`, feature `integration`)
-- Modify: `crates/rabbit-rs-core/src/config.rs` (docblock `TlsVerify`/`server_name` : contract documenté)
+- Modify: `crates/rabbit-rs-core/src/transport/lapin.rs` (`server_name` → SNI, `verify` → verification mode)
+- Modify: `lab/rabbitmq/` (TLS profile: self-signed certificates, amqps ports 5675+)
+- Modify: `crates/rabbit-rs-core/tests/` (new `tls_integration.rs`, `integration` feature)
+- Modify: `crates/rabbit-rs-core/src/config.rs` (`TlsVerify`/`server_name` docblock: documented contract)
 
-**Contexte:** `TlsVerify::None` et `effective_server_name()` (`config.rs:194`) sont validés et hachés dans le fingerprint mais jamais lus par le transport (`lapin.rs:351-372`). Changer `verify`/`server_name` change le fingerprint → nouveau pool → comportement inchangé. Aucun test TLS réel n'existe.
+**Context:** `TlsVerify::None` and `effective_server_name()` (`config.rs:194`) are validated and hashed into the fingerprint but never read by the transport (`lapin.rs:351-372`). Changing `verify`/`server_name` changes the fingerprint → new pool → unchanged behavior. No real TLS test exists.
 
-**Décision d'API:** Lapin 4.10 avec rustls ne consomme qu'`OwnedTLSConfig { identity, cert_chain }` ; le SNI et la désactivation de vérification nécessitent un connecteur TLS custom (`lapin::tcp::TLSBackend` / `ConnectionProperties::with_ssl` ou connecteur rustls injecté). Vérifier l'API exacte de lapin 4.10 dans `~/.cargo/registry/src/*/lapin-4.10*/src/tcp/` avant d'implémenter ; si lapin ne permet pas d'injecter un `rustls::ClientConfig` custom, implémenter :
-1. `verify = Peer` (défaut) : comportement rustls par défaut (vérification hostname = `effective_server_name()`). **Documenter explicitement dans le stub et `config.rs` que la vérification utilise le nom du premier host à défaut de `server_name`.**
-2. `verify = None` : non supporté en V1 → `ConfigError` explicite « tls.verify: 'none' requires a custom TLS connector, not yet supported » (au lieu d'être silencieusement ignoré). Retirer de la surface exposée côté Laravel si non câblé.
+**API decision:** Lapin 4.10 with rustls only consumes `OwnedTLSConfig { identity, cert_chain }`; SNI and verification disabling require a custom TLS connector (`lapin::tcp::TLSBackend` / `ConnectionProperties::with_ssl` or injected rustls connector). Verify the exact lapin 4.10 API in `~/.cargo/registry/src/*/lapin-4.10*/src/tcp/` before implementing; if lapin does not allow injecting a custom `rustls::ClientConfig`, implement:
+1. `verify = Peer` (default): default rustls behavior (hostname verification = `effective_server_name()`). **Explicitly document in the stub and `config.rs` that verification uses the first host's name when `server_name` is absent.**
+2. `verify = None`: not supported in V1 → explicit `ConfigError` "tls.verify: 'none' requires a custom TLS connector, not yet supported" (instead of being silently ignored). Remove from the exposed Laravel surface if unwired.
 
 - [ ] **Step 1: Write the failing integration tests**
 
-`crates/rabbit-rs-core/tests/tls_integration.rs` (marqué `#[cfg(feature = "integration")]`, lab requis) :
+`crates/rabbit-rs-core/tests/tls_integration.rs` (marked `#[cfg(feature = "integration")]`, lab required):
 
 ```rust
 #[tokio::test]
 async fn tls_handshake_succeeds_against_the_lab_certificate() {
-    // Broker configuré en amqps avec le CA auto-signé du lab TLS profile.
-    // Connecte, ouvre un publisher channel, publie avec confirms activés.
+    // Broker configured in amqps with the TLS profile self-signed CA.
+    // Connect, open a publisher channel, publish with confirms enabled.
     // Assert: Confirmed.
 }
 
 #[tokio::test]
 async fn tls_handshake_fails_against_an_untrusted_ca() {
-    // Même broker mais CA différent (fichier CA de mauvaise confiance).
-    // Assert: erreur de connexion typée, pas de message en clair.
+    // Same broker but different CA (wrong-trust CA file).
+    // Assert: typed connection error, no cleartext message.
 }
 
 #[tokio::test]
 async fn server_name_overrides_sni() {
-    // Certificat délivré pour 'rabbit.internal' ; hosts = ['127.0.0.1'];
-    // tls.server_name = 'rabbit.internal'. Assert: handshake réussit.
-    // Variante inverse: server_name = 'wrong.host' → handshake échoue.
+    // Certificate issued for 'rabbit.internal'; hosts = ['127.0.0.1'];
+    // tls.server_name = 'rabbit.internal'. Assert: handshake succeeds.
+    // Reverse variant: server_name = 'wrong.host' → handshake fails.
 }
 ```
 
 - [ ] **Step 2: Add the TLS profile to the lab**
 
-- `lab/rabbitmq/compose.yaml` : profil `with-tls` — ports `5675-5677` en amqps, volumes des certificats.
-- Générer les certificats (CA auto-signé + cert serveur SAN `rabbit.internal`, `127.0.0.1`) via un script `lab/rabbitmq/tls/generate.sh` (openssl, épinglé par digest d'image ou openssl local), commits des `.gitignore`d PEMs hors du repo (générés au `lab-up`).
-- `scripts/lab-ready.sh` : vérifier l'écoute amqps.
-- `scripts/test-integration.sh` : inclure le profil TLS quand `--with-tls`.
+- `lab/rabbitmq/compose.yaml`: `with-tls` profile — ports `5675-5677` in amqps, certificate volumes.
+- Generate the certificates (self-signed CA + server cert SAN `rabbit.internal`, `127.0.0.1`) via a `lab/rabbitmq/tls/generate.sh` script (openssl, pinned by image digest or local openssl), keep generated PEMs `.gitignore`d out of the repo (generated at `lab-up`).
+- `scripts/lab-ready.sh`: verify amqps listening.
+- `scripts/test-integration.sh`: include the TLS profile when `--with-tls`.
 
 - [ ] **Step 3: Implement and verify**
 
-Implémenter le SNI/verify selon la décision d'API ci-dessus (et `ConfigError` explicite pour `verify: none` non supporté). Run: `rtk cargo test -p rabbit-rs-core --features integration --test tls_integration && ./scripts/test-integration.sh --with-tls`
+Implement SNI/verify per the API decision above (and the explicit `ConfigError` for unsupported `verify: none`). Run: `rtk cargo test -p rabbit-rs-core --features integration --test tls_integration && ./scripts/test-integration.sh --with-tls`
 Expected: PASS.
 
 - [ ] **Step 4: Full gate and commit**
@@ -1109,37 +1105,37 @@ git commit -m "feat(core): wire TLS SNI and verify with lab integration tests"
 
 ---
 
-### Task 13: Validation PIE de bout en bout
+### Task 13: End-to-end PIE validation
 
 **Files:**
 - Modify: `scripts/package-pie-binary.sh:273` (naming)
-- Modify: `.github/workflows/release.yml:161` (naming — un seul source de vérité)
-- Create: `.github/workflows/verify-pie.yml` ou job dans `release.yml`
-- Test: run CI sur une release draft
+- Modify: `.github/workflows/release.yml:161` (naming — single source of truth)
+- Create: `.github/workflows/verify-pie.yml` or a job in `release.yml`
+- Test: run CI on a draft release
 
-**Contexte:** Incohérence de naming : `package-pie-binary.sh` produit `...-linux-glibc-nts.zip` (suffixe `-nts`) tandis que `release.yml` produit `...-linux-glibc.zip` (sans suffixe — c'est ce qui est publié dans v0.0.7). La résolution d'asset par PIE dépend du pattern de nommage ; la chaîne n'a jamais été validée par un `pie install` réel.
+**Context:** Naming inconsistency: `package-pie-binary.sh` produces `...-linux-glibc-nts.zip` (with `-nts` suffix) while `release.yml` produces `...-linux-glibc.zip` (without suffix — this is what is published in v0.0.7). PIE asset resolution depends on the naming pattern; the chain has never been validated by a real `pie install`.
 
 - [ ] **Step 1: Determine the PIE-expected naming empirically**
 
-Sur une machine locale avec PIE 1.5+ et PHP 8.4 :
+On a local machine with PIE 1.5+ and PHP 8.4:
 
 ```bash
 pie download goopil/rabbit-rs-native@0.0.7 --dry-run 2>&1 || true
-# puis télécharger manuellement l'asset v0.0.7 et installer localement :
+# then manually download the v0.0.7 asset and install locally:
 gh release download v0.0.7 -p 'php_rabbit_rs-v0.0.7_php8.4-x86_64-linux-glibc.zip' -D /tmp/pie-test
 pie install /tmp/pie-test/php_rabbit_rs-v0.0.7_php8.4-x86_64-linux-glibc.zip
 php -m | grep rabbit_rs
 ```
 
-Si `pie install` résout le suffixe attendu (via la convention de nommage PIE documentée : `php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip`), documenter le pattern obligatoire. Le nom **sans** suffixe `-nts` est-il résolu par PIE ? Si oui, le pattern actuel v0.0.7 est correct ; si non, corriger.
+If `pie install` resolves the expected suffix (via the documented PIE naming convention: `php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip`), document the mandatory pattern. Is the name **without** the `-nts` suffix resolved by PIE? If yes, the current v0.0.7 pattern is correct; if not, fix it.
 
 - [ ] **Step 2: Unify the naming**
 
-Selon le résultat du Step 1, corriger `scripts/package-pie-binary.sh` OU `.github/workflows/release.yml` pour que **les deux produisent exactement le même pattern**, documenté dans `docs/distribution.md` avec un test de convention (script `scripts/verify-pie-naming.sh` vérifiant que chaque asset de la matrice respecte le pattern attendu par PIE).
+Based on the Step 1 result, fix `scripts/package-pie-binary.sh` OR `.github/workflows/release.yml` so that **both produce exactly the same pattern**, documented in `docs/distribution.md` with a convention test (script `scripts/verify-pie-naming.sh` verifying that every asset of the matrix matches the pattern expected by PIE).
 
 - [ ] **Step 3: Add the CI verification job**
 
-Dans `release.yml` (après le job de packaging, avant la publication) :
+In `release.yml` (after the packaging job, before publication):
 
 ```yaml
 verify-pie-install:
@@ -1160,11 +1156,11 @@ verify-pie-install:
         php -r "echo phpversion('rabbit_rs'), PHP_EOL;"
 ```
 
-(Versionner le job pour tester aussi musl et ZTS si PIE le permet sur le runner — au minimum NTS glibc bloquant.)
+(Extend the job to also test musl and ZTS if PIE allows it on the runner — at minimum NTS glibc blocking.)
 
 - [ ] **Step 4: Verify on a draft release**
 
-Tagguer `v0.0.8` (ou similaire), lancer le workflow release complet, vérifier le job `verify-pie-install` vert, puis `pie install` local depuis la release publiée.
+Tag `v0.0.8` (or similar), run the full release workflow, verify the `verify-pie-install` job is green, then `pie install` locally from the published release.
 
 - [ ] **Step 5: Commit**
 
@@ -1175,16 +1171,16 @@ git commit -m "ci: validate PIE asset resolution end-to-end with unified naming"
 
 ---
 
-### Task 14: Compléter les contrats Laravel (ClearableQueue, auto-subscribe)
+### Task 14: Complete the Laravel contracts (ClearableQueue, auto-subscribe)
 
 **Files:**
 - Modify: `packages/laravel-queue/src/RabbitMqQueue.php:31` (implements)
 - Modify: `packages/laravel-queue/src/RabbitMqQueue.php:359-371` (pop fallback)
 - Modify: `packages/laravel-queue/src/Support/WorkerProfileResolver.php`
 - Modify: `packages/laravel-queue/config/rabbit-rs.php`
-- Test: `packages/laravel-queue/tests/Unit/RabbitMqQueueAdminTest.php` + nouveau `AutoSubscribeTest.php`
+- Test: `packages/laravel-queue/tests/Unit/RabbitMqQueueAdminTest.php` + new `AutoSubscribeTest.php`
 
-**Contexte:** (1) `queue:clear rabbit-rs` échoue car `ClearableQueue` n'est pas déclaré alors que `clear()` existe. (2) `pop()` lève si la queue demandée n'est pas une subscription d'un worker profile — déviation majeure vs convention Laravel (`queue:work --queue=emails`).
+**Context:** (1) `queue:clear rabbit-rs` fails because `ClearableQueue` is not declared although `clear()` exists. (2) `pop()` throws if the requested queue is not a subscription of a worker profile — major deviation from the Laravel convention (`queue:work --queue=emails`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1198,10 +1194,10 @@ it('implements ClearableQueue so queue:clear works', function () {
 // tests/Feature/AutoSubscribeTest.php
 it('pops a plain queue by auto-subscribing when enabled', function () {
     config(['queue.connections.rabbit-rs.auto_subscribe' => true]);
-    // fakes natifs du bootstrap : pop('emails') doit créer/réutiliser un
-    // profil implicite contenant la subscription 'emails'
+    // bootstrap native fakes: pop('emails') must create/reuse an
+    // implicit profile containing the 'emails' subscription
     $job = $this->app->make('queue')->connection('rabbit-rs')->pop('emails');
-    // assert: le consumer natif a été demandé avec un profil dédié 'emails'
+    // assert: the native consumer was requested with a dedicated 'emails' profile
 });
 
 it('rejects a plain queue without auto_subscribe', function () {
@@ -1218,8 +1214,8 @@ Expected: FAIL.
 - [ ] **Step 3: Write minimal implementation**
 
 1. `class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue` (`Illuminate\Contracts\Queue\ClearableQueue`).
-2. `pop($queue, $index = 0)` : si la valeur `queue` n'est ni un profil connu ni une subscription, et que `auto_subscribe => true` : construire à la volée un profil implicite `{name: "__auto__", subscriptions: [{broker: default, queue: $queue, weight: 1, prefetch: défaut}]}` (cache process-local par nom de queue, réutilisé aux pops suivants) et poursuivre le chemin existant. Si `auto_subscribe => false` : conserver l'erreur actuelle avec un message amélioré (« configure workers.*.subscriptions.*.queue=emails or enable auto_subscribe »).
-3. `config/rabbit-rs.php` : `'auto_subscribe' => false` (opt-in, documenté).
+2. `pop($queue, $index = 0)`: if the `queue` value is neither a known profile nor a subscription, and `auto_subscribe => true`: build on the fly an implicit profile `{name: "__auto__", subscriptions: [{broker: default, queue: $queue, weight: 1, prefetch: default}]}` (process-local cache per queue name, reused on subsequent pops) and continue the existing path. If `auto_subscribe => false`: keep the current error with an improved message ("configure workers.*.subscriptions.*.queue=emails or enable auto_subscribe").
+3. `config/rabbit-rs.php`: `'auto_subscribe' => false` (opt-in, documented).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1235,22 +1231,22 @@ git commit -m "feat(laravel): implement ClearableQueue and optional auto-subscri
 
 ---
 
-## Milestone P2 — Écosystème et DX
+## Milestone P2 — Ecosystem and DX
 
-### Task 15: Façade de log, erreurs typées, audit des panics
+### Task 15: Log facade, typed errors, panic audit
 
 **Files:**
-- Modify: `crates/rabbit-rs-core/src/pool/recovery_coordinator.rs:47-66` (`CoordinatorError` typé) et `:256,295` (expect/eprintln)
-- Modify: `crates/rabbit-rs-core/src/pool/recovery_coordinator.rs:169-187` (`wait_for_state` panic → erreur)
-- Modify: `crates/rabbit-rs-core/Cargo.toml` (dépendance `log`)
-- Modify: `crates/rabbit-rs-php/src/lib.rs` (init d'un logger minimal vers `error_log` quand config `debug`)
-- Test: `crates/rabbit-rs-core/tests/recovery.rs` (adaptation) + audit manuel documenté
+- Modify: `crates/rabbit-rs-core/src/pool/recovery_coordinator.rs:47-66` (typed `CoordinatorError`) and `:256,295` (expect/eprintln)
+- Modify: `crates/rabbit-rs-core/src/pool/recovery_coordinator.rs:169-187` (`wait_for_state` panic → error)
+- Modify: `crates/rabbit-rs-core/Cargo.toml` (`log` dependency)
+- Modify: `crates/rabbit-rs-php/src/lib.rs` (init of a minimal logger toward `error_log` when `debug` config)
+- Test: `crates/rabbit-rs-core/tests/recovery.rs` (adaptation) + documented manual audit
 
-**Contexte:** `eprintln!` non capturable en prod, `CoordinatorError = String`, `.expect("connection actor started")` dans une tâche spawnée et un panic documenté dans `wait_for_state` : en contexte FFI PHP, une unwind non interceptée est un abort process.
+**Context:** Non-capturable `eprintln!` in prod, `CoordinatorError = String`, `.expect("connection actor started")` in a spawned task and a documented panic in `wait_for_state`: in a PHP FFI context, an uncaught unwind is a process abort.
 
 - [ ] **Step 1: Typify CoordinatorError**
 
-Remplacer `pub type CoordinatorError = String;` par :
+Replace `pub type CoordinatorError = String;` with:
 
 ```rust
 #[derive(Debug)]
@@ -1261,22 +1257,22 @@ pub enum CoordinatorError {
 }
 ```
 
-Adapter les sites de construction. Les `String` de raison deviennent des messages structurés portés par les variantes.
+Adapt the construction sites. The reason `String`s become structured messages carried by the variants.
 
 - [ ] **Step 2: Remove panics reachable from PHP**
 
-- `run_coordinator:256` : `.expect("connection actor started")` → propagation d'erreur (`CoordinatorError::Transport`) et terminaison propre de la task avec log.
-- `wait_for_state:169-187` : retourner `Result<(), CoordinatorError>` quand le watch channel meurt au lieu de paniquer ; les appelants traitent l'erreur.
-- `eprintln!(recovery_coordinator.rs:295)` : remplacer par `log::warn!("recovery generation {generation} failed: {error}")`.
+- `run_coordinator:256`: `.expect("connection actor started")` → error propagation (`CoordinatorError::Transport`) and clean task termination with a log.
+- `wait_for_state:169-187`: return `Result<(), CoordinatorError>` when the watch channel dies instead of panicking; callers handle the error.
+- `eprintln!(recovery_coordinator.rs:295)`: replace with `log::warn!("recovery generation {generation} failed: {error}")`.
 
-- [ ] **Step 3: Audit complet des panics atteignables**
+- [ ] **Step 3: Full audit of reachable panics**
 
 Run: `rtk cargo test --workspace 2>&1 | true; rg -n 'unwrap\(\)|expect\(|panic!\(todo' crates/rabbit-rs-core/src crates/rabbit-rs-php/src --type rust`
-Pour chaque `expect`/`unwrap` atteignable depuis une opération PHP (frontière FFI) : soit justification documentée en commentaire (invariant prouvé), soit conversion en erreur typée. Documenter la liste dans `docs/reliability.md` (section « Panic policy »).
+For each `expect`/`unwrap` reachable from a PHP operation (FFI boundary): either documented justification in a comment (proven invariant), or conversion to a typed error. Document the list in `docs/reliability.md` ("Panic policy" section).
 
 - [ ] **Step 4: Wire the log facade to PHP**
 
-Ajouter `log = "0.4"` au core (sans subscriber — le core n'impose pas de backend). Dans l'extension, `MINIT`/premier usage : installer un logger minimal (crate `env_logger` ou writer custom) qui route vers `error_log()` PHP quand la clé `debug => true` est présente dans la config du Pool ; sinon no-op. Aucun zval capté dans le logger.
+Add `log = "0.4"` to the core (no subscriber — the core imposes no backend). In the extension, `MINIT`/first use: install a minimal logger (crate `env_logger` or custom writer) that routes to PHP `error_log()` when the `debug => true` key is present in the Pool config; otherwise no-op. No zval captured in the logger.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -1290,16 +1286,16 @@ git commit -m "refactor(core): typed coordinator errors, no reachable panics, lo
 
 ---
 
-### Task 16: Aligner les versions et introduire le CHANGELOG
+### Task 16: Align versions and introduce the CHANGELOG
 
 **Files:**
-- Modify: `packages/laravel-queue/src/RabbitMqServiceProvider.php:123` (« ^1.0 » → contrainte réelle)
-- Modify: `packages/laravel-queue/composer.json` + `composer.json` racine (synchronisation)
-- Modify: `docs/installation.md:42` (version affichée)
-- Create: `CHANGELOG.md` (racine) + `packages/laravel-queue/CHANGELOG.md`
-- Test: `packages/laravel-queue/tests/Unit/ExtensionVersionTest.php` (nouveau)
+- Modify: `packages/laravel-queue/src/RabbitMqServiceProvider.php:123` ("^1.0" → real constraint)
+- Modify: `packages/laravel-queue/composer.json` + root `composer.json` (synchronization)
+- Modify: `docs/installation.md:42` (displayed version)
+- Create: `CHANGELOG.md` (root) + `packages/laravel-queue/CHANGELOG.md`
+- Test: `packages/laravel-queue/tests/Unit/ExtensionVersionTest.php` (new)
 
-**Contexte:** composer exige `ext-rabbit_rs: ^0.0`, l'exception parle de « ^1.0 », la doc affiche 1.0.0, le workspace vaut 0.0.7. Pas de CHANGELOG ni de notes d'upgrade.
+**Context:** composer requires `ext-rabbit_rs: ^0.0`, the exception talks about "^1.0", the doc displays 1.0.0, the workspace is 0.0.7. No CHANGELOG or upgrade notes.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1308,21 +1304,21 @@ it('states the same extension version constraint everywhere', function () {
     $composer = json_decode(file_get_contents(__DIR__.'/../../composer.json'), true);
     $constraint = $composer['require']['ext-rabbit_rs'];
 
-    expect($constraint)->toBe('^0.0'); // aligné au workspace 0.0.x jusqu'à la 1.0
+    expect($constraint)->toBe('^0.0'); // aligned to workspace 0.0.x until 1.0
 });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Unit/ExtensionVersionTest.php`
-Expected: FAIL ou PASS selon l'état — le but est de verrouiller la cohérence.
+Expected: FAIL or PASS depending on state — the goal is to lock in consistency.
 
 - [ ] **Step 3: Align and document**
 
-1. Décision : la contrainte `ext-rabbit_rs` suit la version du workspace (`^0.0` jusqu'à 1.0). Corriger le message de `RabbitMqServiceProvider.php:123` pour refléter la contrainte réelle.
-2. Corriger `docs/installation.md` (version => 0.0.7, ou rendre l'exemple générique `php -i | grep rabbit_rs`).
-3. Créer `CHANGELOG.md` (Keep a Changelog, sections Added/Changed/Fixed pour v0.0.3..v0.0.7 depuis les tags git) et `packages/laravel-queue/CHANGELOG.md` (miroir simplifié).
-4. Ajouter au job de release une vérification de cohérence version (déjà présente : `release.yml` vérifie tag↔Cargo.toml — étendre à la contrainte ext du package Laravel).
+1. Decision: the `ext-rabbit_rs` constraint follows the workspace version (`^0.0` until 1.0). Fix the message of `RabbitMqServiceProvider.php:123` to reflect the real constraint.
+2. Fix `docs/installation.md` (version => 0.0.7, or make the example generic `php -i | grep rabbit_rs`).
+3. Create `CHANGELOG.md` (Keep a Changelog, Added/Changed/Fixed sections for v0.0.3..v0.0.7 from git tags) and `packages/laravel-queue/CHANGELOG.md` (simplified mirror).
+4. Add a version consistency check to the release job (already present: `release.yml` checks tag↔Cargo.toml — extend it to the Laravel package ext constraint).
 
 - [ ] **Step 4: Verify and commit**
 
@@ -1336,20 +1332,20 @@ git commit -m "chore: align extension version constraints and add changelogs"
 
 ---
 
-### Task 17: Réduire la friction d'installation et ajouter l'analyse statique PHP
+### Task 17: Reduce installation friction and add PHP static analysis
 
 **Files:**
 - Modify: `packages/laravel-queue/composer.json:9` (`require` → `suggest` + `conflict`?)
-- Modify: `packages/laravel-queue/src/RabbitMqServiceProvider.php:51` (validation runtime)
+- Modify: `packages/laravel-queue/src/RabbitMqServiceProvider.php:51` (runtime validation)
 - Modify: `scripts/check.sh` (Pint + PHPStan)
 - Create: `packages/laravel-queue/pint.json` + `phpstan.neon`
-- Test: run Pint/PHPStan — fix iteratif
+- Test: run Pint/PHPStan — iterative fix
 
-**Contexte:** `ext-rabbit_rs` en `require` dur fait échouer tout `composer install` (CI, builds d'artefacts, dev sans extension) alors que le check runtime existe déjà (`extension_loaded`, ligne 51). Aucune analyse statique PHP dans le quality gate.
+**Context:** `ext-rabbit_rs` in hard `require` makes every `composer install` fail (CI, artifact builds, dev without the extension) although the runtime check already exists (`extension_loaded`, line 51). No PHP static analysis in the quality gate.
 
 - [ ] **Step 1: Decide and apply the dependency policy**
 
-Passer `ext-rabbit_rs` de `require` à `suggest` avec message explicite, ET ajouter une validation runtime **bloquante à la première utilisation** (résolution de connexion) avec un message actionnable (« install the extension via `pie install goopil/rabbit-rs-native` »). Vérifier que `RabbitMqServiceProviderTest` (assertion « missing extension ») reste vert — adapter si nécessaire. Attention : les tests Unit/Feature tournent sans extension par contrat AGENTS.md — la validation ne doit pas s'exécuter au boot mais à la résolution du driver.
+Move `ext-rabbit_rs` from `require` to `suggest` with an explicit message, AND add a runtime validation **blocking at first use** (connection resolution) with an actionable message ("install the extension via `pie install goopil/rabbit-rs-native`"). Verify that `RabbitMqServiceProviderTest` ("missing extension" assertion) stays green — adapt if necessary. Caution: the Unit/Feature tests run without the extension per the AGENTS.md contract — the validation must not run at boot but at driver resolution.
 
 - [ ] **Step 2: Add Pint and PHPStan to the gate**
 
@@ -1358,19 +1354,19 @@ cd packages/laravel-queue
 composer require --dev laravel/pint phpstan/phpstan larastan/larastan --with-all-dependencies
 ```
 
-`packages/laravel-queue/pint.json` : preset laravel. `packages/laravel-queue/phpstan.neon` : level 6, analyse `src/`.
+`packages/laravel-queue/pint.json`: laravel preset. `packages/laravel-queue/phpstan.neon`: level 6, analyze `src/`.
 
-Dans `scripts/check.sh`, après `composer validate` :
+In `scripts/check.sh`, after `composer validate`:
 
 ```bash
 (cd packages/laravel-queue && vendor/bin/pint --test)
 (cd packages/laravel-queue && vendor/bin/phpstan analyse --no-progress --error-format=table)
 ```
 
-- [ ] **Step 3: Fix all reported issues iterativement**
+- [ ] **Step 3: Fix all reported issues iteratively**
 
 Run: `(cd packages/laravel-queue && vendor/bin/pint -v) && (cd packages/laravel-queue && vendor/bin/phpstan analyse)`
-Fixer chaque violation (commits séparés par catégorie si volumineux). Boucler jusqu'à 0 erreur.
+Fix each violation (separate commits per category if large). Loop until 0 errors.
 
 - [ ] **Step 4: Full gate and commit**
 
@@ -1384,28 +1380,28 @@ git commit -m "chore(laravel): soft-depend on the extension and add pint/phpstan
 
 ---
 
-### Task 18: Durcir le superviseur de workers
+### Task 18: Harden the worker supervisor
 
 **Files:**
 - Modify: `packages/laravel-queue/src/Console/WorkerSupervisor.php:125-178`
 - Test: `packages/laravel-queue/tests/Feature/WorkerSupervisorIntegrationTest.php` (extension)
 
-**Contexte:** `run()` exige pcntl même avec `--workers=1` (le message d'erreur « Install it or run with --workers=1 » est faux) ; le `sleep($backoff)` (ligne 168) bloque la boucle de supervision de **tous** les enfants pendant le backoff d'un seul.
+**Context:** `run()` requires pcntl even with `--workers=1` (the error message "Install it or run with --workers=1" is wrong); the `sleep($backoff)` (line 168) blocks the supervision loop of **all** children during a single child's backoff.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```php
 it('runs a single worker inline without pcntl', function () {
     $supervisor = new WorkerSupervisor(workers: 1, options: [...]);
-    // simuler l'absence de pcntl (la classe expose déjà le hook)
-    $supervisor->shouldReceive('hasPcntl')->andReturn(false); // ou sousclasse de test
-    // assert: le worker tourne en avant-plan (proc_open artisan queue:work)
-    // sans exception SupervisorException
+    // simulate the absence of pcntl (the class already exposes the hook)
+    $supervisor->shouldReceive('hasPcntl')->andReturn(false); // or a test subclass
+    // assert: the worker runs in the foreground (proc_open artisan queue:work)
+    // without a SupervisorException
 });
 
 it('keeps supervising other children while one is in backoff', function () {
-    // 2 enfants ; l'enfant 0 crashe ; pendant son backoff de N s,
-    // l'enfant 1 doit être supervisé (poll non bloquant)
+    // 2 children; child 0 crashes; during its N s backoff,
+    // child 1 must be supervised (non-blocking poll)
 });
 ```
 
@@ -1416,9 +1412,9 @@ Expected: FAIL.
 
 - [ ] **Step 3: Write minimal implementation**
 
-1. `--workers=1` sans pcntl : chemin direct `proc_open('php artisan queue:work ...')` + wait + codes de sortie, sans fork. Corriger le message d'erreur pcntl (« ext-pcntl is required for --workers>1 »).
-2. Backoff non bloquant : remplacer `sleep($this->backoffSeconds(...))` par un tableau `restartAt[$index] = microtime(true) + $backoff` ; la boucle de supervision consulte `restartAt` et ignore les tentatives de redémarrage tant que `microtime(true) < restartAt[$index]` (le reste du loop continue : `usleep(100_000)` existant à la ligne 178 assure déjà le polling).
-3. Corriger les défauts identifiés dans l'évaluation : propagation `--sleep`, `--stop-when-empty`, supervision des logs enfants (option `--log-children` ou stdout mux) — selon la surface déjà présente dans `RabbitMqWorkCommand`.
+1. `--workers=1` without pcntl: direct path `proc_open('php artisan queue:work ...')` + wait + exit codes, without fork. Fix the pcntl error message ("ext-pcntl is required for --workers>1").
+2. Non-blocking backoff: replace `sleep($this->backoffSeconds(...))` with a `restartAt[$index] = microtime(true) + $backoff` table; the supervision loop consults `restartAt` and skips restart attempts while `microtime(true) < restartAt[$index]` (the rest of the loop continues: the existing `usleep(100_000)` at line 178 already provides the polling).
+3. Fix the defects identified in the evaluation: `--sleep` propagation, `--stop-when-empty`, child log supervision (`--log-children` option or stdout mux) — depending on the surface already present in `RabbitMqWorkCommand`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1434,34 +1430,34 @@ git commit -m "fix(laravel): pcntl-free single worker path and non-blocking rest
 
 ---
 
-### Task 19: Aligner la documentation et le stub stats()
+### Task 19: Align documentation and the stats() stub
 
 **Files:**
-- Modify: `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php:82` (`@return` de `stats()` : documenter les 17 clés réelles)
-- Modify: `packages/laravel-queue/README.md` (prefetch 16 vs 64 lignes 113/220 ; suites de test ; events)
-- Modify: `docs/laravel.md:40` (retirer `dispatchBatch`)
-- Modify: `packages/laravel-queue/tests/Pest.php:13-37` (retirer le helper `validConfig()` obsolète si inutilisé, sinon le migrer au nouveau schéma)
-- Modify: `docs/operations.md` (prometheus/OTel : préciser « adaptateurs à venir »)
-- Test: PHPT reflection existant
+- Modify: `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php:82` (`@return` of `stats()`: document the 17 real keys)
+- Modify: `packages/laravel-queue/README.md` (prefetch 16 vs 64 lines 113/220; test suites; events)
+- Modify: `docs/laravel.md:40` (remove `dispatchBatch`)
+- Modify: `packages/laravel-queue/tests/Pest.php:13-37` (remove the obsolete `validConfig()` helper if unused, otherwise migrate it to the new schema)
+- Modify: `docs/operations.md` (prometheus/OTel: clarify "adapters coming")
+- Test: existing PHPT reflection
 
-**Contexte:** Incohérences docs/code identifiées par l'audit : stub `stats()` documente 8 clés pour 17 réelles (`pool.rs:211-261`) ; prefetch annoncé 16, défaut 64 ; README renvoie à des suites PHPUnit inexistantes (« Rabbit RS Laravel ») alors que le projet utilise Pest (suite `default`) ; `docs/laravel.md` documente une API inexistante.
+**Context:** Docs/code inconsistencies identified by the audit: the `stats()` stub documents 8 keys for 17 real ones (`pool.rs:211-261`); prefetch advertised 16, default 64; the README references non-existent PHPUnit suites ("Rabbit RS Laravel") while the project uses Pest (`default` suite); `docs/laravel.md` documents a non-existent API.
 
 - [ ] **Step 1: Align the stats() stub**
 
-Documenter chaque clé retournée (17) avec son type : `closed`, `pid`, `handle`, `publishes_total`, `confirmations_total`, `returns_total`, `backpressure_total`, `reconnects_total`, `deliveries_total`, `acks_total`, `rejects_total`, `confirmation_latency_p50|p95|p99`, `settlement_latency_p50|p95|p99` (vérifier la liste exacte depuis `pool.rs:204-261` et `insert_percentile`).
+Document each returned key (17) with its type: `closed`, `pid`, `handle`, `publishes_total`, `confirmations_total`, `returns_total`, `backpressure_total`, `reconnects_total`, `deliveries_total`, `acks_total`, `rejects_total`, `confirmation_latency_p50|p95|p99`, `settlement_latency_p50|p95|p99` (verify the exact list from `pool.rs:204-261` and `insert_percentile`).
 
 - [ ] **Step 2: Fix the package README and docs**
 
-1. Unifier prefetch : soit corriger le README vers 64 (défaut réel `config/rabbit-rs.php:208`), soit corriger le défaut vers 16 (décision produit — défaut config prime, README suit).
-2. Section Testing : référencer `php vendor/bin/pest` et les suites réelles (`default`, Integration).
-3. `docs/laravel.md:40` : remplacer l'exemple `ProcessOrder::dispatchBatch($jobs)` par `$queue->bulk([...])` ou `Bus::batch`.
-4. `docs/operations.md:231` : après Task 10, les events se déclenchent sur publish/consume — reformuler précisément.
-5. `tests/Pest.php` : retirer `validConfig()` si aucun test ne l'utilise (`rg validConfig packages/laravel-queue/tests`), sinon migrer.
+1. Unify prefetch: either fix the README to 64 (actual default `config/rabbit-rs.php:208`), or fix the default to 16 (product decision — config default wins, README follows).
+2. Testing section: reference `php vendor/bin/pest` and the actual suites (`default`, Integration).
+3. `docs/laravel.md:40`: replace the `ProcessOrder::dispatchBatch($jobs)` example with `$queue->bulk([...])` or `Bus::batch`.
+4. `docs/operations.md:231`: after Task 10, events fire on publish/consume — reword precisely.
+5. `tests/Pest.php`: remove `validConfig()` if no test uses it (`rg validConfig packages/laravel-queue/tests`), otherwise migrate it.
 
 - [ ] **Step 3: Verify**
 
 Run: `rtk ./scripts/check.sh && rtk ./scripts/test-extension.sh && cd packages/laravel-queue && php vendor/bin/pest`
-Expected: PASS (le PHPT de réflexion valide le stub — `php -l` sur le stub).
+Expected: PASS (the reflection PHPT validates the stub — `php -l` on the stub).
 
 - [ ] **Step 4: Commit**
 
@@ -1472,22 +1468,22 @@ git commit -m "docs: align stats stub, README, guides with the implementation"
 
 ---
 
-### Task 20: Trancher et appliquer la décision ZTS
+### Task 20: Settle and apply the ZTS decision
 
 **Files:**
-- Modify: `composer.json` (racine, méta PIE : `support-zts`)
-- Modify: `release/pie-matrix.json` (16 → 8 combinaisons)
-- Modify: `.github/workflows/release.yml` (matrice build `ts: ["nts", "zts"]` → `["nts"]`)
+- Modify: `composer.json` (root, PIE meta: `support-zts`)
+- Modify: `release/pie-matrix.json` (16 → 8 combinations)
+- Modify: `.github/workflows/release.yml` (build matrix `ts: ["nts", "zts"]` → `["nts"]`)
 - Modify: `docs/distribution.md` + `docs/installation.md`
-- Modify: `.github/workflows/ci.yml:192-196` (job ZTS advisory — suppression ou passage bloquant selon option)
+- Modify: `.github/workflows/ci.yml:192-196` (ZTS advisory job — remove or make blocking depending on option)
 
-**Contexte:** `support-zts: true` est annoncé sans preuve : le `RuntimeRegistry` global est partagé entre threads PHP sous ZTS (course potentielle sur refcount Zend via `shallow_clone()` des callbacks), le job CI ZTS est advisory-only (`continue-on-error: true`), et les 8 artefacts ZTS de release ne subissent qu'un smoke-test `extension_loaded`. Expédier des binaires ZTS non testés fonctionnellement est le risque mémoire le plus concret du projet.
+**Context:** `support-zts: true` is advertised without proof: the global `RuntimeRegistry` is shared between PHP threads under ZTS (potential race on the Zend refcount via `shallow_clone()` of callbacks), the CI ZTS job is advisory-only (`continue-on-error: true`), and the 8 ZTS release artifacts only get an `extension_loaded` smoke test. Shipping functionally untested ZTS binaries is the most concrete memory risk of the project.
 
-**Décision (recommandée — Option A) :** retirer ZTS du périmètre V1 et le réintroduire en V2 avec isolation par thread + CI bloquante + tests de concurrence réels.
+**Decision (recommended — Option A):** remove ZTS from the V1 scope and reintroduce it in V2 with per-thread isolation + blocking CI + real concurrency tests.
 
 - [ ] **Step 1: Write the failing consistency check**
 
-Ajouter à `scripts/verify-pie-naming.sh` (créé par la Task 13) une vérification que la matrice déclarée dans `release/pie-matrix.json` ne contient aucune entrée `zts` tant que `support-zts` est retiré :
+Add to `scripts/verify-pie-naming.sh` (created by Task 13) a check that the matrix declared in `release/pie-matrix.json` contains no `zts` entry as long as `support-zts` is removed:
 
 ```bash
 # fail if any zts entry remains while support-zts is false
@@ -1498,16 +1494,16 @@ fi
 
 - [ ] **Step 2: Apply Option A**
 
-1. `composer.json` racine : `"support-zts": false` dans la section `php-ext`.
-2. `release/pie-matrix.json` : retirer les 8 entrées ZTS.
-3. `.github/workflows/release.yml` : `ts: ["nts"]` (et simplifier la logique conditionnelle `TS_SUFFIX` lignes 158-159).
-4. `.github/workflows/ci.yml` : supprimer le job ZTS advisory.
-5. `docs/distribution.md` + `docs/installation.md` : documenter « NTS only in V1; ZTS planned for V2 » avec la justification (registry process-global, isolation TSRM non implémentée).
+1. Root `composer.json`: `"support-zts": false` in the `php-ext` section.
+2. `release/pie-matrix.json`: remove the 8 ZTS entries.
+3. `.github/workflows/release.yml`: `ts: ["nts"]` (and simplify the conditional `TS_SUFFIX` logic lines 158-159).
+4. `.github/workflows/ci.yml`: remove the advisory ZTS job.
+5. `docs/distribution.md` + `docs/installation.md`: document "NTS only in V1; ZTS planned for V2" with the justification (process-global registry, TSRM isolation not implemented).
 
 - [ ] **Step 3: Verify the release matrix**
 
 Run: `./scripts/verify-pie-naming.sh && rtk composer validate --strict`
-Expected: PASS. Vérifier aussi `release/validate-distribution.sh` s'il référence ZTS.
+Expected: PASS. Also check `release/validate-distribution.sh` if it references ZTS.
 
 - [ ] **Step 4: Commit**
 
@@ -1516,19 +1512,19 @@ git add composer.json release .github docs
 git commit -m "build: drop unproven ZTS from the V1 release matrix (revisit in V2)"
 ```
 
-> **Option B (rejetée pour V1, à documenter dans le PR) :** implémenter l'isolation
-> par thread (registry TSRM-aware), passer le job CI ZTS en bloquant et ajouter des
-> tests de concurrence — coût estimé plusieurs semaines, reporté.
+> **Option B (rejected for V1, to document in the PR):** implement per-thread
+> isolation (TSRM-aware registry), make the CI ZTS job blocking and add concurrency
+> tests — estimated cost several weeks, deferred.
 
 ---
 
-## Critères de sortie vers 1.0
+## Exit criteria toward 1.0
 
-- [ ] Toutes les tâches P0 livrées et vérifiées en CI.
-- [ ] Toutes les tâches P1 livrées ; la chaîne `pie install` validée sur une release réelle (Task 13).
-- [ ] Task 12 (TLS) validée sur le lab 3 nœuds avec handshake, CA non fiable et SNI.
-- [ ] `./scripts/check.sh` vert + Pint/PHPStan 0 erreur + coverage non régressée (Codecov).
-- [ ] ZTS : décision tranchée et appliquée (Task 20 — Option A par défaut).
-- [ ] CHANGELOG 1.0 rédigé, contraintes de versions alignées, docs cohérentes.
-- [ ] Certification CLI, FPM et les 4 serveurs Octane annoncés (débordement : `scripts/test-octane.sh` sur chaque runtime).
-- [ ] Round 2 (stall/pre-fill/clear) root-caused et re-bench comparé aux archives Phase E.
+- [ ] All P0 tasks delivered and verified in CI.
+- [ ] All P1 tasks delivered; the `pie install` chain validated on a real release (Task 13).
+- [ ] Task 12 (TLS) validated on the 3-node lab with handshake, untrusted CA, and SNI.
+- [ ] `./scripts/check.sh` green + Pint/PHPStan 0 errors + non-regressed coverage (Codecov).
+- [ ] ZTS: decision settled and applied (Task 20 — Option A by default).
+- [ ] 1.0 CHANGELOG written, version constraints aligned, docs consistent.
+- [ ] Certification of CLI, FPM, and the 4 advertised Octane servers (overflow: `scripts/test-octane.sh` on each runtime).
+- [ ] Round 2 (stall/pre-fill/clear) root-caused and re-bench compared to the Phase E archives.

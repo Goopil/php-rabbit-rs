@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Eliminate all 204 SonarCloud issues (10 bugs, 46 vulnerabilities, 148 code smells) on the **`Goopil_php-rabbit-rs`** project (décision 2026-08-29 révisée — le repo a été renommé `Goopil/php-rabbit-rs`, voir Re-validation) without degrading hot-path performance.
+**Goal:** Eliminate all 204 SonarCloud issues (10 bugs, 46 vulnerabilities, 148 code smells) on the **`Goopil_php-rabbit-rs`** project (revised 2026-08-29 decision — the repo was renamed `Goopil/php-rabbit-rs`, see Re-validation) without degrading hot-path performance.
 
 **Architecture:** Fixes are grouped by rule category and file cluster, ordered from lowest-risk/trivial to highest-risk/structural. Each task is self-contained and independently testable. Performance-critical code (RabbitMqQueue, benchmarks) uses annotation-based suppression rather than refactoring.
 
@@ -10,35 +10,35 @@
 
 ## Re-validation 2026-08-29
 
-Distribution actuelle vérifiée via API (projet `Goopil_php-rabbit-rs`, autoscan) :
-**204 issues** — 150 PHP, 37 GitHubActions, 8 Docker, 8 Shell, 1 JSON. **Rust non
-analysé** (plugin Sonar Rust = Enterprise ; 0 issue Rust attendue). La distribution
-par règle est quasi identique au plan initial (203 → 204, ±1) : les 19 tâches restent
-valides.
+Current distribution verified via API (project `Goopil_php-rabbit-rs`, autoscan):
+**204 issues** — 150 PHP, 37 GitHubActions, 8 Docker, 8 Shell, 1 JSON. **Rust not
+analyzed** (Sonar Rust plugin = Enterprise; 0 Rust issues expected). The per-rule
+distribution is nearly identical to the initial plan (203 → 204, ±1): the 19 tasks remain
+valid.
 
-Situation SonarCloud constatée (deux projets parallèles) :
+Observed SonarCloud situation (two parallel projects):
 
 | | `Goopil_php-rabbit-rs` | `Goopil_rabbit-rs` |
 |---|---|---|
-| Déclencheur | autoscan GitHub App | job CI `coverage.yml` |
-| Issues | 204 (issues réelles) | 0 |
-| Coverage | ❌ aucune | ✅ rust.lcov + php-ext.lcov + clover |
-| Décoration PR | ✅ | ❌ NOT_BOUND |
-| QG | ERROR | — |
+| Trigger | autoscan GitHub App | CI job `coverage.yml` |
+| Issues | 204 (real issues) | 0 |
+| Coverage | ❌ none | ✅ rust.lcov + php-ext.lcov + clover |
+| PR decoration | ✅ | ❌ NOT_BOUND |
+| Quality Gate | ERROR | — |
 
-**Décision tranchée (révisée 2026-08-29) : projet unique = `Goopil_php-rabbit-rs` (autoscan).**
-Initialement `Goopil_rabbit-rs` (CI), la décision est inversée le jour même : le repo
-GitHub a été renommé `Goopil/php-rabbit-rs`, ce qui ré-aligne la clé du projet autoscan
-avec le nom du repo. Bascule complète vers l'autoscan :
-- L'analyse CI est **supprimée** (autoscan et analyse CI sont mutuellement exclusifs sur
-  un même projet Sonar — le job serait rejeté « CI analysis while Automatic Analysis is
-  enabled ») → Task 14b.
-- Conséquence acceptée par l'utilisateur : SonarCloud ne reçoit plus la coverage
-  (autoscan ne consomme pas les rapports). Codecov n'est pas affecté (uploads directs
-  dans les jobs coverage).
-- Le tableau ci-dessus est conservé comme instantané historique du 29/08 au matin.
-- `SONAR_TOKEN` devient inutilisé par la CI (suppression côté GitHub au bon vouloir de
-  l'utilisateur, hors scope).
+**Settled decision (revised 2026-08-29): single project = `Goopil_php-rabbit-rs` (autoscan).**
+Initially `Goopil_rabbit-rs` (CI), the decision was reversed the same day: the GitHub repo
+was renamed `Goopil/php-rabbit-rs`, which re-aligns the autoscan project key
+with the repo name. Full switch to autoscan:
+- CI analysis is **removed** (autoscan and CI analysis are mutually exclusive on
+  the same Sonar project — the job would be rejected with "CI analysis while Automatic Analysis is
+  enabled") → Task 14b.
+- Consequence accepted by the user: SonarCloud no longer receives coverage
+  (autoscan does not consume reports). Codecov is unaffected (direct uploads
+  in the coverage jobs).
+- The table above is kept as a historical snapshot of the morning of 08/29.
+- `SONAR_TOKEN` becomes unused by CI (removal on the GitHub side is at the user's
+  discretion, out of scope).
 
 ## Global Constraints
 
@@ -55,53 +55,53 @@ avec le nom du repo. Bascule complète vers l'autoscan :
 
 ---
 
-## Task 0: Consolidation SonarCloud — projet unique `Goopil_rabbit-rs`
+## Task 0: SonarCloud consolidation — single project `Goopil_rabbit-rs`
 
-> **⚠️ AMENDÉ 2026-08-29 (décision révisée, voir Re-validation) :** la cible devient
-> l'autoscan `Goopil_php-rabbit-rs`. Le Step 1 ci-dessous est **caduc** (le job
-> `sonarcloud` est supprimé par Task 14b — le remplacement d'action fait en 345a2dd
-> reste correct pour l'historique). Les actions UI deviennent : **(1)** ne rien binder
-> (l'autoscan est déjà relié via la GitHub App, décoration PR automatique) ; **(2)**
-> supprimer le projet `Goopil_rabbit-rs` (devenu orphelin) — recommandé après la merge
-> de la MR, pas avant. Le Step 3 devient : vérifier la décoration PR autoscan sur la
-> MR (commentaire sonarqubecloud présent).
+> **⚠️ AMENDED 2026-08-29 (revised decision, see Re-validation):** the target becomes
+> the autoscan `Goopil_php-rabbit-rs`. Step 1 below is **void** (the `sonarcloud`
+> job is removed by Task 14b — the action replacement done in 345a2dd
+> remains correct for the record). The UI actions become: **(1)** bind nothing
+> (autoscan is already linked via the GitHub App, automatic PR decoration); **(2)**
+> delete the `Goopil_rabbit-rs` project (now orphaned) — recommended after the MR
+> merge, not before. Step 3 becomes: verify the autoscan PR decoration on the
+> MR (sonarqubecloud comment present).
 
-**Décision d'origine (2026-08-29, matin) :** projet de référence = `Goopil_rabbit-rs`. Le projet
-autoscan `Goopil_php-rabbit-rs` (nom du repo avant renommage, 204 issues) est
-abandonné.
+**Original decision (2026-08-29, morning):** reference project = `Goopil_rabbit-rs`. The
+autoscan project `Goopil_php-rabbit-rs` (repo name before the rename, 204 issues) is
+abandoned.
 
 **Files:**
-- Modify: `.github/workflows/coverage.yml` (action dépréciée à remplacer)
-- Verify: `sonar-project.properties` (clé déjà correcte — pas de changement attendu)
+- Modify: `.github/workflows/coverage.yml` (deprecated action to replace)
+- Verify: `sonar-project.properties` (key already correct — no change expected)
 
-**Actions UI SonarCloud (manuelles, utilisateur) :**
-1. `Goopil_rabbit-rs` > Administration > DevOps Platform Integration > GitHub :
-   binder le projet au repo `Goopil/rabbit-rs` → active la décoration PR + QG PR.
-2. Supprimer le projet `Goopil_php-rabbit-rs`. Si l'autoscan le recrée au push
-   suivant, désactiver AutoScan sur ce projet (Administration du projet).
+**SonarCloud UI actions (manual, user):**
+1. `Goopil_rabbit-rs` > Administration > DevOps Platform Integration > GitHub:
+   bind the project to the `Goopil/rabbit-rs` repo → activates PR decoration + PR Quality Gate.
+2. Delete the `Goopil_php-rabbit-rs` project. If autoscan recreates it on the next
+   push, disable AutoScan on that project (project Administration).
 
 **Interfaces:**
-- Consumes: secrets `SONAR_TOKEN` (existant), artifacts des 3 jobs coverage
-- Produces: scan CI sur le bon projet, décoration PR active, QG fonctionnel
+- Consumes: `SONAR_TOKEN` secret (existing), artifacts of the 3 coverage jobs
+- Produces: CI scan on the right project, active PR decoration, working Quality Gate
 
-- [ ] **Step 1: Remplacer l'action dépréciée**
+- [ ] **Step 1: Replace the deprecated action**
 
-Dans `.github/workflows/coverage.yml`, job `sonarcloud` :
+In `.github/workflows/coverage.yml`, job `sonarcloud`:
 `SonarSource/sonarcloud-github-action@master` → `SonarSource/sonarqube-scan-action@<version>`
-(l'action actuelle émet un warning de dépréciation ; le pin SHA complet est fait en
+(the current action emits a deprecation warning; the full SHA pin is done in
 Task 2).
 
-- [ ] **Step 2: Vérifier la configuration**
+- [ ] **Step 2: Verify the configuration**
 
-`sonar-project.properties` : clé `Goopil_rabbit-rs` ✓, chemins de coverage
+`sonar-project.properties`: key `Goopil_rabbit-rs` ✓, coverage paths
 (`target/coverage/rust.lcov`, `target/coverage/php-ext.lcov`,
-`packages/laravel-queue/build/clover.xml`) alignés avec les artifacts téléchargés par
-le job ✓. Ne rien changer si conforme.
+`packages/laravel-queue/build/clover.xml`) aligned with the artifacts downloaded by
+the job ✓. Change nothing if compliant.
 
-- [ ] **Step 3: Vérification post-binding (après actions UI utilisateur)**
+- [ ] **Step 3: Post-binding verification (after user UI actions)**
 
-Sur une PR de la branche : commentaire sonarqubecloud présent, QG non-ERROR, mesures
-coverage > 0 sur `sonarcloud.io/dashboard?id=Goopil_rabbit-rs`.
+On a PR of the branch: sonarqubecloud comment present, Quality Gate not ERROR, coverage
+measures > 0 on `sonarcloud.io/dashboard?id=Goopil_rabbit-rs`.
 
 - [ ] **Step 4: Commit**
 
@@ -184,8 +184,8 @@ Actions to resolve:
 - `codecov/codecov-action@v5` → full SHA
 - `actions/upload-artifact@v4` → full SHA
 - `actions/download-artifact@v4` → full SHA
-- `SonarSource/sonarcloud-github-action@master` → traité en Task 0 (remplacé par
-  `SonarSource/sonarqube-scan-action`, puis pin SHA)
+- `SonarSource/sonarcloud-github-action@master` → handled in Task 0 (replaced by
+  `SonarSource/sonarqube-scan-action`, then SHA-pinned)
 - `github/codeql-action/upload-sarif@v3` → full SHA
 - `actions/attest@v4` → full SHA
 
@@ -273,8 +273,8 @@ Add `permissions:` block to each job that needs write access:
 `verify-release` job: already has `permissions: contents: write, attestations: read`
 `publish-release` job: add `permissions: contents: write`
 `split-laravel` job: already has `permissions: contents: read`
-`update-homebrew-formula` job: add `permissions: contents: read` (le push du tap
-utilise MIRROR_TOKEN, pas GITHUB_TOKEN — moindre privilège, ruling review Task 4)
+`update-homebrew-formula` job: add `permissions: contents: read` (the tap push
+uses MIRROR_TOKEN, not GITHUB_TOKEN — least privilege, per the Task 4 ruling review)
 `test-homebrew-formula` job: no write needed
 
 - [ ] **Step 3: Commit**
@@ -714,12 +714,12 @@ For each test file, add constants at the class/file level:
 - `RabbitMqJobTest.php:40`: UUID `'018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137'` (5×) → `private const TEST_MESSAGE_ID = '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137';`
 - `HorizonRabbitMqJobTest.php:16`: same UUID (3×) → same constant
 
-> **⚠️ CORRIGÉ EN EXÉCUTION (2026-08-29, commit eca073e) :** `private const` est invalide
-> au niveau fichier Pest, et déclarer le MÊME nom `TEST_MESSAGE_ID` dans deux fichiers
-> chargés dans un même processus Pest produit des warnings « Constant already defined ».
-> Résolution livrée : constantes renommées par fichier — `RABBIT_MQ_JOB_TEST_MESSAGE_ID`
-> (RabbitMqJobTest) et `HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID` (HorizonRabbitMqJobTest),
-> `const` simple (sans `private`). Ne pas ré-exécuter la prescription verbatim ci-dessus.
+> **⚠️ FIXED DURING EXECUTION (2026-08-29, commit eca073e):** `private const` is invalid
+> at the Pest file level, and declaring the SAME name `TEST_MESSAGE_ID` in two files
+> loaded in the same Pest process produces "Constant already defined" warnings.
+> Delivered resolution: constants renamed per file — `RABBIT_MQ_JOB_TEST_MESSAGE_ID`
+> (RabbitMqJobTest) and `HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID` (HorizonRabbitMqJobTest),
+> plain `const` (without `private`). Do not re-execute the prescription verbatim above.
 - `HorizonRabbitMqQueueTest.php:64`: `'Laravel\Horizon\Events\'` (4×) → `private const HORIZON_EVENTS_NS = 'Laravel\Horizon\Events\';`
 - `MessageMapperTest.php:22`: `'{"job":"App\\Jobs\\Example"}'` (3×) → constant
 - `AtLeastOnceChaosTest.php:76`: `'rabbit@rabbitmq-1'` (3×) → constant
@@ -967,42 +967,42 @@ git commit -m "fix: use require_once and fix useless object instantiations (Sona
 
 ---
 
-## Task 14b: Switch SonarCloud target to autoscan project `Goopil_php-rabbit-rs`
+## Task 14b: Switch SonarCloud target to the autoscan project `Goopil_php-rabbit-rs`
 
-> **AJOUTÉE 2026-08-29** — conséquence du renommage du repo GitHub en
-> `Goopil/php-rabbit-rs` + décision utilisateur : bascule vers le projet autoscan.
-> Autoscan et analyse CI étant mutuellement exclusifs, le job CI Sonar disparaît.
+> **ADDED 2026-08-29** — consequence of the GitHub repo rename to
+> `Goopil/php-rabbit-rs` + user decision: switch to the autoscan project.
+> Autoscan and CI analysis being mutually exclusive, the Sonar CI job disappears.
 
 **Files:**
-- Modify: `sonar-project.properties` (clé + liens)
-- Modify: `.github/workflows/coverage.yml` (suppression job `sonarcloud` + étapes artifacts dédiées)
+- Modify: `sonar-project.properties` (key + links)
+- Modify: `.github/workflows/coverage.yml` (removal of the `sonarcloud` job + dedicated artifact steps)
 
 **Interfaces:**
-- Consumes: décision utilisateur (bascule autoscan)
-- Produces: SonarCloud alimenté uniquement par l'autoscan ; coverage uniquement vers Codecov
+- Consumes: user decision (autoscan switch)
+- Produces: SonarCloud fed only by autoscan; coverage only toward Codecov
 
 - [ ] **Step 1: `sonar-project.properties`**
 
-`sonar.projectKey=Goopil_php-rabbit-rs`. Mettre à jour les 3 `sonar.links.*` vers
-`https://github.com/Goopil/php-rabbit-rs`. Supprimer les 2 lignes de chemins de
-coverage (`sonar.coverage.lcovReportPaths`, `sonar.php.coverage.reportPaths`) :
-mortes avec l'autoscan (il ne consomme pas les rapports de coverage). Garder
-sources/tests/exclusions (l'autoscan lit ces propriétés).
+`sonar.projectKey=Goopil_php-rabbit-rs`. Update the 3 `sonar.links.*` to
+`https://github.com/Goopil/php-rabbit-rs`. Remove the 2 coverage path lines
+(`sonar.coverage.lcovReportPaths`, `sonar.php.coverage.reportPaths`):
+dead with autoscan (it does not consume coverage reports). Keep
+sources/tests/exclusions (autoscan reads these properties).
 
-- [ ] **Step 2: `coverage.yml` — suppression du job `sonarcloud`**
+- [ ] **Step 2: `coverage.yml` — remove the `sonarcloud` job**
 
-Supprimer le job `sonarcloud` en entier (checkout fetch-depth 0, téléchargements
-d'artifacts, placement, scan). Supprimer aussi les 3 étapes « Upload artifact »
-(`coverage-rust`, `coverage-php-ext`, `coverage-laravel`) qui n'existaient que pour
-nourrir ce job — vérifier qu'aucune autre étape ne consomme ces artifacts avant de
-supprimer. Les uploads Codecov restent inchangés.
+Delete the whole `sonarcloud` job (checkout fetch-depth 0, artifact downloads,
+placement, scan). Also delete the 3 "Upload artifact" steps
+(`coverage-rust`, `coverage-php-ext`, `coverage-laravel`) that existed only to
+feed that job — verify no other step consumes these artifacts before
+removing. The Codecov uploads remain unchanged.
 
-- [ ] **Step 3: Vérifier**
+- [ ] **Step 3: Verify**
 
-YAML valide (`python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/coverage.yml'))"`,
-ou actionlint si installé). `grep -rn "Goopil_rabbit-rs\|sonarqube-scan\|download-artifact" .github/workflows/coverage.yml sonar-project.properties`
-ne doit plus rien retourner. Aucune autre référence `Goopil_rabbit-rs` hors docs
-(les URLs docs `Goopil/rabbit-rs` sont redirigées par GitHub — hors scope).
+Valid YAML (`python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/coverage.yml'))"`,
+or actionlint if installed). `grep -rn "Goopil_rabbit-rs\|sonarqube-scan\|download-artifact" .github/workflows/coverage.yml sonar-project.properties`
+must return nothing. No other `Goopil_rabbit-rs` reference outside docs
+(the docs URLs `Goopil/rabbit-rs` are redirected by GitHub — out of scope).
 
 - [ ] **Step 4: Commit**
 
@@ -1256,19 +1256,19 @@ Run: `rtk ./scripts/check.sh`
 
 Expected: All pass
 
-- [ ] **Step 4: Vérification SonarCloud (via autoscan — AMENDÉ 2026-08-29)**
+- [ ] **Step 4: SonarCloud verification (via autoscan — AMENDED 2026-08-29)**
 
-La branche est analysée automatiquement par l'autoscan `Goopil_php-rabbit-rs`
-(push de la branche = analyse + décoration PR). Vérifier le commentaire
-sonarqubecloud sur la MR (nouvelles issues sur le code modifié) — le job CI Sonar
-n'existe plus (Task 14b).
+The branch is analyzed automatically by the `Goopil_php-rabbit-rs` autoscan
+(branch push = analysis + PR decoration). Verify the
+sonarqubecloud comment on the MR (new issues on the changed code) — the Sonar CI
+job no longer exists (Task 14b).
 
 - [ ] **Step 5: Verify SonarCloud issues cleared**
 
 Check: `https://sonarcloud.io/project/issues?id=Goopil_php-rabbit-rs`
 
-Expected: après merge sur main (re-scan autoscan), le compte total des 204 issues
-de référence chute en conséquence ; les règles ciblées par le plan ne génèrent
-plus d'issues sur le nouveau code. Les résidus attendus (pattern @noinspection
-inerte : S1448 RabbitMqQueue, S4144 OctaneLifecycle, S1172 WorkerIdle, stubs
-S1186/S1172) font l'objet de l'arbitrage dédié (NOSONAR vs won't-fix UI).
+Expected: after merge to main (autoscan re-scan), the total count of the 204 reference issues
+drops accordingly; the rules targeted by the plan no longer generate
+issues on new code. The expected residues (inert @noinspection pattern:
+S1448 RabbitMqQueue, S4144 OctaneLifecycle, S1172 WorkerIdle, stubs
+S1186/S1172) are covered by the dedicated arbitration (NOSONAR vs UI won't-fix).

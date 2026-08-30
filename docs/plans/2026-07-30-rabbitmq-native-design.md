@@ -1,202 +1,202 @@
-# Rabbit RS — Extension PHP RabbitMQ native et driver Laravel
+# Rabbit RS — Native Rust PHP extension and Laravel driver for RabbitMQ
 
-**Statut :** validé le 30 juillet 2026
+**Status:** approved on July 30, 2026
 
-## Objectif
+## Goal
 
-Construire une extension PHP écrite en Rust et un package Laravel capables de publier et consommer des jobs RabbitMQ avec un coût minimal, tout en conservant les comportements attendus de Laravel Queue. Un même worker doit pouvoir agréger plusieurs connexions, vhosts, queues et channels. Les connexions doivent être réutilisées au maximum à l'intérieur de chaque processus PHP et restaurées automatiquement après une coupure.
+Build a PHP extension written in Rust and a Laravel package capable of publishing and consuming RabbitMQ jobs at minimal cost, while preserving expected Laravel Queue behavior. A single worker must be able to aggregate multiple connections, vhosts, queues, and channels. Connections must be reused as much as possible within each PHP process and restored automatically after an outage.
 
-## Périmètre de la V1
+## V1 scope
 
-- PHP 8.4 et 8.5.
-- Laravel 12 et 13.
+- PHP 8.4 and 8.5.
+- Laravel 12 and 13.
 - RabbitMQ 4.3.x.
-- Linux x86_64 et ARM64.
-- Distributions glibc et musl.
-- SAPIs CLI, PHP-FPM et Octane.
-- Serveurs Octane : FrankenPHP, RoadRunner, Open Swoole et Swoole.
+- Linux x86_64 and ARM64.
+- glibc and musl distributions.
+- SAPIs: CLI, PHP-FPM, and Octane.
+- Octane servers: FrankenPHP, RoadRunner, Open Swoole, and Swoole.
 - AMQP 0-9-1.
-- Quorum queues par défaut, classic queues configurables.
-- Livraison at-least-once.
-- Plusieurs vhosts et abonnements depuis un worker Laravel.
-- Topologie gérée par la bibliothèque ou provisionnée extérieurement.
-- Jobs immédiats, différés, libérés, échoués et envoyés en masse.
-- Reconnexion, publisher confirms, mandatory routing, backpressure et métriques.
+- Quorum queues by default, classic queues configurable.
+- At-least-once delivery.
+- Multiple vhosts and subscriptions from a single Laravel worker.
+- Topology managed by the library or provisioned externally.
+- Immediate, delayed, released, failed, and bulk jobs.
+- Reconnection, publisher confirms, mandatory routing, backpressure, and metrics.
 
-## Hors périmètre initial
+## Out of initial scope
 
-- PHP 8.3 et versions antérieures.
-- Windows et macOS comme plateformes de production distribuées.
-- AMQP 1.0 et RabbitMQ Streams.
+- PHP 8.3 and earlier.
+- Windows and macOS as distributed production platforms.
+- AMQP 1.0 and RabbitMQ Streams.
 - Exactly-once.
-- Partage d'une connexion TCP entre plusieurs processus OS.
-- Contrôleur adaptatif de prefetch activé par défaut.
-- Dashboard équivalent à Horizon.
-- Benchmark SQS.
+- Sharing a TCP connection between multiple OS processes.
+- Adaptive prefetch controller enabled by default.
+- Horizon-equivalent dashboard.
+- SQS benchmark.
 
-## Décisions principales
+## Key decisions
 
-### Nomenclature
+### Naming
 
-Le nom public de l'écosystème est Rabbit RS. Sa tagline est : High-performance RabbitMQ transport for PHP and Laravel, powered by Rust.
+The public name of the ecosystem is Rabbit RS. Its tagline is: High-performance RabbitMQ transport for PHP and Laravel, powered by Rust.
 
-Les noms techniques sont :
+The technical names are:
 
-- dépôt principal : rabbit-rs/rabbit-rs ;
-- package PIE de l'extension : goopil/rabbit-rs-native ;
-- nom interne de l'extension PHP : rabbit_rs ;
-- dépendance de plateforme Composer : ext-rabbit_rs ;
-- package Laravel : goopil/rabbit-rs-laravel ;
-- namespace PHP natif : Goopil\RabbitRs ;
-- namespace du package Laravel : Goopil\RabbitRs\Laravel ;
-- crates Rust : rabbit-rs-core et rabbit-rs-php ;
-- driver Laravel : rabbit-rs ;
-- commandes Artisan : rabbit-rs:work et rabbit-rs:status ;
-- fichier de configuration : rabbit-rs.php.
+- main repository: rabbit-rs/rabbit-rs;
+- PIE package of the extension: goopil/rabbit-rs-native;
+- internal name of the PHP extension: rabbit_rs;
+- Composer platform dependency: ext-rabbit_rs;
+- Laravel package: goopil/rabbit-rs-laravel;
+- native PHP namespace: Goopil\RabbitRs;
+- Laravel package namespace: Goopil\RabbitRs\Laravel;
+- Rust crates: rabbit-rs-core and rabbit-rs-php;
+- Laravel driver: rabbit-rs;
+- Artisan commands: rabbit-rs:work and rabbit-rs:status;
+- configuration file: rabbit-rs.php.
 
-L'extension et le package Laravel utilisent une version synchronisée. Une release 1.2.0 produit donc goopil/rabbit-rs-native 1.2.0 et goopil/rabbit-rs-laravel 1.2.0. Le package Laravel exige une version compatible de ext-rabbit_rs.
+The extension and the Laravel package use a synchronized version. A 1.2.0 release therefore produces goopil/rabbit-rs-native 1.2.0 and goopil/rabbit-rs-laravel 1.2.0. The Laravel package requires a compatible version of ext-rabbit_rs.
 
-### Architecture hybride Laravel
+### Hybrid Laravel architecture
 
-La première couche est un driver Laravel standard. La commande queue:work reste responsable de la boucle de traitement, des signaux, des événements, des limites mémoire, des timeouts et des failed jobs.
+The first layer is a standard Laravel driver. The queue:work command remains responsible for the processing loop, signals, events, memory limits, timeouts, and failed jobs.
 
-Une connexion Laravel peut référencer un profil de worker agrégé. Ce profil contient plusieurs abonnements répartis sur différents brokers et vhosts. La méthode pop du driver demande au noyau Rust le prochain message disponible dans l'ensemble du profil.
+A Laravel connection can reference an aggregated worker profile. This profile holds multiple subscriptions spread across different brokers and vhosts. The driver's pop method asks the Rust core for the next available message across the whole profile.
 
-Une commande rabbit-rs:work sera ajoutée dans un second jalon. Elle pourra superviser plusieurs processus queue:work standards et leur transmettre les signaux. Elle ne réimplémentera pas la boucle Illuminate\Queue\Worker.
+A rabbit-rs:work command will be added in a second milestone. It can supervise several standard queue:work processes and forward signals to them. It will not reimplement the Illuminate\Queue\Worker loop.
 
-### Trois couches
+### Three layers
 
-1. rabbit-rs-core : crate Rust indépendant de PHP, contenant configuration, runtime, pool, acteurs AMQP, topologie, publication, consommation, scheduling, reconnexion et métriques.
-2. rabbit-rs-php : extension ext-php-rs exposant une API PHP réduite et transportant uniquement des valeurs possédées entre PHP et Rust.
-3. goopil/rabbit-rs-laravel : package Composer contenant connecteur, driver Queue, Job, configuration, commandes et intégration Octane.
+1. rabbit-rs-core: a Rust crate independent of PHP, containing configuration, runtime, pool, AMQP actors, topology, publishing, consuming, scheduling, reconnection, and metrics.
+2. rabbit-rs-php: an ext-php-rs extension exposing a minimal PHP API and carrying only owned values between PHP and Rust.
+3. goopil/rabbit-rs-laravel: a Composer package containing the connector, Queue driver, Job, configuration, commands, and Octane integration.
 
-Lapin est le client AMQP initial. Il utilise Tokio, gère AMQP 0-9-1, les publisher confirms et la récupération automatique. Il reste caché derrière une abstraction de transport afin de permettre son remplacement après benchmark.
+Lapin is the initial AMQP client. It uses Tokio, supports AMQP 0-9-1, publisher confirms, and automatic recovery. It stays hidden behind a transport abstraction so it can be replaced after benchmarking.
 
-## Cycle de vie du runtime
+## Runtime lifecycle
 
-Chaque processus PHP possède exactement un registre natif. Le runtime Tokio et les sockets sont créés paresseusement après le fork. Le registre mémorise le PID ; un changement de PID invalide toutes les ressources héritées.
+Each PHP process owns exactly one native registry. The Tokio runtime and sockets are created lazily after the fork. The registry records the PID; a PID change invalidates all inherited resources.
 
-Une clé de connexion normalisée contient :
+A normalized connection key contains:
 
-- ensemble d'hôtes et stratégie de sélection ;
-- port et paramètres TLS ;
-- identité et mécanisme d'authentification ;
-- vhost ;
-- heartbeat, timeouts et paramètres AMQP négociables ;
-- empreinte de configuration.
+- host set and selection strategy;
+- port and TLS settings;
+- identity and authentication mechanism;
+- vhost;
+- heartbeat, timeouts, and negotiable AMQP settings;
+- configuration fingerprint.
 
-Un vhost nécessite sa propre connexion AMQP. Les channels sont réutilisés à l'intérieur de cette connexion. Les channels de consommateurs restent dédiés pendant la durée de leur consumer. Les channels de publication proviennent d'un pool borné.
+A vhost requires its own AMQP connection. Channels are reused within that connection. Consumer channels remain dedicated for the lifetime of their consumer. Publishing channels come from a bounded pool.
 
-FPM réutilise le registre entre les requêtes d'un même worker. Octane le conserve pendant la vie du worker persistant. Deux processus ne partagent jamais le registre.
+FPM reuses the registry between requests of the same worker. Octane keeps it for the lifetime of the persistent worker. Two processes never share a registry.
 
-Les threads Rust ne conservent aucun zval, objet Zend, callback PHP, conteneur Laravel ou objet Request. Ils ne manipulent que des chaînes, octets, nombres et structures Rust possédées.
+Rust threads hold no zvals, Zend objects, PHP callbacks, Laravel containers, or Request objects. They only manipulate owned strings, bytes, numbers, and Rust structures.
 
-## Publication
+## Publishing
 
-Le package Laravel sérialise le job selon le format Laravel, assigne un message_id stable, puis appelle l'extension.
+The Laravel package serializes the job in Laravel format, assigns a stable message_id, then calls the extension.
 
-Le publisher natif :
+The native publisher:
 
-1. valide et copie le payload et les propriétés ;
-2. place la commande dans une file bornée ;
-3. publie avec delivery_mode persistant et mandatory=true ;
-4. associe les numéros de séquence aux attentes de confirmation ;
-5. traite basic.return avant les confirmations ;
-6. termine chaque attente seulement après ACK, NACK, retour ou timeout.
+1. validates and copies the payload and properties;
+2. enqueues the command into a bounded queue;
+3. publishes with persistent delivery_mode and mandatory=true;
+4. associates sequence numbers with confirm waiters;
+5. processes basic.return before confirmations;
+6. resolves each waiter only after ACK, NACK, return, or timeout.
 
-Un appel publish fiable attend sa confirmation avant de rendre la main à PHP. La méthode publishBatch transmet un tableau complet en une seule traversée FFI et constitue le chemin rapide pour Laravel bulk.
+A reliable publish call waits for its confirmation before handing control back to PHP. The publishBatch method transmits a full array in a single FFI crossing and is the fast path for Laravel bulk.
 
-Une coupure avant confirmation rend l'état ambigu. Par défaut, la politique at-least-once conserve en mémoire du processus les publications non envoyées et ambiguës, puis les republie automatiquement avec le même message_id lorsque la connexion, la topologie et un channel avec confirms sont de nouveau prêts. La deadline originale continue de s'appliquer pendant la coupure : elle n'est jamais réinitialisée par une reconnexion.
+An outage before confirmation leaves the state ambiguous. By default, the at-least-once policy keeps unsent and ambiguous publications in process memory, then automatically republishes them with the same message_id once the connection, topology, and a channel with confirms are ready again. The original deadline keeps applying during the outage: it is never reset by a reconnection.
 
-Le publisher passe en état suspendu pendant la recovery mais continue d'accepter des commandes tant que sa capacité globale bornée n'est pas atteinte. Cette capacité couvre les commandes en attente et les confirms en vol afin qu'un acteur qui draine son canal pendant une longue coupure ne puisse pas accumuler une mémoire non bornée. Une fois la capacité atteinte, les nouvelles publications reçoivent Backpressure.
+The publisher enters a suspended state during recovery but keeps accepting commands until its overall bounded capacity is reached. That capacity covers pending commands and in-flight confirms so that an actor draining its channel during a long outage cannot accumulate unbounded memory. Once capacity is reached, new publications receive Backpressure.
 
-Une publication jamais écrite peut être rejouée sans ambiguïté. Une publication écrite mais non confirmée est rejouée automatiquement pour éviter toute perte silencieuse ; cela peut créer un doublon et impose donc des jobs idempotents. ACK, NACK, basic.return, erreur permanente ou expiration de deadline sont terminaux et résolvent l'attente une seule fois. Cette garantie est locale au processus : un crash du processus PHP perd le buffer mémoire ; une garantie au-delà du crash nécessiterait un outbox persistant, hors périmètre de la V1.
+A publication never written can be replayed without ambiguity. A written but unconfirmed publication is replayed automatically to avoid any silent loss; this may create a duplicate and therefore requires idempotent jobs. ACK, NACK, basic.return, permanent error, or deadline expiry are terminal and resolve the waiter exactly once. This guarantee is process-local: a PHP process crash loses the in-memory buffer; a guarantee beyond a crash would require a persistent outbox, out of V1 scope.
 
-## Consommation multi-vhost
+## Multi-vhost consumption
 
-Un ConsumerSet possède plusieurs subscriptions. Chaque subscription référence :
+A ConsumerSet owns multiple subscriptions. Each subscription references:
 
-- un broker et son vhost ;
-- une queue ;
-- un alias stable ;
-- un poids de fairness ;
-- une classe de priorité inter-queues ;
-- une configuration de prefetch ;
-- les options de topologie et, lorsqu'il est explicitement activé, de dead-lettering applicatif.
+- a broker and its vhost;
+- a queue;
+- a stable alias;
+- a fairness weight;
+- an inter-queue priority class;
+- a prefetch configuration;
+- topology options and, when explicitly enabled, application-level dead-lettering options.
 
-Les deliveries arrivent dans des buffers bornés. Un scheduler de type deficit weighted round-robin choisit le prochain message en respectant les poids et une politique d'aging empêchant la famine.
+Deliveries land in bounded buffers. A deficit weighted round-robin scheduler picks the next message while honoring weights and an aging policy preventing starvation.
 
-La priorité AMQP d'un message dans une queue est distincte de la priorité d'une subscription entre plusieurs queues.
+The AMQP priority of a message within a queue is distinct from the priority of a subscription across multiple queues.
 
-La V1 utilise un prefetch fixe par subscription et un budget global max_in_flight par worker. Les métriques nécessaires au futur contrôleur adaptatif sont collectées dès la V1 : durée du job, temps réservé, profondeur du buffer, latence d'ACK et pression mémoire.
+V1 uses fixed prefetch per subscription and a global max_in_flight budget per worker. The metrics needed by the future adaptive controller are collected from V1: job duration, reserved time, buffer depth, ACK latency, and memory pressure.
 
-> **Note (2026-08-29) :** le budget global `max_in_flight` décrit ci-dessus comme vivant en V1 a depuis été supprimé — les deliveries non acquittées sont désormais bornées uniquement par le prefetch QoS par consumer channel ; la suppression est tracée par le plan consumer-tuning (PR #29). Ce document reste un record point-in-time.
+> **Note (2026-08-29):** the global `max_in_flight` budget described above as live in V1 has since been removed — unacknowledged deliveries are now bounded only by the per-consumer-channel QoS prefetch; the removal is tracked by the consumer-tuning plan (PR #29). This document remains a point-in-time record.
 
-## ACK, retry et attempts
+## ACK, retry, and attempts
 
-Chaque message rendu à PHP contient un jeton natif opaque avec l'identité de connexion, de channel, de consumer, le delivery tag et la génération de connexion.
+Each message handed to PHP carries an opaque native token with connection identity, channel, consumer, delivery tag, and connection generation.
 
-- delete envoie basic.ack.
-- release(0) envoie basic.reject avec requeue=true.
-- release(delay > 0) republie vers le mécanisme de délai, attend le publisher confirm, puis ACK le message original.
-- une publication différée échouée laisse l'original non acquitté.
-- une fermeture de connexion réinsère automatiquement les messages non acquittés.
+- delete sends basic.ack.
+- release(0) sends basic.reject with requeue=true.
+- release(delay > 0) republishes to the delay mechanism, waits for the publisher confirm, then ACKs the original message.
+- a failed delayed publication leaves the original unacknowledged.
+- a connection closure automatically requeues unacknowledged messages.
 
-basic.reject est préféré à basic.nack pour une livraison unique : les quorum queues peuvent ainsi incrémenter leurs compteurs de livraison. Les headers x-acquired-count et x-delivery-count de RabbitMQ 4.3 sont utilisés avec le compteur applicatif pour implémenter attempts.
+basic.reject is preferred over basic.nack for a single delivery: quorum queues can then increment their delivery counters. The x-acquired-count and x-delivery-count headers of RabbitMQ 4.3 are used together with the application counter to implement attempts.
 
-Après une coupure, un ACK portant une ancienne génération est refusé par l'extension. Le broker redélivre le message. Si le job avait terminé côté PHP avant l'échec d'ACK, son traitement peut donc être répété.
+After an outage, an ACK carrying an old generation is rejected by the extension. The broker redelivers the message. If the job had already completed on the PHP side before the ACK failure, its processing may therefore be repeated.
 
-## Délais
+## Delays
 
-Le driver delay est auto par défaut :
+The delay driver is auto by default:
 
-1. utiliser rabbitmq_delayed_message_exchange lorsqu'il est disponible et autorisé ;
-2. sinon utiliser des files TTL avec dead-letter exchange.
+1. use rabbitmq_delayed_message_exchange when available and permitted;
+2. otherwise use TTL queues with a dead-letter exchange.
 
-Le fallback TTL utilise des buckets bornés et configurables. Les queues de délai sont déclarées paresseusement, durables lorsque nécessaire et munies d'une expiration de queue afin d'éviter une croissance illimitée de la topologie. Les délais sont arrondis au bucket supérieur afin qu'un job ne soit jamais livré avant son échéance.
+The TTL fallback uses bounded, configurable buckets. Delay queues are declared lazily, durable when needed, and given a queue expiry to avoid unbounded topology growth. Delays are rounded up to the bucket so a job is never delivered before its due time.
 
-## Reconnexion
+## Reconnection
 
-La machine d'états de connexion est :
+The connection state machine is:
 
     Disconnected -> Connecting -> Ready -> Recovering -> Ready
                                    |
                                    +-> Draining -> Closed
 
-Les retries utilisent un backoff exponentiel avec jitter et plafond. Les erreurs d'authentification ou de topologie incompatibles sont classées comme permanentes et remontées sans boucle infinie dans les contextes de publication. Un worker de consommation peut continuer à réessayer selon sa politique.
+Retries use exponential backoff with jitter and a cap. Authentication errors or incompatible topologies are classified as permanent and surfaced without an infinite loop in publishing contexts. A consuming worker may keep retrying according to its policy.
 
-La restauration suit un ordre déterministe :
+Recovery follows a deterministic order:
 
-1. connexion et négociation ;
-2. channels ;
-3. exchanges ;
-4. queues ;
-5. bindings ;
-6. QoS ;
+1. connection and negotiation;
+2. channels;
+3. exchanges;
+4. queues;
+5. bindings;
+6. QoS;
 7. consumers.
 
-Les publisher confirms interrompus sont classés comme ambigus sans résoudre immédiatement l'appel, puis replacés dans le buffer borné de replay. Après une nouvelle génération, la topologie et le mode confirm sont restaurés avant leur republication. Les messages consommés mais non acquittés sont redélivrés par RabbitMQ.
+Interrupted publisher confirms are classified as ambiguous without immediately resolving the call, then placed back into the bounded replay buffer. After a new generation, topology and confirm mode are restored before their republishing. Consumed but unacknowledged messages are redelivered by RabbitMQ.
 
-## Topologie
+## Topology
 
-Trois modes sont disponibles :
+Three modes are available:
 
-- declare : déclarer idempotemment la topologie et échouer en cas d'incompatibilité ;
-- verify : effectuer des déclarations passives et vérifier les propriétés attendues ;
-- external : utiliser la topologie sans la modifier.
+- declare: idempotently declare the topology and fail on incompatibility;
+- verify: perform passive declarations and check expected properties;
+- external: use the topology without modifying it.
 
-Les queues créées automatiquement sont des quorum queues durables, non exclusives et non auto-delete. Classic reste configurable. Aucune DLQ applicative n'est créée par défaut : exchange, queue et bindings de dead-lettering doivent être activés explicitement ou provisionnés par l'infrastructure. Cette règle ne concerne pas le dead-letter exchange interne nécessaire au fallback des messages différés par TTL. Les policies de cluster restent de préférence gérées par l'infrastructure.
+Automatically created queues are durable, non-exclusive, non-auto-delete quorum queues. Classic remains configurable. No application DLQ is created by default: dead-lettering exchange, queue, and bindings must be explicitly enabled or provisioned by the infrastructure. This rule does not concern the internal dead-letter exchange required by the TTL fallback for delayed messages. Cluster policies remain preferably infrastructure-managed.
 
-## Configuration Laravel
+## Laravel configuration
 
-La configuration est séparée en quatre concepts :
+Configuration is split into four concepts:
 
-- brokers : endpoints, vhosts, TLS et authentification ;
-- routes : destinations utilisées pour publier ;
-- topologies : exchanges, queues, bindings et délais ;
-- workers : ensembles de subscriptions et politique de scheduling.
+- brokers: endpoints, vhosts, TLS, and authentication;
+- routes: destinations used for publishing;
+- topologies: exchanges, queues, bindings, and delays;
+- workers: sets of subscriptions and scheduling policy.
 
-Exemple conceptuel :
+Conceptual example:
 
     return [
         'brokers' => [
@@ -232,133 +232,133 @@ Exemple conceptuel :
         ],
     ];
 
-Les valeurs initiales saines sont :
+Sane initial values are:
 
-- confirms et mandatory activés ;
-- queue quorum durable ;
-- delivery limit à 20 sauf policy externe ;
-- aucune DLQ applicative sans configuration explicite ;
-- buffer publisher borné à 8192 commandes ;
-- prefetch initial à 16, borné par max_in_flight ;
-- reconnexion de 100 ms à 30 s, multiplicateur 2 et jitter 20 %.
+- confirms and mandatory enabled;
+- durable quorum queue;
+- delivery limit of 20 unless an external policy exists;
+- no application DLQ without explicit configuration;
+- publisher buffer bounded to 8192 commands;
+- initial prefetch of 16, bounded by max_in_flight;
+- reconnection from 100 ms to 30 s, multiplier 2, and 20% jitter.
 
-Les valeurs de prefetch doivent être calibrées par benchmark avant la V1 stable.
+Prefetch values must be calibrated by benchmark before the stable V1.
 
-## Compatibilité Laravel
+## Laravel compatibility
 
-Le package enregistre un driver rabbit-rs via Queue::extend. Il implémente les contrats Queue, ClearableQueue et Monitor lorsque pertinents.
+The package registers a rabbit-rs driver via Queue::extend. It implements the Queue, ClearableQueue, and Monitor contracts where relevant.
 
-RabbitMqQueue implémente push, pushRaw, later, bulk, pop, size et clear. RabbitMqJob implémente delete, release, attempts, getJobId et getRawBody.
+RabbitMqQueue implements push, pushRaw, later, bulk, pop, size, and clear. RabbitMqJob implements delete, release, attempts, getJobId, and getRawBody.
 
-Pour conserver queue:work sans remplacer Worker, la valeur queue de la connexion représente normalement un profil agrégé. Une sélection avancée de subscriptions et le mode multiprocessus seront fournis par rabbit-rs:work dans le second jalon.
+To keep queue:work without replacing Worker, the connection's queue value normally represents an aggregated profile. Advanced subscription selection and multiprocess mode will be provided by rabbit-rs:work in the second milestone.
 
-Les événements Laravel natifs JobQueued, JobProcessing, JobProcessed, JobFailed et JobExceptionOccurred restent émis par le framework.
+The native Laravel events JobQueued, JobProcessing, JobProcessed, JobFailed, and JobExceptionOccurred remain emitted by the framework.
 
-## Octane et FPM
+## Octane and FPM
 
-Le package ne garde aucune référence à Application, Request ou Config dans des singletons persistants. Il normalise la configuration en valeurs immuables avant de créer le handle natif.
+The package keeps no reference to Application, Request, or Config in persistent singletons. It normalizes configuration into immutable values before creating the native handle.
 
-Des hooks Octane ferment proprement les ressources lors de l'arrêt ou du reload d'un worker. Une requête terminée ne détruit pas le pool natif. Les confirmations déjà attendues conservent une deadline bornée.
+Octane hooks cleanly close resources on worker shutdown or reload. A completed request does not tear down the native pool. Confirmations already awaited keep a bounded deadline.
 
-Le registre détecte les forks, y compris ceux qui surviennent après l'initialisation accidentelle d'un handle.
+The registry detects forks, including those occurring after accidental handle initialization.
 
-## Observabilité
+## Observability
 
-Le noyau expose un snapshot sans imposer de backend :
+The core exposes a snapshot without imposing a backend:
 
-- état des connexions et génération ;
-- channels ouverts, empruntés et invalidés ;
-- commandes publisher en buffer ;
-- confirmations ACK/NACK/timeout ;
-- messages retournés comme non routables ;
-- deliveries prêtes et non acquittées ;
-- ACK, reject, release et redelivery ;
-- tentatives et durée de reconnexion ;
-- latences de publication, confirmation, attente et traitement ;
-- poids théorique et distribution effective par subscription.
+- connection states and generation;
+- open, borrowed, and invalidated channels;
+- publisher commands in buffer;
+- ACK/NACK/timeout confirmations;
+- messages returned as unroutable;
+- ready and unacknowledged deliveries;
+- ACK, reject, release, and redeliveries;
+- reconnection attempts and duration;
+- publish, confirm, wait, and processing latencies;
+- theoretical weight and effective distribution per subscription.
 
-Le package Laravel transforme ces données en événements et peut fournir des adaptateurs Prometheus ou OpenTelemetry ultérieurs. Les logs sont structurés et ne contiennent jamais de mot de passe, URI complète ou certificat privé.
+The Laravel package turns this data into events and can provide Prometheus or OpenTelemetry adapters later. Logs are structured and never contain a password, full URI, or private certificate.
 
 ## Validation
 
-Quatre niveaux de tests sont requis :
+Four levels of testing are required:
 
-1. tests unitaires Rust déterministes ;
-2. tests PHPT et package Laravel ;
-3. tests d'intégration sur cluster RabbitMQ ;
-4. tests de chaos et benchmarks.
+1. deterministic Rust unit tests;
+2. PHPT and Laravel package tests;
+3. integration tests on a RabbitMQ cluster;
+4. chaos tests and benchmarks.
 
-La propriété principale est : aucune perte silencieuse dans les scénarios at-least-once ; les doublons sont autorisés, identifiés et mesurés.
+The main property is: no silent loss in at-least-once scenarios; duplicates are permitted, identified, and measured.
 
-Le dépôt contient trois laboratoires :
+The repository contains three labs:
 
-- benchmarks/native : coût Rust, Lapin, batching, confirms et FFI ;
-- benchmarks/laravel : application Laravel avec extension native, php-amqplib, driver Laravel RabbitMQ existant, Redis et database témoin ;
-- lab/rabbitmq : cluster RabbitMQ 4.3 à trois nœuds, métriques et injection de fautes.
+- benchmarks/native: Rust, Lapin, batching, confirms, and FFI cost;
+- benchmarks/laravel: Laravel application with the native extension, php-amqplib, the existing Laravel RabbitMQ driver, Redis, and a database control;
+- lab/rabbitmq: a three-node RabbitMQ 4.3 cluster, metrics, and fault injection.
 
-Les payloads de référence sont 256 o, 1 Kio, 10 Kio, 100 Kio et 1 Mio. Les métriques sont débit, p50/p95/p99, CPU par message, RSS, connexions, channels, temps de récupération, pertes, doublons et erreur de fairness.
+Reference payloads are 256 B, 1 KiB, 10 KiB, 100 KiB, and 1 MiB. Metrics are throughput, p50/p95/p99, CPU per message, RSS, connections, channels, recovery time, losses, duplicates, and fairness error.
 
-Les objectifs absolus sont calibrés sur une machine de référence après le prototype, puis enregistrés avec les gains comparatifs comme budgets anti-régression.
+Absolute targets are calibrated on a reference machine after the prototype, then recorded alongside comparative gains as anti-regression budgets.
 
 ## Distribution
 
-La distribution optimise la simplicité pour l'utilisateur et sépare clairement le binaire système du code Laravel.
+Distribution optimizes user simplicity and cleanly separates the system binary from Laravel code.
 
-### Extension native
+### Native extension
 
-Le dépôt principal est enregistré sur Packagist comme package goopil/rabbit-rs-native de type php-ext. Son composer.json racine déclare extension-name = rabbit_rs, Linux uniquement, support NTS et ZTS, et download-url-method = pre-packaged-binary.
+The main repository is registered on Packagist as a goopil/rabbit-rs-native package of type php-ext. Its root composer.json declares extension-name = rabbit_rs, Linux only, NTS and ZTS support, and download-url-method = pre-packaged-binary.
 
-L'installation publique est :
+The public installation is:
 
     pie install goopil/rabbit-rs-native
 
-PIE remplace PECL comme canal principal. Il sélectionne le bon binaire selon la version PHP, l'architecture, la libc et le mode NTS/ZTS, installe le fichier partagé et active l'extension dans la bonne configuration PHP.
+PIE replaces PECL as the primary channel. It selects the right binary according to PHP version, architecture, libc, and NTS/ZTS mode, installs the shared file, and enables the extension in the right PHP configuration.
 
-La CI produit 16 archives de release :
+CI produces 16 release archives:
 
-- PHP 8.4 et 8.5 ;
-- x86_64 et ARM64 ;
-- glibc et musl ;
-- NTS et ZTS.
+- PHP 8.4 and 8.5;
+- x86_64 and ARM64;
+- glibc and musl;
+- NTS and ZTS.
 
-Les builds debug ne sont pas distribués. Chaque archive suit exactement la convention de nommage PIE, par exemple :
+Debug builds are not distributed. Each archive follows the PIE naming convention exactly, for example:
 
     php_rabbit_rs-1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 
-Les dépendances Rust et TLS sont liées statiquement autant que possible ; libc reste la seule dépendance système attendue. Les builds glibc utilisent une baseline documentée et suffisamment ancienne. Chaque archive est testée avec le PHP cible, accompagnée d'un SHA-256, d'une SBOM et d'une attestation de provenance GitHub.
+Rust and TLS dependencies are statically linked as much as possible; libc remains the only expected system dependency. glibc builds use a documented, sufficiently old baseline. Each archive is tested with the target PHP, accompanied by a SHA-256, an SBOM, and a GitHub provenance attestation.
 
-La compilation depuis les sources reste documentée pour les contributeurs avec Cargo et cargo-php, mais elle n'est pas le fallback PIE de la V1. Aucun paquet PECL, installateur Composer privilégié, paquet Debian/RPM/APK ou image PHP complète n'est maintenu en V1. Les Dockerfiles utilisateurs installent l'extension avec PIE.
+Building from source remains documented for contributors with Cargo and cargo-php, but it is not the V1 PIE fallback. No PECL package, privileged Composer installer, Debian/RPM/APK package, or full PHP image is maintained in V1. User Dockerfiles install the extension with PIE.
 
-### Package Laravel
+### Laravel package
 
-Le package packages/laravel-queue est publié sur Packagist sous le nom goopil/rabbit-rs-laravel. Son installation est :
+The packages/laravel-queue package is published on Packagist as goopil/rabbit-rs-laravel. Its installation is:
 
     composer require goopil/rabbit-rs-laravel
 
-Il exige PHP ^8.4, Laravel 12 ou 13 et ext-rabbit_rs avec la même version majeure. Composer vérifie la présence de l'extension mais ne tente jamais d'installer ou d'activer un binaire système.
+It requires PHP ^8.4, Laravel 12 or 13, and ext-rabbit_rs with the same major version. Composer checks for the extension's presence but never attempts to install or enable a system binary.
 
-Le monorepo reste la source de développement. Une CI de subtree split publie packages/laravel-queue dans un dépôt miroir en lecture seule, puis pousse le même tag que celui de l'extension. La release GitHub native n'est publiée qu'après production et validation de tous les binaires, publication du tag miroir Laravel et vérification des deux métadonnées Packagist.
+The monorepo remains the development source. A subtree split CI publishes packages/laravel-queue to a read-only mirror repository, then pushes the same tag as the extension. The native GitHub release is only published after all binaries are produced and validated, the Laravel mirror tag is pushed, and both Packagist metadata are verified.
 
-La V1 stable n'est publiée qu'après certification CLI, FPM et des quatre serveurs Octane annoncés.
+The stable V1 is only released after certification of CLI, FPM, and the four announced Octane servers.
 
-## Évolutions prévues
+## Planned evolutions
 
-- prefetch adaptatif basé sur EWMA, target buffer time, hystérésis et pression mémoire ;
-- commande rabbit-rs:work multiprocessus ;
-- exporteurs Prometheus et OpenTelemetry ;
-- stratégies de routing et de failover supplémentaires ;
-- éventuel backend AMQP alternatif si les benchmarks le justifient ;
-- support de RabbitMQ Streams dans un produit distinct si un besoin réel apparaît.
+- adaptive prefetch based on EWMA, target buffer time, hysteresis, and memory pressure;
+- multiprocess rabbit-rs:work command;
+- Prometheus and OpenTelemetry exporters;
+- additional routing and failover strategies;
+- possible alternative AMQP backend if benchmarks justify it;
+- RabbitMQ Streams support in a distinct product if a real need appears.
 
-## Sources techniques
+## Technical sources
 
-- PHP Supported Versions : https://www.php.net/supported-versions.php
-- Laravel Queue Worker : https://github.com/laravel/framework/blob/13.x/src/Illuminate/Queue/Worker.php
-- Laravel Octane : https://laravel.com/docs/13.x/octane
-- RabbitMQ Consumer Acknowledgements and Publisher Confirms : https://www.rabbitmq.com/docs/confirms
-- RabbitMQ Quorum Queues : https://www.rabbitmq.com/docs/quorum-queues
-- RabbitMQ Release Information : https://www.rabbitmq.com/release-information
-- Lapin : https://github.com/amqp-rs/lapin
-- ext-php-rs : https://github.com/davidcole1340/ext-php-rs
-- PIE : https://github.com/php/pie
-- Composer Platform Packages : https://getcomposer.org/doc/01-basic-usage.md#platform-packages
+- PHP Supported Versions: https://www.php.net/supported-versions.php
+- Laravel Queue Worker: https://github.com/laravel/framework/blob/13.x/src/Illuminate/Queue/Worker.php
+- Laravel Octane: https://laravel.com/docs/13.x/octane
+- RabbitMQ Consumer Acknowledgements and Publisher Confirms: https://www.rabbitmq.com/docs/confirms
+- RabbitMQ Quorum Queues: https://www.rabbitmq.com/docs/quorum-queues
+- RabbitMQ Release Information: https://www.rabbitmq.com/release-information
+- Lapin: https://github.com/amqp-rs/lapin
+- ext-php-rs: https://github.com/davidcole1340/ext-php-rs
+- PIE: https://github.com/php/pie
+- Composer Platform Packages: https://getcomposer.org/doc/01-basic-usage.md#platform-packages

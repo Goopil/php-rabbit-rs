@@ -918,7 +918,7 @@ eliminates the `Box::pin` allocation regardless.
 - Publish correctness preserved (confirmations, returns, errors)
 
 
-## Section 7 — Publish: Batch Wait Unifié
+## Section 7 — Publish: Unified Batch Wait
 
 ### Problem
 

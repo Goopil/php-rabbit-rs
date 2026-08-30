@@ -1,6 +1,6 @@
 # Horizon Support Design
 
-**Date:** 23 août 2026
+**Date:** August 23, 2026
 **Status:** Approved
 
 ## Goal

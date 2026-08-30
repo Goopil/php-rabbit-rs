@@ -110,9 +110,9 @@ let publisher_config = PublisherConfig::new(
 ### 8. Documentation — `docs/plans/2026-07-30-rabbitmq-native-design.md`
 
 Update the "Publication" section:
-- Remove "regroupe les commandes par destination et channel" (step 3)
-- Remove from healthy defaults: "batch maximal à 256 messages ou 1 Mio" and "flush à 1 ms"
-- Keep "buffer publisher borné à 8192 commandes" (this is `buffer_capacity`, which stays)
+- Remove "groups commands by destination and channel" (step 3)
+- Remove from healthy defaults: "maximum batch of 256 messages or 1 MiB" and "flush at 1 ms"
+- Keep "publisher buffer bounded to 8192 commands" (this is `buffer_capacity`, which stays)
 
 ## What does NOT change
 

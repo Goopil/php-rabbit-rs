@@ -1,46 +1,45 @@
-# Design — Prefetch adaptatif par subscription
+# Design — Adaptive per-subscription prefetch
 
-Date : 2026-08-29
-Statut : approuvé (brainstorming)
-Branche : `feat-auto-prefetch`
-Périmètre : crate core Rust + package Laravel + docs. Pas de benchmark dédié dans ce jalon.
+Date: 2026-08-29
+Status: approved (brainstorming)
+Branch: `feat-auto-prefetch`
+Scope: Rust core crate + Laravel package + docs. No dedicated benchmark in this milestone.
 
 ## Motivation
 
-Le prefetch fixe par subscription ne peut pas convenir simultanément à des queues de
-profils opposés :
+Fixed prefetch per subscription cannot suit queues with opposite profiles at the same time:
 
-- jobs rapides (5-20 ms) : un prefetch bas (ex. 8) laisse le pipeline se vider entre
-  deux acks, le RTT réseau devient visible et le débit plafonne à `prefetch / durée_job` ;
-- jobs lents (30 s) : un prefetch haut (ex. 64, défaut Laravel) maintient 64 messages
-  en vol pour rien — mémoire gaspillée et rayon de crash amplifié (tout message
-  non acquitté au crash doit être redelivré, donc rejoué).
+- fast jobs (5-20 ms): a low prefetch (e.g. 8) lets the pipeline drain between two acks,
+  the network RTT becomes visible and throughput caps at `prefetch / job_duration`;
+- slow jobs (30 s): a high prefetch (e.g. 64, Laravel default) keeps 64 messages
+  in flight for nothing — wasted memory and an amplified crash radius (every message
+  unacked at crash time must be redelivered, i.e. replayed).
 
-Le document de design initial (`docs/plans/2026-07-30-rabbitmq-native-design.md`,
-§ « Évolutions prévues ») anticipait cette évolution : *« prefetch adaptatif basé sur
-EWMA, target buffer time, hystérésis et pression mémoire »*, avec le format de config
-union (`'prefetch' => ['mode' => ..., ...]`) déjà présent dans la couche Laravel.
-Les métriques nécessaires (latence de settlement incluant la durée du job PHP via
-`reserved_at`) sont collectées depuis la V1.
+The original design document (`docs/plans/2026-07-30-rabbitmq-native-design.md`,
+§ "Planned evolutions") anticipated this evolution: *"adaptive prefetch based on
+EWMA, target buffer time, hysteresis, and memory pressure"*, with the union config
+format (`'prefetch' => ['mode' => ..., ...]`) already present in the Laravel layer.
+The required metrics (settlement latency including PHP job duration via
+`reserved_at`) have been collected since V1.
 
-## Décisions validées
+## Validated decisions
 
-1. **Signal de pilotage** : EWMA de la latence de settlement (réservation → ack,
-   incluant la durée du job PHP). Prefetch cible = `target_buffer_seconds / durée_ewma`,
-   borné `[min, max]`, application par hystérésis.
-2. **Surface de config** : complète — `mode`, `initial`, `min`, `max`,
+1. **Control signal**: EWMA of settlement latency (reservation → ack,
+   including PHP job duration). Target prefetch = `target_buffer_seconds / ewma_duration`,
+   clamped to `[min, max]`, applied with hysteresis.
+2. **Config surface**: complete — `mode`, `initial`, `min`, `max`,
    `target_buffer_seconds`.
-3. **early_ack / no_ack** : rejetés en validation avec le mode adaptatif (le signal
-   n'existe pas : l'ack part avant le job PHP, ou n'existe pas du tout).
-4. **Observabilité** : incluse — `ConsumerHandle::prefetch_stats()` + méthode PHP
+3. **early_ack / no_ack**: rejected in validation with the adaptive mode (the signal
+   does not exist: the ack is sent before the PHP job, or does not exist at all).
+4. **Observability**: included — `ConsumerHandle::prefetch_stats()` + PHP method
    `Consumer::getPrefetchStats()`.
-5. **Approche** : contrôleur pur + tick dans l'actor (approche A). Les alternatives
-   (tâche contrôleur séparée, pilotage depuis PHP) sont rejetées en fin de document.
-6. **Défauts adaptatifs recommandés** : `initial = 64` (continuité avec le défaut
-   Laravel actuel), `min = 1`, `max = 256` (plafond prudent, l'utilisateur peut
-   monter), `target_buffer_seconds = 5`. AMQP `0` (= illimité) reste refusé partout.
+5. **Approach**: pure controller + tick in the actor (approach A). Alternatives
+   (separate controller task, PHP-driven control) are rejected at the end of this document.
+6. **Recommended adaptive defaults**: `initial = 64` (continuity with the current
+   Laravel default), `min = 1`, `max = 256` (prudent cap, the user can raise it),
+   `target_buffer_seconds = 5`. AMQP `0` (= unlimited) remains refused everywhere.
 
-## 1. Configuration core (`crates/rabbit-rs-core/src/config.rs`)
+## 1. Core configuration (`crates/rabbit-rs-core/src/config.rs`)
 
 ```rust
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,189 +54,185 @@ pub enum PrefetchConfig {
 }
 ```
 
-- `SubscriptionConfig.prefetch` passe de `u16` à `PrefetchConfig`.
-- **Formats wire acceptés** (désérialisation custom, rétrocompatible) :
-  1. entier nu : `"prefetch": 16` → `Fixed(16)` (forme émise aujourd'hui par le
-     normalisateur Laravel pour le mode fixed — comportement inchangé) ;
-  2. union fixed : `{"mode": "fixed", "value": 16}` → `Fixed(16)` ;
-  3. union adaptive : `{"mode": "adaptive", "initial": 64, "min": 1, "max": 256,
+- `SubscriptionConfig.prefetch` changes from `u16` to `PrefetchConfig`.
+- **Accepted wire formats** (custom deserialization, backward compatible):
+  1. bare integer: `"prefetch": 16` → `Fixed(16)` (the form the Laravel
+     normalizer emits today for fixed mode — behavior unchanged);
+  2. fixed union: `{"mode": "fixed", "value": 16}` → `Fixed(16)`;
+  3. adaptive union: `{"mode": "adaptive", "initial": 64, "min": 1, "max": 256,
      "target_buffer_seconds": 5}` → `Adaptive { .. }` (`target_buffer_seconds`
-     désérialisé via le helper existant `deserialize_duration_seconds`).
-- **Validation** (chemins d'erreur typés, convention existante) :
-  - forme entier nu : chemin `workers.X.subscriptions.Y.prefetch`, message inchangé
-    (« prefetch must be greater than zero ») — compatibilité avec les tests actuels ;
-  - forme union : chemin `...prefetch.value` / `...prefetch.min` / `...prefetch.max` /
-    `...prefetch.initial` / `...prefetch.target_buffer_seconds` ;
-  - règles : fixed `value ≥ 1` ; adaptive `min ≥ 1`, `min ≤ initial ≤ max`,
-    `target_buffer_seconds > 0` (plancher 1 ms) ;
-  - **refus croisé** : adaptive combiné à `early_ack = true` ou `no_ack = true` →
-    erreur « adaptive prefetch requires consumer acknowledgements… » avec le chemin
-    de la subscription ;
-  - `max ≤ 65535` garanti par `u16`.
-- **Fingerprint** (digest config, config.rs:759) : hash canonique de l'enum —
-  discriminant + champs (`to_be_bytes` pour les `u16`, secondes pour la duration).
-  Deux configs qui diffèrent uniquement par le mode adaptatif doivent produire des
-  fingerprints distincts.
+     deserialized via the existing `deserialize_duration_seconds` helper).
+- **Validation** (typed error paths, existing convention):
+  - bare integer form: path `workers.X.subscriptions.Y.prefetch`, message unchanged
+    ("prefetch must be greater than zero") — compatibility with current tests;
+  - union form: path `...prefetch.value` / `...prefetch.min` / `...prefetch.max` /
+    `...prefetch.initial` / `...prefetch.target_buffer_seconds`;
+  - rules: fixed `value ≥ 1`; adaptive `min ≥ 1`, `min ≤ initial ≤ max`,
+    `target_buffer_seconds > 0` (floor 1 ms);
+  - **cross rejection**: adaptive combined with `early_ack = true` or `no_ack = true` →
+    error "adaptive prefetch requires consumer acknowledgements…" with the path
+    of the subscription;
+  - `max ≤ 65535` guaranteed by `u16`.
+- **Fingerprint** (config digest, config.rs:759): canonical hash of the enum —
+  discriminant + fields (`to_be_bytes` for the `u16`s, seconds for the duration).
+  Two configs differing only in adaptive mode must produce distinct
+  fingerprints.
 
-## 2. Contrôleur pur (`crates/rabbit-rs-core/src/consumer/prefetch.rs`, nouveau)
+## 2. Pure controller (`crates/rabbit-rs-core/src/consumer/prefetch.rs`, new)
 
 ```rust
 pub(crate) struct AdaptivePrefetch {
     bounds: PrefetchBounds,   // min, max, target_buffer
-    current: u16,             // prefetch appliqué côté broker
-    ewma_ns: f64,             // EWMA de la latence de settlement
+    current: u16,             // prefetch applied on the broker side
+    ewma_ns: f64,             // EWMA of settlement latency
     samples: u64,
 }
 ```
 
-API pure (aucune dépendance async, testable unitairement) :
+Pure API (no async dependency, unit-testable):
 
-- `observe(&mut self, latency: Duration)` : mise à jour EWMA, α = 0.25 (constante
-  interne documentée).
-- `tick(&mut self) -> Option<u16>` :
-  - `samples < 3` → `None` (pas assez de données) ;
-  - cible = `ceil(target_buffer / ewma)`, conversion `f64 → u16` saturante,
-    puis clampée `[min, max]` ;
-  - changement appliqué seulement si `|cible − current| ≥ max(1, current / 4)`
-    (hystérésis relative 25 %) — sinon `None` ;
-  - changement retenu → `current = cible`, retourne `Some(cible)`.
+- `observe(&mut self, latency: Duration)`: EWMA update, α = 0.25 (documented
+  internal constant).
+- `tick(&mut self) -> Option<u16>`:
+  - `samples < 3` → `None` (not enough data);
+  - target = `ceil(target_buffer / ewma)`, saturating `f64 → u16` conversion,
+    then clamped to `[min, max]`;
+  - change applied only if `|target − current| ≥ max(1, current / 4)`
+    (25% relative hysteresis) — otherwise `None`;
+  - accepted change → `current = target`, returns `Some(target)`.
 
-Constantes internes (non configurables — YAGNI) :
+Internal constants (not configurable — YAGNI):
 
 - `EWMA_ALPHA: f64 = 0.25`
-- `PREFETCH_TICK: Duration = Duration::from_secs(1)` (intervalle d'application)
+- `PREFETCH_TICK: Duration = Duration::from_secs(1)` (application interval)
 - `MIN_SAMPLES: u64 = 3`
-- hystérésis : `25 %` relatif au courant
+- hysteresis: `25%` relative to current
 
-Sémantique de la cible : `target_buffer_seconds` = quantité de *travail* (temps de
-traitement) qui doit être prête en buffer. Exemples : cible 5 s, job 250 ms →
-prefetch 20 ; job 10 ms → 500 → clampé à `max` ; job 30 s → 1.
+Target semantics: `target_buffer_seconds` = amount of *work* (processing time)
+that should be ready in the buffer. Examples: target 5 s, job 250 ms →
+prefetch 20; job 10 ms → 500 → clamped to `max`; job 30 s → 1.
 
-## 3. Actor consumer (`crates/rabbit-rs-core/src/consumer/actor.rs`)
+## 3. Consumer actor (`crates/rabbit-rs-core/src/consumer/actor.rs`)
 
-- `ActorState` détient un `AdaptivePrefetch` par subscription adaptative
-  (`HashMap<SubscriptionId, AdaptivePrefetch>`) ; les subscriptions fixed n'ont
-  pas d'entrée.
-- **Observation** : nourrie uniquement par les acks authentiques — dans les
-  complétions de settlement réussies de type `Ack`, pour les commandes `Settle`
-  et `SettleThrough`, aux endroits où l'actor enregistre déjà
-  `record_ack(token.reserved_at.elapsed())`. Exclus explicitement : releases
-  (délai — la latence inclurait le délai et corromprait l'EWMA), rejects, et le
-  chemin early-ack (`record_ack(Duration::ZERO)`).
-- **Tick d'application** : bras supplémentaire dans le `tokio::select!` de
-  `run_actor`, armé par précondition `if has_adaptive` (aucun intervalle actif
-  quand aucune subscription n'est adaptative — comportement actuel préservé à
-  l'identique sinon). À chaque tick (1 s) : pour chaque subscription dont
-  `tick()` renvoie `Some(v)` → appliquer `set_qos(v)`.
-- **`set_qos` hors chemin critique** : c'est un aller-retour réseau ; l'exécuter
-  directement dans le bras de l'actor bloquerait dispatch et settlements pendant
-  le RTT. Chaque application est donc effectuée dans une tâche tokio détachée
-  (`tokio::spawn`), qui pousse une erreur dans `error_tx` en cas d'échec transport
-  (même canal d'erreur que les settlements, capacité bornée 256, drop du plus
-  ancien). Le tick lui-même est pur et instantané.
-- Les ajustements sur un même canal sont rares (hystérésis 25 % + tick 1 s) ;
-  pas de garde supplémentaire contre des QoS concurrentes.
+- `ActorState` owns an `AdaptivePrefetch` per adaptive subscription
+  (`HashMap<SubscriptionId, AdaptivePrefetch>`); fixed subscriptions have
+  no entry.
+- **Observation**: fed only by genuine acks — in the successful `Ack`-type
+  settlement completions, for the `Settle` and `SettleThrough` commands, at the points where the actor already records
+  `record_ack(token.reserved_at.elapsed())`. Explicitly excluded: releases
+  (delay — the latency would include the delay and corrupt the EWMA), rejects, and the
+  early-ack path (`record_ack(Duration::ZERO)`).
+- **Application tick**: additional arm in the `tokio::select!` of
+  `run_actor`, armed by the precondition `if has_adaptive` (no active interval
+  when no subscription is adaptive — current behavior preserved identically otherwise). Each tick (1 s): for each subscription whose
+  `tick()` returns `Some(v)` → apply `set_qos(v)`.
+- **`set_qos` off the critical path**: it is a network round trip; running it
+  directly in the actor arm would block dispatch and settlements during
+  the RTT. Each application is therefore performed in a detached tokio task
+  (`tokio::spawn`), which pushes an error into `error_tx` on transport failure
+  (same error channel as settlements, bounded capacity 256, drop of the oldest).
+  The tick itself is pure and instantaneous.
+- Adjustments on a given channel are rare (25% hysteresis + 1 s tick);
+  no additional guard against concurrent QoS calls.
 
-## 4. Spawn, buffers et recovery
+## 4. Spawn, buffers, and recovery
 
-- `Subscription` (`consumer/set.rs`) : le champ `prefetch: u16` devient
-  `prefetch: PrefetchConfig` + helper `effective_prefetch() -> u16` (valeur initiale
-  appliquée au spawn : `value` pour fixed, `initial` pour adaptive).
-- **Dimensionnement des buffers** (`spawn_with_generation`, set.rs:170-217) : la
-  capacité mpsc/flume est calculée sur la somme des **max** des subscriptions
-  adaptatives (et des valeurs des subscriptions fixed) quand au moins une
-  subscription est adaptative ; sinon comportement actuel inchangé. La croissance
-  runtime du prefetch dispose donc toujours de la capacité interne requise —
-  invariant « tout est borné explicitement » préservé.
-- **Recovery** (`pool/recovery_coordinator.rs:422`) : reconstruction avec la config ;
-  `.prefetch(...)` devient `.prefetch(config)` (clone de l'enum). L'état EWMA est
-  perdu au re-spawn : le contrôleur repart de `initial` et réapprend. Accepté et
-  documenté (la recovery suit déjà l'ordre déterministe connexion → … → QoS →
+- `Subscription` (`consumer/set.rs`): the field `prefetch: u16` becomes
+  `prefetch: PrefetchConfig` + helper `effective_prefetch() -> u16` (initial value
+  applied at spawn: `value` for fixed, `initial` for adaptive).
+- **Buffer sizing** (`spawn_with_generation`, set.rs:170-217): the mpsc/flume capacity is computed from the sum of the **max** of adaptive
+  subscriptions (and the values of fixed subscriptions) when at least one
+  subscription is adaptive; otherwise the current behavior is unchanged. Runtime
+  prefetch growth thus always has the required internal capacity —
+  the "everything is explicitly bounded" invariant is preserved.
+- **Recovery** (`pool/recovery_coordinator.rs:422`): reconstruction with the config;
+  `.prefetch(...)` becomes `.prefetch(config)` (clone of the enum). The EWMA state is
+  lost on re-spawn: the controller restarts from `initial` and re-learns. Accepted and
+  documented (recovery already follows the deterministic order connection → … → QoS →
   consumers).
 
-## 5. Couche Laravel (`packages/laravel-queue`)
+## 5. Laravel layer (`packages/laravel-queue`)
 
-- `ConfigNormalizer::prefetch()` (ConfigNormalizer.php:421) :
-  - `['mode' => 'fixed', 'value' => N]` → émet toujours l'entier nu `N` vers le
-    natif (**zéro changement de wire** pour la forme fixed) ;
-  - `['mode' => 'adaptive', ...]` → valide `min ≥ 1`, `min ≤ initial ≤ max`,
-    `target_buffer_seconds > 0` (messages avec chemin exact, convention
-    `positiveInt` existante, plafond 65535) puis émet l'union native vers le core ;
-  - **refus croisé** : adaptive + `early_ack`/`no_ack` → erreur explicite au chemin
-    de la subscription ;
-  - entier nu en entrée Laravel → traité comme fixed (rétrocompat config
-    utilisateur).
-- `config/rabbit-rs.php` (doc bloc lignes 175-190) : documentation du mode
-  adaptatif + exemple commenté (désactivé par défaut ; défaut fixed 64 inchangé).
-- `README.md` : section prefetch mise à jour (table env + exemple adaptive).
+- `ConfigNormalizer::prefetch()` (ConfigNormalizer.php:421):
+  - `['mode' => 'fixed', 'value' => N]` → always emits the bare integer `N` to the
+    native layer (**zero wire change** for the fixed form);
+  - `['mode' => 'adaptive', ...]` → validates `min ≥ 1`, `min ≤ initial ≤ max`,
+    `target_buffer_seconds > 0` (messages with exact path, existing
+    `positiveInt` convention, cap 65535) then emits the native union to the core;
+  - **cross rejection**: adaptive + `early_ack`/`no_ack` → explicit error at the
+    subscription path;
+  - bare integer as Laravel input → treated as fixed (user config backward
+    compat).
+- `config/rabbit-rs.php` (doc block lines 175-190): documentation of the
+  adaptive mode + commented example (disabled by default; fixed 64 default unchanged).
+- `README.md`: prefetch section updated (env table + adaptive example).
 
-## 6. Observabilité
+## 6. Observability
 
-- Nouvelle commande `ConsumerCommand::GetPrefetchStats { completed }` (oneshot).
-- `ConsumerHandle::prefetch_stats() -> Vec<PrefetchStat>` avec
+- New command `ConsumerCommand::GetPrefetchStats { completed }` (oneshot).
+- `ConsumerHandle::prefetch_stats() -> Vec<PrefetchStat>` with
   `PrefetchStat { subscription, queue, mode, current, ewma }` (`ewma: Duration`,
-  zéro tant que `samples == 0`). Réponse instantanée (état de l'actor), commande
-  ponctuelle — pas un tick.
-- Extension PHP : méthode `Consumer::getPrefetchStats()` retournant un tableau
-  associatif `subscription → { mode, prefetch, ewma_ms }` (valeur zéro pour fixed).
-- Aucun changement des métriques globales (`Metrics`) : pas de labels disponibles,
-  le state par subscription passe par la commande dédiée.
+  zero as long as `samples == 0`). Instant response (actor state), one-shot
+  command — not a tick.
+- PHP extension: method `Consumer::getPrefetchStats()` returning an associative array
+  `subscription → { mode, prefetch, ewma_ms }` (zero value for fixed).
+- No change to global metrics (`Metrics`): no labels available,
+  the per-subscription state goes through the dedicated command.
 
-## 7. Tests (TDD — un test focal échouant avant chaque implémentation)
+## 7. Tests (TDD — one focused failing test before each implementation)
 
-- **Rust unit** (`consumer/prefetch.rs`, `#[cfg(test)]`) :
-  - EWMA : convergence, α appliqué, premier échantillon ;
-  - tick : pas de changement sous le seuil d'hystérésis, changement au-delà,
-    clampage `[min, max]`, saturation `ceil`, moins de 3 échantillons → `None` ;
-  - cas aux limites : job très rapide (clamp à max), très lent (min), cible 0
-    interdite en amont.
-- **Rust config** (`config.rs::tests`) : parsing des 3 formes wire + invalides
-  (entier 0, union champ manquant, `min > max`, `initial` hors bornes,
-  `target_buffer_seconds = 0`) ; refus croisé early_ack/no_ack ; fingerprint
-  différencié par mode.
-- **Rust intégration** (`crates/rabbit-rs-core/tests/`, temps tokio pausé +
-  mock transport scriptable) :
-  - livraisons + acks à latences scriptées → après avance de temps au-delà du
-    tick, assertion de la séquence `TransportOperation::Qos { prefetch: X }` sur
-    le canal mocké ;
-  - sous le seuil d'hystérésis → aucune opération `Qos` supplémentaire ;
-  - échec `set_qos` mocké → erreur présente dans `drain_errors()`, l'actor
-    continue ;
-  - set fixed existant : aucun bras de tick actif (aucune opération Qos au-delà
-    du spawn) — régression.
-- **PHP Pest (Laravel)** : `ConfigNormalizerTest` — fixed inchangé (régression),
-  adaptive pass-through avec valeurs validées, erreurs de validation (chemins
-  exacts), refus croisé early_ack/no_ack ; test Feature provider avec config
-  adaptative.
-- **Extension** : PHPT/reflection pour `getPrefetchStats()` (présence, forme).
-- **Gate final** : `rtk ./scripts/check.sh` complet.
+- **Rust unit** (`consumer/prefetch.rs`, `#[cfg(test)]`):
+  - EWMA: convergence, α applied, first sample;
+  - tick: no change below the hysteresis threshold, change beyond it,
+    clamping `[min, max]`, `ceil` saturation, fewer than 3 samples → `None`;
+  - edge cases: very fast job (clamp to max), very slow (min), zero target
+    forbidden upstream.
+- **Rust config** (`config.rs::tests`): parsing of the 3 wire forms + invalid ones
+  (integer 0, union missing field, `min > max`, `initial` out of bounds,
+  `target_buffer_seconds = 0`); early_ack/no_ack cross rejection; fingerprint
+  differentiated by mode.
+- **Rust integration** (`crates/rabbit-rs-core/tests/`, paused tokio time +
+  scriptable mock transport):
+  - deliveries + acks at scripted latencies → after advancing time past the
+    tick, assert the sequence `TransportOperation::Qos { prefetch: X }` on the
+    mocked channel;
+  - below the hysteresis threshold → no additional `Qos` operation;
+  - mocked `set_qos` failure → error present in `drain_errors()`, the actor
+    keeps going;
+  - existing fixed set: no active tick arm (no Qos operation beyond spawn) —
+    regression.
+- **PHP Pest (Laravel)**: `ConfigNormalizerTest` — fixed unchanged (regression),
+  adaptive pass-through with validated values, validation errors (exact
+  paths), early_ack/no_ack cross rejection; Feature provider test with an
+  adaptive config.
+- **Extension**: PHPT/reflection for `getPrefetchStats()` (presence, shape).
+- **Final gate**: full `rtk ./scripts/check.sh`.
 
 ## 8. Documentation
 
-- `docs/plans/2026-07-30-rabbitmq-native-design.md` : item « prefetch adaptatif »
-  de « Évolutions prévues » marqué implémenté (référence au présent spec).
-- Commentaires de config Laravel + README (§5).
+- `docs/plans/2026-07-30-rabbitmq-native-design.md`: the "adaptive prefetch" item
+  of "Planned evolutions" marked implemented (reference to this spec).
+- Laravel config comments + README (§5).
 
-## Alternatives rejetées
+## Rejected alternatives
 
-- **Tâche contrôleur séparée par ConsumerSet** : la même logique pure, mais une
-  tâche tokio dédiée qui enverrait `ConsumerCommand::SetPrefetch`. Rejeté : il
-  faudrait exporter les latences par subscription hors de l'actor (canal
-  supplémentaire), couplage temporel fragile, plus de pièces mobiles pour un
-  résultat identique.
-- **Adaptation pilotée depuis PHP** (`setPrefetch()` + boucle Laravel) : rejeté —
-  réaction limitée par le polling PHP, ne colle pas au design « activé par
-  configuration » de l'actor Rust, surface d'API de plus à maintenir.
-- **Signal composite (buffer depth + mémoire)** : rejeté pour ce jalon — l'EWMA
-  du temps de job couvre le besoin, moins de paramètres à régler. Le garde-fou
-  mémoire existant (`max_buffered_bytes`) reste en place.
+- **Separate controller task per ConsumerSet**: the same pure logic, but a
+  dedicated tokio task that would send `ConsumerCommand::SetPrefetch`. Rejected: it
+  would require exporting per-subscription latencies out of the actor (extra
+  channel), fragile temporal coupling, more moving parts for an identical result.
+- **PHP-driven adaptation** (`setPrefetch()` + Laravel loop): rejected —
+  reaction limited by PHP polling, does not fit the "enabled by configuration"
+  design of the Rust actor, one more API surface to maintain.
+- **Composite signal (buffer depth + memory)**: rejected for this milestone — the EWMA
+  of job time covers the need, fewer parameters to tune. The existing memory
+  guard (`max_buffered_bytes`) stays in place.
 
-## Limites connues (documentées, acceptées)
+## Known limitations (documented, accepted)
 
-- L'état EWMA est perdu à la recovery (re-spawn du ConsumerSet) : réapprentissage
-  depuis `initial`.
-- `early_ack`/`no_ack` n'ont pas de signal exploitable : combinaisons refusées.
-- Le prefetch n'a pas d'effet côté broker pour les consumers `no_ack` (sémantique
-  AMQP) — de toute façon refusé avec l'adaptatif.
-- Quorum queues : prefetch élevé augmente la mémoire côté broker ; le défaut
-  `max = 256` et l'hystérésis bornent l'exposition.
+- The EWMA state is lost at recovery (ConsumerSet re-spawn): re-learning
+  from `initial`.
+- `early_ack`/`no_ack` have no usable signal: combinations rejected.
+- Prefetch has no broker-side effect for `no_ack` consumers (AMQP
+  semantics) — rejected with adaptive anyway.
+- Quorum queues: high prefetch increases broker-side memory; the default
+  `max = 256` and the hysteresis bound the exposure.

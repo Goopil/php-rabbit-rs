@@ -2819,10 +2819,10 @@ drain runs every iteration. The `WorkerIdle` listener is a best-effort addition.
 ### Out of Scope (7 bugs from PHP extension audit — separate plan)
 
 The following bugs are confirmed but not in this plan. They will be addressed in a separate spec/plan:
-1. Deadlock réentrant des callbacks (`pool.rs:312-348`, `callbacks.rs:55-68`)
-2. Perte silencieuse après 20 redeliveries sans DLX (`config/rabbit-rs.php:318-325`)
-3. Pools abandonnés sans fermeture (`NativePoolFactory.php:58-72`, `OctaneLifecycle.php:31-44`)
-4. Payload poison non validé (`RabbitMqJob.php:29-37`)
-5. Config topology partiellement morte (`ConfigNormalizer.php:31-40,468-478`)
-6. Supervisor laissant des workers orphelins (`WorkerSupervisor.php:120-128`)
-7. Monitoring mensonger (`RabbitMqStatusCommand.php:46-70`)
+1. Reentrant callback deadlock (`pool.rs:312-348`, `callbacks.rs:55-68`)
+2. Silent loss after 20 redeliveries without DLX (`config/rabbit-rs.php:318-325`)
+3. Abandoned pools without closure (`NativePoolFactory.php:58-72`, `OctaneLifecycle.php:31-44`)
+4. Unvalidated poison payload (`RabbitMqJob.php:29-37`)
+5. Partially dead topology config (`ConfigNormalizer.php:31-40,468-478`)
+6. Supervisor leaving orphaned workers (`WorkerSupervisor.php:120-128`)
+7. Misleading monitoring (`RabbitMqStatusCommand.php:46-70`)

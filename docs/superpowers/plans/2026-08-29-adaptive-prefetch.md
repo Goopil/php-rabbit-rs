@@ -1787,21 +1787,21 @@ git commit -m "feat(laravel): adaptive prefetch configuration support"
 ### Task 7: Design-doc bookkeeping and full quality gate
 
 **Files:**
-- Modify: `docs/plans/2026-07-30-rabbitmq-native-design.md` (§ « Évolutions prévues », line ~344)
+- Modify: `docs/plans/2026-07-30-rabbitmq-native-design.md` (section "Planned evolutions", line ~344)
 
 - [ ] **Step 1: Mark the roadmap item as implemented**
 
 In `docs/plans/2026-07-30-rabbitmq-native-design.md`, change the line:
 
 ```
-- prefetch adaptatif basé sur EWMA, target buffer time, hystérésis et pression mémoire ;
+- adaptive prefetch based on EWMA, target buffer time, hysteresis, and memory pressure;
 ```
 
 to:
 
 ```
-- prefetch adaptatif basé sur EWMA et target buffer time — implémenté (spec
-  `docs/superpowers/specs/2026-08-29-adaptive-prefetch-design.md`) ;
+- adaptive prefetch based on EWMA and target buffer time — implemented (spec
+  `docs/superpowers/specs/2026-08-29-adaptive-prefetch-design.md`);
 ```
 
 - [ ] **Step 2: Run the full quality gate**

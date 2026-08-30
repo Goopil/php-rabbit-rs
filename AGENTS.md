@@ -12,10 +12,15 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - `docs/plans/2026-07-30-rabbitmq-native-implementation.md` defines the task sequence, current milestone status, and expected file layout.
 - Read the relevant plan sections before changing behavior. Keep milestone details in those documents instead of duplicating them here.
 
+## Language Policy
+
+- All repository artifacts are written in English: documentation under `docs/` (plans, specs, audits, roadmaps), READMEs, code comments, commit messages, and GitHub issues.
+- Conversations with AI assistants may happen in any language, but everything committed to the repository must always be in English.
+
 ## Workspace Map
 
 - `crates/rabbit-rs-core/`: runtime-independent configuration, connection pooling, topology, publishing, consuming, recovery, metrics, and transport abstractions.
-- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (6 files: publisher, consumer, recovery, topology, metrics, integration).
+- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (8 files: publisher, consumer, recovery, topology, metrics, integration, blind_pump, transport_tuning).
 - `crates/rabbit-rs-php/`: `cdylib` for the native PHP extension; depends on the core crate. Pest tests in `tests/`.
 - `packages/laravel-queue/`: Laravel queue driver package (`goopil/rabbit-rs-laravel`). Pest tests in `tests/`.
 - `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.

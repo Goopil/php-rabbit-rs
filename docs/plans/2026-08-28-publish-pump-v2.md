@@ -1,148 +1,159 @@
-# Publish Pump v2 — vrai fire-and-forget
+# Publish Pump v2 — true fire-and-forget
 
-Status: exécuté — mergé via PR #30 (d923fe1, 2026-08-28). Benchs désormais en release
-(debug masque ~4×). Suite: `2026-08-29-post-pump-simplification.md`.
+Status: executed — merged via PR #30 (d923fe1, 2026-08-28). Benchmarks now run in release
+mode (debug masks ~4×). Next: `2026-08-29-post-pump-simplification.md`.
 
 Date: 2026-08-28
-Base: `perf/publish-optimizations` (2b8a9b5) → merge PR #29 → nouvelle branche `perf/publish-pump`
+Base: `perf/publish-optimizations` (2b8a9b5) → merge PR #29 → new branch `perf/publish-pump`
 
-## Contexte
+## Context
 
-L'ancienne extension (Goopil/php-ext-rabbit-rs, archivée) atteignait de bien meilleurs débits
-publish fire-and-forget grâce à : pump dédié avec `FuturesUnordered` (2048 in-flight),
-`tokio::select! biased` qui chevauche intake et drain, flume 4096, runtime multi-thread,
-et un chemin PHP qui **retourne après enfilage** (jamais d'attente d'outcome).
+The former extension (Goopil/php-ext-rabbit-rs, archived) reached much higher publish
+fire-and-forget throughput thanks to: a dedicated pump with `FuturesUnordered` (2048
+in-flight), `tokio::select! biased` overlapping intake and drain, a 4096 flume channel,
+a multi-thread runtime, and a PHP path that **returns after enqueueing** (never waiting
+for outcomes).
 
-Le chemin blind actuel de rabbit-rs passe par l'actor (`try_publish_hot` = `try_publish`) :
-semaphore + oneshot + Box + HashMap + métriques **par message**, puis attente séquentielle
-des outcomes dans le même `block_on` (client.rs:173-183). Le pump existant (pump.rs) est
-séquentiel (1 publish lapin à la fois) et saturait (flume 1024).
+The current rabbit-rs blind path goes through the actor (`try_publish_hot` =
+`try_publish`): semaphore + oneshot + Box + HashMap + metrics **per message**, then
+sequential awaiting of outcomes in the same `block_on` (client.rs:173-183). The existing
+pump (pump.rs) is sequential (1 lapin publish at a time) and saturated (flume 1024).
 
-Objectif utilisateur : ≥ 80-100k msg/s publish en fire-and-forget. Au-delà, inutile.
+User goal: ≥ 80-100k msg/s publish in fire-and-forget. Beyond that, pointless.
 
-## Décisions tranchées
+## Settled decisions
 
-- A (pump v2 + routage blind) : GO sans réserve.
-- B (découplage PHP/outcomes) : inhérent au routage blind vers le pump ; décidé après mesure.
-  Le point de décision post-bench porte sur le diet du chemin actor (Safe/Unsafe), pas sur blind.
-- Sémantique blind : backpressure = **blocage** (`send_async` sur flume bornée, comme l'ancien),
-  pas erreur. Erreur transport après enfilage = perte silencieuse (vrai fire-and-forget,
-  documenté). Modes Safe/Unsafe inchangés (actor, at-least-once, replay).
-- Barrière de flush : port du pattern ancien (`flush_fire_and_forget`) — `Pool::flush()` en
-  blind attend que tout ce qui a été enfilé soit remis à lapin.
+- A (pump v2 + blind routing): GO without reservation.
+- B (PHP/outcome decoupling): inherent to blind routing towards the pump; decided after
+  measurement. The post-bench decision point is about slimming the actor path
+  (Safe/Unsafe), not blind.
+- Blind semantics: backpressure = **blocking** (`send_async` on the bounded flume, like
+  the old one), not an error. Transport error after enqueueing = silent loss (true
+  fire-and-forget, documented). Safe/Unsafe modes unchanged (actor, at-least-once,
+  replay).
+- Flush barrier: port of the old pattern (`flush_fire_and_forget`) — `Pool::flush()` in
+  blind mode waits until everything enqueued has been handed to lapin.
 
-## Contraintes globales
+## Global constraints
 
-- `#![forbid(unsafe_code)]` intouchable ; pas d'affaiblissement des lints workspace.
-- Rust 1.96.0, edition 2024. `rtk cargo fmt --all` après chaque edit Rust.
-- Gate complet avant de déclarer une tâche finie : `rtk ./scripts/check.sh` (ou clippy + test
-  workspace + composer validate pour les tâches non-Rust).
-- At-least-once pour Safe/Unsafe inchangé. Blind = opt-in explicite, sémantique documentée.
-- TDD : test focalisé en échec d'abord, implémentation minimale, re-run.
-- Mock transport + temps tokio en pause pour les tests async déterministes. Pas de sleep réels.
-- Pas de credentials/URIs complètes dans Debug/erreurs/métriques/logs.
-- Préserver le travail non lié dans l'arbre. Commits logiques et scopés.
+- `#![forbid(unsafe_code)]` untouched; no weakening of workspace lints.
+- Rust 1.96.0, edition 2024. `rtk cargo fmt --all` after every Rust edit.
+- Full gate before declaring a task done: `rtk ./scripts/check.sh` (or clippy + workspace
+  test + composer validate for non-Rust tasks).
+- At-least-once for Safe/Unsafe unchanged. Blind = explicit opt-in, documented semantics.
+- TDD: focused failing test first, minimal implementation, re-run.
+- Mock transport + paused tokio time for deterministic async tests. No real sleeps.
+- No credentials/complete URIs in Debug/errors/metrics/logs.
+- Preserve unrelated work in the tree. Logical, scoped commits.
 
-## Phase 0 — Housekeeping merge (sur `perf/publish-optimizations`)
+## Phase 0 — Housekeeping merge (on `perf/publish-optimizations`)
 
-### Task 1 — Restaurer le re-buffering Task 13 dans flush_publishes
+### Task 1 — Restore Task 13 re-buffering in flush_publishes
 
-Le commit d'optimisation publish (`7d3b20f`) a remplacé le re-buffering de `flush_publishes`
-(pool.rs) par un appel `publish_batch` qui jette l'exception sans re-buffer. Les commentaires
-pool.rs:289-290 et 309 prétendent le contraire — ils sont faux.
+The publish optimization commit (`7d3b20f`) replaced the `flush_publishes` re-buffering
+(pool.rs) with a `publish_batch` call that throws without re-buffering. The comments at
+pool.rs:289-290 and 309 claim otherwise — they are wrong.
 
-Référence : commit `7bc5c88` (« fix(ffi): re-buffer remaining messages on
-PublishOutcome::Returned mid-flush ») — restaurer la sémantique adaptée au chemin batch :
+Reference: commit `7bc5c88` (« fix(ffi): re-buffer remaining messages on
+PublishOutcome::Returned mid-flush ») — restore the semantics adapted to the batch path:
 
-- `Err(error)` de `publish_batch` : re-buffer **tous** les messages du flush dans
-  `publish_buffer` (ordre préservé), puis lever l'exception. Exception : erreur `Closed`
-  (pool en train de mourir) → pas de re-buffer, lever l'exception.
-- `Ok(outcomes)` : zipper outcomes et requests par index. `Confirmed` → `publish_message_id`.
-  `Returned` → re-buffer la requête concernée + lever l'exception sur la première `Returned`
-  (les autres outcomes déjà résolus restent reportés). Erreur par message dans les outcomes
-  (backpressure etc.) → re-buffer la requête concernée, première erreur lève.
-- Les duplicatas sont permis et identifiables via `message_id` (contrat at-least-once).
-- Tests : réadapter ceux du commit `7bc5c88` (voir `git show 7bc5c88`) au chemin batch.
-  Les tests pool FFI tournent via `./scripts/test-extension.sh`.
+- `Err(error)` from `publish_batch`: re-buffer **all** flush messages into
+  `publish_buffer` (order preserved), then raise the exception. Exception: `Closed`
+  error (pool dying) → no re-buffer, raise the exception.
+- `Ok(outcomes)`: zip outcomes and requests by index. `Confirmed` → `publish_message_id`.
+  `Returned` → re-buffer the affected request + raise on the first `Returned`
+  (other already-resolved outcomes stay reported). Per-message outcome errors
+  (backpressure etc.) → re-buffer the affected request, first error raises.
+- Duplicates are permitted and identifiable via `message_id` (at-least-once contract).
+- Tests: re-adapt the ones from commit `7bc5c88` (see `git show 7bc5c88`) to the batch
+  path. Pool FFI tests run via `./scripts/test-extension.sh`.
 
-### Task 2 — Cleanup docs `max_in_flight`
+### Task 2 — Docs cleanup for `max_in_flight`
 
-Champs supprimés mais docs restées (minors reportés de la review consumer-tuning) :
+Fields removed but docs remained (minors deferred from the consumer-tuning review):
 
-- `packages/laravel-queue/README.md` : sections `max_in_flight` / `BackpressureDetected`
-- `packages/laravel-queue/config/rabbit-rs.php` : `RABBIT_RS_MAX_IN_FLIGHT` (ignoré par le
-  normalizer)
-- `docs/configuration.md`, `docs/troubleshooting.md` : références `max_in_flight`
-- `benchmarks/src/Drivers/RabbitRsDriver.php` : `max_in_flight => 1024` (inoffensif, à retirer)
+- `packages/laravel-queue/README.md`: `max_in_flight` / `BackpressureDetected` sections
+- `packages/laravel-queue/config/rabbit-rs.php`: `RABBIT_RS_MAX_IN_FLIGHT` (ignored by
+  the normalizer)
+- `docs/configuration.md`, `docs/troubleshooting.md`: `max_in_flight` references
+- `benchmarks/src/Drivers/RabbitRsDriver.php`: `max_in_flight => 1024` (harmless, remove)
 
 ### Task 3 — Merge
 
-`git merge main` dans `perf/publish-optimizations` (27 commits CI/docs), gates, push,
+`git merge main` into `perf/publish-optimizations` (27 CI/docs commits), gates, push,
 merge PR #29 via `gh`.
 
-## Phase 1 — Pump v2 (branche `perf/publish-pump` depuis main post-merge)
+## Phase 1 — Pump v2 (branch `perf/publish-pump` from post-merge main)
 
-### Task 4 — Pump v2 pipeliné (pump.rs)
+### Task 4 — Pipelined pump v2 (pump.rs)
 
-Réécriture de `pump_loop` sur le modèle de l'ancien (`/tmp/php-ext-rabbit-rs/src/core/channels/
-channel_publisher.rs`, `start_pump_if_needed`) :
+Rewrite of `pump_loop` following the old model
+(`/tmp/php-ext-rabbit-rs/src/core/channels/channel_publisher.rs`, `start_pump_if_needed`):
 
-- `flume::bounded(config.buffer_capacity)` (file d'attente, défaut 1024).
-- Cap in-flight : `config.buffer_capacity.saturating_mul(2).max(128)` (défaut 2048).
-- `tokio::select! { biased; }` :
-  1. drain des complétions : `Some(_) = inflight.next(), if !inflight.is_empty()`
-  2. intake : `maybe_job = rx.recv_async(), if inflight.len() < inflight_cap` — push du futur
-     `channel.publish(request)` dans `FuturesUnordered`, puis drain non-bloquant
+- `flume::bounded(config.buffer_capacity)` (intake queue, default 1024).
+- In-flight cap: `config.buffer_capacity.saturating_mul(2).max(128)` (default 2048).
+- `tokio::select! { biased; }`:
+  1. completion drain: `Some(_) = inflight.next(), if !inflight.is_empty()`
+  2. intake: `maybe_job = rx.recv_async(), if inflight.len() < inflight_cap` — push the
+     `channel.publish(request)` future into `FuturesUnordered`, then non-blocking drain
      (`while inflight.next().now_or_never().flatten().is_some() {}`)
-  3. `else => break` (sender droppé ET in-flight vide)
-- Job barrier : `PumpJob { barrier_tx: Option<oneshot::Sender<()>> }` — à la réception d'un
-  barrier : drainer tout l'in-flight (`while inflight.next().await.is_some() {}`) puis répondre.
-- `PublishPump::try_publish` (try_send, non-bloquant) conservé pour compat, plus utilisé par
-  le chemin blind principal — voir Task 5.
-- Nouveau : `PublishPump::send(request)` async — `rx.send_async(job).await` (backpressure par
-  blocage) ; et `PublishPump::flush()` async — barrier + await.
-- Recovery : vérifier/câbler `clear_channel()` sur événement Recovering et `update_channel()`
-  sur Ready (la plomberie `ArcSwapOption` existe déjà). Sur channel `None` : jobs en queue
-  ignorés (drop, sémantique blind) — pas d'erreur.
-- Erreur publish en blind : log-métrique discret + drop (pas de replay, pas de waiter).
+  3. `else => break` (sender dropped AND in-flight empty)
+- Barrier job: `PumpJob { barrier_tx: Option<oneshot::Sender<()>> }` — on receiving a
+  barrier: drain the whole in-flight (`while inflight.next().await.is_some() {}`) then
+  respond.
+- `PublishPump::try_publish` (try_send, non-blocking) kept for compatibility, no longer
+  used by the main blind path — see Task 5.
+- New: `PublishPump::send(request)` async — `rx.send_async(job).await` (backpressure by
+  blocking); and `PublishPump::flush()` async — barrier + await.
+- Recovery: verify/wire `clear_channel()` on Recovering events and `update_channel()` on
+  Ready (the `ArcSwapOption` plumbing already exists). On channel `None`: queued jobs
+  are ignored (drop, blind semantics) — no error.
+- Blind publish error: discreet metric log + drop (no replay, no waiter).
 
-### Task 5 — Routage blind vers le pump
+### Task 5 — Blind routing to the pump
 
-- `PublisherHandle` : exposer `publish_blind(request)` async → `into_transport_request` +
-  `pump.send(request).await` (backpressure par blocage, pas d'erreur sauf pump fermé) +
-  retourner `PublishWaiter::resolved(Confirmed)` (l'outcome n'est jamais lu en blind batch).
-  Conserver `try_publish_blind` (try_send) pour les usages non-bloquants existants.
-- `client.rs publish_batch` : branche blind → `publisher.publish_blind(request)` par message,
-  **aucune attente d'outcome**, retour après enfilage complet. Erreurs : pump fermé uniquement.
-- `client.rs publish` : branche blind → `publish_blind(...).await` (déjà sur le pump, mais
-  via send bloquant au lieu de try_send + erreur).
-- `pool.rs` : `flush()` en mode blind → `flush_blind()` (barrière) pour garantir « tout ce qui
-  est enfilé avant flush est remis à lapin au retour » — port de `flush_fire_and_forget`.
-- Modes Safe/Unsafe : **aucun changement** (actor, wait_all, replay, ledger).
-- Doc : `SafetyMode::Blind` = fire-and-forget explicite ; erreur transport après enfilage =
-  perte silencieuse ; backpressure = blocage du thread appelant (bounded). Mettre à jour
-  `docs/configuration.md` + doc-comment de `SafetyMode`.
+- `PublisherHandle`: expose `publish_blind(request)` async → `into_transport_request` +
+  `pump.send(request).await` (backpressure by blocking, no error unless pump closed) +
+  return `PublishWaiter::resolved(Confirmed)` (the outcome is never read in blind batch).
+  Keep `try_publish_blind` (try_send) for existing non-blocking uses.
+- `client.rs publish_batch`: blind branch → `publisher.publish_blind(request)` per
+  message, **no outcome wait**, return after full enqueue. Errors: closed pump only.
+- `client.rs publish`: blind branch → `publish_blind(...).await` (already on the pump,
+  but via blocking send instead of try_send + error).
+- `pool.rs`: `flush()` in blind mode → `flush_blind()` (barrier) to guarantee
+  "everything enqueued before flush is handed to lapin on return" — port of
+  `flush_fire_and_forget`.
+- Safe/Unsafe modes: **no change** (actor, wait_all, replay, ledger).
+- Doc: `SafetyMode::Blind` = explicit fire-and-forget; transport error after enqueueing =
+  silent loss; backpressure = blocking of the calling thread (bounded). Update
+  `docs/configuration.md` + `SafetyMode` doc-comment.
 
 ### Task 6 — Tests + gates
 
-- Test pipelining : transport mock avec gate — M messages enfilés pendant que l'I/O est
-  bloquée ; M ≤ cap in-flight acceptés sans blocage (le select biased draine pendant l'intake).
-- Test backpressure : file pleine → `send` bloque (paused time / gate) et se débloque au drain.
-- Test barrier : `flush()` retourne seulement après remise à lapin de tout l'enfilé.
-- Test recovery : `clear_channel` → enfilage OK sans erreur (drop), `update_channel` → reprise.
-- Test routage : blind publish_batch ne touche pas l'actor (mock : l'actor ne reçoit aucun
-  command Publish en blind) ; Safe/Unsafe passent toujours par l'actor (tests existants verts).
-- Gate complet + `./scripts/test-extension.sh` + `./scripts/test-laravel.sh`.
+- Pipelining test: mock transport with a gate — M messages enqueued while the I/O is
+  blocked; M ≤ in-flight cap accepted without blocking (biased select drains during
+  intake).
+- Backpressure test: full queue → `send` blocks (paused time / gate) and unblocks on
+  drain.
+- Barrier test: `flush()` returns only after everything enqueued was handed to lapin.
+- Recovery test: `clear_channel` → enqueue OK without error (drop), `update_channel` →
+  recovery.
+- Routing test: blind publish_batch does not touch the actor (mock: the actor receives
+  no Publish command in blind); Safe/Unsafe still go through the actor (existing tests
+  stay green).
+- Full gate + `./scripts/test-extension.sh` + `./scripts/test-laravel.sh`.
 
-### Task 7 — Bench interleavé
+### Task 7 — Interleaved benchmark
 
-- Build ext debug, RabbitMQ lab. 2 runs alternés main vs branche, queues purgées entre runs.
-- Reporter F&F publish/consume, batch-confirm, auto-ack + p99 dans le ledger.
-- Cible : ≥ 80k msg/s F&F publish. Sinon → point de décision (barrier par batch ? diet actor ?).
+- Build ext debug, RabbitMQ lab. 2 alternating runs main vs branch, queues purged
+  between runs.
+- Report F&F publish/consume, batch-confirm, auto-ack + p99 in the ledger.
+- Target: ≥ 80k msg/s F&F publish. Otherwise → decision point (per-batch barrier?
+  actor diet?).
 
-## Phase 2 — A/B optionnels (post-mesure)
+## Phase 2 — Optional A/Bs (post-measurement)
 
-- Task 8 : `worker_threads` 1 vs 2 (runtime.rs) — 2 runs, garder le meilleur documenté.
-- Task 9 : ext release vs debug — 1 run chacun, décider si les benchs passent en release.
-- Task 10 (contingent) : diet chemin actor (Command::PublishBatch, métriques batchées) si
-  Safe/Unsafe appellent plus de débit.
+- Task 8: `worker_threads` 1 vs 2 (runtime.rs) — 2 runs, keep the best, documented.
+- Task 9: ext release vs debug — 1 run each, decide whether benchmarks move to release.
+- Task 10 (contingent): actor path diet (Command::PublishBatch, batched metrics) if
+  Safe/Unsafe call for more throughput.

@@ -2,27 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Charger `ext-rabbit_rs` dans PHP 8.4 et exposer le contrat public `Goopil\RabbitRs` validé pour la suite du Milestone B.
+**Goal:** Load `ext-rabbit_rs` into PHP 8.4 and expose the validated public `Goopil\RabbitRs` contract for the rest of Milestone B.
 
-**Architecture:** `ext-php-rs` reste une frontière mince au-dessus de `rabbit-rs-core`. Cette première livraison enregistre le module, sa version, les exceptions et les classes finales, mais refuse explicitement les opérations dont les conversions et handles seront implémentés aux tâches 14 et 15. Les PHPT chargent le vrai artefact `cdylib` et vérifient le contrat par réflexion.
+**Architecture:** `ext-php-rs` remains a thin boundary above `rabbit-rs-core`. This first delivery registers the module, its version, the exceptions, and the final classes, but explicitly refuses the operations whose conversions and handles will be implemented in Tasks 14 and 15. The PHPT tests load the real `cdylib` artifact and verify the contract through reflection.
 
 **Tech Stack:** Rust 1.96, edition 2024, ext-php-rs 0.15.15, PHP 8.4, PHPT `run-tests.php`, Cargo, Composer/PIE.
 
 ## Global Constraints
 
-- Le package PIE s'appelle `goopil/rabbit-rs-native`.
-- Le namespace natif est exactement `Goopil\RabbitRs`.
-- Le nom technique chargé par PHP reste `rabbit_rs`.
-- La version PHP minimale reste 8.4 et `php`/`php-config` doivent partager la même version majeure et mineure.
-- `#![forbid(unsafe_code)]` reste actif ; aucun code unsafe manuel n'est autorisé.
-- Aucun type Lapin ne traverse la frontière PHP.
-- Aucun objet PHP, `Zval`, callback, requête ou conteneur de services n'est retenu dans un thread Rust.
-- Une opération non câblée lève `Goopil\RabbitRs\Exception` ; elle ne renvoie jamais un succès factice.
-- Les payloads futurs restent binaires ; la signature native de `Delivery::payload()` utilise `Binary<u8>`.
+- The PIE package is named `goopil/rabbit-rs-native`.
+- The native namespace is exactly `Goopil\RabbitRs`.
+- The technical name loaded by PHP remains `rabbit_rs`.
+- The minimum PHP version remains 8.4 and `php`/`php-config` must share the same major and minor version.
+- `#![forbid(unsafe_code)]` remains active; no manual unsafe code is allowed.
+- No Lapin type crosses the PHP boundary.
+- No PHP object, `Zval`, callback, request, or service container is retained in a Rust thread.
+- An unwired operation throws `Goopil\RabbitRs\Exception`; it never returns a fake success.
+- Future payloads remain binary; the native signature of `Delivery::payload()` uses `Binary<u8>`.
 
 ---
 
-### Task 1: Charger le module et enregistrer les exceptions stables
+### Task 1: Load the module and register the stable exceptions
 
 **Files:**
 - Create: `.cargo/config.toml`
@@ -187,7 +187,7 @@ rtk git commit -m "feat(extension): register Goopil namespace and exceptions"
 
 ---
 
-### Task 2: Exposer les classes finales et leurs signatures
+### Task 2: Expose the final classes and their signatures
 
 **Files:**
 - Create: `crates/rabbit-rs-php/src/classes/pool.rs`
