@@ -87,6 +87,16 @@ impl PublisherActor {
         } else {
             None
         };
+        // Invariant: the blind pump exists exactly when the publisher runs in
+        // Blind mode. `publish_blind` routes on this and keeps its defined
+        // non-panicking `try_publish` fallback for the `None` side (Phase B
+        // ruling) — this assertion must stay cohabitable with that fallback
+        // and never become a panic path in production builds.
+        debug_assert_eq!(
+            pump.is_some(),
+            matches!(config.safety, crate::config::SafetyMode::Blind),
+            "the publish pump must exist if and only if the safety mode is Blind",
+        );
         tokio::spawn(run_actor(
             channel,
             config,

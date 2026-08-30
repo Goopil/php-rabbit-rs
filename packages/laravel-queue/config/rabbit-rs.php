@@ -222,6 +222,26 @@ return [
     |
     | Controls how publishes are confirmed by the broker.
     |
+    | safety:          Delivery guarantee level:
+    |
+    |                  - "safe" (default): confirm mode + mandatory routing.
+    |                    At-least-once delivery. Unconfirmed publishes survive
+    |                    connection recovery in bounded process memory and are
+    |                    replayed with the same message_id and original deadline.
+    |
+    |                  - "unsafe": synchronous socket write without confirms.
+    |                    The message reached the kernel socket buffer, but a
+    |                    broker-side failure can still lose it.
+    |
+    |                  - "blind": explicit fire-and-forget. Publishing hands the
+    |                    message to a bounded background pump and returns
+    |                    without waiting for any transport outcome — a transport
+    |                    failure after the hand-off is a silent loss. Delayed
+    |                    jobs (delay_ms > 0) are NOT honored: the pump bypasses
+    |                    delay routing and publishes immediately. When set to
+    |                    "unsafe" or "blind", this takes precedence over the
+    |                    legacy confirms/mandatory flags below.
+    |
     | confirms:        When true, every publish is tracked until the broker
     |                  ACKs or returns it. Unconfirmed publishes survive
     |                  connection recovery in bounded process memory and are
@@ -239,6 +259,7 @@ return [
     */
 
     'publisher' => [
+        'safety' => env('RABBIT_RS_SAFETY', 'safe'),
         'confirms' => true,
         'mandatory' => true,
         'confirm_timeout' => (int) env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),

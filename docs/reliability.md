@@ -2,7 +2,7 @@
 
 Rabbit RS provides at-least-once delivery. Silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable.
 
-The documented exception is `publisher.safety = blind`: an explicit fire-and-forget mode (silent loss possible) that is currently reachable only through the raw native extension configuration — see [Configuration](configuration.md).
+The documented exception is `publisher.safety = blind`: an explicit fire-and-forget mode (silent loss possible) that is configurable through the Laravel package (`publisher.safety`, env `RABBIT_RS_SAFETY`) as well as the raw native extension configuration — an explicit `blind` (or `unsafe`) value takes precedence over the legacy `confirms`/`mandatory` flags; see [Configuration](configuration.md).
 
 ## At-least-once contract
 
@@ -60,6 +60,8 @@ Recovery follows a **deterministic order**:
 8. **Publisher replay** — replay unconfirmed publications from the bounded buffer
 
 This order ensures that consumers are only re-registered after their queues and bindings exist, and that publishers only resume after the topology is restored.
+
+With multiple brokers, each broker recovers independently through its own coordinator: one broker recovering never blocks consumption from the others. When a broker's consumer set is replaced after recovery, the composed multi-broker consumer surfaces a one-shot `ConnectionException` ("broker source replaced by recovery; re-fetch consumer") — re-fetch the consumer to resume deliveries from that broker (see [Multiple brokers and vhosts](configuration.md#multiple-brokers-and-vhosts)).
 
 ### Backoff
 

@@ -1023,6 +1023,8 @@ Structure publique minimale :
         External,
     }
 
+> **Note (2026-08-29) :** le champ `max_in_flight` de `SchedulerConfig` décrit ci-dessus a depuis été supprimé (tracé par le plan consumer-tuning, PR #29). Ce document reste un record point-in-time.
+
 **Step 2: Verify failure**
 
 Run: cargo test -p rabbit-rs-core config::tests

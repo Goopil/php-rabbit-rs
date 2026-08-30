@@ -12,6 +12,7 @@ describe('package defaults', function (): void {
 
         expect('127.0.0.1:5672')->toBe($publishedConfig['brokers']['default']['hosts'])
             ->and('declare')->toBe($publishedConfig['topology_mode'])
+            ->and($publishedConfig['publisher']['safety'])->toBe('safe')
             ->and($publishedConfig['publisher']['confirms'])->toBeTrue()
             ->and($publishedConfig['publisher']['mandatory'])->toBeTrue()
             ->and(30000)->toBe($publishedConfig['publisher']['confirm_timeout'])
@@ -91,6 +92,7 @@ describe('native normalization', function (): void {
             'dead_letter' => null,
             'delivery_limit' => null,
             'publisher' => [
+                'safety' => 'safe',
                 'confirms' => true,
                 'mandatory' => true,
                 'confirm_timeout' => 30000,
@@ -119,13 +121,35 @@ describe('publisher section', function (): void {
         $normalized = ConfigNormalizer::normalize($config);
 
         expect([
+            'safety' => 'safe',
             'confirms' => false,
             'mandatory' => false,
             'confirm_timeout' => 5000,
         ])->toBe($normalized['native']['publisher'])
+            ->and($normalized['publisher']['safety'])->toBe('safe')
             ->and($normalized['publisher']['confirms'])->toBeFalse()
             ->and($normalized['publisher']['mandatory'])->toBeFalse()
             ->and(5000)->toBe($normalized['publisher']['confirm_timeout']);
+    });
+
+    it('propagates the safety mode to native config', function (string $safety): void {
+        $config = configValidConfig();
+        $config['publisher']['safety'] = $safety;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($safety)->toBe($normalized['native']['publisher']['safety'])
+            ->and($safety)->toBe($normalized['publisher']['safety']);
+    })->with(['safe', 'unsafe', 'blind']);
+
+    it('defaults the safety mode to safe', function (): void {
+        $config = configValidConfig();
+        unset($config['publisher']['safety']);
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect('safe')->toBe($normalized['native']['publisher']['safety'])
+            ->and('safe')->toBe($normalized['publisher']['safety']);
     });
 
     it('defaults the confirm timeout to thirty seconds', function (): void {
@@ -556,6 +580,12 @@ function configInvalidConfigurations(): iterable
             $config['topology_mode'] = 'managed';
         },
         'topology_mode',
+    ];
+    yield 'unsupported publisher safety' => [
+        static function (array &$config): void {
+            $config['publisher']['safety'] = 'careless';
+        },
+        'publisher.safety',
     ];
     yield 'early_ack in reliable mode' => [
         static function (array &$config): void {

@@ -6,7 +6,6 @@ namespace Bench\Scenarios;
 
 use Bench\AbstractBenchmark;
 use Bench\Config;
-use Bench\ScenarioMode;
 
 abstract class AbstractLaravelScenarioBenchmark extends AbstractBenchmark
 {

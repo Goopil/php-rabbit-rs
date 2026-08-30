@@ -145,7 +145,9 @@ impl ConsumerSet {
     /// # Errors
     ///
     /// Returns a typed transport error when `QoS` or consumer registration fails.
-    pub async fn spawn(subscriptions: Vec<Subscription>) -> Result<ConsumerHandle, ConsumerError> {
+    pub async fn spawn(
+        subscriptions: Vec<Subscription>,
+    ) -> Result<ConsumerSetHandle, ConsumerError> {
         Self::spawn_with_metrics(subscriptions, Metrics::default()).await
     }
 
@@ -157,7 +159,7 @@ impl ConsumerSet {
     pub async fn spawn_with_metrics(
         subscriptions: Vec<Subscription>,
         metrics: Metrics,
-    ) -> Result<ConsumerHandle, ConsumerError> {
+    ) -> Result<ConsumerSetHandle, ConsumerError> {
         let generation = subscriptions.first().map_or(1, |s| s.generation);
         Self::spawn_with_generation(subscriptions, metrics, generation).await
     }
@@ -166,7 +168,7 @@ impl ConsumerSet {
         subscriptions: Vec<Subscription>,
         metrics: Metrics,
         generation: u64,
-    ) -> Result<ConsumerHandle, ConsumerError> {
+    ) -> Result<ConsumerSetHandle, ConsumerError> {
         let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
         // The command channel carries Incoming delivery commands from the
         // per-subscription pumps plus settlement commands. Size it from the
@@ -231,7 +233,7 @@ impl ConsumerSet {
             spawn_source(subscription, stream, commands.clone());
         }
 
-        Ok(ConsumerHandle {
+        Ok(ConsumerSetHandle {
             commands,
             buffer_rx,
             error_rx,
@@ -271,8 +273,15 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
     }
 }
 
+/// Handle to one consumer set: the subscriptions of a worker profile that
+/// belong to a single broker, multiplexed by one actor.
+///
+/// Deliveries handed out by this handle carry tokens that route settlements
+/// back to this set's actor, so acknowledgements always reach the broker
+/// connection the delivery came from. Use [`super::ConsumerHandle`] to merge
+/// several per-broker sets into one multi-broker consumer.
 #[derive(Clone, Debug)]
-pub struct ConsumerHandle {
+pub struct ConsumerSetHandle {
     commands: mpsc::Sender<ConsumerCommand>,
     buffer_rx: flume::Receiver<Result<Delivery, ConsumerError>>,
     error_rx: flume::Receiver<SettlementError>,
@@ -283,14 +292,14 @@ pub struct ConsumerHandle {
     pending_error: Arc<Mutex<Option<ConsumerError>>>,
 }
 
-impl ConsumerHandle {
+impl ConsumerSetHandle {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
     }
 }
 
-impl Drop for ConsumerHandle {
+impl Drop for ConsumerSetHandle {
     fn drop(&mut self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
@@ -300,7 +309,7 @@ impl Drop for ConsumerHandle {
     }
 }
 
-impl ConsumerHandle {
+impl ConsumerSetHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()

@@ -8,7 +8,7 @@ php artisan vendor:publish --tag="rabbit-rs-config"
 
 ## Structure
 
-The configuration has six sections:
+The configuration has seven sections:
 
 | Section | Purpose |
 |---------|---------|
@@ -16,7 +16,7 @@ The configuration has six sections:
 | `brokers` | Connection endpoints, vhosts, TLS, credentials |
 | `routes` | Publishing destinations (exchange + routing key) |
 | `workers` | Consumer profiles with subscriptions and scheduler |
-| `publisher` | Publisher confirms, mandatory routing, timeouts |
+| `publisher` | Delivery guarantee (safety), confirms, mandatory routing, timeouts |
 | `delay` | Delayed message routing (plugin or TTL fallback) |
 | `topology` | Queue type, durability, delivery limits, DLQ |
 
@@ -164,6 +164,7 @@ Set `enabled => false` to exclude a subscription without removing it from config
 
 ```php
 'publisher' => [
+    'safety' => env('RABBIT_RS_SAFETY', 'safe'),
     'confirms' => true,
     'mandatory' => true,
     'confirm_timeout' => (int) env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),
@@ -172,6 +173,7 @@ Set `enabled => false` to exclude a subscription without removing it from config
 
 | Env | Description | Default |
 |-----|-------------|---------|
+| `RABBIT_RS_SAFETY` | Delivery guarantee level: `safe`, `unsafe` or `blind` | `safe` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
 
 Publisher confirms and mandatory routing are **enabled by default**. This provides at-least-once delivery guarantees. Disabling either is possible but removes safety guarantees — see [Reliability](reliability.md).
@@ -180,13 +182,13 @@ Publisher confirms and mandatory routing are **enabled by default**. This provid
 - `mandatory: true` — the broker returns unroutable messages instead of silently dropping them
 - `confirm_timeout` — how long to wait for a confirm before timing out (milliseconds)
 
-#### Safety modes (native extension configuration only)
+#### Safety modes
 
-The `safety` setting (`RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) is currently reachable **only through the raw native extension configuration**. The Laravel package does not expose it yet: `config/rabbit-rs.php` has no `safety` key, and a hand-added one is silently ignored — the package normalizer rebuilds the publisher section with only `confirms`, `mandatory` and `confirm_timeout`. A follow-up will plumb it through.
+The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) selects the delivery guarantee level. An explicit `unsafe` or `blind` value takes precedence over the legacy `confirms`/`mandatory` flags; the default `safe` keeps deriving from them (`confirms=false` ⇒ `unsafe`).
 
 - `safe` (default) — at-least-once: confirm mode + mandatory routing. Publications are retained in bounded process memory and replayed with their original `message_id` across connection recovery.
 - `unsafe` — synchronous socket write without confirms. The message reached the kernel socket buffer, but a broker-side failure can still lose it.
-- `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. `Pool::flush()` is a barrier: every request enqueued on the pump before it has been handed to the transport (submitted to the broker connection — delivery is not proven without confirms) when it returns. The only blind flush error is `Closed` (the pump is closed because the pool is dying): buffered requests are never re-buffered in blind mode. In `safe`/`unsafe` mode, a failed flush re-buffers the buffered requests conservatively — duplicates are permitted and identifiable through their `message_id`.
+- `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. Delayed jobs (`delay_ms > 0`) are **not** honored: the pump bypasses delay routing and publishes immediately — use `safe` or `unsafe` when you need delay routing. `Pool::flush()` is a barrier: every request enqueued on the pump before it has been handed to the transport — or dropped for lack of a channel during recovery (hand-off means submitted to the broker connection; delivery is not proven without confirms) — when it returns. The only blind flush error is `Closed` (the pump is closed because the pool is dying): buffered requests are never re-buffered in blind mode. In `safe`/`unsafe` mode, a failed flush re-buffers the buffered requests conservatively — duplicates are permitted and identifiable through their `message_id`.
 
 ### Delay
 
@@ -211,6 +213,8 @@ The `safety` setting (`RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) is
 - `auto` — use the `rabbitmq_delayed_message_exchange` plugin if available, otherwise fall back to TTL queues
 - `plugin` — require the plugin; fail if it is not installed
 - `ttl` — always use TTL queue buckets
+
+> **Note:** when `publisher.safety` is `blind`, delayed jobs are **not** honored — the blind pump bypasses delay routing and publishes immediately. Use `safe` or `unsafe` when you need delay routing.
 
 See [Topology — Delay routing](topology.md#delay-routing) for details.
 
@@ -333,6 +337,14 @@ A vhost owns a distinct AMQP connection. To consume from multiple vhosts, define
 ```
 
 This configures a single worker profile (`main`) consuming from three queues across two brokers and vhosts, with weighted-fair scheduling.
+
+### Composed consumer behavior
+
+A worker profile subscribed to several brokers gets one composed consumer: deliveries from every broker fan in through a single `pop()` call, and each delivery's ACK/Release/Reject is routed back to the broker it came from.
+
+- **No cross-broker ordering.** Deliveries are merged round-robin so no broker starves another; ordering is guaranteed only within a single queue.
+- **Independent recovery.** A broker that is recovering does not stop consumption from the others. When the broker comes back, its old consumer set is replaced and the composed consumer surfaces a one-shot `Goopil\RabbitRs\ConnectionException` ("broker source replaced by recovery; re-fetch consumer"). On that error, re-fetch the consumer — e.g. `closeConsumers()` on the queue connector clears the cache so the next `pop()` rebuilds it from every broker's current connection. The fresh handle re-subscribes on all brokers without duplicating subscriptions; deliveries already buffered on the healthy brokers are not lost.
+- **Close fan-out.** Closing the composed consumer closes every broker's channels.
 
 ## Connection key
 

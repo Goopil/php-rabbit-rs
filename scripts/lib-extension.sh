@@ -5,7 +5,8 @@
 #
 # Functions provided:
 #   ext_project_root       — echo the project root directory
-#   ext_artifact_path      — echo the path to the extension artifact (debug or release)
+#   ext_artifact_path      — echo the path to the extension artifact (debug preferred,
+#                            builds it when missing, warns loudly before any stale release fallback)
 #   ext_build_debug        — build the extension in debug mode with --features extension-tests
 #   ext_ensure_built       — build the extension if the artifact is missing
 #   ext_verify_loads       — verify the extension loads correctly
@@ -35,8 +36,13 @@ _ext_suffix() {
 }
 
 # Echo the path to the extension artifact.
-# Prefers target/debug/ (matching the default cargo build profile used by test scripts).
-# Falls back to target/release/ if debug is absent.
+# Prefers target/debug/ (matching the default cargo build profile used by test
+# scripts). When the debug artifact is absent, builds it instead of silently
+# reusing a stale release binary (T1 Phase C: 39 bogus Pest failures caused by
+# a stale release artifact without the extension-tests feature). If we must
+# fall back to target/release/ anyway, a loud warning comparing the artifact
+# mtime with the current HEAD commit date is printed so a stale binary can
+# never fail tests silently.
 ext_artifact_path() {
     local root
     root="$(ext_project_root)"
@@ -47,12 +53,73 @@ ext_artifact_path() {
 
     if [[ -f "${debug_artifact}" ]]; then
         echo "${debug_artifact}"
-    elif [[ -f "${release_artifact}" ]]; then
-        echo "${release_artifact}"
-    else
-        # Neither exists — return the debug path (the canonical default).
-        echo "${debug_artifact}"
+        return 0
     fi
+
+    # Footgun guard: never silently reuse a stale release binary. Build the
+    # debug artifact first; its output goes to stderr so command substitution
+    # stays clean.
+    ext_build_debug >&2 || true
+
+    if [[ -f "${debug_artifact}" ]]; then
+        echo "${debug_artifact}"
+        return 0
+    fi
+
+    if [[ -f "${release_artifact}" ]]; then
+        _ext_warn_stale_release "${root}" "${release_artifact}"
+        echo "${release_artifact}"
+        return 0
+    fi
+
+    # Neither exists — return the debug path (the canonical default);
+    # callers such as ext_ensure_built turn this into a hard error.
+    echo "${debug_artifact}"
+}
+
+# Print the modification time of a file as epoch seconds (portable across
+# BSD and GNU userlands; echoes 0 when it cannot be determined).
+_ext_file_mtime() {
+    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
+}
+
+# Format an epoch timestamp as UTC ISO-8601 (BSD date first, then GNU date,
+# then the raw epoch as a last resort).
+_ext_epoch_to_iso() {
+    date -u -r "$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+        || date -u -d "@$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+        || echo "$1"
+}
+
+# Warn loudly (stderr) about falling back to the release artifact, comparing
+# the artifact mtime with the current HEAD commit date so a stale binary
+# cannot hide behind a passing-looking resolution.
+_ext_warn_stale_release() {
+    local root="$1"
+    local artifact="$2"
+    local mtime head_epoch age
+    mtime="$(_ext_file_mtime "${artifact}")"
+    head_epoch="$(git -C "${root}" log -1 --format=%ct 2>/dev/null || echo 0)"
+
+    {
+        echo "WARNING: target/debug extension artifact is missing; falling back to the RELEASE binary:"
+        echo "  ${artifact}"
+        if [[ "${mtime}" != 0 ]]; then
+            echo "  artifact mtime: $(_ext_epoch_to_iso "${mtime}")"
+        else
+            echo "  artifact mtime: unknown"
+        fi
+        if [[ "${head_epoch}" != 0 && "${mtime}" != 0 ]]; then
+            echo "  HEAD commit:    $(_ext_epoch_to_iso "${head_epoch}")"
+            if (( mtime < head_epoch )); then
+                age=$(( head_epoch - mtime ))
+                echo "  This artifact PREDATES the current HEAD by ${age}s and is very likely stale."
+            fi
+        fi
+        echo "  A stale release binary lacks --features extension-tests and makes test suites"
+        echo "  fail in confusing ways (e.g. missing Goopil\\RabbitRs\\testing_pool)."
+        echo "  Fix: cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests"
+    } >&2
 }
 
 # Build the extension in debug mode with test support enabled.
