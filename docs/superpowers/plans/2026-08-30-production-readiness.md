@@ -1396,7 +1396,7 @@ git commit -m "chore(laravel): soft-depend on the extension and add pint/phpstan
 
 **Context:** `run()` requires pcntl even with `--workers=1` (the error message "Install it or run with --workers=1" is wrong); the `sleep($backoff)` (line 168) blocks the supervision loop of **all** children during a single child's backoff.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```php
 it('runs a single worker inline without pcntl', function () {
@@ -1413,23 +1413,23 @@ it('keeps supervising other children while one is in backoff', function () {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Feature/WorkerSupervisorIntegrationTest.php`
 Expected: FAIL.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 1. `--workers=1` without pcntl: direct path `proc_open('php artisan queue:work ...')` + wait + exit codes, without fork. Fix the pcntl error message ("ext-pcntl is required for --workers>1").
 2. Non-blocking backoff: replace `sleep($this->backoffSeconds(...))` with a `restartAt[$index] = microtime(true) + $backoff` table; the supervision loop consults `restartAt` and skips restart attempts while `microtime(true) < restartAt[$index]` (the rest of the loop continues: the existing `usleep(100_000)` at line 178 already provides the polling).
 3. Fix the defects identified in the evaluation: `--sleep` propagation, `--stop-when-empty`, child log supervision (`--log-children` option or stdout mux) — depending on the surface already present in `RabbitMqWorkCommand`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd packages/laravel-queue && php vendor/bin/pest && rtk ./scripts/check.sh`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/laravel-queue

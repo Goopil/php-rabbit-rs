@@ -122,12 +122,21 @@ class WorkerSupervisor
      * gracefully. On unexpected exit, children are restarted with backoff
      * until maxRestarts is reached.
      *
-     * @throws SupervisorException when ext-pcntl is not available
+     * When ext-pcntl is not available and a single worker is configured, the
+     * child runs in the foreground without forking ({@see runInline()}); no
+     * pcntl function is needed on that path.
+     *
+     * @throws SupervisorException when ext-pcntl is not available and more
+     *         than one worker is configured
      */
     public function run(): int
     {
         if (! $this->canFork()) {
-            throw new SupervisorException('ext-pcntl is required for the supervisor. Install it or run with --workers=1.');
+            if ($this->workers === 1) {
+                return $this->runInline();
+            }
+
+            throw new SupervisorException('ext-pcntl is required for --workers>1. Install ext-pcntl or run with --workers=1.');
         }
 
         return $this->runInternal();
@@ -143,10 +152,44 @@ class WorkerSupervisor
         return function_exists('pcntl_fork');
     }
 
+    /**
+     * Run a single worker in the foreground without forking.
+     *
+     * Fallback for PHP builds without ext-pcntl (e.g. Windows): the child
+     * process runs inline and the supervisor blocks until it exits, keeping
+     * the same backoff and max-restarts semantics as the forking path.
+     * Without pcntl there is no graceful signal handling: the default signal
+     * disposition terminates the supervisor, leaving the child to stop on
+     * its own.
+     */
+    private function runInline(): int
+    {
+        $restarts = 0;
+        $process = $this->startProcess(0);
+
+        while (true) {
+            $process->wait();
+
+            if (! $this->shouldRestart($restarts)) {
+                return self::EXIT_MAX_RESTARTS;
+            }
+
+            sleep($this->backoffSeconds($restarts));
+            $restarts++;
+            $process = $this->startProcess(0);
+        }
+    }
+
     private function runInternal(): int
     {
         $processes = [];
         $restartCounts = array_fill(0, $this->workers, 0);
+        // Next allowed restart time per worker (unix timestamp seconds).
+        // 0.0 means no restart is pending: the value is set once when a dead
+        // worker is detected, and consumed once the backoff window elapsed.
+        // While a worker waits out its backoff, the loop keeps polling the
+        // other children (non-blocking backoff).
+        $restartAt = array_fill(0, $this->workers, 0.0);
 
         $shutdown = false;
         $signalHandler = static function () use (&$shutdown): void {
@@ -162,18 +205,33 @@ class WorkerSupervisor
         }
 
         while (! $shutdown) {
+            $now = microtime(true);
             foreach ($processes as $index => $process) {
-                if (! $process->isRunning()) {
-                    if ($this->shouldRestart($restartCounts[$index])) {
-                        sleep($this->backoffSeconds($restartCounts[$index]));
-                        $restartCounts[$index]++;
-                        $processes[$index] = $this->startProcess($index);
-                    } else {
-                        $this->stopAllProcesses($processes);
-
-                        return self::EXIT_MAX_RESTARTS;
-                    }
+                if ($process->isRunning()) {
+                    continue;
                 }
+
+                if ($restartAt[$index] !== 0.0) {
+                    // A restart is already scheduled for this worker: wait for
+                    // its backoff window to elapse, then restart it. The other
+                    // children keep being supervised in the meantime.
+                    if ($now >= $restartAt[$index]) {
+                        $restartAt[$index] = 0.0;
+                        $processes[$index] = $this->startProcess($index);
+                    }
+                    continue;
+                }
+
+                if (! $this->shouldRestart($restartCounts[$index])) {
+                    $this->stopAllProcesses($processes);
+
+                    return self::EXIT_MAX_RESTARTS;
+                }
+
+                // Schedule the restart with its backoff; the loop keeps
+                // polling the other children meanwhile (non-blocking backoff).
+                $restartAt[$index] = $now + $this->backoffSeconds($restartCounts[$index]);
+                $restartCounts[$index]++;
             }
             usleep(100_000);
         }
