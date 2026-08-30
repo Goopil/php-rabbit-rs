@@ -28,6 +28,15 @@ none is a delivery loss (messages stay `ready` in RabbitMQ; at-least-once holds)
    runner detects it (400 consecutive null pops) and rebuilds the connection;
    ~0.6–0.8 s per stall is billed into measured time (`stall_recoveries` reported).
    First task: root-cause investigation (prior exploration came back empty).
+   **First hypothesis to test (from the 2026-08-30 production-readiness audit):** the
+   per-broker consumer actor blocks on a *blocking* send to the bounded
+   settlement-error channel — 11 `state.error_tx.send(...)` sites in
+   `crates/rabbit-rs-core/src/consumer/actor.rs` on a `flume::bounded(256)` channel
+   (`consumer/set.rs`). If the embedder never calls `drain_errors()`, 256 settlement
+   errors freeze the actor loop: deliveries stop flowing while messages stay `ready`
+   — the exact observed symptom. The fix (drop-oldest wrapper, ~30 lines) is
+   Round F Task 1; apply it before deeper root-cause work and re-run the Phase E
+   reproduction to confirm or eliminate it.
 2. **P2 — pre-fill missing deliveries (~2%).** If the native consumer is created
    before the fill has been ingested (first `pop()` while the fill is in flight, or a
    consumer left idle across rounds), a fraction of messages never surfaces on that
@@ -53,6 +62,92 @@ should close most of that).
 
 Success criteria: each bug root-caused and fixed (or its ceiling documented with
 data), full quality gate green, re-bench archived and compared.
+
+## Round F — production readiness hardening (audit 2026-08-30)
+
+Motivation: full-stack production-readiness audit of the ecosystem (core Rust, PHP
+extension, Laravel package) on 2026-08-30. Detailed TDD plan with exact files, test
+code and verification commands:
+`docs/superpowers/plans/2026-08-30-production-readiness.md` (tasks 1–20). Split into
+two waves around Round 2 and the re-bench.
+
+### F1 — correctness & safety blockers (runs alongside Round 2)
+
+1. **Consumer actor: make the settlement-error channel non-blocking** (drop-oldest,
+   plan Task 1) — also Round 2 P1 hypothesis #1; fix first, then re-test the stall
+   reproduction.
+2. **Horizon: honor `after_commit` and wire `bulk()`** (plan Task 5) — the Horizon
+   subclass bypasses `enqueueUsing`, so transactional jobs publish before the SQL
+   commit (job loss on rollback); `bulk()` skips `JobPayload::prepare()` so bulk jobs
+   are invisible in the dashboard. Prerequisite: base `prepareBatch`/`publishBatch`
+   go from `private` to `protected`.
+3. **Bound the extension publish buffer** (plan Task 2) — `publish_buffer`
+   (`crates/rabbit-rs-php/src/classes/pool.rs:46`) grows unbounded during outages;
+   cap at 4096 messages / 64 MiB with explicit `BackpressureException` (already
+   accepted messages are never dropped). Includes a benchmark non-regression step.
+4. **Consumer acquisition deadline** (plan Task 3) — `ClientPool::consumer()`
+   (`client.rs:330+`) loops forever against a black-holed broker and freezes FPM
+   workers; add `consumer.wait_timeout` (default 30 s, validated 1 s–24 h), typed
+   transport error at expiry, Laravel `consumers.wait_timeout`.
+5. **TLS: fail loudly on unreadable certificate files** (plan Task 4) —
+   `fs::read(...).ok()` in `transport/lapin.rs` silently connects without the
+   configured CA; return a typed error identifying the exact path.
+6. **Poison-message warning on permissive defaults** (plan Task 6) —
+   `delivery_limit=null` + `dead_letter=null` means infinite redelivery for
+   worker-crashing messages; emit a production warning (opt-out
+   `production_warning`).
+
+### F2 — hardening (after Round 2 + re-bench)
+
+7. **Lazy consumer establishment** (plan Task 7) — `recover_generation`
+   (`recovery_coordinator.rs:406`) consumes every declared worker profile, so a
+   publisher-only process retains unacked messages on all queues at each
+   reconnection; only establish requested profiles.
+8. **Wire duplicate measurement** (plan Task 9) — `record_duplicate()` has no
+   callers; the at-least-once contract requires duplicates to be measurable.
+9. **Drain native events on publish/consume paths** (plan Task 10) —
+   `ConnectionStateChanged`/`BackpressureDetected` only fire inside `stats()`
+   (`pool.rs:264-265`); extract a shared `EventBridge` used by `Pool` and
+   `Consumer` so the README/operations.md promises become true.
+10. **Blind mode byte budget** (plan Task 11) — `publish_blind`
+    (`publisher/actor.rs:229`) bypasses the byte budget (message-count only);
+    reuse `with_byte_budget` (`publisher/mod.rs:245`). Includes a benchmark
+    non-regression step.
+11. **TLS integration: SNI + verify + lab TLS profile** (plan Task 12) —
+    `TlsVerify::None` and `server_name` are validated but never read by the
+    transport; API decision gated on lapin 4.10 connector capabilities, TLS
+    profile in the lab, handshake/untrusted-CA/SNI tests.
+12. **PIE end-to-end validation** (plan Task 13) — NTS naming inconsistency
+    between `release.yml` and `package-pie-binary.sh`; no `pie install` test in
+    CI. Unify naming, add a blocking CI job on a draft release. *Can start in
+    parallel from F1 onward (external latency: release cycle).*
+13. **Laravel contracts: `ClearableQueue` + optional `auto_subscribe`** (plan
+    Task 14) — `queue:clear` fails (interface not declared) and `pop()` refuses
+    plain queue names (deviation from the Laravel convention).
+
+### F3 — ecosystem & DX (with F2)
+
+15. **Log facade, typed coordinator errors, zero panics reachable from PHP**
+    (plan Task 15) — `eprintln!`, `CoordinatorError = String`, `expect()`/panics
+    in spawned tasks (process abort under FFI).
+16. **Version alignment + CHANGELOG** (plan Task 16) — composer `^0.0` vs
+    exception `^1.0` vs docs `1.0.0` vs workspace `0.0.7`.
+17. **Install friction + static analysis** (plan Task 17) — `ext-rabbit_rs` as a
+    hard `require` breaks `composer install` without the extension; move to
+    `suggest` + runtime validation at connection resolution; add Pint + PHPStan
+    to the quality gate.
+18. **Harden the worker supervisor** (plan Task 18) — pcntl-free `--workers=1`
+    path (the current error message is wrong) and non-blocking restart backoff.
+19. **Docs/stubs alignment** (plan Task 19) — `stats()` stub documents 8 keys
+    for 17 real ones; prefetch 16 advertised vs 64 configured; PHPUnit suite
+    references that do not exist (Pest is used); nonexistent `dispatchBatch` API
+    in docs.
+20. **ZTS decision applied** (plan Task 20) — Option A: drop ZTS from the V1
+    release matrix (16 → 8 assets), revisit in V2. See Parked.
+
+Success criteria: all plan tasks green (tasks 1–7, 9–20), full quality gate, no
+benchmark regression against the frozen budgets, `pie install` validated on a real
+release.
 
 ## Round C — local integration harness reliability
 
@@ -112,6 +207,13 @@ Success criteria: full quality gate green; deterministic paused-time tests prove
 QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
 (regression tests).
 
+## Order of execution (agreed 2026-08-30)
+
+Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
+Round F1 → Round C (local harness, unblocks local validation of everything after) →
+Round F2 → Round E → Round D. The PIE validation (Round F2 item 12) can start in
+parallel from F1 onward because it only depends on a release cycle, not on code.
+
 ## Parked (no round yet)
 
 - **Per-queue publish safety**: `publisher.safety` is a connection-level setting
@@ -123,10 +225,21 @@ QoS adjustment sequence on the mock transport; fixed mode behavior byte-identica
 - Publish latency excludes the terminal flush (comment if ever reported).
 - Re-fetch acquisition blocks on all brokers when a source retires — semantics match
   mono-broker behavior and are documented; revisit only if an async retire is needed.
+- **ZTS decision (open, blocks 1.0)**: `support-zts: true` is announced
+  (root `composer.json`) but unproven — the process-global `RuntimeRegistry` is
+  shared across PHP threads, the CI ZTS job is advisory-only (`continue-on-error`)
+  and release ZTS artifacts only get an `extension_loaded` smoke test.
+  Option A (recommended for V1, plan Task 20): drop ZTS from the release matrix
+  (16 → 8 assets) and re-introduce in V2 with thread isolation + a blocking ZTS CI
+  job + real concurrency tests. Option B: implement TSRM-aware isolation now.
+- **Known minor items from the audit, deliberately unscheduled**:
+  `try_publish_hot` is a pure passthrough of `try_publish` (the announced hot path
+  does not exist yet); `frame_max = 1 MiB` is hardcoded in `transport/lapin.rs`;
+  AGENTS.md says 6 core test files but 8 exist (blind_pump, transport_tuning).
 
 ## Housekeeping (owner actions)
 
-- `git pull` the main checkout (`~/dev/perso/rabbit-rs` is behind `origin/main`).
+- ~~`git pull` the main checkout~~ (done 2026-08-30 — main checkout is current).
 - Delete the orphan SonarCloud project `Goopil_rabbit-rs` and the now-unused
   `SONAR_TOKEN` secret (coverage goes to Codecov only; SonarCloud runs automatic
   analysis on `Goopil_php-rabbit-rs`).
