@@ -17,15 +17,16 @@ gap survive once the framework layer is in front of it?
 ```
 driver-bench/
 ├── composer.json          # laravel/framework ^12||^13 + the 3 drivers
-│                          # (composer.lock is generated locally — gitignored
-│                          # by repo convention; platform.php pinned to 8.4
-│                          # so it resolves identically local and Docker)
+│                          # composer.lock IS committed: this is an app, and
+│                          # pinning fixes reproducibility (and SonarCloud S8567)
 ├── artisan                # minimal artisan (debugging only)
 ├── bootstrap/app.php      # minimal bootstrap + unambiguous driver names
 ├── config/
 │   ├── app.php            # minimal
 │   ├── queue.php          # the THREE connections (never interchangeable)
-│   └── rabbit-rs.php      # published config of the goopil driver
+│   └── rabbit-rs.php      # minimal topology override — the package merges
+│                          # its full default config at boot
+│                          # (mergeConfigFrom), same env vars
 ├── bin/bench.php          # the benchmark runner
 ├── docker/Dockerfile      # php:8.4-cli + librabbitmq + pecl amqp + composer
 └── .env.example           # per-driver credentials/vhosts for the lab
