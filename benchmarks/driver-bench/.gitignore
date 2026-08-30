@@ -1,0 +1,6 @@
+/vendor/
+/.env
+/storage/
+/results/
+/.phpunit.result.cache
+/.phpactor.json

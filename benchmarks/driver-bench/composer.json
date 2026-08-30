@@ -1,0 +1,32 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "bench/driver-bench",
+    "description": "Laravel-level queue driver benchmark skeleton (Phase E): rabbit-rs (goopil) vs vladimir-yuldashev (php-amqplib) vs iamfarhad (ext-amqp)",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4",
+        "goopil/rabbit-rs-laravel": "dev-main",
+        "iamfarhad/laravel-rabbitmq": "^1.4",
+        "laravel/framework": "^12.0 || ^13.0",
+        "vladimir-yuldashev/laravel-queue-rabbitmq": "^15.0"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../../packages/laravel-queue",
+            "options": {
+                "symlink": false
+            }
+        }
+    ],
+    "config": {
+        "optimize-autoloader": true,
+        "platform": {
+            "php": "8.4.0"
+        },
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
