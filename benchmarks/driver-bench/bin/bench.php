@@ -118,6 +118,12 @@ unset($bodySizeAtPadZero);
 // ---------------------------------------------------------------------------
 
 $configEcho = maskCredentials($connectionConfig);
+if ($connection === 'rabbit-rs') {
+    // The goopil driver reads its broker/topology/publisher settings from
+    // the global rabbit-rs config, not the connection entry: echo it too
+    // (credentials masked) so the run records the effective broker config.
+    $configEcho['rabbit_rs_global'] = maskCredentials((array) config('rabbit-rs', []));
+}
 $configEcho['connection'] = $connection;
 $configEcho['mode'] = $mode;
 
