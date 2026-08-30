@@ -295,7 +295,15 @@ git commit -m "fix(php-ext): bound the publish buffer with explicit backpressure
 
 **Context:** `ClientPool::consumer()` (`client.rs:330+`) loops indefinitely when the coordinator never leaves `Connecting`↔`Recovering` (black-holed broker, no connect timeout): FPM workers can freeze with no escape hatch. Since the multi-broker composition (PR #35), the `wait_for_state` wait loop sits inside the per-broker composition loop (≈ lines 371-410) — the deadline must wrap the whole acquisition, across all sources.
 
-- [ ] **Step 1: Write the failing test (core)**
+**Status: delivered on branch `task/45-consumer-deadline`.** Adaptations made while implementing:
+
+- `wait_timeout` deserializes from integer milliseconds via the existing `deserialize_duration_millis` helper (same convention as `publisher.confirm_timeout` and the Laravel ms passthrough) instead of adding a `humantime_serde` dependency.
+- The plan's example test value (500 ms) conflicts with the plan's own 1 s..=24 h validation bound; the test uses the 1 s boundary instead.
+- The pre-existing acquisition wait loop spun hot on cloned watch receivers whose mark was stale (`changed()` returned immediately), so a bare `tokio::time::timeout` could never fire. The loop now awaits real transitions via the new `RecoveryCoordinatorHandle::wait_for_transition` (mark-seen before waiting) and yields while `Ready`, preserving the terminal semantics (immediate failure on `FailedPermanent`/`Closed`, immediate retry while `Ready`). The deadline wraps the whole acquisition.
+- `conversion.rs` needed no code change: the config array already flows through serde, so the new `consumer.wait_timeout` key maps automatically; the stub documents the key.
+- The Laravel side throws `InvalidArgumentException` with the exact config path (existing convention) instead of the planned `ConfigurationException`, which does not exist in the package.
+
+- [x] **Step 1: Write the failing test (core)**
 
 In `crates/rabbit-rs-core/tests/consumer.rs` (or a new `consumer_wait_deadline.rs` file):
 
@@ -343,12 +351,12 @@ async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
 
 Adapt the worker profile construction to the existing helper (the `client_pool` tests in `crates/rabbit-rs-core/src/client.rs` show the full construction).
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core consumer_wait_deadline`
 Expected: FAIL — the `consumer` field does not exist (compilation) then the loop never terminates.
 
-- [ ] **Step 3: Implement the config section**
+- [x] **Step 3: Implement the config section**
 
 In `crates/rabbit-rs-core/src/config.rs`:
 
@@ -375,7 +383,7 @@ Add `pub consumer: ConsumerConfigSection` to the `Config` struct (with `#[serde(
 
 Update the `Config { ... }` literals of test helpers (`tests/consumer.rs::helper::connection_key` and other sites) by adding `consumer: ConsumerConfigSection::default(),`.
 
-- [ ] **Step 4: Bound the acquisition**
+- [x] **Step 4: Bound the acquisition**
 
 In `crates/rabbit-rs-core/src/client.rs::consumer()`, wrap the whole acquisition (the per-broker composition and its `wait_for_state` loops, ≈ lines 355-410):
 
@@ -395,14 +403,14 @@ let consumer = tokio::time::timeout(wait_timeout, async {
 
 With paused Tokio time, `timeout` respects `advance()` — the test stays deterministic.
 
-- [ ] **Step 5: Wire through PHP and Laravel**
+- [x] **Step 5: Wire through PHP and Laravel**
 
 - `crates/rabbit-rs-php/src/conversion.rs`: map the `consumer.wait_timeout` key (integer ms, optional) to the native config.
 - `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`: document the config key.
 - `packages/laravel-queue/config/rabbit-rs.php`: add `'wait_timeout' => 30_000` under a `consumers` section (ms).
 - `packages/laravel-queue/src/Config/ConfigNormalizer.php`: validate (int > 0, ≤ 86 400 000) and map to `consumer.wait_timeout`.
 
-- [ ] **Step 6: Write the failing Laravel test, then pass it**
+- [x] **Step 6: Write the failing Laravel test, then pass it**
 
 In `packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php`:
 
@@ -422,7 +430,7 @@ it('rejects a consumer wait_timeout outside the 1s..24h bound', function () {
 Run: `cd packages/laravel-queue && php vendor/bin/pest tests/Unit/ConfigNormalizerTest.php`
 Expected: FAIL then PASS after the Step 5 implementation.
 
-- [ ] **Step 7: Full gate and commit**
+- [x] **Step 7: Full gate and commit**
 
 Run: `rtk ./scripts/check.sh`
 Expected: PASS.
