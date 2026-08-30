@@ -13,8 +13,13 @@ set -euo pipefail
 #
 # PIE accepts NTS asset names with or without an explicit -nts suffix, but
 # requires the -zts suffix for ZTS builds. The Rabbit RS convention is that
-# every Linux artifact carries an explicit thread-safety suffix (-nts / -zts)
-# so that asset names are unambiguous and self-describing.
+# every Linux artifact carries an explicit thread-safety suffix (-nts) so
+# that asset names are unambiguous and self-describing.
+#
+# V1 ships NTS binaries only (plan Task 20, Option A): the root composer.json
+# declares "support-zts": false and the PIE matrix must contain no zts entry
+# (checked below). ZTS is planned for V2 with TSRM isolation, a blocking ZTS
+# CI job, and real concurrency tests. See docs/distribution.md.
 #
 # Usage:
 #   ./scripts/verify-pie-naming.sh
@@ -48,6 +53,24 @@ need_file "${DOCS}"
 need_file "${PKG_SCRIPT}"
 need_cmd jq
 
+# --- V1 ZTS decision (plan Task 20, Option A) ---------------------------------
+
+# ZTS is out of the V1 release matrix: the process-global RuntimeRegistry is
+# shared across PHP threads under ZTS and TSRM isolation is not implemented.
+# While the root composer.json declares "support-zts": false, the PIE matrix
+# must not contain any zts entry.
+
+echo "==> Checking ZTS exclusion (V1 decision)"
+
+support_zts="$(jq -r '.["php-ext"]."support-zts"' "${ROOT_DIR}/composer.json")"
+if [[ "${support_zts}" != "true" ]]; then
+    if grep -qi 'zts' "${PIE_MATRIX}"; then
+        echo "ERROR: zts entries found in pie-matrix.json after ZTS removal (Task 20)" >&2
+        exit 1
+    fi
+fi
+ok "no zts entries in the PIE matrix (support-zts: ${support_zts})"
+
 # --- packaging script naming logic --------------------------------------------
 
 echo "==> Checking packaging script naming logic"
@@ -58,8 +81,8 @@ echo "==> Checking packaging script naming logic"
 echo "==> Checking PIE matrix naming"
 
 matrix_count="$(jq -r '.matrix | length' "${PIE_MATRIX}")"
-[[ "${matrix_count}" -eq 16 ]] \
-    || fail "PIE matrix must have exactly 16 entries, found ${matrix_count}"
+[[ "${matrix_count}" -eq 8 ]] \
+    || fail "PIE matrix must have exactly 8 V1 entries (NTS only), found ${matrix_count}"
 
 php_ext_name="$(jq -r '.php_extension_name' "${PIE_MATRIX}")"
 [[ "${php_ext_name}" == "rabbit_rs" ]] \

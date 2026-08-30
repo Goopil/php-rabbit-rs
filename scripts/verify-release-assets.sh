@@ -3,8 +3,8 @@ set -euo pipefail
 
 # verify-release-assets.sh — verify release artifacts before publishing.
 #
-# Checks that exactly 16 PIE archives exist, each with a SHA-256 checksum.
-# Rejects debug artifacts and unsupported platforms.
+# Checks that exactly 8 PIE archives exist (V1 matrix, NTS only), each with a
+# SHA-256 checksum. Rejects debug artifacts and unsupported platforms.
 # Validates version synchronization across Cargo, extension, and tag.
 #
 # Usage:
@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURES=""
 RELEASE_DIR="${ROOT_DIR}/release"
 VERSION=""
-EXPECTED_ARCHIVE_COUNT=16
+EXPECTED_ARCHIVE_COUNT=8
 
 fail() {
     echo "FAIL: $*" >&2
@@ -141,10 +141,10 @@ for i in $(seq 0 $((matrix_count - 1))); do
         *) fail "unsupported libc in matrix entry ${i}: ${entry_libc}" ;;
     esac
 
-    # Validate thread safety
+    # Validate thread safety (V1 is NTS-only, plan Task 20)
     case "${entry_ts}" in
-        nts|zts) : ;;
-        *) fail "unsupported thread_safety in matrix entry ${i}: ${entry_ts}" ;;
+        nts) : ;;
+        *) fail "unsupported thread_safety in matrix entry ${i}: ${entry_ts} (V1 matrix is NTS-only)" ;;
     esac
 
     # Build expected archive name: php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}{ts_suffix}.zip

@@ -4,13 +4,17 @@ This guide covers installing the Rabbit RS native extension and the Laravel brid
 
 ## Prerequisites
 
-- PHP 8.4 or 8.5 (NTS or ZTS)
+- PHP 8.4 or 8.5 (**NTS only** — ZTS is not supported in V1, see [Thread safety](#thread-safety))
 - Linux x86_64 or ARM64 (glibc or musl)
 - RabbitMQ 4.3.x (reachable from your PHP process)
 - [PIE](https://github.com/php/pie) 1.5+ for extension installation
 - [Composer](https://getcomposer.org) for the Laravel bridge
 
 > **macOS and Windows** are not supported as production platforms in V1. You can compile and test locally on macOS for development purposes, but pre-compiled binaries target Linux only.
+
+### Thread safety
+
+V1 ships **NTS binaries only**. PIE will not match a ZTS PHP installation (`composer.json` declares `"support-zts": false`). This is deliberate: the extension keeps a process-global runtime and connection registry, and TSRM per-thread isolation is not implemented in V1, so ZTS binaries would share that registry across PHP threads without synchronization. ZTS support is planned for V2 with per-thread isolation, a blocking ZTS CI job, and real concurrency tests — see [Distribution](distribution.md#thread-safety-nts-only-in-v1).
 
 ## Step 1 — Install the native extension
 
@@ -23,7 +27,7 @@ PIE selects the correct pre-compiled binary for your environment:
 - PHP version (8.4 or 8.5)
 - Architecture (x86_64 or arm64)
 - libc (glibc or musl)
-- Thread safety (NTS or ZTS)
+- Thread safety (NTS only in V1)
 
 It copies the shared object (`rabbit_rs.so`) to your PHP extension directory and enables it in the active PHP configuration.
 

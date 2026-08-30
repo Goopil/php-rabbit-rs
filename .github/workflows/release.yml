@@ -79,7 +79,7 @@ jobs:
       matrix:
         php: ["8.4", "8.5"]
         arch: ["x86_64", "arm64"]
-        ts: ["nts", "zts"]
+        ts: ["nts"]
         libc: ["glibc", "musl"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -89,17 +89,9 @@ jobs:
         run: |
           PHP="${{ matrix.php }}"
           if [[ "${{ matrix.libc }}" == "musl" ]]; then
-            if [[ "${{ matrix.ts }}" == "zts" ]]; then
-              echo "image=php:${PHP}-zts-alpine" >> "$GITHUB_OUTPUT"
-            else
-              echo "image=php:${PHP}-alpine" >> "$GITHUB_OUTPUT"
-            fi
+            echo "image=php:${PHP}-alpine" >> "$GITHUB_OUTPUT"
           else
-            if [[ "${{ matrix.ts }}" == "zts" ]]; then
-              echo "image=php:${PHP}-zts" >> "$GITHUB_OUTPUT"
-            else
-              echo "image=php:${PHP}-cli" >> "$GITHUB_OUTPUT"
-            fi
+            echo "image=php:${PHP}-cli" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Cache Cargo
@@ -169,8 +161,8 @@ jobs:
         run: |
           VERSION="${{ needs.create-release.outputs.version }}"
           # Unified PIE naming convention: every Linux artifact carries an
-          # explicit thread-safety suffix (-nts / -zts). See
-          # docs/distribution.md and scripts/verify-pie-naming.sh.
+          # explicit thread-safety suffix (-nts in V1 — the matrix is
+          # NTS-only, see docs/distribution.md and scripts/verify-pie-naming.sh).
           ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}"
           ASSET_NAME="${ASSET_BASE}.zip"
           zip "${ASSET_NAME}" rabbit_rs.so
@@ -316,17 +308,17 @@ jobs:
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 54 ]]; then
-            echo "::error::Expected 54 assets (18 ZIP + 18 SHA256 + 18 SBOM), found ${ASSET_COUNT}"
+          if [[ "${ASSET_COUNT}" -ne 30 ]]; then
+            echo "::error::Expected 30 assets (10 ZIP + 10 SHA256 + 10 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
           SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
-          [[ "${ZIP_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 ZIPs, found ${ZIP_COUNT}"; exit 1; }
-          [[ "${SHA_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 SHA256, found ${SHA_COUNT}"; exit 1; }
-          [[ "${SBOM_COUNT}" -eq 18 ]] || { echo "::error::Expected 18 SBOMs, found ${SBOM_COUNT}"; exit 1; }
+          [[ "${ZIP_COUNT}" -eq 10 ]] || { echo "::error::Expected 10 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 10 ]] || { echo "::error::Expected 10 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 10 ]] || { echo "::error::Expected 10 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
           # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
@@ -354,8 +346,8 @@ jobs:
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
-          echo "OK: 18 ZIPs + 18 SHA256 + 18 SBOMs verified"
-          echo "OK: 18 provenance + 18 SBOM attestations verified"
+          echo "OK: 10 ZIPs + 10 SHA256 + 10 SBOMs verified"
+          echo "OK: 10 provenance + 10 SBOM attestations verified"
 
   verify-pie-install:
     name: PIE install end-to-end (glibc NTS x86_64 PHP 8.4)
