@@ -5,7 +5,7 @@ Rabbit RS distributes two packages in synchronized releases:
 - **`goopil/rabbit-rs-native`** — the native PHP extension, installed via [PIE](https://github.com/php/pie)
 - **`goopil/rabbit-rs-laravel`** — the Laravel bridge, installed via [Composer](https://getcomposer.org)
 
-Both packages share the same version number. A release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package requires `ext-rabbit_rs ^1.0` (same major version).
+Both packages share the same version number. A release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package requires `ext-rabbit_rs ^0.0` (the constraint tracks the extension version until 1.0).
 
 ## PIE build matrix
 
@@ -151,13 +151,13 @@ This is a deliberate design decision. PIE is the PHP ecosystem's official extens
     "type": "library",
     "require": {
         "php": "^8.4",
-        "ext-rabbit_rs": "^1.0",
+        "ext-rabbit_rs": "^0.0",
         "illuminate/queue": "^12.0 || ^13.0"
     }
 }
 ```
 
-The `ext-rabbit_rs` constraint pins the major version. Composer checks that the extension is loaded but never installs it.
+The `ext-rabbit_rs` constraint tracks the extension version until 1.0. Composer checks that the extension is loaded but never installs it.
 
 ## GitHub repositories
 

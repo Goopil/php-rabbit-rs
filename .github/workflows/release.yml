@@ -47,6 +47,20 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Laravel package ext-rabbit_rs constraint matches version policy
+        run: |
+          CONSTRAINT=$(sed -n 's/.*"ext-rabbit_rs": *"\([^"]*\)".*/\1/p' packages/laravel-queue/composer.json)
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          if [[ "$CARGO_VERSION" == 0.0.* ]]; then
+            EXPECTED="^0.0"
+          else
+            EXPECTED="^${CARGO_VERSION%%.*}.0"
+          fi
+          if [[ "$CONSTRAINT" != "$EXPECTED" ]]; then
+            echo "::error::Laravel package ext-rabbit_rs constraint ($CONSTRAINT) does not match the extension version policy ($EXPECTED, derived from Cargo.toml $CARGO_VERSION)."
+            exit 1
+          fi
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,7 +6,7 @@
 
 **Error:**
 ```
-The Rabbit RS Laravel driver requires ext-rabbit_rs ^1.0 to be loaded.
+The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.0 to be loaded.
 ```
 
 **Solution:**
