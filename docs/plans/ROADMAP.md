@@ -89,6 +89,29 @@ optimizations (with re-bench proof) or document the ceiling with data.
 Success criteria: root cause documented with measurements; either an implemented,
 bench-validated optimization or a documented, quantified ceiling.
 
+## Round E — adaptive prefetch per subscription
+
+Motivation: fixed prefetch cannot serve opposite queue profiles at once — fast jobs
+under-fill the pipeline (RTT visible, throughput capped at `prefetch / job duration`)
+while slow jobs with high prefetch waste memory and amplify the post-crash redelivery
+blast radius. Anticipated by the original design ("adaptive prefetch based on EWMA,
+target buffer time, hysteresis").
+
+Full design (approved spec):
+`docs/superpowers/specs/2026-08-29-adaptive-prefetch-design.md`; implementation
+plan: `docs/superpowers/plans/2026-08-29-adaptive-prefetch.md`.
+
+Scope: per-subscription adaptive prefetch driven by an EWMA of settlement latency
+(includes PHP job duration), target buffer time, 25% hysteresis, 1s tick in the
+consumer actor with `set_qos` applied off the critical path; union wire format
+(`fixed`/`adaptive`) backward compatible with the plain int form; adaptive rejected
+with `early_ack`/`no_ack` at validation; buffer sizing from the sum of maxima;
+`Consumer::getPrefetchStats()` observability; Laravel normalizer + docs.
+
+Success criteria: full quality gate green; deterministic paused-time tests prove the
+QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
+(regression tests).
+
 ## Parked (no round yet)
 
 - **Per-queue publish safety**: `publisher.safety` is a connection-level setting
