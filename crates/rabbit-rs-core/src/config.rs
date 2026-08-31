@@ -862,8 +862,8 @@ mod tests {
         PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig,
         TlsConfig, TopologyMode, WorkerProfile,
     };
-    use crate::transport::lapin::connection_uri;
     use crate::transport::QueueKind;
+    use crate::transport::lapin::connection_uri;
 
     fn broker(hosts: Vec<Endpoint>) -> BrokerConfig {
         BrokerConfig {
@@ -946,9 +946,11 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions.default");
-        assert!(error
-            .to_string()
-            .contains("subscription name must be unique within a worker profile"));
+        assert!(
+            error
+                .to_string()
+                .contains("subscription name must be unique within a worker profile")
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
     options::{
