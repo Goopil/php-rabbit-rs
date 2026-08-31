@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, Credentials, DeadLetterConfig, DelayConfig,
-        Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig,
-        TlsConfig, TopologyMode, ValidatedConfig, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig,
+        PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
+        ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
@@ -447,6 +447,7 @@ async fn a_new_connection_generation_replays_the_full_plan() {
 
 #[cfg(feature = "integration")]
 async fn integration_connect() -> Box<dyn rabbit_rs_core::transport::TransportConnection> {
+    use rabbit_rs_core::config::{Credentials, Endpoint, TlsConfig};
     use rabbit_rs_core::transport::lapin::LapinTransport;
 
     let broker = BrokerConfig {
