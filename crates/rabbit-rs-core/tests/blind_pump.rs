@@ -192,10 +192,12 @@ async fn blind_single_publish_resolves_confirmed_without_waiting_for_the_transpo
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(1),
-        pool.publish("default", request("m0")),
+        pool.publish_batch(vec![("default".to_owned(), request("m0"))]),
     )
     .await
     .expect("blind publish must resolve at hand-off, not on the transport")
+    .expect("blind publish succeeds")
+    .pop()
     .expect("blind publish succeeds");
     assert_eq!(
         outcome,
@@ -270,7 +272,7 @@ async fn flush_blind_resolves_immediately_on_non_blind_clients() {
         .expect("flush must not hang on an empty pool")
         .expect("flush on an empty pool succeeds");
 
-    pool.publish("default", request("m0"))
+    pool.publish_batch(vec![("default".to_owned(), request("m0"))])
         .await
         .expect("safe publish");
     tokio::time::timeout(Duration::from_secs(1), pool.flush_blind())

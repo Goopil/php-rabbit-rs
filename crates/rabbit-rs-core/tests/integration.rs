@@ -319,12 +319,16 @@ async fn reuses_one_connection_and_publisher_for_confirmed_messages() {
     let pool = ClientPool::new(Arc::new(config()), transport.clone());
 
     let first = pool
-        .publish("default", request("first"))
+        .publish_batch(vec![("default".to_owned(), request("first"))])
         .await
+        .expect("first publish")
+        .pop()
         .expect("first publish");
     let second = pool
-        .publish("default", request("second"))
+        .publish_batch(vec![("default".to_owned(), request("second"))])
         .await
+        .expect("second publish")
+        .pop()
         .expect("second publish");
 
     assert_eq!(
@@ -446,7 +450,10 @@ async fn close_while_connecting_closes_the_uncommitted_connection_once() {
     let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
     let publishing = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("default", request("message")).await }
+        async move {
+            pool.publish_batch(vec![("default".to_owned(), request("message"))])
+                .await
+        }
     });
 
     tokio::task::yield_now().await;
@@ -473,7 +480,7 @@ async fn close_while_connecting_closes_the_uncommitted_connection_once() {
             .any(|operation| matches!(operation, TransportOperation::OpenPublisher))
     );
     assert_eq!(
-        pool.publish("default", request("after-close"))
+        pool.publish_batch(vec![("default".to_owned(), request("after-close"))])
             .await
             .expect_err("closed pool")
             .kind(),
@@ -491,11 +498,17 @@ async fn concurrent_same_broker_initialization_is_deduplicated() {
     let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
     let first = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("default", request("first")).await }
+        async move {
+            pool.publish_batch(vec![("default".to_owned(), request("first"))])
+                .await
+        }
     });
     let second = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("default", request("second")).await }
+        async move {
+            pool.publish_batch(vec![("default".to_owned(), request("second"))])
+                .await
+        }
     });
     gate.wait_entered().await;
     tokio::task::yield_now().await;
@@ -534,11 +547,17 @@ async fn independent_brokers_initialize_in_parallel() {
     ));
     let first = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("first", request("first")).await }
+        async move {
+            pool.publish_batch(vec![("first".to_owned(), request("first"))])
+                .await
+        }
     });
     let second = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("second", request("second")).await }
+        async move {
+            pool.publish_batch(vec![("second".to_owned(), request("second"))])
+                .await
+        }
     });
     first_gate.wait_entered().await;
     tokio::time::timeout(Duration::from_millis(10), second_gate.wait_entered())
@@ -582,7 +601,7 @@ async fn connection_states_reports_known_brokers_after_initialization() {
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let pool = ClientPool::new(Arc::new(config()), transport);
 
-    pool.publish("default", request("first"))
+    pool.publish_batch(vec![("default".to_owned(), request("first"))])
         .await
         .expect("publish");
 
@@ -954,11 +973,13 @@ mod integration {
         purge_or_ignore(&pool, "primary", queue).await;
 
         let outcome = pool
-            .publish(
-                "primary",
+            .publish_batch(vec![(
+                "primary".to_owned(),
                 publish_request("msg-confirm-1", queue, b"hello-confirm"),
-            )
+            )])
             .await
+            .expect("publish")
+            .pop()
             .expect("publish");
 
         assert_eq!(
@@ -990,10 +1011,10 @@ mod integration {
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 
-        pool.publish(
-            "primary",
+        pool.publish_batch(vec![(
+            "primary".to_owned(),
             publish_request("msg-release-0", queue, b"hello-release"),
-        )
+        )])
         .await
         .expect("publish");
 
@@ -1022,16 +1043,16 @@ mod integration {
         purge_or_ignore(&pool, "orders", orders_queue).await;
         purge_or_ignore(&pool, "billing", billing_queue).await;
 
-        pool.publish(
-            "orders",
+        pool.publish_batch(vec![(
+            "orders".to_owned(),
             publish_request("msg-orders-1", orders_queue, b"from-orders"),
-        )
+        )])
         .await
         .expect("publish orders");
-        pool.publish(
-            "billing",
+        pool.publish_batch(vec![(
+            "billing".to_owned(),
             publish_request("msg-billing-1", billing_queue, b"from-billing"),
-        )
+        )])
         .await
         .expect("publish billing");
 

@@ -1738,7 +1738,9 @@ async fn profile_requested_after_a_publishing_phase_is_established_on_demand() {
         properties,
         tokio::time::Instant::now() + Duration::from_secs(30),
     );
-    pool.publish("b", request).await.expect("publish");
+    pool.publish_batch(vec![("b".to_owned(), request)])
+        .await
+        .expect("publish");
     tokio::time::advance(Duration::from_millis(10)).await;
     tokio::task::yield_now().await;
 
