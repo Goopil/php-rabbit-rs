@@ -2,10 +2,6 @@
 retries = 1
 fail-fast = false
 
-[profile.ci]
-retries = 1
-fail-fast = false
-
 [profile.ci.junit]
 path = "target/nextest/junit.xml"
 store-success-output = false

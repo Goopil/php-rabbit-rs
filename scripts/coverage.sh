@@ -15,31 +15,22 @@ mkdir -p "${COVERAGE_DIR}"
 
 FAILURES=0
 
-echo "━━━ Rust Core ━━━"
-if "${SCRIPT_DIR}/coverage-rust.sh"; then
-    echo "  ✓ Rust coverage OK"
-else
-    echo "  ✗ Rust coverage FAILED"
-    FAILURES=$((FAILURES + 1))
-fi
-
-echo ""
-echo "━━━ PHP Extension ━━━"
-if "${SCRIPT_DIR}/coverage-php-ext.sh"; then
-    echo "  ✓ PHP extension coverage OK"
-else
-    echo "  ✗ PHP extension coverage FAILED"
-    FAILURES=$((FAILURES + 1))
-fi
-
-echo ""
-echo "━━━ Laravel Package ━━━"
-if "${SCRIPT_DIR}/coverage-laravel.sh"; then
-    echo "  ✓ Laravel coverage OK"
-else
-    echo "  ✗ Laravel coverage FAILED"
-    FAILURES=$((FAILURES + 1))
-fi
+for suite in \
+    "Rust Core:coverage-rust.sh" \
+    "PHP Extension:coverage-php-ext.sh" \
+    "Laravel Package:coverage-laravel.sh"
+do
+    name="${suite%%:*}"
+    script="${suite#*:}"
+    echo ""
+    echo "━━━ ${name} ━━━"
+    if "${SCRIPT_DIR}/${script}"; then
+        echo "  ✓ ${name} coverage OK"
+    else
+        echo "  ✗ ${name} coverage FAILED"
+        FAILURES=$((FAILURES + 1))
+    fi
+done
 
 echo ""
 echo "━━━ Summary ━━━"
