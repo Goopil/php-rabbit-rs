@@ -64,6 +64,12 @@ php artisan queue:work --connection=rabbit-rs --queue=main
 
 The worker profile resolves to all configured subscriptions. A single `pop()` call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
+The `--queue` value is resolved in this order:
+
+1. A queue subscribed by a worker profile (`workers.*.subscriptions.*.queue`) — that profile is used.
+2. A worker profile name — that profile is used.
+3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled an implicit profile is built on the fly (opt-in, see below); without it `pop()` fails with an actionable error.
+
 ### Multi-process supervisor
 
 ```bash
@@ -151,7 +157,7 @@ if ($job !== null) {
 }
 ```
 
-`pop()` delegates to the native consumer set. The queue argument references a worker profile name. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
+`pop()` delegates to the native consumer set. The queue argument is resolved to a worker profile (see the resolution order above): a subscribed queue name, a worker profile name, or — when `auto_subscribe` is enabled — an implicit profile dedicated to the requested queue. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
 ### size
 
@@ -164,8 +170,10 @@ Returns the message count for the queue. Uses AMQP passive declaration (no manag
 ### clear
 
 ```php
-Queue::connection('rabbit-rs')->clear('orders.high');
+$purged = Queue::connection('rabbit-rs')->clear('orders.high');
 ```
+
+Purges all messages from the queue and returns the number of jobs removed (the pending count measured before the purge; messages racing the purge are counted but may survive). Requires configuration permissions on the broker. The `ClearableQueue` contract makes `php artisan queue:clear rabbit-rs` available.
 
 Purges all messages from the queue. Requires configuration permissions on the broker.
 
@@ -254,6 +262,7 @@ Add the connection to `config/queue.php`:
         'driver' => 'rabbit-rs',
         'queue' => env('RABBIT_RS_QUEUE', 'default'),
         'after_commit' => false,
+        'auto_subscribe' => (bool) env('RABBIT_RS_AUTO_SUBSCRIBE', false),
     ],
 ],
 ```
@@ -263,6 +272,19 @@ Set the default connection:
 ```bash
 QUEUE_CONNECTION=rabbit-rs
 ```
+
+### Auto subscribe
+
+`auto_subscribe` (opt-in, default `false`) controls how `pop()` resolves plain queue names that no worker profile subscribes to — for example `queue:work --queue=emails` when no `workers.*.subscriptions.*.queue` entry references the `emails` queue.
+
+- `false` (default): `pop()` fails with an actionable error telling you to declare the queue in `workers.*.subscriptions.*.queue` or enable `auto_subscribe`.
+- `true`: `pop()` builds an implicit worker profile on the fly — a single subscription using the default broker, weight 1, and the default prefetch. The profile is cached per queue name in process memory and reused on subsequent pops of the same queue; it is requested from the native pool by name (`__auto__.<queue>`).
+
+The native pool resolves worker profiles from its own configuration, so auto-subscribed consumption additionally requires the native side to accept runtime-registered profiles; until then, declare the queue in `workers.*.subscriptions.*.queue` for reliable consumption.
+
+Prefer declared worker profiles in production: they control per-queue weights, prefetch, and priority classes, and they are visible to `rabbit-rs:status`. Use `auto_subscribe` for development convenience or dynamic low-traffic queues.
+
+The value can be set per connection (`auto_subscribe` in `config/queue.php`, as above — takes precedence) or package-wide in `config/rabbit-rs.php`.
 
 ## Worker lifecycle
 

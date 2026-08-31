@@ -35,6 +35,7 @@ final class ConfigNormalizer
         $publisher = self::publisher($config['publisher'] ?? []);
         $consumers = self::consumers($config['consumers'] ?? []);
         $bestEffort = self::boolean($config['best_effort'] ?? false, 'best_effort');
+        $autoSubscribe = self::boolean($config['auto_subscribe'] ?? false, 'auto_subscribe');
 
         return [
             'native' => [
@@ -53,6 +54,7 @@ final class ConfigNormalizer
             'publisher' => $publisher,
             'topology' => $topology,
             'best_effort' => $bestEffort,
+            'auto_subscribe' => $autoSubscribe,
         ];
     }
 

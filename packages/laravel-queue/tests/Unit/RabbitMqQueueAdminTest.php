@@ -135,4 +135,18 @@ describe('clear', function (): void {
             self::assertStringContainsString('purge refused', $exception->getMessage());
         }
     });
+
+    it('returns the number of purged jobs so queue:clear can report a count', function (): void {
+        [$queue, $pool] = adminQueue();
+        $pool->sizeResults['orders-broker:orders'] = 7;
+
+        expect(7)->toBe($queue->clear('orders'));
+    });
+
+    it('returns zero for an empty queue', function (): void {
+        [$queue, $pool] = adminQueue();
+        $pool->sizeResults['default-broker:default'] = 0;
+
+        expect(0)->toBe($queue->clear());
+    });
 });
