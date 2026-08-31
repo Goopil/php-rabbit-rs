@@ -6,8 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-08-31
+
+### Added
+
+- `ClearableQueue` support: `queue:clear` works and reports the purge count (`clear(): int`).
+- Opt-in `auto_subscribe` (connection > package > `RABBIT_RS_AUTO_SUBSCRIBE`): `pop()` resolves plain queue names through implicit `__auto__.<queue>` profiles cached per queue; worker-profile names keep working.
+- Production warning when `delivery_limit` and `dead_letter` are both unset (infinite redelivery for worker-crashing messages), opt-out via `production_warning => false`.
+- Horizon `bulk()` now prepares payloads and fires `JobPending`/`JobPushed`, so bulk jobs are visible in the dashboard.
+- `consumers.wait_timeout` passthrough (ms, `RABBIT_RS_CONSUMER_WAIT_TIMEOUT`) mapping to the native `consumer.wait_timeout` acquisition deadline.
+
 ### Changed
 
+- Horizon `push`/`later` honor `after_commit` through `enqueueUsing` — transactional jobs publish only after the SQL commit.
+- Worker supervisor: pcntl-free `--workers=1` runs inline, and restart backoff is non-blocking.
 - The `ext-rabbit_rs` requirement is documented as `^0.0` everywhere (composer, exception message, docs), aligned with the extension workspace version.
 
 ## [0.0.7] - 2026-08-26
@@ -50,7 +62,8 @@ Packaging-only release: Laravel mirror split sequenced after native release publ
 - Pools are closed before clearing the cache in `flush` and `resetAfterFork`.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/Goopil/rabbit-rs/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/Goopil/rabbit-rs/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/Goopil/rabbit-rs/compare/v0.0.4...v0.0.5

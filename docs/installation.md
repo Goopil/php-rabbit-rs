@@ -43,7 +43,7 @@ Expected output:
 rabbit_rs
 
 Rabbit RS - High-performance RabbitMQ transport for PHP and Laravel, powered by Rust
-Version => 0.0.7
+Version => 0.0.8
 ...
 ```
 
