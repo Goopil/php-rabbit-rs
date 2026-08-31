@@ -19,6 +19,15 @@ nothing is lost between rounds.
   main (`bbd836b`, `08ba5e8`); secondary scope + re-bench done 2026-08-31
   (branch `task/39-secondary-rebench`, archive
   `benchmarks/results/round-2-rebench/`).
+- **Release v0.0.8 (2026-08-31)** — first release exercising the new delivery
+  pipeline end to end: unified `-nts` naming, blocking `verify-pie-install`
+  (real `pie install` against the published release; PIE 1.4.10 cannot resolve
+  draft releases, so the job runs after publish and gates Homebrew + the
+  Laravel split; the installer itself runs as root to bypass the interactive
+  sudo check), ZTS dropped from the matrix (16 → 8 assets). Contains the 17
+  production-readiness issues closed on 2026-08-31 (Round 2 fixes, publish
+  buffer bound, consumer deadline, Horizon after-commit, ClearableQueue,
+  lazy establishment, events bridge, TLS loud failures).
 
 ## Next — Round 2: consumer stall and reliability
 
