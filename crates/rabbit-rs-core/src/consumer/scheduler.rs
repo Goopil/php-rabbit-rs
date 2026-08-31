@@ -57,20 +57,7 @@ impl SubscriptionPolicy {
 }
 
 /// Selects the next ready subscription.
-pub trait Scheduler {
-    /// Registers a subscription or replaces its scheduling policy.
-    fn register(&mut self, id: SubscriptionId, policy: SubscriptionPolicy);
-
-    /// Marks a subscription as having at least one buffered delivery.
-    fn mark_ready(&mut self, id: &SubscriptionId);
-
-    /// Marks a subscription as having no buffered delivery.
-    fn mark_empty(&mut self, id: &SubscriptionId);
-
-    /// Returns the next subscription according to priority, aging, and weight.
-    fn next(&mut self, now: Instant) -> Option<SubscriptionId>;
-}
-
+///
 /// A deterministic smooth weighted scheduler with starvation protection.
 #[derive(Debug, Default)]
 pub struct WeightedFairScheduler {
@@ -87,8 +74,9 @@ struct Entry {
     credit: i64,
 }
 
-impl Scheduler for WeightedFairScheduler {
-    fn register(&mut self, id: SubscriptionId, policy: SubscriptionPolicy) {
+impl WeightedFairScheduler {
+    /// Registers a subscription or replaces its scheduling policy.
+    pub fn register(&mut self, id: SubscriptionId, policy: SubscriptionPolicy) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
             entry.policy = policy;
             return;
@@ -103,7 +91,7 @@ impl Scheduler for WeightedFairScheduler {
         });
     }
 
-    fn mark_ready(&mut self, id: &SubscriptionId) {
+    pub fn mark_ready(&mut self, id: &SubscriptionId) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.id == id)
             && !entry.ready
         {
@@ -113,7 +101,7 @@ impl Scheduler for WeightedFairScheduler {
         }
     }
 
-    fn mark_empty(&mut self, id: &SubscriptionId) {
+    pub fn mark_empty(&mut self, id: &SubscriptionId) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.id == id) {
             entry.ready = false;
             entry.ready_since = None;
@@ -121,7 +109,7 @@ impl Scheduler for WeightedFairScheduler {
         }
     }
 
-    fn next(&mut self, now: Instant) -> Option<SubscriptionId> {
+    pub fn next(&mut self, now: Instant) -> Option<SubscriptionId> {
         for entry in self.entries.iter_mut().filter(|entry| entry.ready) {
             entry.ready_since.get_or_insert(now);
         }

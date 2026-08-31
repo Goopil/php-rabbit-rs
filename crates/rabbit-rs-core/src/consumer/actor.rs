@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{
     AttemptsResolver, ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, MessageId,
-    Scheduler, SubscriptionId, WeightedFairScheduler,
+    SubscriptionId, WeightedFairScheduler,
     delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner, Settlement, SettlementError},
     set::Subscription,
 };

@@ -11,7 +11,7 @@ use rabbit_rs_core::{
         BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
         SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
-    consumer::{Scheduler, SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
+    consumer::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind,

@@ -16,5 +16,5 @@ pub use delivery::{
     ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, DeliveryTokenInner, Headers,
     MessageId, SettleError, Settlement, SettlementError, SettlementErrorKind,
 };
-pub use scheduler::{Scheduler, SubscriptionId, SubscriptionPolicy, WeightedFairScheduler};
+pub use scheduler::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler};
 pub use set::{ConsumerSet, ConsumerSetHandle, Subscription};
