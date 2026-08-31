@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::config::BrokerConfig;
 
 pub mod lapin;
+#[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 
 pub type TransportResult<T> = Result<T, TransportError>;

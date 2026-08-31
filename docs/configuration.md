@@ -198,7 +198,6 @@ The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`,
     'buckets' => array_map('intval', array_filter(array_map('trim', explode(',', env('RABBIT_RS_DELAY_BUCKETS', '1,5,30,120'))))),
     'max_buckets' => (int) env('RABBIT_RS_DELAY_MAX_BUCKETS', 8),
     'queue_expiry_margin' => (int) env('RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN', 60),
-    'detection_timeout' => (int) env('RABBIT_RS_DELAY_DETECTION_TIMEOUT', 5),
 ],
 ```
 
@@ -208,9 +207,8 @@ The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`,
 | `RABBIT_RS_DELAY_BUCKETS` | Comma-separated TTL bucket seconds | `1,5,30,120` |
 | `RABBIT_RS_DELAY_MAX_BUCKETS` | Maximum number of TTL buckets | `8` |
 | `RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN` | Queue expiry margin in seconds | `60` |
-| `RABBIT_RS_DELAY_DETECTION_TIMEOUT` | Plugin detection timeout in seconds | `5` |
 
-- `auto` — use the `rabbitmq_delayed_message_exchange` plugin if available, otherwise fall back to TTL queues
+- `auto` — publish delayed messages through the `x-delayed-message` exchange (same as `plugin`); use `ttl` when the plugin is not installed
 - `plugin` — require the plugin; fail if it is not installed
 - `ttl` — always use TTL queue buckets
 

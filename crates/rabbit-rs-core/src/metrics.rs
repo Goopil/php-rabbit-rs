@@ -46,17 +46,6 @@ impl Metrics {
             backpressure_total: load(&self.inner.backpressure_total),
             confirmation_latency: self.inner.confirmation_latency.snapshot(),
             settlement_latency: self.inner.settlement_latency.snapshot(),
-            publishing_depth: load(&self.inner.publishing_depth),
-            publishing_depth_hwm: load(&self.inner.publishing_depth_hwm),
-            publishing_bytes: load(&self.inner.publishing_bytes),
-            replay_depth: load(&self.inner.replay_depth),
-            replay_count: load(&self.inner.replay_count),
-            consumer_buffer_depth: load(&self.inner.consumer_buffer_depth),
-            consumer_buffer_depth_hwm: load(&self.inner.consumer_buffer_depth_hwm),
-            consumer_buffer_bytes: load(&self.inner.consumer_buffer_bytes),
-            settlement_lane_depth: load(&self.inner.settlement_lane_depth),
-            backpressure_duration_us: load(&self.inner.backpressure_duration_us),
-            duplicate_count: load(&self.inner.duplicate_count),
         }
     }
 
@@ -94,57 +83,6 @@ impl Metrics {
     pub(crate) fn record_backpressure(&self) {
         increment(&self.inner.backpressure_total);
     }
-
-    pub fn record_publishing_depth(&self, depth: u64) {
-        self.inner.publishing_depth.store(depth, Ordering::Relaxed);
-        update_hwm(&self.inner.publishing_depth_hwm, depth);
-    }
-
-    pub fn record_publishing_bytes(&self, bytes: u64) {
-        self.inner.publishing_bytes.store(bytes, Ordering::Relaxed);
-    }
-
-    pub fn record_replay(&self) {
-        self.inner.replay_depth.fetch_add(1, Ordering::Relaxed);
-        self.inner.replay_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn record_replay_depth(&self, depth: u64) {
-        self.inner.replay_depth.store(depth, Ordering::Relaxed);
-    }
-
-    pub fn record_consumer_buffer_depth(&self, depth: u64) {
-        self.inner
-            .consumer_buffer_depth
-            .store(depth, Ordering::Relaxed);
-        update_hwm(&self.inner.consumer_buffer_depth_hwm, depth);
-    }
-
-    pub fn record_consumer_buffer_bytes(&self, bytes: u64) {
-        self.inner
-            .consumer_buffer_bytes
-            .store(bytes, Ordering::Relaxed);
-    }
-
-    pub fn record_settlement_lane_depth(&self, depth: u64) {
-        self.inner
-            .settlement_lane_depth
-            .store(depth, Ordering::Relaxed);
-    }
-
-    pub fn record_backpressure_duration(&self, duration: Duration) {
-        let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
-        self.inner
-            .backpressure_duration_us
-            .fetch_add(micros, Ordering::Relaxed);
-    }
-
-    /// Records a duplicate delivery detected by message-id tracking.
-    ///
-    /// TODO: Wire this once consumer message-id deduplication is implemented.
-    pub fn record_duplicate(&self) {
-        increment(&self.inner.duplicate_count);
-    }
 }
 
 impl fmt::Debug for Metrics {
@@ -165,17 +103,6 @@ struct MetricsInner {
     backpressure_total: AtomicU64,
     confirmation_latency: AtomicHistogram,
     settlement_latency: AtomicHistogram,
-    publishing_depth: AtomicU64,
-    publishing_depth_hwm: AtomicU64,
-    publishing_bytes: AtomicU64,
-    replay_depth: AtomicU64,
-    replay_count: AtomicU64,
-    consumer_buffer_depth: AtomicU64,
-    consumer_buffer_depth_hwm: AtomicU64,
-    consumer_buffer_bytes: AtomicU64,
-    settlement_lane_depth: AtomicU64,
-    backpressure_duration_us: AtomicU64,
-    duplicate_count: AtomicU64,
 }
 
 /// Serializable counters and latency distributions with no dynamic labels.
@@ -201,28 +128,6 @@ pub struct MetricsSnapshot {
     pub confirmation_latency: HistogramSnapshot,
     /// End-to-end latency from delivery reservation to successful settlement.
     pub settlement_latency: HistogramSnapshot,
-    /// Current depth of the in-flight publisher queue.
-    pub publishing_depth: u64,
-    /// High-water mark of the in-flight publisher queue depth.
-    pub publishing_depth_hwm: u64,
-    /// Current bytes buffered in the publisher queue.
-    pub publishing_bytes: u64,
-    /// Current depth of the bounded replay buffer.
-    pub replay_depth: u64,
-    /// Total number of replays attempted since startup.
-    pub replay_count: u64,
-    /// Current depth of the consumer buffer.
-    pub consumer_buffer_depth: u64,
-    /// High-water mark of the consumer buffer depth.
-    pub consumer_buffer_depth_hwm: u64,
-    /// Current bytes buffered in the consumer buffer.
-    pub consumer_buffer_bytes: u64,
-    /// Current depth of the settlement lane.
-    pub settlement_lane_depth: u64,
-    /// Total backpressure duration in microseconds.
-    pub backpressure_duration_us: u64,
-    /// Total duplicate deliveries detected since startup.
-    pub duplicate_count: u64,
 }
 
 /// Fixed latency histogram whose buckets are non-cumulative.
@@ -335,21 +240,6 @@ fn increment(counter: &AtomicU64) {
 
 fn load(counter: &AtomicU64) -> u64 {
     counter.load(Ordering::Relaxed)
-}
-
-fn update_hwm(hwm: &AtomicU64, value: u64) {
-    loop {
-        let current = hwm.load(Ordering::Relaxed);
-        if value <= current {
-            break;
-        }
-        if hwm
-            .compare_exchange(current, value, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            break;
-        }
-    }
 }
 
 /// Converts a non-negative `f64` nanosecond value to `u64`, clamping overflow.

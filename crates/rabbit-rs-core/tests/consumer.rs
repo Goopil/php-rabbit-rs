@@ -102,19 +102,6 @@ mod helper {
         delivery
     }
 
-    pub fn delivery_with_owned_payload(tag: u64, payload: Vec<u8>) -> TransportDelivery {
-        TransportDelivery {
-            delivery_tag: tag,
-            exchange: "jobs".to_owned(),
-            routing_key: "high".to_owned(),
-            redelivered: false,
-            message_id: None,
-            correlation_id: None,
-            headers: Arc::new(BTreeMap::new()),
-            payload: Bytes::from(payload),
-        }
-    }
-
     pub async fn subscription(
         transport: &MockTransport,
         id: &str,
@@ -1419,39 +1406,6 @@ async fn early_ack_preserves_delivery_metadata() {
 // ---------------------------------------------------------------------------
 // OOM protection — hard gate tests
 // ---------------------------------------------------------------------------
-
-#[tokio::test(start_paused = true)]
-async fn hard_gate_stops_accepting_when_over_budget() {
-    let transport = MockTransport::default();
-    let budget = 1024 * 1024 * 4; // 4 MiB
-    let payload_size = 1024 * 1024; // 1 MiB per delivery
-
-    for i in 0..100 {
-        transport.push_delivery(Ok(helper::delivery_with_owned_payload(
-            i,
-            vec![0u8; payload_size],
-        )));
-    }
-
-    let sub = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
-        .await
-        .max_buffered_bytes(budget);
-    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
-        .await
-        .expect("consumer set");
-
-    let_sources_fill().await;
-
-    let snapshot = consumer.metrics_snapshot();
-    assert!(
-        snapshot.consumer_buffer_bytes <= budget,
-        "buffered_bytes ({}) should not exceed max_buffered_bytes ({} bytes)",
-        snapshot.consumer_buffer_bytes,
-        budget
-    );
-
-    let _ = consumer.close().await;
-}
 
 #[tokio::test]
 async fn arc_headers_no_deep_clone() {

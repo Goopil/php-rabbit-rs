@@ -169,8 +169,6 @@ impl PublisherHandle {
 
         if !self.byte_budget.try_reserve(payload_bytes) {
             self.metrics.record_backpressure();
-            self.metrics
-                .record_backpressure_duration(Duration::from_millis(2));
             return Err(PublishError::new(
                 PublishErrorKind::Backpressure,
                 "publisher byte budget is exhausted",
@@ -180,8 +178,6 @@ impl PublisherHandle {
         let permit = self.capacity.clone().try_acquire_owned().map_err(|_| {
             self.byte_budget.release(payload_bytes);
             self.metrics.record_backpressure();
-            self.metrics
-                .record_backpressure_duration(Duration::from_millis(2));
             PublishError::new(
                 PublishErrorKind::Backpressure,
                 "publisher global capacity is exhausted",
@@ -205,8 +201,6 @@ impl PublisherHandle {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.byte_budget.release(payload_bytes);
                 self.metrics.record_backpressure();
-                self.metrics
-                    .record_backpressure_duration(Duration::from_millis(2));
                 Err(PublishError::new(
                     PublishErrorKind::Backpressure,
                     "publisher command buffer is full",
@@ -483,13 +477,7 @@ impl ActorState {
         all.extend(self.publishing.drain().map(|(_, retained)| retained));
         all.extend(self.ledger.drain().map(|in_flight| in_flight.retained));
         all.sort_by_key(|retained| retained.sequence);
-        let replay_count = all.len();
         self.replay = all.into_iter().collect();
-        for _ in 0..replay_count {
-            self.metrics.record_replay();
-        }
-        self.metrics
-            .record_replay_depth(u64::try_from(self.replay.len()).unwrap_or(u64::MAX));
         self.confirmations = FuturesUnordered::new();
         self.publish_in_flight = FuturesUnordered::new();
     }
@@ -509,7 +497,6 @@ impl ActorState {
         }
         self.confirmations = FuturesUnordered::new();
         self.publish_in_flight = FuturesUnordered::new();
-        record_publisher_metrics(self);
     }
 
     fn expire_replay(&mut self) {
@@ -530,8 +517,6 @@ impl ActorState {
             }
         }
         self.replay = retained;
-        self.metrics
-            .record_replay_depth(u64::try_from(self.replay.len()).unwrap_or(u64::MAX));
     }
 }
 
@@ -627,9 +612,6 @@ async fn accept_publish(state: &mut ActorState, retained: RetainedPublish) {
         }
         Phase::Suspended => {
             state.replay.push_back(retained);
-            state
-                .metrics
-                .record_replay_depth(u64::try_from(state.replay.len()).unwrap_or(u64::MAX));
         }
         Phase::FailedPermanent => {
             state.byte_budget.release(retained.payload_bytes);
@@ -717,10 +699,6 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         let Some(channel) = state.channel.clone() else {
             state.replay.push_back(retained);
             state.replay.extend(pending);
-            state
-                .metrics
-                .record_replay_depth(u64::try_from(state.replay.len()).unwrap_or(u64::MAX));
-            record_publisher_metrics(state);
             return;
         };
 
@@ -750,8 +728,6 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         );
 
         state.publishing.insert(sequence, retained);
-
-        record_publisher_metrics(state);
 
         let channel_for_pub = Arc::clone(&channel);
         let mut tagged = TaggedFuture {
@@ -784,8 +760,6 @@ fn handle_publish_completion(
         return;
     };
 
-    record_publisher_metrics(state);
-
     match result {
         Ok(receipt) => {
             if state.config.confirms {
@@ -810,7 +784,6 @@ fn handle_publish_completion(
                 }));
             } else {
                 state.byte_budget.release(retained.payload_bytes);
-                record_publisher_metrics(state);
                 let _ = retained.completion.send(Ok(PublishOutcome::Confirmed {
                     message_id: retained.request.properties.message_id.clone(),
                 }));
@@ -819,15 +792,10 @@ fn handle_publish_completion(
         Err(error) if error.is_recoverable() => {
             state.replay.push_back(retained);
             state.publish_in_flight.clear();
-            state.metrics.record_replay();
-            state
-                .metrics
-                .record_replay_depth(u64::try_from(state.replay.len()).unwrap_or(u64::MAX));
             state.suspend(state.generation);
         }
         Err(error) => {
             state.byte_budget.release(retained.payload_bytes);
-            record_publisher_metrics(state);
             complete_error(retained, transport_publish_error(&error));
         }
     }
@@ -926,7 +894,6 @@ fn resolve_confirmation(
     match result {
         ConfirmationResult::TimedOut => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
-            record_publisher_metrics(state);
             complete_error(
                 in_flight.retained,
                 PublishError::new(
@@ -937,22 +904,16 @@ fn resolve_confirmation(
         }
         ConfirmationResult::Completed(Err(error)) if error.is_recoverable() => {
             state.replay.push_back(in_flight.retained);
-            state.metrics.record_replay();
-            state
-                .metrics
-                .record_replay_depth(u64::try_from(state.replay.len()).unwrap_or(u64::MAX));
             state.suspend(generation);
         }
         ConfirmationResult::Completed(Err(error)) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
-            record_publisher_metrics(state);
             complete_error(in_flight.retained, transport_publish_error(&error));
         }
         ConfirmationResult::Completed(Ok(
             PublishConfirmation::Ack(Some(returned)) | PublishConfirmation::Nack(Some(returned)),
         )) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
-            record_publisher_metrics(state);
             state.metrics.record_return();
             let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(
@@ -970,13 +931,11 @@ fn resolve_confirmation(
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Ack(None))) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
-            record_publisher_metrics(state);
             let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(in_flight.retained, PublishOutcome::Confirmed { message_id });
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Nack(None))) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
-            record_publisher_metrics(state);
             complete_error(
                 in_flight.retained,
                 PublishError::new(
@@ -987,7 +946,6 @@ fn resolve_confirmation(
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::NotRequested)) => {
             state.byte_budget.release(in_flight.retained.payload_bytes);
-            record_publisher_metrics(state);
             complete_error(
                 in_flight.retained,
                 PublishError::new(
@@ -1005,20 +963,6 @@ fn complete_outcome(retained: RetainedPublish, outcome: PublishOutcome) {
 
 fn complete_error(retained: RetainedPublish, error: PublishError) {
     let _ = retained.completion.send(Err(error));
-}
-
-fn record_publisher_metrics(state: &ActorState) {
-    let publishing_depth =
-        u64::try_from(state.publishing.len() + state.ledger.len() + state.replay.len())
-            .unwrap_or(u64::MAX);
-    state.metrics.record_publishing_depth(publishing_depth);
-
-    let total_bytes = state.byte_budget.current();
-    state.metrics.record_publishing_bytes(total_bytes);
-
-    state
-        .metrics
-        .record_replay_depth(u64::try_from(state.replay.len()).unwrap_or(u64::MAX));
 }
 
 fn transport_publish_error(error: &TransportError) -> PublishError {

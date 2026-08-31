@@ -88,7 +88,6 @@ describe('native normalization', function (): void {
                 'buckets' => [1, 5, 30, 120],
                 'max_buckets' => 8,
                 'queue_expiry_margin' => 60,
-                'detection_timeout' => 5,
             ],
             'dead_letter' => null,
             'delivery_limit' => null,

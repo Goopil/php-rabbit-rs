@@ -489,7 +489,7 @@ final class ConfigNormalizer
     }
 
     /**
-     * @return array{mode: string, buckets: list<int>, max_buckets: int, queue_expiry_margin: int, detection_timeout: int}
+     * @return array{mode: string, buckets: list<int>, max_buckets: int, queue_expiry_margin: int}
      */
     private static function delay(mixed $delay): array
     {
@@ -523,10 +523,6 @@ final class ConfigNormalizer
             'queue_expiry_margin' => self::positiveInt(
                 $delay['queue_expiry_margin'] ?? 60,
                 'delay.queue_expiry_margin',
-            ),
-            'detection_timeout' => self::positiveInt(
-                $delay['detection_timeout'] ?? 5,
-                'delay.detection_timeout',
             ),
         ];
     }

@@ -337,27 +337,6 @@ pub struct DelayConfig {
     pub max_buckets: usize,
     #[serde(deserialize_with = "deserialize_duration_seconds")]
     pub queue_expiry_margin: Duration,
-    #[serde(deserialize_with = "deserialize_duration_seconds")]
-    pub detection_timeout: Duration,
-}
-
-impl DelayConfig {
-    #[must_use]
-    pub const fn new(
-        mode: DelayMode,
-        buckets: Vec<Duration>,
-        max_buckets: usize,
-        queue_expiry_margin: Duration,
-        detection_timeout: Duration,
-    ) -> Self {
-        Self {
-            mode,
-            buckets,
-            max_buckets,
-            queue_expiry_margin,
-            detection_timeout,
-        }
-    }
 }
 
 impl Default for DelayConfig {
@@ -372,7 +351,6 @@ impl Default for DelayConfig {
             ],
             max_buckets: 8,
             queue_expiry_margin: Duration::from_mins(1),
-            detection_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -678,12 +656,6 @@ impl Config {
                 "TTL buckets must be greater than zero",
             ));
         }
-        if delay.detection_timeout.is_zero() {
-            return Err(ConfigError::new(
-                "delay.detection_timeout",
-                "detection_timeout must be greater than zero",
-            ));
-        }
         Ok(())
     }
 }
@@ -827,7 +799,6 @@ impl ConfigFingerprint {
         hash_value(&mut digest, &format!("{:?}", config.delay.buckets));
         digest.update(config.delay.max_buckets.to_be_bytes());
         digest.update(config.delay.queue_expiry_margin.as_secs().to_be_bytes());
-        digest.update(config.delay.detection_timeout.as_secs().to_be_bytes());
 
         if let Some(dl) = &config.dead_letter {
             hash_value(&mut digest, "dead_letter");

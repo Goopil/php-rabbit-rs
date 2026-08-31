@@ -642,8 +642,7 @@ fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> Transp
 /// Compiles a delay strategy from configuration for the publisher actor.
 ///
 /// In plugin mode the strategy is `Plugin`; in TTL mode it is `TtlBuckets`.
-/// In auto mode we default to `Plugin` for the publisher path — the consumer
-/// path performs runtime detection via `DelayStrategyResolver`.
+/// In auto mode we default to `Plugin` for the publisher path.
 fn compile_delay_strategy(config: &ValidatedConfig) -> crate::topology::delay::DelayStrategy {
     use crate::{
         config::DelayMode,

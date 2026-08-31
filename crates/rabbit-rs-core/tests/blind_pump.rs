@@ -167,16 +167,14 @@ async fn blind_batch_bypasses_the_publisher_actor() {
     gates[1].wait_entered().await;
 
     // The actor path retains one capacity permit per pending publication; the
-    // pump path does not. Zero in-flight permits — and a zero peak publishing
-    // depth — while both publishes are still pending proves no publish
-    // command ever reached the actor.
+    // pump path does not. Zero in-flight permits while both publishes are
+    // still pending proves no publish command ever reached the actor.
     let (in_flight, capacity) = pool.publisher_utilization();
     assert_eq!(
         in_flight, 0,
         "no actor permit may be retained in blind mode"
     );
     assert_eq!(capacity, 8);
-    assert_eq!(pool.metrics_snapshot().publishing_depth_hwm, 0);
 
     for gate in &gates {
         assert!(gate.release());

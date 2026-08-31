@@ -1,12 +1,5 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
@@ -17,10 +10,10 @@ use rabbit_rs_core::{
         PublishWaiter, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
         delay::DelayRouter,
     },
-    topology::delay::{DelayPluginProbe, DelayStrategy, DelayStrategyResolver, TtlBucketPlan},
+    topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
         ExchangeKind, ExchangeSpec, PublishConfirmation, PublishRequest as TransportRequest,
-        PublisherChannel, QueueSpec, ReturnedMessage, Transport, TransportError, TransportResult,
+        PublisherChannel, QueueSpec, ReturnedMessage, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -199,65 +192,28 @@ mod helper {
     }
 
     pub fn ttl_config() -> DelayConfig {
-        DelayConfig::new(
-            DelayMode::Ttl,
-            vec![
+        DelayConfig {
+            mode: DelayMode::Ttl,
+            buckets: vec![
                 Duration::from_secs(1),
                 Duration::from_secs(5),
                 Duration::from_secs(30),
             ],
-            8,
-            Duration::from_mins(1),
-            Duration::from_millis(50),
-        )
+            max_buckets: 8,
+            queue_expiry_margin: Duration::from_mins(1),
+        }
     }
 
     pub fn delay_config(mode: DelayMode) -> DelayConfig {
-        DelayConfig::new(
+        DelayConfig {
             mode,
-            vec![
+            buckets: vec![
                 Duration::from_secs(1),
                 Duration::from_secs(5),
                 Duration::from_secs(30),
             ],
-            8,
-            Duration::from_mins(1),
-            Duration::from_millis(50),
-        )
-    }
-
-    pub struct FixedProbe {
-        available: bool,
-        calls: AtomicUsize,
-    }
-
-    impl FixedProbe {
-        pub const fn new(available: bool) -> Self {
-            Self {
-                available,
-                calls: AtomicUsize::new(0),
-            }
-        }
-
-        pub fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl DelayPluginProbe for FixedProbe {
-        async fn is_available(&self) -> TransportResult<bool> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(self.available)
-        }
-    }
-
-    pub struct PendingProbe;
-
-    #[async_trait]
-    impl DelayPluginProbe for PendingProbe {
-        async fn is_available(&self) -> TransportResult<bool> {
-            std::future::pending().await
+            max_buckets: 8,
+            queue_expiry_margin: Duration::from_mins(1),
         }
     }
 }
@@ -1432,8 +1388,7 @@ fn delay_config_is_validated_and_deserialized_from_config() {
             "mode": "ttl",
             "buckets": [1, 5, 30],
             "max_buckets": 8,
-            "queue_expiry_margin": 60,
-            "detection_timeout": 5
+            "queue_expiry_margin": 60
         }
     });
 
@@ -1452,7 +1407,6 @@ fn delay_config_is_validated_and_deserialized_from_config() {
     );
     assert_eq!(delay.max_buckets, 8);
     assert_eq!(delay.queue_expiry_margin, Duration::from_mins(1));
-    assert_eq!(delay.detection_timeout, Duration::from_secs(5));
 }
 
 #[test]
@@ -1486,8 +1440,7 @@ fn delay_config_rejects_empty_buckets() {
             "mode": "ttl",
             "buckets": [],
             "max_buckets": 8,
-            "queue_expiry_margin": 60,
-            "detection_timeout": 5
+            "queue_expiry_margin": 60
         }
     });
 
@@ -1499,79 +1452,9 @@ fn delay_config_rejects_empty_buckets() {
     assert!(error.path().contains("delay.buckets"));
 }
 
-#[tokio::test(start_paused = true)]
-async fn auto_mode_detects_plugin_and_falls_back_to_ttl_if_absent() {
-    struct NeverAvailable;
-
-    #[async_trait]
-    impl DelayPluginProbe for NeverAvailable {
-        async fn is_available(&self) -> TransportResult<bool> {
-            Ok(false)
-        }
-    }
-
-    let mut resolver = DelayStrategyResolver::new();
-    let config = DelayConfig::new(
-        DelayMode::Auto,
-        vec![Duration::from_secs(5)],
-        8,
-        Duration::from_mins(1),
-        Duration::from_millis(50),
-    );
-
-    let strategy = resolver
-        .resolve(&config, 1, Arc::new(NeverAvailable))
-        .await
-        .expect("fallback strategy");
-
-    assert!(
-        matches!(strategy, DelayStrategy::TtlBuckets(_)),
-        "Auto mode must fall back to TTL when plugin is absent"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Delay routing tests (from delay_routing.rs)
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn auto_selects_delayed_exchange_when_plugin_is_available() {
-    let probe = Arc::new(FixedProbe::new(true));
-    let mut resolver = DelayStrategyResolver::new();
-
-    let strategy = resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe)
-        .await
-        .expect("plugin strategy");
-
-    assert_eq!(strategy, DelayStrategy::Plugin);
-}
-
-#[tokio::test]
-async fn auto_falls_back_to_ttl_when_plugin_is_absent() {
-    let probe = Arc::new(FixedProbe::new(false));
-    let mut resolver = DelayStrategyResolver::new();
-
-    let strategy = resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe)
-        .await
-        .expect("TTL fallback");
-
-    assert!(matches!(strategy, DelayStrategy::TtlBuckets(_)));
-}
-
-#[tokio::test]
-async fn required_plugin_fails_permanently_when_absent() {
-    let probe = Arc::new(FixedProbe::new(false));
-    let mut resolver = DelayStrategyResolver::new();
-
-    let error = resolver
-        .resolve(&delay_config(DelayMode::Plugin), 1, probe)
-        .await
-        .expect_err("plugin is required");
-
-    assert!(error.is_permanent());
-}
 
 #[test]
 fn ttl_rounds_up_to_the_next_bucket() {
@@ -1586,17 +1469,16 @@ fn ttl_rounds_up_to_the_next_bucket() {
 
 #[test]
 fn ttl_rejects_more_than_the_configured_maximum_buckets() {
-    let invalid = DelayConfig::new(
-        DelayMode::Ttl,
-        vec![
+    let invalid = DelayConfig {
+        mode: DelayMode::Ttl,
+        buckets: vec![
             Duration::from_secs(1),
             Duration::from_secs(2),
             Duration::from_secs(3),
         ],
-        2,
-        Duration::from_mins(1),
-        Duration::from_millis(50),
-    );
+        max_buckets: 2,
+        queue_expiry_margin: Duration::from_mins(1),
+    };
 
     assert!(TtlBucketPlan::compile(&invalid).is_err());
 }
@@ -1625,39 +1507,6 @@ fn negative_delay_is_rejected() {
     );
 
     assert!(DelayRouter::route(&strategy, &Destination::new("jobs", "high"), -1).is_err());
-}
-
-#[tokio::test]
-async fn plugin_detection_is_cached_per_connection_generation() {
-    let probe = Arc::new(FixedProbe::new(true));
-    let mut resolver = DelayStrategyResolver::new();
-
-    resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe.clone())
-        .await
-        .expect("first resolution");
-    resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe.clone())
-        .await
-        .expect("cached resolution");
-    resolver
-        .resolve(&delay_config(DelayMode::Auto), 2, probe.clone())
-        .await
-        .expect("new generation");
-
-    assert_eq!(probe.calls(), 2);
-}
-
-#[tokio::test(start_paused = true)]
-async fn auto_detection_timeout_is_bounded_and_falls_back_to_ttl() {
-    let mut resolver = DelayStrategyResolver::new();
-
-    let strategy = resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, Arc::new(PendingProbe))
-        .await
-        .expect("bounded TTL fallback");
-
-    assert!(matches!(strategy, DelayStrategy::TtlBuckets(_)));
 }
 
 // ---------------------------------------------------------------------------

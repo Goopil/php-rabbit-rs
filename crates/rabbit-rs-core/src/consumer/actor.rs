@@ -324,7 +324,6 @@ impl ActorState {
             }
             self.metrics.record_delivery();
         }
-        record_consumer_buffer_metrics(self);
     }
 
     fn record_source_error(&mut self, error: ConsumerError) {
@@ -371,37 +370,12 @@ impl ActorState {
                 *bytes = bytes.saturating_add(delivery_bytes);
             }
         }
-        record_consumer_buffer_metrics(self);
     }
 
     fn try_drain_pending(&mut self) {
         self.drain_pending();
         self.dispatch();
     }
-}
-
-fn record_consumer_buffer_metrics(state: &ActorState) {
-    let total_depth: u64 = state
-        .buffers
-        .values()
-        .map(|b| u64::try_from(b.len()).unwrap_or(u64::MAX))
-        .sum();
-    state.metrics.record_consumer_buffer_depth(total_depth);
-
-    let total_bytes: u64 = state.buffered_bytes.values().sum();
-    state.metrics.record_consumer_buffer_bytes(total_bytes);
-
-    let lane_depth = state
-        .settlement_queues
-        .values()
-        .map(|q| u64::try_from(q.len()).unwrap_or(u64::MAX))
-        .sum::<u64>()
-        + state
-            .settle_through_queues
-            .values()
-            .map(|q| u64::try_from(q.len()).unwrap_or(u64::MAX))
-            .sum::<u64>();
-    state.metrics.record_settlement_lane_depth(lane_depth);
 }
 
 #[allow(clippy::too_many_lines)]
@@ -462,7 +436,6 @@ pub(crate) async fn run_actor(
                             if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
                                 *bytes = bytes.saturating_add(delivery_bytes);
                             }
-                            record_consumer_buffer_metrics(&state);
                             state.dispatch();
                         } else {
                             state.pending_incoming.push_back((subscription.clone(), delivery));
@@ -505,10 +478,8 @@ pub(crate) async fn run_actor(
                     let params = SettleParams { token, settlement };
                     if state.settlement_in_flight.contains(&channel_key) {
                         state.settlement_queues.entry(channel_key).or_default().push_back(params);
-                        record_consumer_buffer_metrics(&state);
                     } else {
                         launch_settlement(&mut state, channel_key, params);
-                        record_consumer_buffer_metrics(&state);
                     }
                 }
                 Some(ConsumerCommand::SettleThrough { token }) => {
@@ -558,10 +529,8 @@ pub(crate) async fn run_actor(
                             };
                             if state.settlement_in_flight.contains(&channel_key) {
                                 state.settle_through_queues.entry(channel_key).or_default().push_back(params);
-                                record_consumer_buffer_metrics(&state);
                             } else {
                                 launch_settle_through(&mut state, channel_key, params);
-                                record_consumer_buffer_metrics(&state);
                             }
                         }
                         Err(error) => {
@@ -647,13 +616,10 @@ pub(crate) async fn run_actor(
                     if let Some(bytes) = state.buffered_bytes.get_mut(&settlement_result.token.subscription) {
                         *bytes = bytes.saturating_sub(delivery_bytes);
                     }
-                    record_consumer_buffer_metrics(&state);
                     state.try_drain_pending();
                     if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
                         ledger.pending.remove(&settlement_result.token.delivery_tag);
                     }
-                } else {
-                    record_consumer_buffer_metrics(&state);
                 }
 
                 settlement_result.token.settling.store(false, std::sync::atomic::Ordering::Release);
@@ -739,7 +705,6 @@ pub(crate) async fn run_actor(
                             }
                         }
                     }
-                    record_consumer_buffer_metrics(&state);
                     state.try_drain_pending();
                     if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
                         for tag in (ledger.acked_prefix + 1)..=target_tag {
@@ -749,8 +714,6 @@ pub(crate) async fn run_actor(
                             ledger.acked_prefix = target_tag;
                         }
                     }
-                } else {
-                    record_consumer_buffer_metrics(&state);
                 }
 
                 for token in &settle_through_result.affected_tokens {
@@ -1087,7 +1050,6 @@ fn drain_settlement_queue(state: &mut ActorState, channel_key: ChannelKey) {
         && let Some(next) = queue.pop_front()
     {
         launch_settlement(state, channel_key, next);
-        record_consumer_buffer_metrics(state);
         return;
     }
     state.settlement_queues.remove(&channel_key);
@@ -1095,9 +1057,7 @@ fn drain_settlement_queue(state: &mut ActorState, channel_key: ChannelKey) {
         && let Some(next) = queue.pop_front()
     {
         launch_settle_through(state, channel_key, next);
-        record_consumer_buffer_metrics(state);
         return;
     }
     state.settle_through_queues.remove(&channel_key);
-    record_consumer_buffer_metrics(state);
 }
