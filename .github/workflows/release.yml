@@ -384,8 +384,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
-          pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
+          sudo -E pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
+          sudo -E pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
 
       - name: Smoke test installed extension
         run: |
