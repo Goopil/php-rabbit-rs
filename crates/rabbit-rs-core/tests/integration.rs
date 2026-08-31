@@ -826,7 +826,7 @@ mod integration {
         }
     }
 
-    fn config_single() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
+    fn config_single(queue: &str) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
         Arc::new(
             Config {
                 brokers: vec![broker("primary", "/orders-eu")],
@@ -835,7 +835,7 @@ mod integration {
                     subscriptions: vec![SubscriptionConfig {
                         name: "jobs".to_owned(),
                         broker: "primary".to_owned(),
-                        queue: "rabbit-rs-it-publish-consume".to_owned(),
+                        queue: queue.to_owned(),
                         weight: 1,
                         priority_class: 0,
                         prefetch: 8,
@@ -963,10 +963,12 @@ mod integration {
     async fn publish_confirm_then_consume_and_ack() {
         use rabbit_rs_core::consumer::DeliveryState;
 
-        let queue = "rabbit-rs-it-publish-consume";
+        // Unique queue per test: these tests run in parallel and must not
+        // consume each other's messages.
+        let queue = "rabbit-rs-it-confirm";
         declare_queue("/orders-eu", queue).await;
 
-        let config = config_single();
+        let config = config_single(queue);
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 
@@ -1002,10 +1004,10 @@ mod integration {
     async fn release_zero_requeues_and_redispatches() {
         use rabbit_rs_core::consumer::DeliveryState;
 
-        let queue = "rabbit-rs-it-publish-consume";
+        let queue = "rabbit-rs-it-release";
         declare_queue("/orders-eu", queue).await;
 
-        let config = config_single();
+        let config = config_single(queue);
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 
@@ -1071,10 +1073,10 @@ mod integration {
 
     #[tokio::test]
     async fn bulk_publish_then_consume_all() {
-        let queue = "rabbit-rs-it-publish-consume";
+        let queue = "rabbit-rs-it-bulk";
         declare_queue("/orders-eu", queue).await;
 
-        let config = config_single();
+        let config = config_single(queue);
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 
