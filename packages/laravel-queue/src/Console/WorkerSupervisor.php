@@ -111,11 +111,6 @@ class WorkerSupervisor
         return $this->workers;
     }
 
-    public function maxRestarts(): int
-    {
-        return $this->maxRestarts;
-    }
-
     /**
      * Starts the supervisor loop. Each child runs queue:work with the configured
      * connection and queue. On signal SIGTERM/SIGINT, children are stopped
