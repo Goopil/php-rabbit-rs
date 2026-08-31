@@ -108,7 +108,7 @@ mod helper {
 
     pub fn subscription(queue: &str) -> SubscriptionConfig {
         SubscriptionConfig {
-            name: "jobs".to_owned(),
+            name: queue.to_owned(),
             broker: "primary".to_owned(),
             queue: queue.to_owned(),
             weight: 1,

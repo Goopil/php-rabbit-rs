@@ -570,51 +570,7 @@ impl Config {
             .collect();
 
         for worker in &mut self.workers {
-            if worker.subscriptions.is_empty() {
-                return Err(ConfigError::new(
-                    format!("workers.{}.subscriptions", worker.name),
-                    "at least one subscription is required",
-                ));
-            }
-            for subscription in &worker.subscriptions {
-                if !broker_names.contains(subscription.broker.as_str()) {
-                    return Err(ConfigError::new(
-                        format!(
-                            "workers.{}.subscriptions.{}.broker",
-                            worker.name, subscription.name
-                        ),
-                        "references an unknown broker",
-                    ));
-                }
-                if subscription.weight == 0 {
-                    return Err(ConfigError::new(
-                        format!(
-                            "workers.{}.subscriptions.{}.weight",
-                            worker.name, subscription.name
-                        ),
-                        "weight must be greater than zero",
-                    ));
-                }
-                if subscription.prefetch == 0 {
-                    return Err(ConfigError::new(
-                        format!(
-                            "workers.{}.subscriptions.{}.prefetch",
-                            worker.name, subscription.name
-                        ),
-                        "prefetch must be greater than zero",
-                    ));
-                }
-
-                if subscription.starvation_after.is_zero() {
-                    return Err(ConfigError::new(
-                        format!(
-                            "workers.{}.subscriptions.{}.starvation_after",
-                            worker.name, subscription.name
-                        ),
-                        "starvation_after must be greater than zero",
-                    ));
-                }
-            }
+            Self::validate_worker(worker, &broker_names)?;
 
             worker
                 .subscriptions
@@ -649,6 +605,54 @@ impl Config {
             queue_durable: self.queue_durable,
             fingerprint,
         })
+    }
+
+    fn validate_worker(
+        worker: &WorkerProfile,
+        broker_names: &HashSet<&str>,
+    ) -> Result<(), ConfigError> {
+        let worker_name = worker.name.as_str();
+        if worker.subscriptions.is_empty() {
+            return Err(ConfigError::new(
+                format!("workers.{worker_name}.subscriptions"),
+                "at least one subscription is required",
+            ));
+        }
+        let mut subscription_names: HashSet<&str> = HashSet::new();
+        for subscription in &worker.subscriptions {
+            let path = format!("workers.{worker_name}.subscriptions.{}", subscription.name);
+            if !subscription_names.insert(subscription.name.as_str()) {
+                return Err(ConfigError::new(
+                    path,
+                    "subscription name must be unique within a worker profile",
+                ));
+            }
+            if !broker_names.contains(subscription.broker.as_str()) {
+                return Err(ConfigError::new(
+                    path + ".broker",
+                    "references an unknown broker",
+                ));
+            }
+            if subscription.weight == 0 {
+                return Err(ConfigError::new(
+                    path + ".weight",
+                    "weight must be greater than zero",
+                ));
+            }
+            if subscription.prefetch == 0 {
+                return Err(ConfigError::new(
+                    path + ".prefetch",
+                    "prefetch must be greater than zero",
+                ));
+            }
+            if subscription.starvation_after.is_zero() {
+                return Err(ConfigError::new(
+                    path + ".starvation_after",
+                    "starvation_after must be greater than zero",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn validate_delay(delay: &DelayConfig) -> Result<(), ConfigError> {
@@ -1091,6 +1095,28 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions.default.prefetch");
+    }
+
+    #[test]
+    fn rejects_duplicate_subscription_names_within_a_worker() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        let mut duplicated = worker(16);
+        duplicated.subscriptions.push(SubscriptionConfig {
+            name: "default".to_owned(),
+            broker: "default".to_owned(),
+            queue: "jobs.other".to_owned(),
+            ..subscription(16)
+        });
+        candidate.workers = vec![duplicated];
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "workers.main.subscriptions.default");
+        assert!(
+            error
+                .to_string()
+                .contains("subscription name must be unique within a worker profile")
+        );
     }
 
     #[test]
