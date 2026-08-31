@@ -364,6 +364,8 @@ jobs:
           extensions: json
 
       - name: Install PIE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           curl -fL --output /tmp/pie.phar https://github.com/php/pie/releases/latest/download/pie.phar
           gh attestation verify --owner php /tmp/pie.phar
