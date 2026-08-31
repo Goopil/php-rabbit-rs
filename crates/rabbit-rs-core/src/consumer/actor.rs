@@ -80,11 +80,6 @@ pub(crate) enum ConsumerCommand {
     SettleThrough {
         token: Arc<DeliveryTokenInner>,
     },
-    UpdateGeneration {
-        subscription: SubscriptionId,
-        generation: u64,
-        completed: oneshot::Sender<Result<(), ConsumerError>>,
-    },
     Close(oneshot::Sender<()>),
 }
 
@@ -544,25 +539,6 @@ pub(crate) async fn run_actor(
                             });
                         }
                     }
-                }
-                Some(ConsumerCommand::UpdateGeneration {
-                    subscription,
-                    generation,
-                    completed,
-                }) => {
-                    let result = state.subscriptions.get_mut(&subscription).map_or_else(
-                        || {
-                            Err(ConsumerError::new(
-                                ConsumerErrorKind::InvalidSubscription,
-                                "cannot update an unknown subscription",
-                            ))
-                        },
-                        |runtime| {
-                            runtime.generation = generation;
-                            Ok(())
-                        },
-                    );
-                    let _ = completed.send(result);
                 }
                 Some(ConsumerCommand::Close(completed)) => {
                     // Cancel pending settlements and clear queued work so close

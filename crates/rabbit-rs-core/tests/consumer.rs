@@ -12,7 +12,7 @@ use rabbit_rs_core::{
         SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     consumer::{
-        ConsumerErrorKind, ConsumerSet, DeliveryState, Settlement, Subscription, SubscriptionId,
+        ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
         SubscriptionPolicy,
     },
     metrics::Metrics,
@@ -500,43 +500,6 @@ async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
         );
     }
     assert_eq!(consumer.next().await.expect("delivery").payload, b"job"[..]);
-}
-
-#[tokio::test(start_paused = true)]
-async fn stale_generation_ack_is_rejected_without_touching_the_new_channel() {
-    let transport = MockTransport::default();
-    transport.push_delivery(Ok(delivery(42, b"job")));
-    let id = SubscriptionId::new("jobs");
-    let consumer = ConsumerSet::spawn_with_metrics(
-        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
-        Metrics::default(),
-    )
-    .await
-    .expect("consumer set");
-    let item = consumer.next().await.expect("delivery");
-    consumer
-        .update_generation(id, 2)
-        .await
-        .expect("new generation");
-
-    item.ack().await.expect("ACK enqueued (fire-and-forget)");
-
-    tokio::time::advance(Duration::from_millis(10)).await;
-    tokio::task::yield_now().await;
-
-    let errors = consumer.drain_errors();
-    assert!(
-        !errors.is_empty(),
-        "expected stale-generation settlement error"
-    );
-    assert_eq!(errors[0].kind, ConsumerErrorKind::StaleGeneration);
-    assert_eq!(item.state(), DeliveryState::Lost);
-    assert!(
-        !transport
-            .operations()
-            .iter()
-            .any(|operation| matches!(operation, TransportOperation::Ack { .. }))
-    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -1049,8 +1012,7 @@ async fn settle_through_acks_contiguous_prefix() {
 
     // Ack through d3 — should ack 1, 2, 3 with multiple=true
     consumer
-        .ack_through(&d3)
-        .await
+        .try_settle_through(d3.inner_token().clone())
         .expect("ack through enqueued");
 
     tokio::time::advance(Duration::from_millis(10)).await;
@@ -1086,8 +1048,7 @@ async fn settle_through_rejects_non_contiguous_prefix() {
     let d3 = consumer.next().await.expect("d3"); // tag 3
 
     consumer
-        .ack_through(&d3)
-        .await
+        .try_settle_through(d3.inner_token().clone())
         .expect("ack through enqueued (fire-and-forget)");
 
     tokio::time::advance(Duration::from_millis(10)).await;
@@ -1492,8 +1453,7 @@ async fn fire_and_forget_ack_returns_immediately() {
 
     let delivery = handle.next().await.unwrap();
 
-    let result = handle.try_settle(delivery.inner_token().clone(), Settlement::Ack);
-    assert!(result.is_ok());
+    delivery.ack().await.expect("ack enqueued");
 
     tokio::time::advance(Duration::from_millis(10)).await;
     tokio::task::yield_now().await;
@@ -1519,9 +1479,7 @@ async fn settlement_error_surfaces_via_drain_errors() {
 
     let delivery = handle.next().await.unwrap();
 
-    handle
-        .try_settle(delivery.inner_token().clone(), Settlement::Ack)
-        .unwrap();
+    delivery.ack().await.expect("ack enqueued");
 
     tokio::time::advance(Duration::from_millis(10)).await;
     tokio::task::yield_now().await;
@@ -1618,9 +1576,7 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
         for tag in 1..=300u64 {
             let delivery = handle.next().await.expect("delivery must keep flowing");
             assert_eq!(delivery.delivery_tag(), tag);
-            handle
-                .try_settle(delivery.inner_token().clone(), Settlement::Ack)
-                .expect("settle enqueued");
+            delivery.ack().await.expect("ack enqueued");
             tokio::time::advance(Duration::from_millis(1)).await;
             tokio::task::yield_now().await;
         }

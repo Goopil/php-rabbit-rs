@@ -13,8 +13,8 @@ use std::sync::{
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use super::{
-    ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, SettleError, Settlement,
-    SettlementError, SubscriptionId, actor::ConsumerCommand, set::ConsumerSetHandle,
+    ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, SettleError, SettlementError,
+    actor::ConsumerCommand, set::ConsumerSetHandle,
 };
 use crate::metrics::MetricsSnapshot;
 
@@ -129,32 +129,11 @@ impl ConsumerHandle {
         errors
     }
 
-    /// Fire-and-forget settlement routed to the set that produced the token.
-    ///
-    /// Unlike [`ConsumerSetHandle::try_settle`], which sends through its own
-    /// actor, this reads the routing channel from the token itself so a
+    /// Fire-and-forget batch settlement routed to the set that produced the
+    /// token. The routing channel is read from the token itself so a
     /// settlement always reaches the originating broker regardless of which
     /// source delivered it. Does not perform the pending→terminal CAS — the
     /// caller is responsible for ensuring the delivery is not double-settled.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SettleError::ChannelFull`] when the originating actor's
-    /// command channel is at capacity, or [`SettleError::Closed`] when it
-    /// has stopped.
-    pub fn try_settle(
-        &self,
-        token: std::sync::Arc<DeliveryTokenInner>,
-        settlement: Settlement,
-    ) -> Result<(), SettleError> {
-        let commands = token.commands.clone();
-        commands
-            .try_send(ConsumerCommand::Settle { token, settlement })
-            .map_err(|e| map_try_send_error(&e))
-    }
-
-    /// Fire-and-forget batch settlement routed to the set that produced the
-    /// token. See [`Self::try_settle`] for the routing semantics.
     ///
     /// # Errors
     ///
@@ -324,53 +303,6 @@ impl ConsumerHandle {
         Err(self
             .take_pending_error()
             .unwrap_or_else(ConsumerError::closed))
-    }
-
-    /// Acknowledges a contiguous prefix of deliveries up to and including the
-    /// given delivery, routed to the set that produced it. See
-    /// [`ConsumerSetHandle::ack_through`] for the prefix semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the originating actor's command channel is
-    /// full or closed.
-    #[allow(clippy::unused_async)]
-    pub async fn ack_through(&self, delivery: &Delivery) -> Result<(), ConsumerError> {
-        self.try_settle_through(delivery.inner_token().clone())
-            .map_err(|e| match e {
-                SettleError::ChannelFull => ConsumerError::new(
-                    ConsumerErrorKind::SettlementInProgress,
-                    "settlement command channel is full",
-                ),
-                SettleError::Closed => ConsumerError::closed(),
-            })
-    }
-
-    /// Records a new connection generation for one subscription on whichever
-    /// source owns it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when no source owns the subscription or an
-    /// actor is unavailable.
-    pub async fn update_generation(
-        &self,
-        subscription: SubscriptionId,
-        generation: u64,
-    ) -> Result<(), ConsumerError> {
-        let mut first_error = None;
-        for source in &self.inner.sources {
-            match source
-                .update_generation(subscription.clone(), generation)
-                .await
-            {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        Err(first_error.unwrap_or_else(ConsumerError::closed))
     }
 
     /// Closes every underlying set and wakes all pending calls to
