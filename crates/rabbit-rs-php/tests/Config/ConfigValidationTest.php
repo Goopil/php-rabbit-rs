@@ -10,7 +10,7 @@ function validConfigWithWorkers(): array
             'hosts' => [['host' => '127.0.0.1', 'port' => 5672]],
             'vhost' => '/',
             'credentials' => ['username' => 'guest', 'password' => 'native-password-must-stay-secret'],
-            'tls' => ['enabled' => false, 'server_name' => null],
+            'tls' => ['enabled' => false],
             'heartbeat' => 30,
         ]],
         'workers' => [[
@@ -57,15 +57,15 @@ describe('config validation', function () {
         );
     });
 
-    it('rejects legacy max_in_flight with the canonical path', function () {
+    it('rejects legacy max_in_flight as an unknown field', function () {
         $legacy = validConfigWithWorkers();
         $legacy['workers'][0]['max_in_flight'] = 64;
         unset($legacy['workers'][0]['scheduler']['max_in_flight']);
 
         expect(fn () => new \Goopil\RabbitRs\Pool($legacy))->toThrow(
             function (\Goopil\RabbitRs\Exception $e): void {
-                expect($e->getMessage())->toContain('workers.main.max_in_flight');
-                expect($e->getMessage())->toContain('workers.main.scheduler.max_in_flight');
+                expect($e->getMessage())->toContain('unknown field `max_in_flight`');
+                expect($e->getMessage())->toContain('`name`, `subscriptions`, `scheduler`');
             },
         );
     });
