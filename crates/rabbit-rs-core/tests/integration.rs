@@ -813,8 +813,17 @@ async fn closing_a_multi_broker_consumer_closes_every_brokers_channels() {
 mod integration {
     use super::*;
 
+    /// Real-broker helper: the lab provisions the `rabbit_rs` user (not
+    /// `guest`) on `localhost:5672` with per-vhost permissions.
     fn broker(name: &str, vhost: &str) -> BrokerConfig {
-        crate::common::broker(name, vhost, "rabbit_rs_lab")
+        BrokerConfig {
+            name: name.to_owned(),
+            hosts: vec![rabbit_rs_core::config::Endpoint::new("localhost", 5672)],
+            vhost: vhost.to_owned(),
+            credentials: rabbit_rs_core::config::Credentials::new("rabbit_rs", "rabbit_rs_lab"),
+            tls: rabbit_rs_core::config::TlsConfig::disabled(),
+            heartbeat: std::time::Duration::from_secs(30),
+        }
     }
 
     fn config_single() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
