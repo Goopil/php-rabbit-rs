@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig,
-        PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
-        ValidatedConfig, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, Credentials, DeadLetterConfig,
+        DelayConfig, Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig,
+        SubscriptionConfig, TlsConfig, TopologyMode, ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,

@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -810,7 +812,6 @@ async fn closing_a_multi_broker_consumer_closes_every_brokers_channels() {
 #[cfg(feature = "integration")]
 mod integration {
     use super::*;
-    use crate::common;
 
     fn broker(name: &str, vhost: &str) -> BrokerConfig {
         crate::common::broker(name, vhost, "rabbit_rs_lab")
