@@ -118,6 +118,11 @@ it('increases size after push', function () {
     $this->queue->push('stdClass', ['size' => 'test']);
     $this->queue->push('stdClass', ['size' => 'test2']);
 
+    // Publishes are batched in the native publish buffer and only reach the
+    // broker on the next flush (threshold, consumer drain, or explicit
+    // flush()); size() reads broker state, so flush before asserting.
+    $this->pool->flush();
+
     expect($this->queue->size($this->queueName))->toBeGreaterThanOrEqual(2);
 
     $this->queue->clear($this->queueName);
