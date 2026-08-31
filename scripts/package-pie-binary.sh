@@ -15,9 +15,6 @@ set -euo pipefail
 #       --ts nts \
 #       --so /path/to/rabbit_rs.so
 #
-# Self-test (no .so required):
-#   ./scripts/package-pie-binary.sh --self-test
-#
 # Produces:
 #   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
 #   php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip.sha256
@@ -31,14 +28,8 @@ EXPECTED_SO_NAME="rabbit_rs.so"
 
 # --- helpers -----------------------------------------------------------------
 
-fail() {
-    echo "FAIL: $*" >&2
-    exit 1
-}
-
-ok() {
-    echo "OK: $*"
-}
+# shellcheck source=lib-release.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-release.sh"
 
 usage() {
     cat <<'USAGE'
@@ -51,7 +42,6 @@ Options:
   --libc <libc>       glibc or musl
   --ts <mode>         nts (V1 is NTS-only; zts is not distributed)
   --so <path>         Path to the compiled rabbit_rs.so
-  --self-test         Run internal self-test (no .so needed) and exit
   -h, --help          Show this help
 
 Example:
@@ -67,7 +57,6 @@ ARCH=""
 LIBC=""
 TS=""
 SO_PATH=""
-SELF_TEST=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -77,107 +66,10 @@ while [[ $# -gt 0 ]]; do
         --libc)     LIBC="$2"; shift 2 ;;
         --ts)       TS="$2"; shift 2 ;;
         --so)       SO_PATH="$2"; shift 2 ;;
-        --self-test) SELF_TEST=1; shift ;;
         -h|--help)  usage; exit 0 ;;
         *)          fail "unknown argument: $1" ;;
     esac
 done
-
-# --- self-test mode -----------------------------------------------------------
-
-if [[ "${SELF_TEST}" -eq 1 ]]; then
-    echo "==> Running self-test"
-    VALID_PHP="8.4 8.5"
-    VALID_ARCH="x86_64 arm64"
-    VALID_LIBC="glibc musl"
-    VALID_TS="nts"
-
-    for pv in ${VALID_PHP}; do
-        for ar in ${VALID_ARCH}; do
-            for lc in ${VALID_LIBC}; do
-                for ts in ${VALID_TS}; do
-                    V="1.2.3"
-                    archive="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
-                    expected_prefix="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}"
-                    if [[ "${archive}" != "${expected_prefix}.zip" ]]; then
-                        fail "naming logic broken for ${pv}/${ar}/${lc}/${ts}: got ${archive}"
-                    fi
-                done
-            done
-        done
-    done
-    ok "naming logic for all 8 V1 combinations"
-
-    # Validate version semver
-    V="1.2.3"
-    [[ "${V}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "semver regex broken (valid case)"
-    V="1.2"
-    [[ ! "${V}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "semver regex broken (reject 1.2)"
-
-    # Validate arch
-    for ar in x86_64 arm64; do
-        case "${ar}" in
-            x86_64|arm64) : ;;
-            *) fail "arch ${ar} should be valid" ;;
-        esac
-    done
-    for ar in amd64 i386; do
-        case "${ar}" in
-            x86_64|arm64) fail "arch ${ar} should be invalid" ;;
-            *) : ;;
-        esac
-    done
-
-    # Validate libc
-    for lc in glibc musl; do
-        case "${lc}" in
-            glibc|musl) : ;;
-            *) fail "libc ${lc} should be valid" ;;
-        esac
-    done
-    for lc in bionic libc; do
-        case "${lc}" in
-            glibc|musl) fail "libc ${lc} should be invalid" ;;
-            *) : ;;
-        esac
-    done
-
-    # Validate ts
-    for ts in nts; do
-        case "${ts}" in
-            nts) : ;;
-            *) fail "ts ${ts} should be valid" ;;
-        esac
-    done
-    for ts in zts debug pthread; do
-        case "${ts}" in
-            nts) fail "ts ${ts} should be invalid" ;;
-            *) : ;;
-        esac
-    done
-
-    # Validate SBOM naming convention: sbom name = archive base + .sbom.json
-    for pv in ${VALID_PHP}; do
-        for ar in ${VALID_ARCH}; do
-            for lc in ${VALID_LIBC}; do
-                for ts in ${VALID_TS}; do
-                    V="1.2.3"
-                    archive="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}.zip"
-                    expected_sbom="php_${EXTENSION_NAME}-v${V}_php${pv}-${ar}-linux-${lc}-${ts}.sbom.json"
-                    sbom_name="${archive%.zip}.sbom.json"
-                    [[ "${sbom_name}" == "${expected_sbom}" ]] \
-                        || fail "SBOM naming broken for ${pv}/${ar}/${lc}/${ts}: got ${sbom_name} expected ${expected_sbom}"
-                done
-            done
-        done
-    done
-    ok "SBOM naming logic for all 8 V1 combinations"
-
-    ok "validation logic for version, arch, libc, ts"
-    echo ""
-    echo "Self-test passed (8 V1 artifacts, NTS only)."
-    exit 0
-fi
 
 # --- validate arguments -------------------------------------------------------
 

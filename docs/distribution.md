@@ -50,11 +50,11 @@ php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 
 Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.5.x) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in three places that must stay consistent:
 
-- `scripts/package-pie-binary.sh` — packaging script (self-tested via `--self-test`)
+- `scripts/package-pie-binary.sh` — packaging script
 - `release/pie-matrix.json` — machine-readable matrix (`ts_suffix` is always `-nts` in V1; ZTS entries are excluded)
 - `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name)
 
-`scripts/verify-pie-naming.sh` fails if any of them drifts from the pattern expected by PIE.
+`scripts/validate-distribution.sh` fails if any of them drifts from the pattern expected by PIE.
 
 macOS artifacts (`arm64-darwin-nts`) are outside the PIE matrix — `composer.json` declares `os-families: ["linux"]` — and are consumed by the Homebrew formula.
 
@@ -121,6 +121,8 @@ The validation script [`scripts/validate-distribution.sh`](../scripts/validate-d
 - Major version coherence between Cargo, the extension, and the Laravel package
 - Exactly 8 PIE matrix entries (NTS only) with unique suffixes
 - Minimum glibc version
+- PIE asset naming convention across the packaging script, the release workflow, and this document
+- Release artifacts, when archives are present: exactly 30 files (10 ZIP + 10 SHA-256 + 10 SBOM for the 8 Linux matrix entries plus 2 macOS darwin assets) with verified checksums and CycloneDX SBOMs
 
 ## Not V1 distribution channels
 

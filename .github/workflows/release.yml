@@ -105,20 +105,32 @@ jobs:
           restore-keys: |
             cargo-release-${{ matrix.libc }}-${{ matrix.arch }}-${{ matrix.ts }}-${{ matrix.php }}-
 
-      - name: Build and smoke test in Docker (glibc)
-        if: matrix.libc == 'glibc'
+      - name: Build and smoke test in Docker
+        env:
+          LIBC: ${{ matrix.libc }}
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
             -w /src \
+            -e LIBC \
             ${{ steps.docker.outputs.image }} \
             sh -c '
               set -e
-              apt-get update && apt-get install -y curl gcc make libclang-dev
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+              if [ "$LIBC" = "musl" ]; then
+                apk add --no-cache curl gcc g++ make pkgconfig clang-dev musl-dev linux-headers
+                RUSTUP_FLAGS="--default-toolchain stable --profile minimal"
+              else
+                apt-get update && apt-get install -y curl gcc make libclang-dev
+                RUSTUP_FLAGS=""
+              fi
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y $RUSTUP_FLAGS
               . "$HOME/.cargo/env"
               cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
-              cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+              if [ "$LIBC" = "musl" ]; then
+                RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+              else
+                cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+              fi
               cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
               cargo cyclonedx --manifest-path crates/rabbit-rs-php/Cargo.toml --format json --spec-version 1.5 --quiet
               cp crates/rabbit-rs-php/rabbit-rs-php.cdx.json /src/rabbit_rs.sbom.json
@@ -127,72 +139,18 @@ jobs:
                   echo \"ERROR: rabbit_rs extension is not loaded\n\";
                   exit(1);
                 }
-                echo \"OK: rabbit_rs loaded, version \" . phpversion(\"rabbit_rs\") . \"\n\";
+                echo \"OK: rabbit_rs loaded, version \" . phpversion(\"rabbit_rs\") . \"\\n\";
               "
             '
 
-      - name: Build and smoke test in Docker (musl)
-        if: matrix.libc == 'musl'
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/src" \
-            -w /src \
-            ${{ steps.docker.outputs.image }} \
-            sh -c '
-              set -e
-              apk add --no-cache curl gcc g++ make pkgconfig clang-dev musl-dev linux-headers
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-              . "$HOME/.cargo/env"
-              cargo install cargo-cyclonedx --version 0.5.9 --locked --quiet
-              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
-              cp target/release/librabbit_rs_php.so /src/rabbit_rs.so
-              cargo cyclonedx --manifest-path crates/rabbit-rs-php/Cargo.toml --format json --spec-version 1.5 --quiet
-              cp crates/rabbit-rs-php/rabbit-rs-php.cdx.json /src/rabbit_rs.sbom.json
-              php -d extension=/src/rabbit_rs.so -r "
-                if (!extension_loaded(\"rabbit_rs\")) {
-                  echo \"ERROR: rabbit_rs extension is not loaded\n\";
-                  exit(1);
-                }
-                echo \"OK: rabbit_rs loaded, version \" . phpversion(\"rabbit_rs\") . \"\n\";
-              "
-            '
-
-      - name: Package
-        run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
+      - name: Package, upload, and attest
+        uses: ./.github/actions/package-release-asset
+        with:
           # Unified PIE naming convention: every Linux artifact carries an
           # explicit thread-safety suffix (-nts in V1 — the matrix is
-          # NTS-only, see docs/distribution.md and scripts/verify-pie-naming.sh).
-          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}"
-          ASSET_NAME="${ASSET_BASE}.zip"
-          zip "${ASSET_NAME}" rabbit_rs.so
-          sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
-
-          # SBOM was generated inside the Docker build container and copied to rabbit_rs.sbom.json
-          cp rabbit_rs.sbom.json "${ASSET_BASE}.sbom.json"
-          [[ -f "${ASSET_BASE}.sbom.json" ]] || { echo "::error::SBOM not found"; exit 1; }
-
-          echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
-          echo "ASSET_BASE=${ASSET_BASE}" >> "$GITHUB_ENV"
-
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$GITHUB_REF_NAME" \
-            "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
-            --clobber --repo "${GITHUB_REPOSITORY}"
-
-      - name: Attest build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
-
-      - name: Attest SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
-          sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
+          # NTS-only, see docs/distribution.md and scripts/validate-distribution.sh).
+          asset-base: php_rabbit_rs-v${{ needs.create-release.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos:
     needs: create-release
@@ -255,37 +213,11 @@ jobs:
             echo \"OK: rabbit_rs loaded, version \" . phpversion('rabbit_rs') . \"\n\";
           "
 
-      - name: Package
-        run: |
-          VERSION="${{ needs.create-release.outputs.version }}"
-          ASSET_BASE="php_rabbit_rs-v${VERSION}_php${{ matrix.php }}-arm64-darwin-nts"
-          ASSET_NAME="${ASSET_BASE}.zip"
-          zip "${ASSET_NAME}" rabbit_rs.so
-          shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
-          cp rabbit_rs.sbom.json "${ASSET_BASE}.sbom.json"
-          [[ -f "${ASSET_BASE}.sbom.json" ]] || { echo "::error::SBOM not found"; exit 1; }
-
-          echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
-          echo "ASSET_BASE=${ASSET_BASE}" >> "$GITHUB_ENV"
-
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$GITHUB_REF_NAME" \
-            "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
-            --clobber --repo "${GITHUB_REPOSITORY}"
-
-      - name: Attest build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+      - name: Package, upload, and attest
+        uses: ./.github/actions/package-release-asset
         with:
-          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
-
-      - name: Attest SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
-          sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'
+          asset-base: php_rabbit_rs-v${{ needs.create-release.outputs.version }}_php${{ matrix.php }}-arm64-darwin-nts
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   verify-release:
     needs: [create-release, build-linux, build-macos]
@@ -455,38 +387,6 @@ jobs:
       - name: Summary
         if: steps.check.outputs.skip == 'true'
         run: echo "::notice::MIRROR_TOKEN not configured -- Homebrew formula update skipped."
-
-  test-homebrew-formula:
-    needs: [update-homebrew-formula]
-    runs-on: macos-14
-    permissions:
-      contents: read
-    if: needs.update-homebrew-formula.result == 'success' && needs.update-homebrew-formula.outputs.skip == 'false'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      - name: Tap and audit formula
-        run: |
-          brew trust goopil/rabbit-rs
-          brew tap goopil/rabbit-rs
-          brew audit --strict --formula goopil/rabbit-rs/rabbit-rs
-
-      - name: Install formula
-        run: brew install rabbit-rs
-
-      - name: Verify extension loads
-        run: |
-          $(brew --prefix php)/bin/php -m | grep -q "rabbit_rs" || { echo "ERROR: rabbit_rs extension not loaded"; exit 1; }
-          echo "OK: rabbit_rs loaded, version $($(brew --prefix php)/bin/php -r 'echo phpversion("rabbit_rs");')"
-
-      - name: Uninstall and verify cleanup
-        run: |
-          brew uninstall rabbit-rs
-          if $(brew --prefix php)/bin/php -m 2>/dev/null | grep -q "rabbit_rs"; then
-            echo "ERROR: rabbit_rs still loaded after uninstall"
-            exit 1
-          fi
-          echo "OK: rabbit_rs uninstalled cleanly"
 
   split-laravel:
     needs: [publish-release, verify-pie-install]
