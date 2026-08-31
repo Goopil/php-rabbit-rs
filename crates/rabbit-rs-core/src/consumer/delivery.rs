@@ -475,15 +475,6 @@ impl fmt::Display for ConsumerError {
 
 impl Error for ConsumerError {}
 
-/// Error returned by `try_settle` when the fire-and-forget send fails.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SettleError {
-    /// The actor's command channel is full (256 capacity).
-    ChannelFull,
-    /// The actor's command channel is closed.
-    Closed,
-}
-
 /// Classification of a fire-and-forget settlement failure at the token level.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettlementErrorKind {
@@ -506,6 +497,4 @@ pub struct SettlementError {
     pub kind: ConsumerErrorKind,
     /// Human-readable error message.
     pub message: String,
-    /// When the error was recorded.
-    pub timestamp: Instant,
 }

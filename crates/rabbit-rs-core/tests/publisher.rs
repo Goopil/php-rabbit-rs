@@ -466,7 +466,7 @@ async fn skips_enable_confirms_when_configured_off() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), false, true);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Unsafe);
     let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher),
         config,
@@ -485,7 +485,7 @@ async fn skips_enable_confirms_when_configured_off() {
         !operations
             .iter()
             .any(|op| matches!(op, TransportOperation::EnableConfirms)),
-        "enable_confirms must not be called when confirms=false"
+        "enable_confirms must not be called in Unsafe mode"
     );
 }
 
@@ -500,7 +500,7 @@ async fn calls_enable_confirms_when_configured_on() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe);
     let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher),
         config,
@@ -524,45 +524,6 @@ async fn calls_enable_confirms_when_configured_on() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn publishes_with_mandatory_false_when_configured_off() {
-    let transport = MockTransport::default();
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let publisher = transport
-        .connect(&broker())
-        .await
-        .expect("connection")
-        .open_publisher()
-        .await
-        .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, false);
-    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
-        Arc::from(publisher),
-        config,
-        Metrics::default(),
-        None,
-    );
-
-    let waiter = actor
-        .try_publish(request_safety("one", b"a"))
-        .expect("publish");
-    wait_for_publish_count(&transport, 1).await;
-    let _ = waiter.wait().await;
-
-    let operations = transport.operations();
-    let publish = operations
-        .iter()
-        .find(|op| matches!(op, TransportOperation::Publish(_)))
-        .expect("a publish operation");
-    let TransportOperation::Publish(req) = publish else {
-        panic!("expected a Publish operation");
-    };
-    assert!(
-        !req.mandatory,
-        "publish must have mandatory=false when config.mandatory=false"
-    );
-}
-
-#[tokio::test(start_paused = true)]
 async fn publishes_with_mandatory_true_when_configured_on() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
@@ -573,7 +534,7 @@ async fn publishes_with_mandatory_true_when_configured_on() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe);
     let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher),
         config,
@@ -612,7 +573,7 @@ async fn confirm_timeout_from_config_is_applied() {
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe);
     let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher),
         config,

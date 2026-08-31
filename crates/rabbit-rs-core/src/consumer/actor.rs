@@ -451,23 +451,21 @@ pub(crate) async fn run_actor(
                 }) => {
                     let Some(channel_key) = state.channel_key_for(&token.subscription) else {
                         token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: token.delivery_tag,
-                            subscription: token.subscription.clone(),
-                            kind: ConsumerErrorKind::InvalidSubscription,
-                            message: "delivery references an unknown subscription".to_owned(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &token,
+                                ConsumerErrorKind::InvalidSubscription,
+                                "delivery references an unknown subscription",
+                            ));
                         continue;
                     };
                     if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: token.delivery_tag,
-                            subscription: token.subscription.clone(),
-                            kind: ConsumerErrorKind::AlreadySettling,
-                            message: "delivery is already being settled".to_owned(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &token,
+                                ConsumerErrorKind::AlreadySettling,
+                                "delivery is already being settled",
+                            ));
                         continue;
                     }
                     let params = SettleParams { token, settlement };
@@ -480,34 +478,31 @@ pub(crate) async fn run_actor(
                 Some(ConsumerCommand::SettleThrough { token }) => {
                     let Some(channel_key) = state.channel_key_for(&token.subscription) else {
                         token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: token.delivery_tag,
-                            subscription: token.subscription.clone(),
-                            kind: ConsumerErrorKind::InvalidSubscription,
-                            message: "delivery references an unknown subscription".to_owned(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &token,
+                                ConsumerErrorKind::InvalidSubscription,
+                                "delivery references an unknown subscription",
+                            ));
                         continue;
                     };
                     if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: token.delivery_tag,
-                            subscription: token.subscription.clone(),
-                            kind: ConsumerErrorKind::AlreadySettling,
-                            message: "delivery is already being settled".to_owned(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &token,
+                                ConsumerErrorKind::AlreadySettling,
+                                "delivery is already being settled",
+                            ));
                         continue;
                     }
                     let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
                         token.settling.store(false, std::sync::atomic::Ordering::Release);
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: token.delivery_tag,
-                            subscription: token.subscription.clone(),
-                            kind: ConsumerErrorKind::Transport,
-                            message: "channel ledger not found".to_owned(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &token,
+                                ConsumerErrorKind::Transport,
+                                "channel ledger not found",
+                            ));
                         continue;
                     };
                     match validate_contiguous_prefix(ledger, token.delivery_tag) {
@@ -530,13 +525,12 @@ pub(crate) async fn run_actor(
                         }
                         Err(error) => {
                             token.settling.store(false, std::sync::atomic::Ordering::Release);
-                            state.record_settlement_error(SettlementError {
-                                delivery_tag: token.delivery_tag,
-                                subscription: token.subscription.clone(),
-                                kind: error.kind(),
-                                message: error.to_string(),
-                                timestamp: Instant::now(),
-                            });
+                            state
+                                .record_settlement_error(settlement_error(
+                                    &token,
+                                    error.kind(),
+                                    error.to_string(),
+                                ));
                         }
                     }
                 }
@@ -617,26 +611,24 @@ pub(crate) async fn run_actor(
                             .token
                             .state
                             .store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: settlement_result.token.delivery_tag,
-                            subscription: settlement_result.token.subscription.clone(),
-                            kind: error.kind(),
-                            message: error.to_string(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &settlement_result.token,
+                                error.kind(),
+                                error.to_string(),
+                            ));
                     }
                     Err(error) => {
                         settlement_result
                             .token
                             .state
                             .store(DeliveryState::Pending as u8, std::sync::atomic::Ordering::Release);
-                        state.record_settlement_error(SettlementError {
-                            delivery_tag: settlement_result.token.delivery_tag,
-                            subscription: settlement_result.token.subscription.clone(),
-                            kind: error.kind(),
-                            message: error.to_string(),
-                            timestamp: Instant::now(),
-                        });
+                        state
+                            .record_settlement_error(settlement_error(
+                                &settlement_result.token,
+                                error.kind(),
+                                error.to_string(),
+                            ));
                     }
                 }
 
@@ -716,13 +708,26 @@ pub(crate) async fn run_actor(
                             ),
                         kind: error.kind(),
                         message: error.to_string(),
-                        timestamp: Instant::now(),
-                    });
+                                            });
                 }
 
                 drain_settlement_queue(&mut state, channel_key);
             }
         }
+    }
+}
+
+/// Builds a settlement error for a token whose asynchronous settlement failed.
+fn settlement_error(
+    token: &DeliveryTokenInner,
+    kind: ConsumerErrorKind,
+    message: impl Into<String>,
+) -> SettlementError {
+    SettlementError {
+        delivery_tag: token.delivery_tag,
+        subscription: token.subscription.clone(),
+        kind,
+        message: message.into(),
     }
 }
 
@@ -735,13 +740,11 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
             DeliveryState::Lost as u8,
             std::sync::atomic::Ordering::Release,
         );
-        state.record_settlement_error(SettlementError {
-            delivery_tag: params.token.delivery_tag,
-            subscription: params.token.subscription.clone(),
-            kind: ConsumerErrorKind::InvalidSubscription,
-            message: "delivery references an unknown subscription".to_owned(),
-            timestamp: Instant::now(),
-        });
+        state.record_settlement_error(settlement_error(
+            &params.token,
+            ConsumerErrorKind::InvalidSubscription,
+            "delivery references an unknown subscription",
+        ));
         return;
     };
     let channel = runtime.channel.clone();
@@ -959,13 +962,11 @@ fn launch_settle_through(
             DeliveryState::Lost as u8,
             std::sync::atomic::Ordering::Release,
         );
-        state.record_settlement_error(SettlementError {
-            delivery_tag: params.token.delivery_tag,
-            subscription: params.token.subscription.clone(),
-            kind: ConsumerErrorKind::InvalidSubscription,
-            message: "delivery references an unknown subscription".to_owned(),
-            timestamp: Instant::now(),
-        });
+        state.record_settlement_error(settlement_error(
+            &params.token,
+            ConsumerErrorKind::InvalidSubscription,
+            "delivery references an unknown subscription",
+        ));
         return;
     };
     let channel = runtime.channel.clone();

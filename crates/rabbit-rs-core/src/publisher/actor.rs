@@ -24,8 +24,7 @@ use crate::{
 
 use super::{
     ByteBudget, PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
-    PublisherConfig, PublisherConnectionEvent, ReturnInfo, confirms::ConfirmLedger,
-    delay::DelayRouter,
+    PublisherConfig, PublisherConnectionEvent, ReturnInfo, delay::DelayRouter,
 };
 
 pub struct PublisherActor;
@@ -394,7 +393,7 @@ struct ActorState {
     channel: Option<Arc<dyn PublisherChannel>>,
     replay: VecDeque<RetainedPublish>,
     publishing: HashMap<u64, RetainedPublish>,
-    ledger: ConfirmLedger<InFlightPublish>,
+    ledger: HashMap<u64, InFlightPublish>,
     confirmations: FuturesUnordered<ConfirmationFuture>,
     publish_in_flight: FuturesUnordered<PublishFuture>,
     sequence: u64,
@@ -420,7 +419,7 @@ impl ActorState {
             channel: Some(channel),
             replay: VecDeque::new(),
             publishing: HashMap::new(),
-            ledger: ConfirmLedger::with_capacity(config.buffer_capacity),
+            ledger: HashMap::with_capacity(config.buffer_capacity),
             confirmations: FuturesUnordered::new(),
             publish_in_flight: FuturesUnordered::new(),
             sequence: 0,
@@ -451,7 +450,11 @@ impl ActorState {
         self.channel = None;
         let mut all: Vec<RetainedPublish> = std::mem::take(&mut self.replay).into_iter().collect();
         all.extend(self.publishing.drain().map(|(_, retained)| retained));
-        all.extend(self.ledger.drain().map(|in_flight| in_flight.retained));
+        all.extend(
+            std::mem::take(&mut self.ledger)
+                .into_values()
+                .map(|in_flight| in_flight.retained),
+        );
         all.sort_by_key(|retained| retained.sequence);
         self.replay = all.into_iter().collect();
         self.confirmations = FuturesUnordered::new();
@@ -463,7 +466,7 @@ impl ActorState {
             self.byte_budget.release(retained.payload_bytes);
             complete_error(retained, error.clone());
         }
-        for in_flight in self.ledger.drain() {
+        for in_flight in std::mem::take(&mut self.ledger).into_values() {
             self.byte_budget.release(in_flight.retained.payload_bytes);
             complete_error(in_flight.retained, error.clone());
         }
@@ -511,7 +514,7 @@ async fn run_actor(
         delay_strategy,
         byte_budget,
     );
-    if state.config.confirms
+    if state.config.enables_confirms()
         && let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
     {
@@ -630,7 +633,7 @@ async fn handle_connection_event(
                     "publisher recovery generation is stale",
                 ));
             }
-            if state.config.confirms {
+            if state.config.enables_confirms() {
                 channel
                     .enable_confirms()
                     .await
@@ -700,7 +703,7 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         let request = into_transport_request(
             &retained.request,
             state.delay_strategy.as_ref(),
-            state.config.mandatory,
+            state.config.mandatory_flag(),
         );
 
         state.publishing.insert(sequence, retained);
@@ -738,7 +741,7 @@ fn handle_publish_completion(
 
     match result {
         Ok(receipt) => {
-            if state.config.confirms {
+            if state.config.enables_confirms() {
                 let generation = state.generation;
                 let deadline = retained
                     .request
@@ -782,45 +785,35 @@ fn into_transport_request(
     delay_strategy: Option<&DelayStrategy>,
     mandatory: bool,
 ) -> TransportRequest {
-    let delay_ms = request.properties.delay_ms.unwrap_or(0);
+    let requested_delay = request.properties.delay_ms.unwrap_or(0);
+    let routed = (requested_delay > 0)
+        .then_some(delay_strategy)
+        .flatten()
+        .and_then(|strategy| {
+            DelayRouter::route(
+                strategy,
+                &request.destination,
+                i64::try_from(requested_delay).unwrap_or(i64::MAX),
+            )
+            .ok()
+            .map(|route| {
+                (
+                    route.exchange,
+                    route.routing_key,
+                    route.queue.is_none().then_some(route.delay_ms),
+                )
+            })
+        });
 
-    if delay_ms > 0
-        && let Some(strategy) = delay_strategy
-        && let Ok(route) = DelayRouter::route(
-            strategy,
-            &request.destination,
-            i64::try_from(delay_ms).unwrap_or(i64::MAX),
-        )
-    {
-        let properties = TransportProperties {
-            content_type: request
-                .properties
-                .content_type
-                .as_ref()
-                .map(|ct| ct.as_ref().to_owned()),
-            correlation_id: request
-                .properties
-                .correlation_id
-                .as_ref()
-                .map(|ci| ci.as_ref().to_owned()),
-            message_id: Some(request.properties.message_id.as_ref().to_owned()),
-            delay_ms: route.queue.is_none().then_some(route.delay_ms),
-            headers: request.properties.headers.clone(),
-            persistent: true,
-        };
-
-        return TransportRequest {
-            exchange: route.exchange,
-            routing_key: route.routing_key,
-            payload: request.payload.clone(),
-            mandatory,
-            properties,
-        };
-    }
+    let (exchange, routing_key, delay_ms) = routed.unwrap_or((
+        request.destination.exchange.clone(),
+        request.destination.routing_key.clone(),
+        request.properties.delay_ms,
+    ));
 
     TransportRequest {
-        exchange: request.destination.exchange.clone(),
-        routing_key: request.destination.routing_key.clone(),
+        exchange,
+        routing_key,
         payload: request.payload.clone(),
         mandatory,
         properties: TransportProperties {
@@ -835,7 +828,7 @@ fn into_transport_request(
                 .as_ref()
                 .map(|ci| ci.as_ref().to_owned()),
             message_id: Some(request.properties.message_id.as_ref().to_owned()),
-            delay_ms: request.properties.delay_ms,
+            delay_ms,
             headers: request.properties.headers.clone(),
             persistent: true,
         },
@@ -848,7 +841,7 @@ fn resolve_confirmation(
     generation: u64,
     result: ConfirmationResult,
 ) {
-    let Some(in_flight) = state.ledger.remove(sequence) else {
+    let Some(in_flight) = state.ledger.remove(&sequence) else {
         return;
     };
     if in_flight.generation != generation {
@@ -867,9 +860,17 @@ fn resolve_confirmation(
             .record_confirmation(in_flight.retained.accepted_at.elapsed());
     }
 
+    // Recoverable errors keep the payload budgeted: the message is re-queued
+    // for replay, so its bytes stay accounted for.
+    if !matches!(
+        &result,
+        ConfirmationResult::Completed(Err(error)) if error.is_recoverable()
+    ) {
+        state.byte_budget.release(in_flight.retained.payload_bytes);
+    }
+
     match result {
         ConfirmationResult::TimedOut => {
-            state.byte_budget.release(in_flight.retained.payload_bytes);
             complete_error(
                 in_flight.retained,
                 PublishError::new(
@@ -883,13 +884,11 @@ fn resolve_confirmation(
             state.suspend(generation);
         }
         ConfirmationResult::Completed(Err(error)) => {
-            state.byte_budget.release(in_flight.retained.payload_bytes);
             complete_error(in_flight.retained, transport_publish_error(&error));
         }
         ConfirmationResult::Completed(Ok(
             PublishConfirmation::Ack(Some(returned)) | PublishConfirmation::Nack(Some(returned)),
         )) => {
-            state.byte_budget.release(in_flight.retained.payload_bytes);
             state.metrics.record_return();
             let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(
@@ -906,12 +905,10 @@ fn resolve_confirmation(
             );
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Ack(None))) => {
-            state.byte_budget.release(in_flight.retained.payload_bytes);
             let message_id = in_flight.retained.request.properties.message_id.clone();
             complete_outcome(in_flight.retained, PublishOutcome::Confirmed { message_id });
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::Nack(None))) => {
-            state.byte_budget.release(in_flight.retained.payload_bytes);
             complete_error(
                 in_flight.retained,
                 PublishError::new(
@@ -921,7 +918,6 @@ fn resolve_confirmation(
             );
         }
         ConfirmationResult::Completed(Ok(PublishConfirmation::NotRequested)) => {
-            state.byte_budget.release(in_flight.retained.payload_bytes);
             complete_error(
                 in_flight.retained,
                 PublishError::new(

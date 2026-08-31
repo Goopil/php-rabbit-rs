@@ -14,7 +14,7 @@ pub use attempts::{
 pub use composite::ConsumerHandle;
 pub use delivery::{
     ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, DeliveryTokenInner, Headers,
-    MessageId, SettleError, Settlement, SettlementError, SettlementErrorKind,
+    MessageId, Settlement, SettlementError, SettlementErrorKind,
 };
 pub use scheduler::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler};
 pub use set::{ConsumerSet, ConsumerSetHandle, Subscription};

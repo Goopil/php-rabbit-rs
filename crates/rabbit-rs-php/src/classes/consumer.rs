@@ -179,7 +179,7 @@ impl Consumer {
             .try_settle_through(delivery.inner.inner_token().clone())
         {
             Ok(()) => Ok(()),
-            Err(rabbit_rs_core::consumer::SettleError::ChannelFull) => {
+            Err(rabbit_rs_core::consumer::SettlementErrorKind::ChannelFull) => {
                 for _ in 0..64 {
                     std::thread::yield_now();
                     if self
@@ -192,8 +192,11 @@ impl Consumer {
                 }
                 rabbit_exception("settlement channel full after backpressure timeout")
             }
-            Err(rabbit_rs_core::consumer::SettleError::Closed) => {
+            Err(rabbit_rs_core::consumer::SettlementErrorKind::Closed) => {
                 rabbit_exception("consumer set is closed")
+            }
+            Err(rabbit_rs_core::consumer::SettlementErrorKind::AlreadySettled) => {
+                rabbit_exception("delivery is already settled")
             }
         }
     }

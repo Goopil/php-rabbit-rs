@@ -13,8 +13,8 @@ use std::sync::{
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use super::{
-    ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, SettleError, SettlementError,
-    actor::ConsumerCommand, set::ConsumerSetHandle,
+    ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, SettlementError,
+    SettlementErrorKind, actor::ConsumerCommand, set::ConsumerSetHandle,
 };
 use crate::metrics::MetricsSnapshot;
 
@@ -137,13 +137,13 @@ impl ConsumerHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`SettleError::ChannelFull`] when the originating actor's
-    /// command channel is at capacity, or [`SettleError::Closed`] when it
+    /// Returns [`SettlementErrorKind::ChannelFull`] when the originating actor's
+    /// command channel is at capacity, or [`SettlementErrorKind::Closed`] when it
     /// has stopped.
     pub fn try_settle_through(
         &self,
         token: std::sync::Arc<DeliveryTokenInner>,
-    ) -> Result<(), SettleError> {
+    ) -> Result<(), SettlementErrorKind> {
         let commands = token.commands.clone();
         commands
             .try_send(ConsumerCommand::SettleThrough { token })
@@ -394,10 +394,10 @@ impl ConsumerHandle {
 
 fn map_try_send_error(
     error: &tokio::sync::mpsc::error::TrySendError<ConsumerCommand>,
-) -> SettleError {
+) -> SettlementErrorKind {
     match error {
-        tokio::sync::mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
-        tokio::sync::mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
+        tokio::sync::mpsc::error::TrySendError::Full(_) => SettlementErrorKind::ChannelFull,
+        tokio::sync::mpsc::error::TrySendError::Closed(_) => SettlementErrorKind::Closed,
     }
 }
 
