@@ -379,6 +379,9 @@ jobs:
         run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
 
       - name: Install the drafted release via PIE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
           pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
