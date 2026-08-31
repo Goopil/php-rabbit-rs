@@ -351,7 +351,7 @@ jobs:
 
   verify-pie-install:
     name: PIE install end-to-end (glibc NTS x86_64 PHP 8.4)
-    needs: [create-release, build-linux]
+    needs: [publish-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -373,12 +373,12 @@ jobs:
           sudo chmod +x /usr/local/bin/pie
           pie --version
 
-      - name: Authenticate Composer for the GitHub API (draft release access)
+      - name: Authenticate Composer for the GitHub API (release access)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
 
-      - name: Install the drafted release via PIE
+      - name: Install the published release via PIE
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -398,11 +398,11 @@ jobs:
               fwrite(STDERR, \"ERROR: version mismatch - installed '\$v', expected '${VERSION}'\" . PHP_EOL);
               exit(1);
             }
-            echo 'OK: rabbit_rs ' . \$v . ' installed via PIE from the draft release' . PHP_EOL;
+            echo 'OK: rabbit_rs ' . \$v . ' installed via PIE from the published release' . PHP_EOL;
           "
 
   publish-release:
-    needs: [create-release, build-linux, build-macos, verify-release, verify-pie-install]
+    needs: [create-release, build-linux, build-macos, verify-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -424,7 +424,7 @@ jobs:
             -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
 
   update-homebrew-formula:
-    needs: [create-release, publish-release]
+    needs: [create-release, publish-release, verify-pie-install]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -489,7 +489,7 @@ jobs:
           echo "OK: rabbit_rs uninstalled cleanly"
 
   split-laravel:
-    needs: [publish-release]
+    needs: [publish-release, verify-pie-install]
     runs-on: ubuntu-latest
     permissions:
       contents: read

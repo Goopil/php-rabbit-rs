@@ -60,7 +60,7 @@ macOS artifacts (`arm64-darwin-nts`) are outside the PIE matrix — `composer.js
 
 ### End-to-end PIE validation
 
-Before a release is published, the release pipeline runs a blocking `verify-pie-install` job that installs the drafted release with a real `pie install` (PHP 8.4, x86_64, glibc, NTS) by resolving the package through the GitHub API against the draft release. Publication is blocked unless PIE successfully matches, downloads, installs, and loads the extension with the released version.
+Once the release is published, the release pipeline runs a blocking `verify-pie-install` job that installs the release with a real `pie install` (PHP 8.4, x86_64, glibc, NTS) by resolving the package through the GitHub API against the published release. The Homebrew formula update and the Laravel package split run only after this verification succeeds, so a release that PIE cannot install never reaches those channels.
 
 Each release archive is accompanied by:
 

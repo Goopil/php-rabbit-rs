@@ -18,7 +18,7 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 - Laravel contracts: `RabbitMqQueue` implements `ClearableQueue` (`clear(): int` returns the purge count for `queue:clear`), and `pop()` resolves plain queue names via opt-in `auto_subscribe` (connection > package > `RABBIT_RS_AUTO_SUBSCRIBE`).
 - Native events (`ConnectionStateChanged`, `BackpressureDetected`) now drain from `publish()`, `publishBatch()`, `flush()` and `next()` through a shared `EventBridge` — no longer only inside `stats()`.
 - Duplicate subscription names within a worker profile are rejected with a typed configuration error identifying the exact path.
-- PIE end-to-end delivery validation: unified `-nts` naming convention across the release pipeline and a blocking `verify-pie-install` CI job that runs a real `pie install` against the draft release.
+- PIE end-to-end delivery validation: unified `-nts` naming convention across the release pipeline and a blocking `verify-pie-install` CI job that runs a real `pie install` against the release, gating the Homebrew formula update and the Laravel package split.
 
 ### Changed
 
