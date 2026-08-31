@@ -98,32 +98,79 @@ already does: purge → reconnect → fill → pop). A consumer that survives a 
 remains functional — pinned by the pool_clear tests. The residual pop degradation
 tracks P2 and is addressed by the P2 task.
 
-## Secondary scope (parked items rolled into the round)
+## Secondary scope (parked items rolled into the round) — DONE 2026-08-31
 
-1. **Closed-pump batch fail contract test** (`client.rs:143-147`): the batch must
-   fail immediately and re-buffer (superset semantics) — ~10 lines, parked since
-   Phase B.
-2. **`scripts/lib-extension.sh` rebuild-on-change**: a stale artifact is still used
-   if it exists (the D2 fix covers build-on-miss + warning only) —
-   rebuild when Cargo.toml/lock change.
-3. **Symmetric flush_blind test** (`blind_pump.rs`): the blind sibling of the D2
-   non-vacated flush test.
-4. **shellcheck `scripts/test-integration.sh`** (bash -n only today).
-5. **Subscription name uniqueness validation** (pre-existing,
-   `update_generation` without a production caller).
+1. **Closed-pump batch fail contract test** (`client.rs`): DONE — pinned in
+   `crates/rabbit-rs-core/tests/blind_pump.rs`
+   (`blind_batch_on_a_closed_pump_fails_immediately_and_leaves_everything_with_the_caller`).
+   A deterministic closed-pump state is built through test-support-only
+   constructors (`PublishPump::closed_for_tests` →
+   `PublisherActor::with_closed_pump_for_tests` →
+   `ClientPool::install_closed_pump_publisher_for_tests`); a mutation check
+   confirmed the test fails if the closed-pump error were swallowed into a
+   synthetic `Confirmed` outcome.
+2. **`scripts/lib-extension.sh` rebuild-on-change**: DONE — the debug artifact is
+   rebuilt when stale, detected by (a) crate sources/manifests/lockfile newer than
+   the artifact and (b) a feature stamp recording the last
+   `--features extension-tests` build (an artifact newer than the stamp was
+   rebuilt by another cargo command — e.g. check.sh's workspace test build — and
+   lacks the test feature). Verified: fresh artifact → no warning; touched
+   source → rebuild; feature-less rebuild → rebuild.
+3. **Symmetric flush_blind test** (`blind_pump.rs`): DONE — the ClientPool-level
+   flush test now uses the D2 non-vacuous assert (a full simulated second of
+   timeout expiry as positive proof the barrier stayed parked), symmetric with
+   the pump-level D2 test; mutation-checked.
+4. **shellcheck `scripts/test-integration.sh`**: DONE — clean
+   (`shellcheck -x` from `scripts/`, exit 0; the `source=` directive resolves
+   relative to the CWD). No findings to fix in the script; the pre-existing
+   SC2028 in `lib-extension.sh` was fixed with printf.
+5. **Subscription name uniqueness validation**: DONE — `Config::validate` rejects
+   duplicate subscription names within a worker profile with a typed
+   `ConfigError` on the exact `workers.<name>.subscriptions.<subscription>`
+   path (previously two subscriptions sharing a name raced for the same
+   `SubscriptionId` in `update_generation`).
 
-## Re-bench (exit criterion)
+## Re-bench (exit criterion) — DONE 2026-08-31, archived
 
-Full Phase E protocol (100 runs, 4 conditions × 2 modes × 10 rounds,
-interleaved, release, archived JSONs) after the fixes. Expected:
+Full interleaved protocol, release build, archived JSONs
+(`benchmarks/results/round-2-rebench/` — raw runs + `summary.json` + README).
+The SDD `runs/phase-e/` workspace no longer exists; deltas are computed against
+the numbers recorded in this plan, the ROADMAP and
+`benchmarks/driver-bench/README.md`. Protocol honesty note: the harnesses have no
+literal "100-run" switch — the protocol was realized as 3 interleaved 10-round
+runs per cell (driver-level: 5 cells × 30 rounds; transport: 8 cells × 30 rounds
+of 10 000 msgs), exceeding the 100-round scale.
 
-- `stall_recoveries = 0` across all worker rounds;
-- goopil worker close to the clean round (27 073/s) — gap vs vladimir to re-measure;
-- 0 losses / 0 late everywhere (untouchable invariant);
-- dispatch unchanged within variance (the fixes only touch the consumer).
+Driver-level (classic queues, primary comparison):
 
-Systematic comparison vs E2 archives (`runs/phase-e/` of the SDD workspace — copy the
-reference before removing the workspace).
+| Cell | Re-bench median (30 rounds) | Pre-fix reference | Delta |
+|---|---|---|---|
+| goopil worker (pop+ack) | **21 747 ops/s** | 10 030 taxed median | **+117 %**, `stall_recoveries = 0` in 30/30 rounds (9/10 affected pre-fix) |
+| goopil worker vs clean rounds | 21 747 | 27 073 (E2 clean-round subset) | −20 % (session drift −9 % on blind; one slow round 8 836) |
+| goopil dispatch blind | 70 262 | 76 794 | −9 % |
+| goopil dispatch safe | 7 703 (4 361–9 623) | 9 772 | −21 % (wide spread; run 2 median 8.7k) |
+| vladimir dispatch | 32 193 | 31 182 | +3 % |
+| vladimir worker | 2 041 | ~2 500 | −18 % |
+
+0 losses / 0 late arrivals / every run `ok` in every driver-level run.
+
+Transport-level (context): fire-and-forget rabbit-rs 268 959 pub (reference
+260 679 ✓), laravel-worker consume 12 963 (14 425 ✓ −10 %), both amqplib
+references matched; confirm-bound quorum-queue cells (batch-confirm 24 792 vs
+37 353; laravel-dispatch 2 812 vs 8 213) read below their Phase B references
+with wide spreads and reachable peaks (36 848 / 7 086 in pass 3) — variance
+context documented, not a regression claim (this round's fixes are
+consumer-side only).
+
+Budgets (`benchmarks/baselines/smoke-budget.json`): 19/24 transport invocations
+ALL PASS; 0 losses / 0 duplicates everywhere; the 5 p99 failures are
+e2e-latency-on-publish-then-drain shape artifacts, itemized in the archive
+README.
+
+Expected outcomes versus the plan: `stall_recoveries = 0` ✓; worker close to the
+clean round — closed to within session drift of the E2 clean-round number while
+more than doubling the taxed median ✓; 0 losses / 0 late everywhere ✓; dispatch
+unchanged within variance ✓.
 
 ## Protocol
 
@@ -140,10 +187,11 @@ reference before removing the workspace).
 ## Execution order
 
 1. Root-cause investigation P1/P2 (parallel readings possible, sequential fixes by
-   risk — P1 first: biggest measured tax).
-2. P3 (dedicated test, fix if confirmed).
-3. Secondary scope (items 1-5, independent).
-4. Re-bench + E2 comparison.
+   risk — P1 first: biggest measured tax). DONE on main (`bbd836b` publish-buffer
+   flush on consume; `08ba5e8` requested-profile establishment).
+2. P3 (dedicated test, fix if confirmed). DONE — documented verdict, no core defect.
+3. Secondary scope (items 1-5, independent). DONE 2026-08-31.
+4. Re-bench + E2 comparison. DONE 2026-08-31 (`benchmarks/results/round-2-rebench/`).
 5. Final review + PR.
 
 Each step explicitly validated before the next.

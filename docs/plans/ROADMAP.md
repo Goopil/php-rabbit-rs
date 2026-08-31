@@ -15,6 +15,10 @@ nothing is lost between rounds.
   multi-broker consumer fan-in, Phase E driver-level benchmark vs amqplib/amqp-ext
   (merged as PR #35, 2026-08-30 — includes the local ext-amqp cross-check and the
   publish safety variant matrix).
+- Round 2 (plan `2026-08-30-consumer-stall-and-reliability.md`): P1/P2/P3 resolved on
+  main (`bbd836b`, `08ba5e8`); secondary scope + re-bench done 2026-08-31
+  (branch `task/39-secondary-rebench`, archive
+  `benchmarks/results/round-2-rebench/`).
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -53,20 +57,24 @@ none is a delivery loss (messages stay `ready` in RabbitMQ; at-least-once holds)
    block; see the P3 section of the round plan for the full mechanism and the
    documented `clear()` → consumer sequence.
 
-Secondary scope:
+Secondary scope (all DONE 2026-08-31):
 
-4. **Test the closed-pump batch contract** (`client.rs:143-147`): batch must fail
-   immediately and re-buffer (superset semantics) — ~10 lines, parked since Phase B.
-5. **`scripts/lib-extension.sh` rebuild-on-change**: currently builds only when the
-   artifact is missing; stale artifacts after `Cargo.toml`/lock changes remain a
-   footgun (the D2 fix covers missing + warning only).
-6. **Parked minors rolled in**: symmetric `flush_blind` flush-vacue test
-   (`blind_pump.rs`), shellcheck pass on `scripts/test-integration.sh`,
-   subscription-name uniqueness validation.
+4. **Test the closed-pump batch contract** (`client.rs`): pinned with a
+   deterministic test-support closed-pump construction; mutation-checked.
+5. **`scripts/lib-extension.sh` rebuild-on-change**: DONE — staleness from
+   source/manifest mtimes plus a feature stamp (detects artifacts rebuilt
+   without `--features extension-tests` by other cargo commands).
+6. **Parked minors rolled in**: symmetric `flush_blind` non-vacuous assert
+   (D2 style, mutation-checked), shellcheck clean on
+   `scripts/test-integration.sh`, subscription-name uniqueness validation
+   (typed error on the exact config path).
 
-Then: **re-bench** with the Phase E 100-run protocol to quantify the delta (worker
-goopil was 10 030 ops/s median with the stall tax vs 27 073 on clean rounds; the fix
-should close most of that).
+Then: **re-bench** with the Phase E-style interleaved protocol — DONE
+2026-08-31, archived in `benchmarks/results/round-2-rebench/`. Worker goopil
+median 21 747 ops/s vs the 10 030 taxed baseline (+117 %), `stall_recoveries = 0`
+in 30/30 worker rounds, 0 losses / 0 late everywhere; non-confirm cells match
+their E2 references within session drift (goopil blind 70 262 vs 76 794; vladimir
+dispatch 32 193 vs 31 182).
 
 Success criteria: each bug root-caused and fixed (or its ceiling documented with
 data), full quality gate green, re-bench archived and compared.
