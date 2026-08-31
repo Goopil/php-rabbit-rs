@@ -44,6 +44,14 @@ none is a delivery loss (messages stay `ready` in RabbitMQ; at-least-once holds)
    fill → clean. Other drivers (amqplib, amqp-ext, bunny) are unaffected.
 3. **P3 — `Pool::clear()` with a pre-existing consumer.** Combo degrades pops ~25×.
    Needs a dedicated core-level test.
+   **Resolved 2026-08-30 (no core defect):** the dedicated core tests
+   (`crates/rabbit-rs-core/tests/pool_clear.rs`) show the combination is safe —
+   deliveries keep flowing, generations and settlements are untouched, and no
+   re-establishment or connection storm exists. The observed ~25× is the P2
+   configuration (consumer attached while the next round's fill is ingested,
+   plus the 404→pop-drain fallback) amplified by the matrix's 1 s null-pop
+   block; see the P3 section of the round plan for the full mechanism and the
+   documented `clear()` → consumer sequence.
 
 Secondary scope:
 

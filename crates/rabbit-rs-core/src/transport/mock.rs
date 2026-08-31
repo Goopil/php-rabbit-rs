@@ -43,6 +43,10 @@ struct MockState {
     confirmations: VecDeque<MockConfirmation>,
     deliveries: VecDeque<TransportResult<Delivery>>,
     keep_delivery_stream_open: bool,
+    /// Wakes delivery streams parked on an empty queue so a fill pushed
+    /// after a stream parked still surfaces, like a live broker
+    /// subscription. Only armed while `keep_delivery_stream_open` holds.
+    delivery_notify: Arc<tokio::sync::Notify>,
     operation_results: VecDeque<TransportResult<()>>,
     consumer_results: VecDeque<TransportResult<()>>,
     queue_sizes: VecDeque<TransportResult<u32>>,
@@ -90,7 +94,11 @@ impl MockTransport {
     }
 
     pub fn push_delivery(&self, delivery: TransportResult<Delivery>) {
-        self.state().deliveries.push_back(delivery);
+        let mut state = self.state();
+        state.deliveries.push_back(delivery);
+        // Wake a stream parked on an empty queue (open stream mode) so the
+        // delivery surfaces like it would from a live broker subscription.
+        state.delivery_notify.notify_one();
     }
 
     pub fn keep_delivery_stream_open(&self) {
@@ -160,7 +168,11 @@ impl MockTransport {
     #[must_use]
     pub fn push_delivery_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
-        self.state().delivery_gates.push_back(wait);
+        {
+            let mut state = self.state();
+            state.delivery_gates.push_back(wait);
+            state.delivery_notify.notify_one();
+        }
         gate
     }
 
@@ -680,29 +692,38 @@ struct MockDeliveryStream {
 #[async_trait]
 impl DeliveryStream for MockDeliveryStream {
     async fn next(&mut self) -> Option<TransportResult<Delivery>> {
-        let (gate, delivery) = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (
-                state.delivery_gates.pop_front(),
-                state.deliveries.pop_front(),
-            )
-        };
-        wait_for_gate(gate).await;
-        if let Some(delivery) = delivery {
-            return Some(delivery);
-        }
-        let keep_open = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keep_delivery_stream_open;
-        if keep_open {
-            std::future::pending().await
-        } else {
-            None
+        loop {
+            let (gate, delivery, keep_open) = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    state.delivery_gates.pop_front(),
+                    state.deliveries.pop_front(),
+                    state.keep_delivery_stream_open,
+                )
+            };
+            wait_for_gate(gate).await;
+            if let Some(delivery) = delivery {
+                return Some(delivery);
+            }
+            if !keep_open {
+                return None;
+            }
+            // Open stream mode: park until the next push wakes this stream,
+            // mirroring a live broker subscription that stays open between
+            // deliveries. The notified future is created after the empty
+            // check, so a push racing this park is not lost (`notify_one`
+            // stores a permit when no waiter is registered yet).
+            let notified = Arc::clone(
+                &self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .delivery_notify,
+            );
+            notified.notified().await;
         }
     }
 }
