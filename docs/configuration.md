@@ -184,6 +184,22 @@ The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`,
 - `unsafe` — synchronous socket write without confirms. The message reached the kernel socket buffer, but a broker-side failure can still lose it.
 - `blind` — explicit fire-and-forget: publishing hands the message to a bounded background pump (backpressure by blocking) and returns without waiting for any transport outcome. A transport failure after the hand-off — including a channel cleared during recovery — is a silent loss: no confirmation, no mandatory return, no replay. Delayed jobs (`delay_ms > 0`) are **not** honored: the pump bypasses delay routing and publishes immediately — use `safe` or `unsafe` when you need delay routing. `Pool::flush()` is a barrier: every request enqueued on the pump before it has been handed to the transport — or dropped for lack of a channel during recovery (hand-off means submitted to the broker connection; delivery is not proven without confirms) — when it returns. The only blind flush error is `Closed` (the pump is closed because the pool is dying): buffered requests are never re-buffered in blind mode. In `safe`/`unsafe` mode, a failed flush re-buffers the buffered requests conservatively — duplicates are permitted and identifiable through their `message_id`.
 
+### Consumers
+
+```php
+'consumers' => [
+    'wait_timeout' => (int) env('RABBIT_RS_CONSUMER_WAIT_TIMEOUT', 30000),
+    'max_attempts' => (int) env('RABBIT_RS_MAX_ATTEMPTS', 20),
+],
+```
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `consumers.wait_timeout` | Milliseconds to wait when acquiring a consumer handle (1000–86400000) | `30000` |
+| `consumers.max_attempts` | Inclusive cap on resolved delivery attempts per message; must be ≥ 1 | `20` |
+
+A delivery whose resolved attempt count exceeds `max_attempts` is settled terminally instead of being dispatched: it is rejected toward the dead-letter exchange when `topology.dead_letter` is configured, otherwise it is explicitly acknowledged and logged. Keep the cap at or above the `--tries` value used by your workers so Laravel can fail poison jobs itself before the native cap settles them.
+
 ### Delay
 
 ```php
