@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_lite::StreamExt;
-use futures_util::stream::FuturesUnordered;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
     options::{
@@ -166,44 +165,6 @@ impl PublisherChannel for LapinPublisherChannel {
         Ok(Box::new(LapinPublishReceipt {
             inner: confirmation,
         }))
-    }
-
-    async fn publish_batch(
-        &self,
-        requests: Vec<PublishRequest>,
-    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
-        let channel = self.inner.clone();
-        let mut futs = FuturesUnordered::new();
-        for request in requests {
-            let properties = publish_properties(&request);
-            let exchange = request.exchange;
-            let routing_key = request.routing_key;
-            let mandatory = request.mandatory;
-            let payload = request.payload;
-            let ch = channel.clone();
-            futs.push(async move {
-                ch.basic_publish(
-                    exchange.as_ref().into(),
-                    routing_key.as_ref().into(),
-                    BasicPublishOptions {
-                        mandatory,
-                        immediate: false,
-                    },
-                    &payload,
-                    properties,
-                )
-                .await
-                .map_err(map_lapin_error)
-            });
-        }
-        let mut receipts = Vec::with_capacity(futs.len());
-        while let Some(result) = futs.next().await {
-            let confirmation = result?;
-            receipts.push(Box::new(LapinPublishReceipt {
-                inner: confirmation,
-            }) as Box<dyn PublishReceipt>);
-        }
-        Ok(receipts)
     }
 }
 
