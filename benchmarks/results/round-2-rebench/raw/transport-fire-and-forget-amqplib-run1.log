@@ -1,0 +1,17 @@
+PHP Deprecated:  Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+Deprecated: Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+=== fire-and-forget / amqplib ===
+  Publish: avg 88809 msg/s (min 82882, max 91193)
+  Consume: avg 47064 msg/s (min 45220, max 48322)
+  Latency p50: 166.97 ms, p95: 207.41 ms, p99: 210.85 ms
+Budget Check: ALL PASS
+
+=== Summary ===
+Scenario/Driver                | Publish msg/s   | Consume msg/s   | p99 (ms)   | Losses     | Duplicates
+---------------------------------------------------------------------------------------------------------
+fire-and-forget/amqplib        | 88809           | 47064           | 210.85     | 0          | 0         
+
+
+Results written to /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/src/../results/benchmark-results.json

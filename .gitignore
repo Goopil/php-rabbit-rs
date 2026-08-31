@@ -14,6 +14,8 @@ crates/rabbit-rs-php/tests/phpt/*.log
 crates/rabbit-rs-php/tests/phpt/*.out
 crates/rabbit-rs-php/tests/phpt/*.php
 crates/rabbit-rs-php/tests/phpt/*.sh
-/benchmarks/results/
+# Per-run benchmark outputs stay untracked; curated round archives are re-included
+# by benchmarks/.gitignore (e.g. results/round-2-rebench/).
+/benchmarks/results/*
 
 /packages/laravel-queue/composer.lock

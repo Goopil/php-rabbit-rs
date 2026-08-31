@@ -1,0 +1,17 @@
+PHP Deprecated:  Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+Deprecated: Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+=== laravel-worker / rabbit-rs ===
+  Publish: avg 240882 msg/s (min 228540, max 252315)
+  Consume: avg 14154 msg/s (min 11645, max 15611)
+  Latency p50: 452.80 ms, p95: 690.74 ms, p99: 710.94 ms
+Budget Check: ALL PASS
+
+=== Summary ===
+Scenario/Driver                | Publish msg/s   | Consume msg/s   | p99 (ms)   | Losses     | Duplicates
+---------------------------------------------------------------------------------------------------------
+laravel-worker/rabbit-rs       | 240882          | 14154           | 710.94     | 0          | 0         
+
+
+Results written to /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/src/../results/benchmark-results.json

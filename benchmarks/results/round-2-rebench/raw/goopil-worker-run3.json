@@ -1,0 +1,196 @@
+{
+    "benchmark": "driver-bench",
+    "phase": "E",
+    "ok": true,
+    "connection": "rabbit-rs",
+    "driver_package": "goopil/rabbit-rs-laravel",
+    "driver_package_version": "dev-main",
+    "mode": "worker",
+    "queue": "bench.goopil.driver-bench",
+    "count": 1000,
+    "rounds": 10,
+    "payload_body_bytes": 1024,
+    "payload_target_bytes": 1024,
+    "settle_ms": 500,
+    "ops_total": 10000,
+    "time_total_s": 0.464024,
+    "avg_rate_ops_s": 21550.61,
+    "min_rate_ops_s": 17898.21,
+    "max_rate_ops_s": 23763.27,
+    "losses": 0,
+    "late_arrivals_after_drain": 0,
+    "rounds_detail": [
+        {
+            "round": 0,
+            "ops": 1000,
+            "time_s": 0.044729,
+            "rate_ops_s": 22357.07,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 1,
+            "ops": 1000,
+            "time_s": 0.04367,
+            "rate_ops_s": 22899.02,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 2,
+            "ops": 1000,
+            "time_s": 0.045969,
+            "rate_ops_s": 21753.93,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 3,
+            "ops": 1000,
+            "time_s": 0.042082,
+            "rate_ops_s": 23763.27,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 4,
+            "ops": 1000,
+            "time_s": 0.043412,
+            "rate_ops_s": 23035.02,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 5,
+            "ops": 1000,
+            "time_s": 0.049001,
+            "rate_ops_s": 20407.83,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 6,
+            "ops": 1000,
+            "time_s": 0.049025,
+            "rate_ops_s": 20397.72,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 7,
+            "ops": 1000,
+            "time_s": 0.046384,
+            "rate_ops_s": 21559.04,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 8,
+            "ops": 1000,
+            "time_s": 0.043881,
+            "rate_ops_s": 22788.8,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 9,
+            "ops": 1000,
+            "time_s": 0.055872,
+            "rate_ops_s": 17898.21,
+            "stall_recoveries": 0
+        }
+    ],
+    "config": {
+        "driver": "rabbit-rs",
+        "queue": "bench.goopil.driver-bench",
+        "after_commit": false,
+        "block_for": 0,
+        "rabbit_rs_global": {
+            "topology_mode": "declare",
+            "brokers": {
+                "default": {
+                    "hosts": [
+                        "127.0.0.1:5672"
+                    ],
+                    "vhost": "/",
+                    "credentials": "***",
+                    "tls": {
+                        "enabled": false,
+                        "server_name": null,
+                        "ca_cert": null,
+                        "client_cert": null,
+                        "client_key": null,
+                        "verify": "peer"
+                    },
+                    "heartbeat": 30
+                }
+            },
+            "routes": {
+                "default": {
+                    "broker": "default",
+                    "exchange": "",
+                    "routing_key": "{queue}"
+                }
+            },
+            "best_effort": false,
+            "workers": {
+                "default": {
+                    "scheduler": {
+                        "strategy": "weighted_fair"
+                    },
+                    "subscriptions": {
+                        "default": {
+                            "enabled": true,
+                            "broker": "default",
+                            "queue": "bench.goopil.driver-bench",
+                            "weight": 1,
+                            "priority_class": 0,
+                            "prefetch": {
+                                "mode": "fixed",
+                                "value": 64
+                            },
+                            "starvation_after": 30,
+                            "early_ack": false,
+                            "no_ack": false
+                        }
+                    }
+                }
+            },
+            "auto_subscribe": false,
+            "publisher": {
+                "safety": "safe",
+                "confirms": true,
+                "mandatory": true,
+                "confirm_timeout": 30000
+            },
+            "consumers": {
+                "wait_timeout": 30000
+            },
+            "delay": {
+                "mode": "auto",
+                "buckets": [
+                    1,
+                    5,
+                    30,
+                    120
+                ],
+                "max_buckets": 8,
+                "queue_expiry_margin": 60,
+                "detection_timeout": 5
+            },
+            "topology": {
+                "queue": {
+                    "type": "classic",
+                    "durable": true,
+                    "delivery_limit": null
+                },
+                "dead_letter": null
+            },
+            "production_warning": true,
+            "worker": "default"
+        },
+        "connection": "rabbit-rs",
+        "mode": "worker"
+    },
+    "meta": {
+        "php": "8.5.6",
+        "sapi": "cli",
+        "extensions": {
+            "rabbit_rs": "0.0.7",
+            "amqp": false
+        },
+        "laravel": "v13.29.0",
+        "os": "Darwin 25.6.0"
+    }
+}

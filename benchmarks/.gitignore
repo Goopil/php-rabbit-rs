@@ -1,3 +1,4 @@
-results/
+results/*
+!results/round-2-rebench/
 composer.lock
 vendor/

@@ -1,0 +1,324 @@
+{
+    "generated": "2026-08-31T04:29:51+00:00",
+    "protocol": null,
+    "driver_bench": {
+        "goopil-dispatch-blind": {
+            "runs": 3,
+            "rounds": 30,
+            "count_per_round": 1000,
+            "median_ops_s": 70261.53,
+            "min_ops_s": 63419.42,
+            "max_ops_s": 71758.75,
+            "stall_recoveries": 0,
+            "losses": 0,
+            "late_arrivals_after_drain": 0,
+            "all_runs_ok": true
+        },
+        "goopil-dispatch-safe": {
+            "runs": 3,
+            "rounds": 30,
+            "count_per_round": 1000,
+            "median_ops_s": 7703.18,
+            "min_ops_s": 4360.59,
+            "max_ops_s": 9623.08,
+            "stall_recoveries": 0,
+            "losses": 0,
+            "late_arrivals_after_drain": 0,
+            "all_runs_ok": true
+        },
+        "goopil-worker": {
+            "runs": 3,
+            "rounds": 30,
+            "count_per_round": 1000,
+            "median_ops_s": 21747.28,
+            "min_ops_s": 8835.53,
+            "max_ops_s": 24808.38,
+            "stall_recoveries": 0,
+            "losses": 0,
+            "late_arrivals_after_drain": 0,
+            "all_runs_ok": true
+        },
+        "vladimir-dispatch": {
+            "runs": 3,
+            "rounds": 30,
+            "count_per_round": 1000,
+            "median_ops_s": 32193.03,
+            "min_ops_s": 30496.29,
+            "max_ops_s": 33284.19,
+            "stall_recoveries": 0,
+            "losses": 0,
+            "late_arrivals_after_drain": 0,
+            "all_runs_ok": true
+        },
+        "vladimir-worker": {
+            "runs": 3,
+            "rounds": 30,
+            "count_per_round": 1000,
+            "median_ops_s": 2041.2,
+            "min_ops_s": 444.83,
+            "max_ops_s": 2258.79,
+            "stall_recoveries": 0,
+            "losses": 0,
+            "late_arrivals_after_drain": 0,
+            "all_runs_ok": true
+        }
+    },
+    "transport": {
+        "batch-confirm/amqplib": {
+            "1": {
+                "publish_avg_rate": 47463.793851867325,
+                "publish_min_rate": 37417.03770247136,
+                "publish_max_rate": 50384.390379849625,
+                "consume_avg_rate": 29711.81064479837,
+                "consume_min_rate": 28617.149531849453,
+                "consume_max_rate": 30491.52202296658,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 46561.582316289925,
+                "publish_min_rate": 31962.66567905073,
+                "publish_max_rate": 51133.3992468306,
+                "consume_avg_rate": 29274.11485351237,
+                "consume_min_rate": 27849.107817502634,
+                "consume_max_rate": 30276.525771439625,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 48482.557598838306,
+                "publish_min_rate": 37789.04179197532,
+                "publish_max_rate": 51682.568316717,
+                "consume_avg_rate": 30328.247769120004,
+                "consume_min_rate": 28249.626699552577,
+                "consume_max_rate": 30992.493325717547,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "batch-confirm/rabbit-rs": {
+            "1": {
+                "publish_avg_rate": 22223.921072232206,
+                "publish_min_rate": 16118.975085805992,
+                "publish_max_rate": 30785.98392404032,
+                "consume_avg_rate": 30464.874794898245,
+                "consume_min_rate": 23442.26433401185,
+                "consume_max_rate": 43141.73305287411,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 24792.24755788023,
+                "publish_min_rate": 17149.595455891034,
+                "publish_max_rate": 39421.00252167105,
+                "consume_avg_rate": 34858.74738679204,
+                "consume_min_rate": 28363.483410864035,
+                "consume_max_rate": 43603.731726536884,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 36847.530651389905,
+                "publish_min_rate": 23414.220232908272,
+                "publish_max_rate": 39660.3489555163,
+                "consume_avg_rate": 42250.372859895346,
+                "consume_min_rate": 33149.897174796526,
+                "consume_max_rate": 45136.29764983271,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "fire-and-forget/amqplib": {
+            "1": {
+                "publish_avg_rate": 88808.80136242155,
+                "publish_min_rate": 82881.5555467731,
+                "publish_max_rate": 91193.40776414059,
+                "consume_avg_rate": 47063.914624025274,
+                "consume_min_rate": 45220.2413296418,
+                "consume_max_rate": 48322.47673338848,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 90802.02315386359,
+                "publish_min_rate": 89190.98117853703,
+                "publish_max_rate": 91330.82050243553,
+                "consume_avg_rate": 47087.27188151948,
+                "consume_min_rate": 43055.773407955196,
+                "consume_max_rate": 48208.340564826554,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 89657.34263142661,
+                "publish_min_rate": 87430.14849957894,
+                "publish_max_rate": 91732.31153481922,
+                "consume_avg_rate": 46840.22219345139,
+                "consume_min_rate": 45497.97909891459,
+                "consume_max_rate": 47935.6150434235,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "fire-and-forget/rabbit-rs": {
+            "1": {
+                "publish_avg_rate": 264380.951494129,
+                "publish_min_rate": 223878.8985145212,
+                "publish_max_rate": 292567.34699571715,
+                "consume_avg_rate": 14590.014208245397,
+                "consume_min_rate": 12095.596155182691,
+                "consume_max_rate": 17188.2770841222,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 276479.21639691025,
+                "publish_min_rate": 258457.74639208292,
+                "publish_max_rate": 295640.0135333258,
+                "consume_avg_rate": 13389.655914876052,
+                "consume_min_rate": 11539.082024436651,
+                "consume_max_rate": 18366.86042285383,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 268959.1371011734,
+                "publish_min_rate": 242319.25587844473,
+                "publish_max_rate": 282214.76103646186,
+                "consume_avg_rate": 15928.73986621139,
+                "consume_min_rate": 9221.50949170608,
+                "consume_max_rate": 19560.211611786388,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "laravel-dispatch/amqplib": {
+            "1": {
+                "publish_avg_rate": 26799.65303084005,
+                "publish_min_rate": 23709.492153936597,
+                "publish_max_rate": 28703.220358237308,
+                "consume_avg_rate": 29203.323351118044,
+                "consume_min_rate": 26700.70324580373,
+                "consume_max_rate": 30064.15227959212,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 26511.027571831783,
+                "publish_min_rate": 23062.999655234795,
+                "publish_max_rate": 28205.079236137542,
+                "consume_avg_rate": 29300.32455527217,
+                "consume_min_rate": 27055.330397498758,
+                "consume_max_rate": 30178.01869836688,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 29550.679777651203,
+                "publish_min_rate": 26125.898518767674,
+                "publish_max_rate": 30584.772891342236,
+                "consume_avg_rate": 30056.46356808953,
+                "consume_min_rate": 26534.556002264828,
+                "consume_max_rate": 30648.713307694725,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "laravel-dispatch/rabbit-rs": {
+            "1": {
+                "publish_avg_rate": 2394.834489799156,
+                "publish_min_rate": 1828.8567090412662,
+                "publish_max_rate": 3290.7130318639383,
+                "consume_avg_rate": 28550.125358264428,
+                "consume_min_rate": 17020.05819025861,
+                "consume_max_rate": 37292.14956677914,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 2812.016314286025,
+                "publish_min_rate": 1805.8505230107194,
+                "publish_max_rate": 5175.279209150277,
+                "consume_avg_rate": 31207.671301332943,
+                "consume_min_rate": 23509.22308602048,
+                "consume_max_rate": 38139.53657547425,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 5560.62086949013,
+                "publish_min_rate": 4187.0946604137,
+                "publish_max_rate": 7085.901800641435,
+                "consume_avg_rate": 38596.29465914384,
+                "consume_min_rate": 33422.24035494811,
+                "consume_max_rate": 40583.25737828324,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "laravel-worker/amqplib": {
+            "1": {
+                "publish_avg_rate": 86231.84418763431,
+                "publish_min_rate": 84396.67991347653,
+                "publish_max_rate": 87574.91037480764,
+                "consume_avg_rate": 2228.869802614396,
+                "consume_min_rate": 2170.701330506209,
+                "consume_max_rate": 2296.0653033786225,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 86289.9614887207,
+                "publish_min_rate": 81335.08635166634,
+                "publish_max_rate": 87936.80079166737,
+                "consume_avg_rate": 2254.514699322289,
+                "consume_min_rate": 2089.1476397331267,
+                "consume_max_rate": 2412.8770875497376,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 87361.22007168383,
+                "publish_min_rate": 85840.49642254859,
+                "publish_max_rate": 88665.13053588415,
+                "consume_avg_rate": 2575.939740820634,
+                "consume_min_rate": 2498.986684893529,
+                "consume_max_rate": 2697.3888608744064,
+                "losses": 0,
+                "duplicates": 0
+            }
+        },
+        "laravel-worker/rabbit-rs": {
+            "1": {
+                "publish_avg_rate": 214990.42202310188,
+                "publish_min_rate": 187857.0884709613,
+                "publish_max_rate": 233263.1110616762,
+                "consume_avg_rate": 10388.84512602486,
+                "consume_min_rate": 8845.025466091043,
+                "consume_max_rate": 12185.270081432609,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "2": {
+                "publish_avg_rate": 215120.71442868226,
+                "publish_min_rate": 197238.85615397998,
+                "publish_max_rate": 231899.90434960497,
+                "consume_avg_rate": 12962.723156402262,
+                "consume_min_rate": 10439.437605485062,
+                "consume_max_rate": 14588.741396605528,
+                "losses": 0,
+                "duplicates": 0
+            },
+            "3": {
+                "publish_avg_rate": 240882.19491886307,
+                "publish_min_rate": 228540.04337260115,
+                "publish_max_rate": 252314.76301336076,
+                "consume_avg_rate": 14153.709202437949,
+                "consume_min_rate": 11644.549918294166,
+                "consume_max_rate": 15610.732140145481,
+                "losses": 0,
+                "duplicates": 0
+            }
+        }
+    }
+}

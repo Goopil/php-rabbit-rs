@@ -1,0 +1,19 @@
+PHP Deprecated:  Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+Deprecated: Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+=== laravel-worker / amqplib ===
+  Publish: avg 86232 msg/s (min 84397, max 87575)
+  Consume: avg 2229 msg/s (min 2171, max 2296)
+  Latency p50: 2295.17 ms, p95: 4273.06 ms, p99: 4446.17 ms
+Budget Check: FAIL
+  publish_p99_max_ms: expected 2000, got 4446.1678209
+  consume_p99_max_ms: expected 2000, got 4446.1678209
+
+=== Summary ===
+Scenario/Driver                | Publish msg/s   | Consume msg/s   | p99 (ms)   | Losses     | Duplicates
+---------------------------------------------------------------------------------------------------------
+laravel-worker/amqplib         | 86232           | 2229            | 4446.17    | 0          | 0         
+
+
+Results written to /Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task-39-secondary-rebench/benchmarks/src/../results/benchmark-results.json
