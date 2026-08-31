@@ -97,6 +97,7 @@ describe('native normalization', function (): void {
             ],
             'consumer' => [
                 'wait_timeout' => 30000,
+                'max_attempts' => 20,
             ],
             'queue_type' => 'quorum',
             'queue_durable' => true,
@@ -206,6 +207,51 @@ describe('consumer section', function (): void {
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('consumers.wait_timeout');
+
+        ConfigNormalizer::normalize($config);
+    });
+
+    it('maps consumer max_attempts to the native config', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['max_attempts' => 25];
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect(25)->toBe($normalized['native']['consumer']['max_attempts']);
+    });
+
+    it('defaults the consumer max_attempts to twenty', function (): void {
+        $normalized = ConfigNormalizer::normalize(configValidConfig());
+
+        expect(20)->toBe($normalized['native']['consumer']['max_attempts']);
+    });
+
+    it('rejects a zero consumer max_attempts', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['max_attempts' => 0];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('consumers.max_attempts');
+
+        ConfigNormalizer::normalize($config);
+    });
+
+    it('rejects a non-integer consumer max_attempts', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['max_attempts' => 'many'];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('consumers.max_attempts');
+
+        ConfigNormalizer::normalize($config);
+    });
+
+    it('rejects a negative consumer max_attempts', function (): void {
+        $config = configValidConfig();
+        $config['consumers'] = ['max_attempts' => -1];
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('consumers.max_attempts');
 
         ConfigNormalizer::normalize($config);
     });

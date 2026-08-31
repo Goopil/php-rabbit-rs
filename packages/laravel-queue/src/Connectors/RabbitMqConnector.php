@@ -82,6 +82,7 @@ final class RabbitMqConnector implements ConnectorInterface
             blockForMilliseconds: ($blockFor ?? 0) * 1000,
             publisherConfig: $this->normalizedConfig['publisher'],
             autoSubscribe: $autoSubscribe,
+            hasDeadLetter: ($this->normalizedConfig['topology']['dead_letter'] ?? null) !== null,
         );
     }
 
