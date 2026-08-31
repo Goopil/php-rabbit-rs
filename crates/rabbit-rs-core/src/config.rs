@@ -73,27 +73,14 @@ impl fmt::Debug for Credentials {
     }
 }
 
-/// TLS verification mode controlling certificate validation.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum TlsVerify {
-    /// Verify the server certificate chain against the configured CA.
-    #[default]
-    Peer,
-    /// Skip certificate verification (insecure — use only in development).
-    None,
-}
-
 /// TLS parameters that are safe to retain in normalized configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct TlsConfig {
     enabled: bool,
-    server_name: Option<String>,
     ca_cert: Option<PathBuf>,
     client_cert: Option<PathBuf>,
     client_key: Option<PathBuf>,
-    verify: TlsVerify,
 }
 
 impl TlsConfig {
@@ -101,34 +88,15 @@ impl TlsConfig {
     pub const fn disabled() -> Self {
         Self {
             enabled: false,
-            server_name: None,
             ca_cert: None,
             client_cert: None,
             client_key: None,
-            verify: TlsVerify::Peer,
-        }
-    }
-
-    #[must_use]
-    pub const fn enabled() -> Self {
-        Self {
-            enabled: true,
-            server_name: None,
-            ca_cert: None,
-            client_cert: None,
-            client_key: None,
-            verify: TlsVerify::Peer,
         }
     }
 
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
         self.enabled
-    }
-
-    #[must_use]
-    pub fn server_name(&self) -> Option<&str> {
-        self.server_name.as_deref()
     }
 
     #[must_use]
@@ -144,17 +112,6 @@ impl TlsConfig {
     #[must_use]
     pub fn client_key(&self) -> Option<&PathBuf> {
         self.client_key.as_ref()
-    }
-
-    #[must_use]
-    pub const fn verify(&self) -> TlsVerify {
-        self.verify
-    }
-
-    #[must_use]
-    pub fn with_server_name(mut self, server_name: &str) -> Self {
-        self.server_name = Some(server_name.to_owned());
-        self
     }
 }
 
@@ -182,21 +139,6 @@ impl BrokerConfig {
     pub fn hosts(&self) -> &[Endpoint] {
         &self.hosts
     }
-
-    /// Returns the SNI server name to use for TLS connections.
-    ///
-    /// Falls back to the first broker host when `tls.server_name` is not set.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the broker has no hosts. Validation guarantees at least one host.
-    #[must_use]
-    pub fn effective_server_name(&self) -> &str {
-        self.tls
-            .server_name
-            .as_deref()
-            .unwrap_or_else(|| self.hosts.first().expect("at least one host").host())
-    }
 }
 
 /// Per-subscription scheduling and flow-control parameters.
@@ -216,8 +158,6 @@ pub struct SubscriptionConfig {
     pub starvation_after: Duration,
     #[serde(default = "default_max_buffered_bytes")]
     pub max_buffered_bytes: u64,
-    #[serde(default)]
-    pub max_message_bytes: Option<u64>,
     /// Best-effort mode: ACK the delivery to the broker before dispatch to PHP.
     ///
     /// When `true`, the consumer auto-acks each delivery immediately and
@@ -245,39 +185,6 @@ pub enum SchedulerStrategy {
 #[serde(deny_unknown_fields)]
 pub struct SchedulerConfig {
     pub strategy: SchedulerStrategy,
-}
-
-impl SchedulerConfig {
-    #[must_use]
-    pub const fn weighted_fair() -> Self {
-        Self {
-            strategy: SchedulerStrategy::WeightedFair,
-        }
-    }
-}
-
-/// A set of subscriptions consumed by one Laravel worker profile.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkerProfile {
-    pub name: String,
-    pub subscriptions: Vec<SubscriptionConfig>,
-    pub scheduler: SchedulerConfig,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkerProfileWire {
-    name: String,
-    subscriptions: Vec<SubscriptionConfig>,
-    scheduler: SchedulerConfigWire,
-    #[serde(default)]
-    max_in_flight: Option<u16>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SchedulerConfigWire {
-    strategy: SchedulerStrategy,
     /// Deserialized for wire compatibility with existing hand-written configs,
     /// then ignored: broker `QoS` structurally bounds un-acked deliveries per
     /// channel, so a worker-level dispatch budget would be dead weight.
@@ -286,27 +193,23 @@ struct SchedulerConfigWire {
     max_in_flight: Option<u16>,
 }
 
-impl<'de> Deserialize<'de> for WorkerProfile {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = WorkerProfileWire::deserialize(deserializer)?;
-        if wire.max_in_flight.is_some() {
-            return Err(serde::de::Error::custom(format!(
-                "workers.{}.max_in_flight moved to workers.{}.scheduler.max_in_flight",
-                wire.name, wire.name
-            )));
+impl SchedulerConfig {
+    #[must_use]
+    pub const fn weighted_fair() -> Self {
+        Self {
+            strategy: SchedulerStrategy::WeightedFair,
+            max_in_flight: None,
         }
-
-        Ok(Self {
-            name: wire.name,
-            subscriptions: wire.subscriptions,
-            scheduler: SchedulerConfig {
-                strategy: wire.scheduler.strategy,
-            },
-        })
     }
+}
+
+/// A set of subscriptions consumed by one Laravel worker profile.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerProfile {
+    pub name: String,
+    pub subscriptions: Vec<SubscriptionConfig>,
+    pub scheduler: SchedulerConfig,
 }
 
 /// Controls whether Rabbit RS mutates or only observes broker topology.
@@ -337,27 +240,6 @@ pub struct DelayConfig {
     pub max_buckets: usize,
     #[serde(deserialize_with = "deserialize_duration_seconds")]
     pub queue_expiry_margin: Duration,
-    #[serde(deserialize_with = "deserialize_duration_seconds")]
-    pub detection_timeout: Duration,
-}
-
-impl DelayConfig {
-    #[must_use]
-    pub const fn new(
-        mode: DelayMode,
-        buckets: Vec<Duration>,
-        max_buckets: usize,
-        queue_expiry_margin: Duration,
-        detection_timeout: Duration,
-    ) -> Self {
-        Self {
-            mode,
-            buckets,
-            max_buckets,
-            queue_expiry_margin,
-            detection_timeout,
-        }
-    }
 }
 
 impl Default for DelayConfig {
@@ -372,7 +254,6 @@ impl Default for DelayConfig {
             ],
             max_buckets: 8,
             queue_expiry_margin: Duration::from_mins(1),
-            detection_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -443,20 +324,6 @@ pub struct PublisherConfigSection {
 }
 
 impl PublisherConfigSection {
-    #[must_use]
-    pub const fn new(confirms: bool, mandatory: bool, confirm_timeout: Duration) -> Self {
-        Self {
-            safety: if confirms {
-                SafetyMode::Safe
-            } else {
-                SafetyMode::Unsafe
-            },
-            confirms,
-            mandatory,
-            confirm_timeout,
-        }
-    }
-
     /// Returns the effective safety mode, deriving from legacy `confirms`/`mandatory`
     /// flags when `safety` was not explicitly set.
     ///
@@ -678,12 +545,6 @@ impl Config {
                 "TTL buckets must be greater than zero",
             ));
         }
-        if delay.detection_timeout.is_zero() {
-            return Err(ConfigError::new(
-                "delay.detection_timeout",
-                "detection_timeout must be greater than zero",
-            ));
-        }
         Ok(())
     }
 }
@@ -713,12 +574,6 @@ impl ValidatedConfig {
     #[must_use]
     pub fn worker(&self, name: &str) -> Option<&WorkerProfile> {
         self.workers.iter().find(|worker| worker.name == name)
-    }
-
-    /// Returns all broker configurations in canonical order.
-    #[must_use]
-    pub fn brokers(&self) -> &[BrokerConfig] {
-        &self.brokers
     }
 
     /// Returns all worker profiles in canonical order.
@@ -801,13 +656,6 @@ impl ConfigFingerprint {
                 digest.update(subscription.prefetch.to_be_bytes());
                 digest.update(subscription.starvation_after.as_secs().to_be_bytes());
                 digest.update(subscription.max_buffered_bytes.to_be_bytes());
-                match subscription.max_message_bytes {
-                    Some(bytes) => {
-                        hash_value(&mut digest, "max_message_bytes");
-                        digest.update(bytes.to_be_bytes());
-                    }
-                    None => hash_value(&mut digest, "no_max_message_bytes"),
-                }
                 hash_value(
                     &mut digest,
                     if subscription.early_ack {
@@ -827,7 +675,6 @@ impl ConfigFingerprint {
         hash_value(&mut digest, &format!("{:?}", config.delay.buckets));
         digest.update(config.delay.max_buckets.to_be_bytes());
         digest.update(config.delay.queue_expiry_margin.as_secs().to_be_bytes());
-        digest.update(config.delay.detection_timeout.as_secs().to_be_bytes());
 
         if let Some(dl) = &config.dead_letter {
             hash_value(&mut digest, "dead_letter");
@@ -876,10 +723,6 @@ fn hash_broker(digest: &mut Sha256, broker: &BrokerConfig) {
     hash_value(digest, if broker.tls.enabled { "tls" } else { "plain" });
     hash_value(
         digest,
-        broker.tls.server_name.as_deref().unwrap_or_default(),
-    );
-    hash_value(
-        digest,
         broker
             .tls
             .ca_cert
@@ -908,7 +751,6 @@ fn hash_broker(digest: &mut Sha256, broker: &BrokerConfig) {
             .as_deref()
             .unwrap_or_default(),
     );
-    hash_value(digest, tls_verify_name(broker.tls.verify));
     digest.update(broker.heartbeat.as_secs().to_be_bytes());
     for endpoint in &broker.hosts {
         hash_value(digest, &endpoint.host);
@@ -970,13 +812,6 @@ const fn delay_mode_name(mode: DelayMode) -> &'static str {
     }
 }
 
-const fn tls_verify_name(verify: TlsVerify) -> &'static str {
-    match verify {
-        TlsVerify::Peer => "peer",
-        TlsVerify::None => "none",
-    }
-}
-
 const fn safety_mode_name(mode: SafetyMode) -> &'static str {
     match mode {
         SafetyMode::Blind => "blind",
@@ -1025,7 +860,7 @@ mod tests {
     use super::{
         BrokerConfig, Config, ConsumerConfigSection, Credentials, DelayConfig, Endpoint,
         PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig,
-        TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
+        TlsConfig, TopologyMode, WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -1051,7 +886,6 @@ mod tests {
             prefetch,
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
-            max_message_bytes: None,
             early_ack: false,
             no_ack: false,
         }
@@ -1127,7 +961,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1161,7 +995,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1211,7 +1045,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1252,7 +1086,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1274,12 +1108,8 @@ mod tests {
         }))
         .expect_err("legacy worker-level max_in_flight must be rejected");
 
-        assert!(error.to_string().contains("workers.main.max_in_flight"));
-        assert!(
-            error
-                .to_string()
-                .contains("workers.main.scheduler.max_in_flight")
-        );
+        assert!(error.to_string().contains("unknown field"));
+        assert!(error.to_string().contains("max_in_flight"));
     }
 
     #[test]
@@ -1436,7 +1266,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1505,7 +1335,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1547,7 +1377,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{
@@ -1601,7 +1431,9 @@ mod tests {
 
     #[test]
     fn tls_enabled_uses_amqps_scheme() {
-        let broker = broker_with_tls(TlsConfig::enabled());
+        let enabled: TlsConfig =
+            serde_json::from_value(serde_json::json!({"enabled": true})).expect("valid TLS config");
+        let broker = broker_with_tls(enabled);
         let uri = connection_uri(&broker, &broker.hosts()[0]).expect("valid URI");
         assert_eq!(uri.scheme(), "amqps");
     }
@@ -1614,31 +1446,16 @@ mod tests {
     }
 
     #[test]
-    fn tls_server_name_resolves_to_explicit_value() {
-        let broker = broker_with_tls(TlsConfig::enabled().with_server_name("broker.internal"));
-        assert_eq!(broker.effective_server_name(), "broker.internal");
-    }
-
-    #[test]
-    fn tls_server_name_falls_back_to_first_host() {
-        let broker = broker_with_tls(TlsConfig::enabled());
-        assert_eq!(broker.effective_server_name(), "rabbit.example.com");
-    }
-
-    #[test]
     fn tls_config_deserializes_ca_and_client_certs() {
         let tls: TlsConfig = serde_json::from_value(serde_json::json!({
             "enabled": true,
-            "server_name": "broker.internal",
             "ca_cert": "/etc/ssl/certs/ca.pem",
             "client_cert": "/etc/ssl/client/cert.pem",
-            "client_key": "/etc/ssl/client/key.pem",
-            "verify": "peer"
+            "client_key": "/etc/ssl/client/key.pem"
         }))
         .expect("valid TLS config");
 
         assert!(tls.is_enabled());
-        assert_eq!(tls.server_name(), Some("broker.internal"));
         assert_eq!(tls.ca_cert(), Some(&PathBuf::from("/etc/ssl/certs/ca.pem")));
         assert_eq!(
             tls.client_cert(),
@@ -1648,35 +1465,12 @@ mod tests {
             tls.client_key(),
             Some(&PathBuf::from("/etc/ssl/client/key.pem"))
         );
-        assert_eq!(tls.verify(), TlsVerify::Peer);
-    }
-
-    #[test]
-    fn tls_verify_defaults_to_peer() {
-        let tls: TlsConfig = serde_json::from_value(serde_json::json!({
-            "enabled": true
-        }))
-        .expect("valid TLS config");
-
-        assert_eq!(tls.verify(), TlsVerify::Peer);
-    }
-
-    #[test]
-    fn tls_verify_can_be_set_to_none() {
-        let tls: TlsConfig = serde_json::from_value(serde_json::json!({
-            "enabled": true,
-            "verify": "none"
-        }))
-        .expect("valid TLS config");
-
-        assert_eq!(tls.verify(), TlsVerify::None);
     }
 
     #[test]
     fn tls_config_without_certs_defaults_to_none() {
         let tls: TlsConfig = serde_json::from_value(serde_json::json!({
-            "enabled": true,
-            "server_name": "broker.internal"
+            "enabled": true
         }))
         .expect("valid TLS config");
 
@@ -1695,7 +1489,6 @@ mod tests {
                 "credentials": {"username": "guest", "password": "secret"},
                 "tls": {
                     "enabled": true,
-                    "server_name": "broker.internal",
                     "ca_cert": "/etc/ssl/certs/ca.pem"
                 },
                 "heartbeat": 30
@@ -1726,8 +1519,7 @@ mod tests {
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
                 "tls": {
-                    "enabled": true,
-                    "server_name": "broker.internal"
+                    "enabled": true
                 },
                 "heartbeat": 30
             }],
@@ -1754,61 +1546,6 @@ mod tests {
             validated_with.fingerprint(),
             validated_without.fingerprint(),
             "different TLS CA cert paths must produce different fingerprints"
-        );
-    }
-
-    #[test]
-    fn tls_verify_change_affects_fingerprint() {
-        let peer = serde_json::from_value::<Config>(serde_json::json!({
-            "brokers": [{
-                "name": "primary",
-                "hosts": [{"host": "rabbit.example.com", "port": 5671}],
-                "vhost": "/",
-                "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": true, "verify": "peer"},
-                "heartbeat": 30
-            }],
-            "workers": [{
-                "name": "main",
-                "subscriptions": [{
-                    "name": "jobs", "broker": "primary", "queue": "jobs",
-                    "weight": 1, "priority_class": 0, "prefetch": 8, "starvation_after": 30
-                }],
-                "scheduler": {"strategy": "weighted_fair", "max_in_flight": 16}
-            }],
-            "topology_mode": "declare"
-        }))
-        .unwrap()
-        .validate()
-        .unwrap();
-
-        let none = serde_json::from_value::<Config>(serde_json::json!({
-            "brokers": [{
-                "name": "primary",
-                "hosts": [{"host": "rabbit.example.com", "port": 5671}],
-                "vhost": "/",
-                "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": true, "verify": "none"},
-                "heartbeat": 30
-            }],
-            "workers": [{
-                "name": "main",
-                "subscriptions": [{
-                    "name": "jobs", "broker": "primary", "queue": "jobs",
-                    "weight": 1, "priority_class": 0, "prefetch": 8, "starvation_after": 30
-                }],
-                "scheduler": {"strategy": "weighted_fair", "max_in_flight": 16}
-            }],
-            "topology_mode": "declare"
-        }))
-        .unwrap()
-        .validate()
-        .unwrap();
-
-        assert_ne!(
-            peer.fingerprint(),
-            none.fingerprint(),
-            "different verify modes must produce different fingerprints"
         );
     }
 
@@ -1861,7 +1598,7 @@ mod tests {
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
                 "vhost": "/",
                 "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
+                "tls": {"enabled": false},
                 "heartbeat": 30
             }],
             "workers": [{

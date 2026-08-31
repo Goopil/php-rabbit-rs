@@ -111,13 +111,7 @@ benchmarks/
 │   │   ├── AmqpExtDriver.php
 │   │   ├── BunnyDriver.php
 │   │   └── RabbitRsDriver.php
-│   └── Scenarios/
-│       ├── AbstractLaravelScenarioBenchmark.php  # Shared base for the laravel-* scenarios
-│       ├── FireAndForgetBenchmark.php
-│       ├── BatchConfirmBenchmark.php
-│       ├── AutoAckBenchmark.php
-│       ├── LaravelDispatchBenchmark.php
-│       └── LaravelWorkerBenchmark.php
+│   └── (scenarios are declared in run-benchmarks.php)
 └── laravel/
     ├── LaravelCompareBenchmark.php
     └── LaravelSmokeBenchmark.php

@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use ext_php_rs::{
     prelude::{ModuleBuilder, PhpException, PhpResult, php_function},
-    types::{ArrayKey, ZendHashTable, Zval},
+    types::{ZendHashTable, Zval},
     wrap_function,
 };
 use rabbit_rs_core::{
@@ -20,8 +20,8 @@ use rabbit_rs_core::{
 };
 
 use crate::{
-    classes::{exception::RabbitRsException, pool::Pool},
-    conversion,
+    classes::pool::Pool,
+    conversion::{self, is_list, optional_non_negative_integer, reject_unknown_keys, string_key},
 };
 
 pub(crate) fn register(module: ModuleBuilder) -> ModuleBuilder {
@@ -356,52 +356,6 @@ fn optional_u32(table: &ZendHashTable, key: &str, path: &str) -> Result<Option<u
         .map_err(|_| format!("{path}.{key}: integer is too large"))
 }
 
-fn optional_non_negative_integer(
-    table: &ZendHashTable,
-    key: &str,
-    path: &str,
-) -> Result<Option<u64>, String> {
-    let Some(value) = table.get(key).map(Zval::dereference) else {
-        return Ok(None);
-    };
-    let value = value
-        .long()
-        .ok_or_else(|| format!("{path}.{key}: expected a non-negative integer"))?;
-    u64::try_from(value)
-        .map(Some)
-        .map_err(|_| format!("{path}.{key}: expected a non-negative integer"))
-}
-
-fn reject_unknown_keys(table: &ZendHashTable, path: &str, allowed: &[&str]) -> Result<(), String> {
-    for (key, _) in table {
-        let key = string_key(key, path)?;
-        if !allowed.contains(&key.as_str()) {
-            return Err(format!("{path}.{key}: unknown field"));
-        }
-    }
-    Ok(())
-}
-
-fn is_list(input: &ZendHashTable) -> bool {
-    input.iter().enumerate().all(|(index, (key, _))| {
-        matches!(key, ArrayKey::Long(value) if value == i64::try_from(index).unwrap_or(i64::MAX))
-    })
-}
-
-fn string_key(key: ArrayKey<'_>, path: &str) -> Result<String, String> {
-    match key {
-        ArrayKey::String(value) => Ok(value),
-        ArrayKey::Str(value) => Ok(value.to_owned()),
-        ArrayKey::ZendString(value) => value
-            .as_str()
-            .map(ToOwned::to_owned)
-            .map_err(|_| format!("{path}: array keys must be valid UTF-8 strings")),
-        ArrayKey::Long(value) => Err(format!(
-            "{path}.{value}: associative arrays require string keys"
-        )),
-    }
-}
-
 fn testing_exception(message: String) -> PhpException {
-    PhpException::from_class::<RabbitRsException>(message)
+    crate::classes::exception::rabbit_exception_message(message)
 }

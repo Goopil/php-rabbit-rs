@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{
     config::BrokerConfig,
     metrics::{Metrics, MetricsSnapshot},
-    recovery::{Clock, ConnectionState, EqualJitter, JitterSource, RecoveryPolicy, TokioClock},
+    recovery::{Clock, ConnectionState, JitterSource, RecoveryPolicy},
     transport::{
         ConsumerChannel, PublisherChannel, Transport, TransportConnection, TransportError,
     },
@@ -17,53 +17,6 @@ const COMMAND_CAPACITY: usize = 32;
 pub struct ConnectionActor;
 
 impl ConnectionActor {
-    /// Spawns an actor with production clock and equal-jitter defaults.
-    #[must_use]
-    pub fn spawn(
-        transport: Arc<dyn Transport>,
-        config: BrokerConfig,
-        policy: RecoveryPolicy,
-    ) -> ConnectionActorHandle {
-        Self::spawn_with_metrics(transport, config, policy, Metrics::default())
-    }
-
-    /// Spawns an actor with a metrics registry shared by its caller.
-    #[must_use]
-    pub fn spawn_with_metrics(
-        transport: Arc<dyn Transport>,
-        config: BrokerConfig,
-        policy: RecoveryPolicy,
-        metrics: Metrics,
-    ) -> ConnectionActorHandle {
-        Self::spawn_with_dependencies_and_metrics(
-            transport,
-            config,
-            policy,
-            Arc::new(TokioClock),
-            Arc::new(EqualJitter),
-            metrics,
-        )
-    }
-
-    /// Spawns an actor with deterministic time and jitter dependencies.
-    #[must_use]
-    pub fn spawn_with_dependencies(
-        transport: Arc<dyn Transport>,
-        config: BrokerConfig,
-        policy: RecoveryPolicy,
-        clock: Arc<dyn Clock>,
-        jitter: Arc<dyn JitterSource>,
-    ) -> ConnectionActorHandle {
-        Self::spawn_with_dependencies_and_metrics(
-            transport,
-            config,
-            policy,
-            clock,
-            jitter,
-            Metrics::default(),
-        )
-    }
-
     /// Spawns an actor with deterministic dependencies and shared metrics.
     #[must_use]
     pub fn spawn_with_dependencies_and_metrics(

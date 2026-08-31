@@ -1,0 +1,52 @@
+name: Package release asset
+description: >
+  Zips rabbit_rs.so into a PIE archive, uploads it with SHA-256 and SBOM
+  sidecars, and attests build provenance and SBOM.
+inputs:
+  asset-base:
+    description: Asset base name without extension, including the version (PIE naming convention).
+    required: true
+  token:
+    description: GitHub token used to upload to the release.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Package
+      shell: bash
+      run: |
+        ASSET_BASE="${{ inputs.asset-base }}"
+        ASSET_NAME="${ASSET_BASE}.zip"
+        zip "${ASSET_NAME}" rabbit_rs.so
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+        else
+            shasum -a 256 "${ASSET_NAME}" > "${ASSET_NAME}.sha256"
+        fi
+
+        # SBOM was generated next to the build output as rabbit_rs.sbom.json
+        cp rabbit_rs.sbom.json "${ASSET_BASE}.sbom.json"
+        [[ -f "${ASSET_BASE}.sbom.json" ]] || { echo "::error::SBOM not found"; exit 1; }
+
+        echo "ASSET_NAME=${ASSET_NAME}" >> "$GITHUB_ENV"
+        echo "ASSET_BASE=${ASSET_BASE}" >> "$GITHUB_ENV"
+
+    - name: Upload to release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        gh release upload "$GITHUB_REF_NAME" \
+          "$ASSET_NAME" "$ASSET_NAME.sha256" "${ASSET_BASE}.sbom.json" \
+          --clobber --repo "${GITHUB_REPOSITORY}"
+
+    - name: Attest build provenance
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+      with:
+        subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+
+    - name: Attest SBOM
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+      with:
+        subject-path: '${{ github.workspace }}/${{ env.ASSET_NAME }}'
+        sbom-path: '${{ github.workspace }}/${{ env.ASSET_BASE }}.sbom.json'

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SafetyMode, TlsConfig,
         TopologyMode,
     },
     consumer::{ConsumerSet, Subscription},
@@ -16,11 +16,14 @@ use rabbit_rs_core::{
     recovery::{ConnectionState, IdentityJitter, RecoveryPolicy, TokioClock},
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind, ReturnedMessage, Transport,
-        TransportError,
-        mock::{MockTransport, TransportOperation},
+        TransportError, mock::MockTransport,
     },
 };
 use tokio::{sync::watch, time::Instant};
+
+mod common;
+
+use common::wait_for_publish_count;
 
 fn broker(password: &str) -> BrokerConfig {
     BrokerConfig {
@@ -61,21 +64,6 @@ fn publish_request(message_id: &str) -> PublishRequest {
     )
 }
 
-async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
-    for _ in 0..100 {
-        let count = transport
-            .operations()
-            .iter()
-            .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-            .count();
-        if count == expected {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("publisher did not emit {expected} messages");
-}
-
 #[tokio::test(start_paused = true)]
 async fn publisher_records_accepts_confirmations_returns_and_backpressure() {
     let transport = MockTransport::default();
@@ -88,10 +76,11 @@ async fn publisher_records_accepts_confirmations_returns_and_backpressure() {
         .await
         .expect("publisher channel");
     let metrics = Metrics::default();
-    let publisher = PublisherActor::spawn_with_metrics(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(1, Duration::from_secs(5)),
+        PublisherConfig::with_safety(1, Duration::from_secs(5), SafetyMode::Safe),
         metrics,
+        None,
     );
 
     let first = publisher
@@ -142,10 +131,11 @@ async fn only_ack_and_nack_are_recorded_as_confirmations() {
         .open_publisher()
         .await
         .expect("publisher channel");
-    let publisher = PublisherActor::spawn_with_metrics(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(1, Duration::from_secs(5)),
+        PublisherConfig::with_safety(1, Duration::from_secs(5), SafetyMode::Safe),
         Metrics::default(),
+        None,
     );
 
     let nack = publisher
@@ -303,10 +293,11 @@ async fn concurrent_snapshots_do_not_prevent_publisher_progress() {
         .await
         .expect("publisher channel");
     let metrics = Metrics::default();
-    let publisher = PublisherActor::spawn_with_metrics(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(MESSAGE_COUNT, Duration::from_secs(5)),
+        PublisherConfig::with_safety(MESSAGE_COUNT, Duration::from_secs(5), SafetyMode::Safe),
         metrics.clone(),
+        None,
     );
     let snapshot_reader = std::thread::spawn(move || {
         let mut latest = metrics.snapshot();
@@ -339,21 +330,4 @@ async fn concurrent_snapshots_do_not_prevent_publisher_progress() {
     let expected = u64::try_from(MESSAGE_COUNT).expect("message count fits u64");
     assert_eq!(publisher.metrics_snapshot().confirmations_total, expected);
     assert!(concurrent_snapshot.confirmations_total <= expected);
-}
-
-#[tokio::test(start_paused = true)]
-async fn depth_metrics_are_recorded() {
-    let metrics = Metrics::default();
-    metrics.record_publishing_depth(10);
-    metrics.record_publishing_depth(5);
-    metrics.record_publishing_bytes(1024);
-    metrics.record_replay();
-    metrics.record_consumer_buffer_depth(3);
-    let snapshot = metrics.snapshot();
-    assert_eq!(snapshot.publishing_depth, 5);
-    assert_eq!(snapshot.publishing_depth_hwm, 10);
-    assert_eq!(snapshot.publishing_bytes, 1024);
-    assert_eq!(snapshot.replay_count, 1);
-    assert_eq!(snapshot.replay_depth, 1);
-    assert_eq!(snapshot.consumer_buffer_depth, 3);
 }

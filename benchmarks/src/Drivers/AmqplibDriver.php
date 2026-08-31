@@ -191,13 +191,7 @@ class AmqplibDriver extends AbstractBenchmark
 
             $body = $msg->getBody();
             $this->recordReceived($msg->get('message_id'));
-            if (strlen($body) >= 8) {
-                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
-                }
-            }
+            $this->recordLatencyFromPayload($body);
             $msg->ack();
             $consumed++;
         }
@@ -208,13 +202,7 @@ class AmqplibDriver extends AbstractBenchmark
         return function (AMQPMessage $msg) use ($count, &$consumed, $autoAck, $consumerTag): void {
             $body = $msg->getBody();
             $this->recordReceived($msg->get('message_id'));
-            if (strlen($body) >= 8) {
-                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
-                }
-            }
+            $this->recordLatencyFromPayload($body);
             $consumed++;
             if (!$autoAck) {
                 $msg->ack();

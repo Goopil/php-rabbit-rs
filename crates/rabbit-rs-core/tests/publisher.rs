@@ -1,55 +1,43 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::{
-        BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint, SafetyMode, TlsConfig,
-    },
+    config::{Config, DelayConfig, DelayMode, SafetyMode},
+    metrics::Metrics,
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
         PublishWaiter, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
         delay::DelayRouter,
     },
-    topology::delay::{DelayPluginProbe, DelayStrategy, DelayStrategyResolver, TtlBucketPlan},
+    topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
-        ExchangeKind, ExchangeSpec, PublishConfirmation, PublishRequest as TransportRequest,
-        PublisherChannel, QueueSpec, ReturnedMessage, Transport, TransportError, TransportResult,
+        ExchangeKind, ExchangeSpec, PublishConfirmation, PublisherChannel, QueueSpec,
+        ReturnedMessage, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
 use tokio::time::Instant;
 
+mod common;
+
 mod helper {
     use super::*;
 
-    pub fn broker() -> BrokerConfig {
-        BrokerConfig {
-            name: "primary".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
-    }
+    pub use crate::common::{
+        broker, find_publish, publish_requests as publish_operations, wait_for_publish_count,
+        wait_for_publish_count_delay,
+    };
 
     pub fn config_safety() -> PublisherConfig {
-        PublisherConfig::new(32, Duration::from_secs(5))
+        PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe)
     }
 
     pub fn config_recovery(capacity: usize) -> PublisherConfig {
-        PublisherConfig::new(capacity, Duration::from_secs(5))
+        PublisherConfig::with_safety(capacity, Duration::from_secs(5), SafetyMode::Safe)
     }
 
     pub fn publisher_config_delay() -> PublisherConfig {
-        PublisherConfig::new(32, Duration::from_secs(30))
+        PublisherConfig::with_safety(32, Duration::from_secs(30), SafetyMode::Safe)
     }
 
     pub fn request_safety(message_id: &str, payload: &'static [u8]) -> PublishRequest {
@@ -98,19 +86,24 @@ mod helper {
         config: PublisherConfig,
     ) -> PublisherHandle {
         let publisher = transport
-            .connect(&broker())
+            .connect(&broker("primary", "/", "guest"))
             .await
             .expect("connection")
             .open_publisher()
             .await
             .expect("publisher");
-        PublisherActor::spawn(Arc::from(publisher), config)
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
+            Arc::from(publisher),
+            config,
+            Metrics::default(),
+            None,
+        )
     }
 
     pub async fn new_channel(transport: &MockTransport) -> Arc<dyn PublisherChannel> {
         Arc::from(
             transport
-                .connect(&broker())
+                .connect(&broker("primary", "/", "guest"))
                 .await
                 .expect("connection")
                 .open_publisher()
@@ -120,7 +113,12 @@ mod helper {
     }
 
     pub async fn actor_recovery(transport: &MockTransport, capacity: usize) -> PublisherHandle {
-        PublisherActor::spawn(new_channel(transport).await, config_recovery(capacity))
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
+            new_channel(transport).await,
+            config_recovery(capacity),
+            Metrics::default(),
+            None,
+        )
     }
 
     pub async fn spawn_actor_delay(
@@ -129,66 +127,18 @@ mod helper {
         delay_strategy: DelayStrategy,
     ) -> PublisherHandle {
         let publisher = transport
-            .connect(&broker())
+            .connect(&broker("primary", "/", "guest"))
             .await
             .expect("connection")
             .open_publisher()
             .await
             .expect("publisher");
-        PublisherActor::spawn_with_delay_strategy(Arc::from(publisher), config, delay_strategy)
-    }
-
-    pub async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
-        for _ in 0..100 {
-            let count = transport
-                .operations()
-                .iter()
-                .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-                .count();
-            if count == expected {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!("publisher did not emit {expected} messages");
-    }
-
-    pub async fn wait_for_publish_count_delay(transport: &MockTransport, expected: usize) {
-        for _ in 0..200 {
-            let count = transport
-                .operations()
-                .iter()
-                .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-                .count();
-            if count == expected {
-                return;
-            }
-            tokio::time::advance(Duration::from_millis(2)).await;
-            tokio::task::yield_now().await;
-        }
-        panic!("publisher did not emit {expected} messages");
-    }
-
-    pub fn find_publish(transport: &MockTransport) -> TransportRequest {
-        transport
-            .operations()
-            .iter()
-            .find_map(|operation| match operation {
-                TransportOperation::Publish(request) => Some(request.clone()),
-                _ => None,
-            })
-            .expect("at least one publish")
-    }
-
-    pub fn publish_operations(transport: &MockTransport) -> Vec<TransportRequest> {
-        transport
-            .operations()
-            .into_iter()
-            .filter_map(|operation| match operation {
-                TransportOperation::Publish(request) => Some(request),
-                _ => None,
-            })
-            .collect()
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
+            Arc::from(publisher),
+            config,
+            Metrics::default(),
+            Some(delay_strategy),
+        )
     }
 
     pub async fn suspend(actor: &PublisherHandle) {
@@ -199,65 +149,28 @@ mod helper {
     }
 
     pub fn ttl_config() -> DelayConfig {
-        DelayConfig::new(
-            DelayMode::Ttl,
-            vec![
+        DelayConfig {
+            mode: DelayMode::Ttl,
+            buckets: vec![
                 Duration::from_secs(1),
                 Duration::from_secs(5),
                 Duration::from_secs(30),
             ],
-            8,
-            Duration::from_mins(1),
-            Duration::from_millis(50),
-        )
+            max_buckets: 8,
+            queue_expiry_margin: Duration::from_mins(1),
+        }
     }
 
     pub fn delay_config(mode: DelayMode) -> DelayConfig {
-        DelayConfig::new(
+        DelayConfig {
             mode,
-            vec![
+            buckets: vec![
                 Duration::from_secs(1),
                 Duration::from_secs(5),
                 Duration::from_secs(30),
             ],
-            8,
-            Duration::from_mins(1),
-            Duration::from_millis(50),
-        )
-    }
-
-    pub struct FixedProbe {
-        available: bool,
-        calls: AtomicUsize,
-    }
-
-    impl FixedProbe {
-        pub const fn new(available: bool) -> Self {
-            Self {
-                available,
-                calls: AtomicUsize::new(0),
-            }
-        }
-
-        pub fn calls(&self) -> usize {
-            self.calls.load(Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl DelayPluginProbe for FixedProbe {
-        async fn is_available(&self) -> TransportResult<bool> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(self.available)
-        }
-    }
-
-    pub struct PendingProbe;
-
-    #[async_trait]
-    impl DelayPluginProbe for PendingProbe {
-        async fn is_available(&self) -> TransportResult<bool> {
-            std::future::pending().await
+            max_buckets: 8,
+            queue_expiry_margin: Duration::from_mins(1),
         }
     }
 }
@@ -384,7 +297,7 @@ async fn confirmation_timeout_is_typed() {
     transport.push_pending_confirmation();
     let actor = actor_safety(
         &transport,
-        PublisherConfig::new(32, Duration::from_millis(10)),
+        PublisherConfig::with_safety(32, Duration::from_millis(10), SafetyMode::Safe),
     )
     .await;
     let waiter = actor
@@ -403,7 +316,11 @@ async fn confirmation_timeout_is_typed() {
 #[tokio::test(start_paused = true)]
 async fn a_full_command_buffer_returns_backpressure() {
     let transport = MockTransport::default();
-    let actor = actor_safety(&transport, PublisherConfig::new(1, Duration::from_secs(5))).await;
+    let actor = actor_safety(
+        &transport,
+        PublisherConfig::with_safety(1, Duration::from_secs(5), SafetyMode::Safe),
+    )
+    .await;
 
     let _first = actor
         .try_publish(request_safety("one", b"a"))
@@ -428,7 +345,7 @@ async fn connection_loss_before_confirm_is_replayed() {
     actor.connection_lost().await.expect("loss command");
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let replacement = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("replacement connection")
         .open_publisher()
@@ -484,14 +401,19 @@ async fn skips_enable_confirms_when_configured_off() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), false, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Unsafe);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -504,7 +426,7 @@ async fn skips_enable_confirms_when_configured_off() {
         !operations
             .iter()
             .any(|op| matches!(op, TransportOperation::EnableConfirms)),
-        "enable_confirms must not be called when confirms=false"
+        "enable_confirms must not be called in Unsafe mode"
     );
 }
 
@@ -513,14 +435,19 @@ async fn calls_enable_confirms_when_configured_on() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -538,52 +465,23 @@ async fn calls_enable_confirms_when_configured_on() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn publishes_with_mandatory_false_when_configured_off() {
-    let transport = MockTransport::default();
-    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let publisher = transport
-        .connect(&broker())
-        .await
-        .expect("connection")
-        .open_publisher()
-        .await
-        .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, false);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
-
-    let waiter = actor
-        .try_publish(request_safety("one", b"a"))
-        .expect("publish");
-    wait_for_publish_count(&transport, 1).await;
-    let _ = waiter.wait().await;
-
-    let operations = transport.operations();
-    let publish = operations
-        .iter()
-        .find(|op| matches!(op, TransportOperation::Publish(_)))
-        .expect("a publish operation");
-    let TransportOperation::Publish(req) = publish else {
-        panic!("expected a Publish operation");
-    };
-    assert!(
-        !req.mandatory,
-        "publish must have mandatory=false when config.mandatory=false"
-    );
-}
-
-#[tokio::test(start_paused = true)]
 async fn publishes_with_mandatory_true_when_configured_on() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -610,14 +508,19 @@ async fn confirm_timeout_from_config_is_applied() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
         .await
         .expect("publisher");
-    let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let config = PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("slow", b"job"))
@@ -882,9 +785,11 @@ async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() 
 async fn unconfirmed_publish_is_retained_across_connection_loss() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();
-    let actor = PublisherActor::spawn(
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         new_channel(&transport).await,
-        PublisherConfig::new(8, Duration::from_secs(5)),
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe),
+        Metrics::default(),
+        None,
     );
     let waiter = actor
         .try_publish(request_recovery(
@@ -1409,7 +1314,7 @@ fn delay_config_is_validated_and_deserialized_from_config() {
             "hosts": [{"host": "rabbit.local", "port": 5672}],
             "vhost": "/",
             "credentials": {"username": "guest", "password": "secret"},
-            "tls": {"enabled": false, "server_name": null},
+            "tls": {"enabled": false},
             "heartbeat": 30
         }],
         "workers": [{
@@ -1432,8 +1337,7 @@ fn delay_config_is_validated_and_deserialized_from_config() {
             "mode": "ttl",
             "buckets": [1, 5, 30],
             "max_buckets": 8,
-            "queue_expiry_margin": 60,
-            "detection_timeout": 5
+            "queue_expiry_margin": 60
         }
     });
 
@@ -1452,7 +1356,6 @@ fn delay_config_is_validated_and_deserialized_from_config() {
     );
     assert_eq!(delay.max_buckets, 8);
     assert_eq!(delay.queue_expiry_margin, Duration::from_mins(1));
-    assert_eq!(delay.detection_timeout, Duration::from_secs(5));
 }
 
 #[test]
@@ -1463,7 +1366,7 @@ fn delay_config_rejects_empty_buckets() {
             "hosts": [{"host": "rabbit.local", "port": 5672}],
             "vhost": "/",
             "credentials": {"username": "guest", "password": "secret"},
-            "tls": {"enabled": false, "server_name": null},
+            "tls": {"enabled": false},
             "heartbeat": 30
         }],
         "workers": [{
@@ -1486,8 +1389,7 @@ fn delay_config_rejects_empty_buckets() {
             "mode": "ttl",
             "buckets": [],
             "max_buckets": 8,
-            "queue_expiry_margin": 60,
-            "detection_timeout": 5
+            "queue_expiry_margin": 60
         }
     });
 
@@ -1499,79 +1401,9 @@ fn delay_config_rejects_empty_buckets() {
     assert!(error.path().contains("delay.buckets"));
 }
 
-#[tokio::test(start_paused = true)]
-async fn auto_mode_detects_plugin_and_falls_back_to_ttl_if_absent() {
-    struct NeverAvailable;
-
-    #[async_trait]
-    impl DelayPluginProbe for NeverAvailable {
-        async fn is_available(&self) -> TransportResult<bool> {
-            Ok(false)
-        }
-    }
-
-    let mut resolver = DelayStrategyResolver::new();
-    let config = DelayConfig::new(
-        DelayMode::Auto,
-        vec![Duration::from_secs(5)],
-        8,
-        Duration::from_mins(1),
-        Duration::from_millis(50),
-    );
-
-    let strategy = resolver
-        .resolve(&config, 1, Arc::new(NeverAvailable))
-        .await
-        .expect("fallback strategy");
-
-    assert!(
-        matches!(strategy, DelayStrategy::TtlBuckets(_)),
-        "Auto mode must fall back to TTL when plugin is absent"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Delay routing tests (from delay_routing.rs)
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn auto_selects_delayed_exchange_when_plugin_is_available() {
-    let probe = Arc::new(FixedProbe::new(true));
-    let mut resolver = DelayStrategyResolver::new();
-
-    let strategy = resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe)
-        .await
-        .expect("plugin strategy");
-
-    assert_eq!(strategy, DelayStrategy::Plugin);
-}
-
-#[tokio::test]
-async fn auto_falls_back_to_ttl_when_plugin_is_absent() {
-    let probe = Arc::new(FixedProbe::new(false));
-    let mut resolver = DelayStrategyResolver::new();
-
-    let strategy = resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe)
-        .await
-        .expect("TTL fallback");
-
-    assert!(matches!(strategy, DelayStrategy::TtlBuckets(_)));
-}
-
-#[tokio::test]
-async fn required_plugin_fails_permanently_when_absent() {
-    let probe = Arc::new(FixedProbe::new(false));
-    let mut resolver = DelayStrategyResolver::new();
-
-    let error = resolver
-        .resolve(&delay_config(DelayMode::Plugin), 1, probe)
-        .await
-        .expect_err("plugin is required");
-
-    assert!(error.is_permanent());
-}
 
 #[test]
 fn ttl_rounds_up_to_the_next_bucket() {
@@ -1586,17 +1418,16 @@ fn ttl_rounds_up_to_the_next_bucket() {
 
 #[test]
 fn ttl_rejects_more_than_the_configured_maximum_buckets() {
-    let invalid = DelayConfig::new(
-        DelayMode::Ttl,
-        vec![
+    let invalid = DelayConfig {
+        mode: DelayMode::Ttl,
+        buckets: vec![
             Duration::from_secs(1),
             Duration::from_secs(2),
             Duration::from_secs(3),
         ],
-        2,
-        Duration::from_mins(1),
-        Duration::from_millis(50),
-    );
+        max_buckets: 2,
+        queue_expiry_margin: Duration::from_mins(1),
+    };
 
     assert!(TtlBucketPlan::compile(&invalid).is_err());
 }
@@ -1625,39 +1456,6 @@ fn negative_delay_is_rejected() {
     );
 
     assert!(DelayRouter::route(&strategy, &Destination::new("jobs", "high"), -1).is_err());
-}
-
-#[tokio::test]
-async fn plugin_detection_is_cached_per_connection_generation() {
-    let probe = Arc::new(FixedProbe::new(true));
-    let mut resolver = DelayStrategyResolver::new();
-
-    resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe.clone())
-        .await
-        .expect("first resolution");
-    resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, probe.clone())
-        .await
-        .expect("cached resolution");
-    resolver
-        .resolve(&delay_config(DelayMode::Auto), 2, probe.clone())
-        .await
-        .expect("new generation");
-
-    assert_eq!(probe.calls(), 2);
-}
-
-#[tokio::test(start_paused = true)]
-async fn auto_detection_timeout_is_bounded_and_falls_back_to_ttl() {
-    let mut resolver = DelayStrategyResolver::new();
-
-    let strategy = resolver
-        .resolve(&delay_config(DelayMode::Auto), 1, Arc::new(PendingProbe))
-        .await
-        .expect("bounded TTL fallback");
-
-    assert!(matches!(strategy, DelayStrategy::TtlBuckets(_)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,7 +1543,12 @@ async fn connection_event_clears_then_restores_the_blind_pump_channel() {
     let transport = MockTransport::default();
     let channel = new_channel(&transport).await;
     let config = PublisherConfig::with_safety(4, Duration::from_secs(5), SafetyMode::Blind);
-    let handle = PublisherActor::spawn(channel, config);
+    let handle = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        channel,
+        config,
+        Metrics::default(),
+        None,
+    );
 
     // m1 is taken in by the pump and held pending on the gate.
     let gate = transport.push_publish_gate();

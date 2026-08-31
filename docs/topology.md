@@ -142,16 +142,10 @@ Rabbit RS supports delayed message delivery via two strategies, selected by the 
     'buckets' => [1, 5, 30, 120],
     'max_buckets' => 8,
     'queue_expiry_margin' => 60,
-    'detection_timeout' => 5,
 ],
 ```
 
-In `auto` mode, Rabbit RS detects whether the `rabbitmq_delayed_message_exchange` plugin is installed:
-
-1. **Plugin available** → uses `x-delayed-message` exchange type
-2. **Plugin absent** → falls back to TTL queue buckets
-
-The detection is bounded by `detection_timeout` (seconds) and cached per connection generation.
+In `auto` mode, delayed messages are published through the `x-delayed-message` exchange, same as `plugin` mode. Use `ttl` mode when the `rabbitmq_delayed_message_exchange` plugin is not installed.
 
 ### Plugin mode
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-LAB_DIR="${PROJECT_ROOT}/lab/rabbitmq"
+# shellcheck source=lib-lab.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-lab.sh"
 
 MGMT_PORT="${RABBIT_RS_LAB_MGMT:-15672}"
 PROM_PORT="${RABBIT_RS_LAB_PROM:-9091}"
@@ -28,17 +27,10 @@ echo "Checking RabbitMQ lab readiness..."
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v jq   >/dev/null 2>&1 || fail "jq is required"
-command -v docker >/dev/null 2>&1 || fail "docker is required"
 
 echo "Checking Docker Compose services are running..."
 cd "${LAB_DIR}"
-if docker compose version >/dev/null 2>&1; then
-    DC="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
-    DC="docker-compose"
-else
-    fail "docker compose is required"
-fi
+lab_dc
 
 SERVICES=$(${DC} --profile with-plugin --profile without-plugin ps --format json 2>/dev/null || true)
 RUNNING_SERVICES=$(echo "${SERVICES}" | jq -r 'if type == "array" then [.[] | .Service] else [.Service] end | .[]' 2>/dev/null || true)

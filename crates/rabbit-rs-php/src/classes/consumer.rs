@@ -8,15 +8,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::{
     bridge::EventBridge,
     delivery::Delivery,
-    exception::{consumer_exception, rabbit_exception},
+    exception::{
+        consumer_exception, consumer_exception_message, rabbit_exception, rabbit_exception_message,
+    },
 };
 use ext_php_rs::{
     boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
-    types::{ZendClassObject, ZendHashTable},
+    types::{ZendClassObject, ZendHashTable, Zval},
 };
-use rabbit_rs_core::consumer::ConsumerHandle;
+use rabbit_rs_core::consumer::{ConsumerHandle, Delivery as NativeDelivery};
 use tokio::{runtime::Handle, time};
 
 /// Native consumer for an aggregated subscription profile.
@@ -47,38 +49,15 @@ impl Consumer {
         if let Some(delivery) = self
             .handle
             .try_next()
-            .map_err(|error| consumer_php_exception(&error))?
+            .map_err(|error| consumer_exception_message(&error))?
         {
-            return Ok(Some(Delivery::new(
-                delivery,
-                self.runtime.clone(),
-                self.pid,
-            )));
+            return Ok(Some(self.wrap_delivery(delivery)));
         }
 
-        // Slow path: drain native events (connection state, backpressure)
-        // before blocking on the async runtime with timeout.
-        self.bridge.drain();
-        let timeout = u64::try_from(timeoutMs).map_err(|_| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                "timeoutMs must be a non-negative integer".to_owned(),
-            )
-        })?;
-        match self.runtime.block_on(async {
-            time::timeout(
-                std::time::Duration::from_millis(timeout),
-                self.handle.next(),
-            )
-            .await
-        }) {
-            Ok(Ok(delivery)) => Ok(Some(Delivery::new(
-                delivery,
-                self.runtime.clone(),
-                self.pid,
-            ))),
-            Ok(Err(error)) => consumer_exception(&error),
-            Err(_) => Ok(None),
-        }
+        // Slow path: block on the async runtime with timeout.
+        Ok(self
+            .await_delivery(timeoutMs)?
+            .map(|d| self.wrap_delivery(d)))
     }
 
     /// Attempts to return the next delivery without blocking.
@@ -89,11 +68,7 @@ impl Consumer {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::tryNext")?;
         self.drain_publish_buffer()?;
         match self.handle.try_next() {
-            Ok(Some(delivery)) => Ok(Some(Delivery::new(
-                delivery,
-                self.runtime.clone(),
-                self.pid,
-            ))),
+            Ok(Some(delivery)) => Ok(Some(self.wrap_delivery(delivery))),
             Ok(None) => {
                 // Buffer empty: drain native events before returning, mirroring
                 // the drain performed before the blocking wait in next().
@@ -115,57 +90,35 @@ impl Consumer {
         self.drain_publish_buffer()?;
 
         let max = usize::try_from(max).map_err(|_| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                "max must be a non-negative integer".to_owned(),
-            )
+            rabbit_exception_message("max must be a non-negative integer".to_owned())
         })?;
 
         // Fast path: drain the flume buffer without block_on.
         let batch = self
             .handle
             .try_next_batch(max)
-            .map_err(|error| consumer_php_exception(&error))?;
+            .map_err(|error| consumer_exception_message(&error))?;
         if !batch.is_empty() {
-            return batch
+            return Ok(batch
                 .into_iter()
-                .map(|delivery| Ok(Delivery::new(delivery, self.runtime.clone(), self.pid)))
-                .collect();
+                .map(|delivery| self.wrap_delivery(delivery))
+                .collect());
         }
 
-        // Slow path: drain native events (connection state, backpressure)
-        // before blocking on the async runtime with timeout, then drain
-        // whatever is available.
-        self.bridge.drain();
-        let timeout = u64::try_from(timeoutMs).map_err(|_| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                "max must be a non-negative integer".to_owned(),
-            )
-        })?;
-        match self.runtime.block_on(async {
-            time::timeout(
-                std::time::Duration::from_millis(timeout),
-                self.handle.next(),
-            )
-            .await
-        }) {
-            Ok(Ok(delivery)) => {
-                let mut deliveries = vec![Delivery::new(delivery, self.runtime.clone(), self.pid)];
-                let more = if max > 1 {
-                    self.handle
-                        .try_next_batch(max.saturating_sub(1))
-                        .map_err(|error| consumer_php_exception(&error))?
-                } else {
-                    Vec::new()
-                };
-                deliveries.extend(
-                    more.into_iter()
-                        .map(|d| Delivery::new(d, self.runtime.clone(), self.pid)),
-                );
-                Ok(deliveries)
-            }
-            Ok(Err(error)) => consumer_exception(&error),
-            Err(_) => Ok(Vec::new()),
+        // Slow path: block on one delivery, then drain whatever else is
+        // available up to the remaining batch size.
+        let Some(delivery) = self.await_delivery(timeoutMs)? else {
+            return Ok(Vec::new());
+        };
+        let mut deliveries = vec![self.wrap_delivery(delivery)];
+        if max > 1 {
+            let more = self
+                .handle
+                .try_next_batch(max.saturating_sub(1))
+                .map_err(|error| consumer_exception_message(&error))?;
+            deliveries.extend(more.into_iter().map(|d| self.wrap_delivery(d)));
         }
+        Ok(deliveries)
     }
 
     /// Acknowledges a contiguous prefix of deliveries up to and including the
@@ -179,7 +132,7 @@ impl Consumer {
             .try_settle_through(delivery.inner.inner_token().clone())
         {
             Ok(()) => Ok(()),
-            Err(rabbit_rs_core::consumer::SettleError::ChannelFull) => {
+            Err(rabbit_rs_core::consumer::SettlementErrorKind::ChannelFull) => {
                 for _ in 0..64 {
                     std::thread::yield_now();
                     if self
@@ -192,8 +145,11 @@ impl Consumer {
                 }
                 rabbit_exception("settlement channel full after backpressure timeout")
             }
-            Err(rabbit_rs_core::consumer::SettleError::Closed) => {
+            Err(rabbit_rs_core::consumer::SettlementErrorKind::Closed) => {
                 rabbit_exception("consumer set is closed")
+            }
+            Err(rabbit_rs_core::consumer::SettlementErrorKind::AlreadySettled) => {
+                rabbit_exception("delivery is already settled")
             }
         }
     }
@@ -209,27 +165,7 @@ impl Consumer {
             if count >= 256 {
                 return rabbit_exception("ackBatch: maximum 256 deliveries per call");
             }
-            let zval = value.dereference();
-            let object =
-                zval.object().ok_or_else(|| {
-                    ext_php_rs::prelude::PhpException::from_class::<
-                        super::exception::RabbitRsException,
-                    >("ackBatch expects an array of Delivery objects".to_owned())
-                })?;
-            let class_obj: &ZendClassObject<Delivery> =
-                object.extract().map_err(|_| {
-                    ext_php_rs::prelude::PhpException::from_class::<
-                        super::exception::RabbitRsException,
-                    >("ackBatch expects an array of Delivery objects".to_owned())
-                })?;
-            let delivery =
-                class_obj.obj.as_ref().ok_or_else(|| {
-                    ext_php_rs::prelude::PhpException::from_class::<
-                        super::exception::RabbitRsException,
-                    >(
-                        "ackBatch encountered an uninitialized Delivery object".to_owned()
-                    )
-                })?;
+            let delivery = delivery_from_zval(value.dereference())?;
             delivery.settle_with_backpressure(rabbit_rs_core::consumer::Delivery::try_ack)?;
         }
         Ok(())
@@ -264,11 +200,9 @@ impl Consumer {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        self.runtime.block_on(self.handle.close()).map_err(|error| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                error.to_string(),
-            )
-        })
+        self.runtime
+            .block_on(self.handle.close())
+            .map_err(|error| rabbit_exception_message(error.to_string()))
     }
 
     /// Closes the consumer handle when PHP garbage-collects the object.
@@ -324,13 +258,52 @@ impl Consumer {
         }
         Ok(())
     }
+
+    /// Wraps a native delivery into the PHP-facing type with this handle's pid.
+    fn wrap_delivery(&self, delivery: NativeDelivery) -> Delivery {
+        Delivery::new(delivery, self.pid)
+    }
+
+    /// Drains native events, then blocks on the async runtime for the next
+    /// delivery with the given timeout in milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a PHP exception when the consumer reports a consumer error or
+    /// `timeoutMs` is negative.
+    fn await_delivery(&self, timeout_ms: i64) -> PhpResult<Option<NativeDelivery>> {
+        self.bridge.drain();
+        let timeout = u64::try_from(timeout_ms).map_err(|_| {
+            rabbit_exception_message("timeoutMs must be a non-negative integer".to_owned())
+        })?;
+        match self.runtime.block_on(async {
+            time::timeout(
+                std::time::Duration::from_millis(timeout),
+                self.handle.next(),
+            )
+            .await
+        }) {
+            Ok(Ok(delivery)) => Ok(Some(delivery)),
+            Ok(Err(error)) => Err(consumer_exception_message(&error)),
+            Err(_) => Ok(None),
+        }
+    }
 }
 
-fn consumer_php_exception(
-    error: &rabbit_rs_core::consumer::ConsumerError,
-) -> ext_php_rs::prelude::PhpException {
-    match consumer_exception::<()>(error) {
-        Err(error) => error,
-        Ok(()) => unreachable!("consumer_exception always returns an error"),
-    }
+/// Extracts a [`Delivery`] reference from a value in a delivery array.
+///
+/// # Errors
+///
+/// Returns a PHP exception when the value is not a constructed `Delivery`
+/// object.
+fn delivery_from_zval(value: &Zval) -> PhpResult<&Delivery> {
+    let object = value.dereference().object().ok_or_else(|| {
+        rabbit_exception_message("ackBatch expects an array of Delivery objects".to_owned())
+    })?;
+    let class_obj: &ZendClassObject<Delivery> = object.extract().map_err(|_| {
+        rabbit_exception_message("ackBatch expects an array of Delivery objects".to_owned())
+    })?;
+    class_obj.obj.as_ref().ok_or_else(|| {
+        rabbit_exception_message("ackBatch encountered an uninitialized Delivery object".to_owned())
+    })
 }

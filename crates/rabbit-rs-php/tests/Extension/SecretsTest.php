@@ -22,7 +22,6 @@ describe('secret redaction', function () {
         $config['brokers'][0]['hosts'][0]['port'] = 'not-a-port';
         $config['brokers'][0]['tls'] = [
             'enabled' => true,
-            'server_name' => 'rabbit.internal',
             'private_key' => $privateKey,
         ];
 

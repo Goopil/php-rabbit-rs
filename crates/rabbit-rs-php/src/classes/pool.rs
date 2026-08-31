@@ -200,26 +200,18 @@ impl Pool {
         stats.insert("pid", i64::from(self.pid))?;
         stats.insert("handle", self.handle.identifier())?;
         let metrics = self.client.metrics_snapshot();
-        stats.insert("publishes_total", i64_from_counter(metrics.publishes_total))?;
-        stats.insert(
-            "confirmations_total",
-            i64_from_counter(metrics.confirmations_total),
-        )?;
-        stats.insert("returns_total", i64_from_counter(metrics.returns_total))?;
-        stats.insert(
-            "backpressure_total",
-            i64_from_counter(metrics.backpressure_total),
-        )?;
-        stats.insert(
-            "reconnects_total",
-            i64_from_counter(metrics.reconnects_total),
-        )?;
-        stats.insert(
-            "deliveries_total",
-            i64_from_counter(metrics.deliveries_total),
-        )?;
-        stats.insert("acks_total", i64_from_counter(metrics.acks_total))?;
-        stats.insert("rejects_total", i64_from_counter(metrics.rejects_total))?;
+        for (key, value) in [
+            ("publishes_total", metrics.publishes_total),
+            ("confirmations_total", metrics.confirmations_total),
+            ("returns_total", metrics.returns_total),
+            ("backpressure_total", metrics.backpressure_total),
+            ("reconnects_total", metrics.reconnects_total),
+            ("deliveries_total", metrics.deliveries_total),
+            ("acks_total", metrics.acks_total),
+            ("rejects_total", metrics.rejects_total),
+        ] {
+            stats.insert(key, i64_from_counter(value))?;
+        }
 
         insert_percentile(
             &mut stats,

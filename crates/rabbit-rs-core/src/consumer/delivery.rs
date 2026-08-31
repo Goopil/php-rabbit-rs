@@ -461,22 +461,6 @@ impl ConsumerError {
         )
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn already_settling() -> Self {
-        Self::new(
-            ConsumerErrorKind::AlreadySettling,
-            "delivery is already being settled",
-        )
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn settlement_in_progress() -> Self {
-        Self::new(
-            ConsumerErrorKind::SettlementInProgress,
-            "a settlement is already in progress on this channel",
-        )
-    }
-
     #[must_use]
     pub const fn kind(&self) -> ConsumerErrorKind {
         self.kind
@@ -490,15 +474,6 @@ impl fmt::Display for ConsumerError {
 }
 
 impl Error for ConsumerError {}
-
-/// Error returned by `try_settle` when the fire-and-forget send fails.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SettleError {
-    /// The actor's command channel is full (256 capacity).
-    ChannelFull,
-    /// The actor's command channel is closed.
-    Closed,
-}
 
 /// Classification of a fire-and-forget settlement failure at the token level.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -522,6 +497,4 @@ pub struct SettlementError {
     pub kind: ConsumerErrorKind,
     /// Human-readable error message.
     pub message: String,
-    /// When the error was recorded.
-    pub timestamp: Instant,
 }

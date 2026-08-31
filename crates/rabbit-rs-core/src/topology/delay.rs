@@ -1,28 +1,16 @@
 use std::{
     error::Error,
     fmt::{self, Write as _},
-    sync::Arc,
     time::Duration,
 };
 
-use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    config::{DelayConfig, DelayMode},
+    config::DelayConfig,
     publisher::Destination,
-    transport::{QueueKind, QueueSpec, TransportResult},
+    transport::{QueueKind, QueueSpec},
 };
-
-#[async_trait]
-pub trait DelayPluginProbe: Send + Sync {
-    /// Checks whether `x-delayed-message` is installed and usable.
-    ///
-    /// # Errors
-    ///
-    /// Returns a transport error when the capability check cannot complete.
-    async fn is_available(&self) -> TransportResult<bool>;
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DelayStrategy {
@@ -107,75 +95,6 @@ impl TtlBucketPlan {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct DelayStrategyResolver {
-    cached_plugin: Option<(u64, bool)>,
-}
-
-impl DelayStrategyResolver {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            cached_plugin: None,
-        }
-    }
-
-    /// Resolves plugin or TTL mode with bounded, generation-scoped detection.
-    ///
-    /// # Errors
-    ///
-    /// Returns a permanent error for invalid TTL configuration or when plugin
-    /// mode is mandatory but the capability is unavailable.
-    pub async fn resolve(
-        &mut self,
-        config: &DelayConfig,
-        generation: u64,
-        probe: Arc<dyn DelayPluginProbe>,
-    ) -> Result<DelayStrategy, DelayError> {
-        if config.mode == DelayMode::Ttl {
-            return TtlBucketPlan::compile(config).map(DelayStrategy::TtlBuckets);
-        }
-
-        let plugin_available = if let Some((cached_generation, available)) = self.cached_plugin {
-            if cached_generation == generation {
-                available
-            } else {
-                self.detect(config, generation, &probe).await?
-            }
-        } else {
-            self.detect(config, generation, &probe).await?
-        };
-
-        if plugin_available {
-            Ok(DelayStrategy::Plugin)
-        } else if config.mode == DelayMode::Plugin {
-            Err(DelayError::new(
-                "x-delayed-message plugin is required but unavailable",
-            ))
-        } else {
-            TtlBucketPlan::compile(config).map(DelayStrategy::TtlBuckets)
-        }
-    }
-
-    async fn detect(
-        &mut self,
-        config: &DelayConfig,
-        generation: u64,
-        probe: &Arc<dyn DelayPluginProbe>,
-    ) -> Result<bool, DelayError> {
-        let detected = tokio::time::timeout(config.detection_timeout, probe.is_available()).await;
-        let available = match detected {
-            Ok(Ok(available)) => available,
-            Ok(Err(error)) if config.mode == DelayMode::Plugin => {
-                return Err(DelayError::new(error.to_string()));
-            }
-            Ok(Err(_)) | Err(_) => false,
-        };
-        self.cached_plugin = Some((generation, available));
-        Ok(available)
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DelayError {
     message: String,
@@ -186,11 +105,6 @@ impl DelayError {
         Self {
             message: message.into(),
         }
-    }
-
-    #[must_use]
-    pub const fn is_permanent(&self) -> bool {
-        true
     }
 }
 

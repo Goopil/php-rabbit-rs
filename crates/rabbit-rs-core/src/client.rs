@@ -117,34 +117,6 @@ impl ClientPool {
         }
     }
 
-    /// Publishes one message through a lazily reused broker connection and publisher actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error for an unknown broker, connection failure, backpressure,
-    /// negative confirmation, mandatory return, timeout, or closed pool.
-    pub async fn publish(
-        &self,
-        broker: &str,
-        request: PublishRequest,
-    ) -> Result<PublishOutcome, ClientError> {
-        self.ensure_open()?;
-        let publisher = self.publisher(broker).await?;
-        let waiter = match self.publisher_config.safety {
-            SafetyMode::Blind => publisher
-                .publish_blind(request)
-                .await
-                .map_err(|error| ClientError::publish(&error))?,
-            SafetyMode::Safe | SafetyMode::Unsafe => publisher
-                .try_publish(request)
-                .map_err(|error| ClientError::publish(&error))?,
-        };
-        waiter
-            .wait()
-            .await
-            .map_err(|error| ClientError::publish(&error))
-    }
-
     /// Enqueues a complete batch through cached per-broker publishers,
     /// preserving input order in the returned outcomes.
     ///

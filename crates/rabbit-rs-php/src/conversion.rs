@@ -51,32 +51,23 @@ impl ConversionBudget {
         Ok(())
     }
 
-    fn add_header_key_bytes(&mut self, parent_path: &str, bytes: usize) -> Result<(), String> {
-        self.header_bytes = self
-            .header_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| format!("{parent_path}.headers: header size overflow"))?;
-        if self.header_bytes > MAX_HEADER_BYTES {
-            return Err(format!(
-                "{parent_path}.headers: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
-            ));
-        }
-        Ok(())
-    }
-
     fn add_header_bytes(
         &mut self,
         parent_path: &str,
-        key: &str,
+        key: Option<&str>,
         bytes: usize,
     ) -> Result<(), String> {
+        let location = match key {
+            Some(key) => format!("{parent_path}.headers.{key}"),
+            None => format!("{parent_path}.headers"),
+        };
         self.header_bytes = self
             .header_bytes
             .checked_add(bytes)
-            .ok_or_else(|| format!("{parent_path}.headers.{key}: header size overflow"))?;
+            .ok_or_else(|| format!("{location}: header size overflow"))?;
         if self.header_bytes > MAX_HEADER_BYTES {
             return Err(format!(
-                "{parent_path}.headers.{key}: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
+                "{location}: cumulative headers exceed the {MAX_HEADER_BYTES} byte limit"
             ));
         }
         Ok(())
@@ -274,13 +265,13 @@ fn array_value(
     result
 }
 
-fn is_list(input: &ZendHashTable) -> bool {
+pub(crate) fn is_list(input: &ZendHashTable) -> bool {
     input.iter().enumerate().all(|(index, (key, _))| {
         matches!(key, ArrayKey::Long(value) if value == i64::try_from(index).unwrap_or(i64::MAX))
     })
 }
 
-fn string_key(key: ArrayKey<'_>, path: &str) -> Result<String, String> {
+pub(crate) fn string_key(key: ArrayKey<'_>, path: &str) -> Result<String, String> {
     match key {
         ArrayKey::String(value) => Ok(value),
         ArrayKey::Str(value) => Ok(value.to_owned()),
@@ -333,7 +324,7 @@ fn required_payload(
     Ok(Bytes::copy_from_slice(value.as_bytes()))
 }
 
-fn optional_non_negative_integer(
+pub(crate) fn optional_non_negative_integer(
     table: &ZendHashTable,
     key: &str,
     path: &str,
@@ -382,7 +373,7 @@ fn optional_headers(
                 ));
             }
         };
-        budget.add_header_key_bytes(path, key.len())?;
+        budget.add_header_bytes(path, None, key.len())?;
         let value_path = format!("{path}.headers.{key}");
         let value = header_value(value, &value_path, path, key.as_ref(), budget)?;
         output.insert(key.into_owned(), value);
@@ -402,22 +393,22 @@ fn header_value(
         return Ok(HeaderValue::Void);
     }
     if let Some(value) = input.bool() {
-        budget.add_header_bytes(parent_path, key, 1)?;
+        budget.add_header_bytes(parent_path, Some(key), 1)?;
         return Ok(HeaderValue::Boolean(value));
     }
     if let Some(value) = input.long() {
-        budget.add_header_bytes(parent_path, key, size_of::<i64>())?;
+        budget.add_header_bytes(parent_path, Some(key), size_of::<i64>())?;
         return Ok(HeaderValue::Integer(value));
     }
     if let Some(value) = input.double() {
         let value = HeaderFloat::new(value)
             .map(HeaderValue::Double)
             .ok_or_else(|| format!("{path}: non-finite floating-point value is unsupported"))?;
-        budget.add_header_bytes(parent_path, key, size_of::<f64>())?;
+        budget.add_header_bytes(parent_path, Some(key), size_of::<f64>())?;
         return Ok(value);
     }
     if let Some(value) = input.zend_str() {
-        budget.add_header_bytes(parent_path, key, value.as_bytes().len())?;
+        budget.add_header_bytes(parent_path, Some(key), value.as_bytes().len())?;
         return Ok(HeaderValue::Binary(Bytes::copy_from_slice(
             value.as_bytes(),
         )));
@@ -433,7 +424,11 @@ fn header_value(
     ))
 }
 
-fn reject_unknown_keys(table: &ZendHashTable, path: &str, allowed: &[&str]) -> Result<(), String> {
+pub(crate) fn reject_unknown_keys(
+    table: &ZendHashTable,
+    path: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
     for (key, _) in table {
         let key = string_key(key, path)?;
         if !allowed.contains(&key.as_str()) {

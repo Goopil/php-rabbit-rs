@@ -78,11 +78,6 @@ class Budget
         };
     }
 
-    public function budget(): array
-    {
-        return $this->budget;
-    }
-
     public function formatResult(array $result): string
     {
         if ($result['pass']) {

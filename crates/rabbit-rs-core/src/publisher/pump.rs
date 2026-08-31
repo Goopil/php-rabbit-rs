@@ -1,13 +1,16 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
-use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use flume::{Receiver, Sender};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::sync::oneshot;
 
 use super::{PublishError, PublishErrorKind};
-use crate::transport::{PublishRequest as TransportRequest, PublisherChannel};
+use crate::transport::{PublishProperties, PublishRequest as TransportRequest, PublisherChannel};
 
 /// Boxed publish future tracked in the pump's in-flight set.
 type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -22,7 +25,7 @@ type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// [`buffer_capacity.saturating_mul(2).max(128)`](Self::spawn) publishes are
 /// pending on the transport.
 ///
-/// The transport channel is stored in an [`ArcSwapOption`] so the actor can
+/// The transport channel is stored behind a `RwLock` so the actor can
 /// hot-swap it after connection recovery. When the channel is `None`
 /// (suspended during recovery), jobs are silently dropped.
 ///
@@ -37,18 +40,7 @@ type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// [`PublishErrorKind::Closed`].
 pub struct PublishPump {
     tx: Sender<PumpJob>,
-    channel: Arc<ArcSwapOption<PumpChannel>>,
-}
-
-/// Sized wrapper around `Arc<dyn PublisherChannel>` so it can be stored in
-/// `ArcSwapOption` (which requires `Sized` types for its `RefCnt` impls).
-#[derive(Clone)]
-struct PumpChannel(Arc<dyn PublisherChannel>);
-
-impl std::fmt::Debug for PumpChannel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("PumpChannel").finish_non_exhaustive()
-    }
+    channel: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>>,
 }
 
 struct PumpJob {
@@ -72,8 +64,8 @@ impl PublishPump {
     pub fn spawn(channel: Arc<dyn PublisherChannel>, buffer_capacity: usize) -> Self {
         let (tx, rx) = flume::bounded(buffer_capacity.max(1));
         let inflight_cap = buffer_capacity.saturating_mul(2).max(128);
-        let channel_slot: Arc<ArcSwapOption<PumpChannel>> =
-            Arc::new(ArcSwapOption::from_pointee(PumpChannel(channel)));
+        let channel_slot: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>> =
+            Arc::new(RwLock::new(Some(channel)));
         tokio::spawn(pump_loop(channel_slot.clone(), rx, inflight_cap));
         Self {
             tx,
@@ -83,13 +75,19 @@ impl PublishPump {
 
     /// Hot-swaps the transport channel used by the background pump.
     pub fn update_channel(&self, channel: Arc<dyn PublisherChannel>) {
-        self.channel.store(Some(Arc::new(PumpChannel(channel))));
+        *self
+            .channel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(channel);
     }
 
     /// Clears the transport channel, causing the pump to drop messages until
     /// a new channel is provided via [`update_channel`](Self::update_channel).
     pub fn clear_channel(&self) {
-        self.channel.store(None);
+        *self
+            .channel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Enqueues a publish job, applying backpressure by blocking the caller
@@ -119,11 +117,13 @@ impl PublishPump {
         let (barrier_tx, barrier_rx) = oneshot::channel();
         self.tx
             .send_async(PumpJob {
-                request: TransportRequest::new(
-                    Arc::<str>::from(""),
-                    Arc::<str>::from(""),
-                    Bytes::new(),
-                ),
+                request: TransportRequest {
+                    exchange: Arc::<str>::from(""),
+                    routing_key: Arc::<str>::from(""),
+                    payload: Bytes::new(),
+                    mandatory: true,
+                    properties: PublishProperties::default(),
+                },
                 barrier_tx: Some(barrier_tx),
             })
             .await
@@ -159,7 +159,7 @@ impl PublishPump {
         drop(rx);
         Self {
             tx,
-            channel: Arc::new(ArcSwapOption::from_pointee(None)),
+            channel: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -173,7 +173,7 @@ impl std::fmt::Debug for PublishPump {
 }
 
 async fn pump_loop(
-    channel: Arc<ArcSwapOption<PumpChannel>>,
+    channel: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>>,
     rx: Receiver<PumpJob>,
     inflight_cap: usize,
 ) {
@@ -203,9 +203,13 @@ async fn pump_loop(
                 // With a channel, the publish error is a silent loss (blind
                 // semantics); without one (recovery in progress) the job is
                 // dropped silently.
-                if let Some(ch) = channel.load_full() {
+                if let Some(ch) = channel
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     inflight.push(Box::pin(async move {
-                        let _ = ch.0.publish(job.request).await;
+                        let _ = ch.publish(job.request).await;
                     }));
                 }
 
@@ -473,7 +477,7 @@ mod tests {
         drop(rx);
         let pump = PublishPump {
             tx,
-            channel: Arc::new(ArcSwapOption::from_pointee(PumpChannel(channel))),
+            channel: Arc::new(RwLock::new(Some(channel))),
         };
 
         let outcome = timeout(Duration::from_secs(1), pump.send(request("x")))
@@ -498,7 +502,7 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         let gate = transport.push_publish_gate();
-        let slot = Arc::new(ArcSwapOption::from_pointee(PumpChannel(channel)));
+        let slot = Arc::new(RwLock::new(Some(channel)));
         let (tx, rx) = flume::bounded::<PumpJob>(4);
         let task = tokio::spawn(pump_loop(slot, rx, 128));
 
@@ -550,7 +554,7 @@ mod tests {
     async fn cancelled_pump_task_resolves_pending_barriers_with_closed() {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
-        let slot = Arc::new(ArcSwapOption::from_pointee(PumpChannel(channel)));
+        let slot = Arc::new(RwLock::new(Some(channel)));
         let (tx, rx) = flume::bounded::<PumpJob>(4);
         let task = tokio::spawn(pump_loop(slot, rx, 128));
 
@@ -565,11 +569,7 @@ mod tests {
 
         let (barrier_tx, barrier_rx) = oneshot::channel();
         tx.send_async(PumpJob {
-            request: TransportRequest::new(
-                Arc::<str>::from(""),
-                Arc::<str>::from(""),
-                Bytes::new(),
-            ),
+            request: request(""),
             barrier_tx: Some(barrier_tx),
         })
         .await

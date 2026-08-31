@@ -9,7 +9,7 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
-    ConsumerError, Delivery, DeliveryTokenInner, SettleError, Settlement, SettlementError,
+    ConsumerError, Delivery, DeliveryTokenInner, SettlementError, SettlementErrorKind,
     SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
 };
@@ -144,17 +144,6 @@ impl Subscription {
 pub struct ConsumerSet;
 
 impl ConsumerSet {
-    /// Configures all channels and starts one multiplexing actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed transport error when `QoS` or consumer registration fails.
-    pub async fn spawn(
-        subscriptions: Vec<Subscription>,
-    ) -> Result<ConsumerSetHandle, ConsumerError> {
-        Self::spawn_with_metrics(subscriptions, Metrics::default()).await
-    }
-
     /// Configures the consumer set with a metrics registry shared by its caller.
     ///
     /// # Errors
@@ -340,29 +329,6 @@ impl ConsumerSetHandle {
         errors
     }
 
-    /// Fire-and-forget settlement via the actor's command channel.
-    ///
-    /// Enqueues a `Settle` command with `try_send` and returns immediately.
-    /// Does not perform the `Pending → Transitioning` CAS — the caller is
-    /// responsible for ensuring the delivery is not double-settled.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SettleError::ChannelFull`] when the command channel is at
-    /// capacity, or [`SettleError::Closed`] when the actor has stopped.
-    pub fn try_settle(
-        &self,
-        token: Arc<DeliveryTokenInner>,
-        settlement: Settlement,
-    ) -> Result<(), SettleError> {
-        self.commands
-            .try_send(ConsumerCommand::Settle { token, settlement })
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
-                mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
-            })
-    }
-
     /// Fire-and-forget batch settlement via the actor's command channel.
     ///
     /// Enqueues a `SettleThrough` command with `try_send` and returns
@@ -371,14 +337,17 @@ impl ConsumerSetHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`SettleError::ChannelFull`] when the command channel is at
-    /// capacity, or [`SettleError::Closed`] when the actor has stopped.
-    pub fn try_settle_through(&self, token: Arc<DeliveryTokenInner>) -> Result<(), SettleError> {
+    /// Returns [`SettlementErrorKind::ChannelFull`] when the command channel is at
+    /// capacity, or [`SettlementErrorKind::Closed`] when the actor has stopped.
+    pub fn try_settle_through(
+        &self,
+        token: Arc<DeliveryTokenInner>,
+    ) -> Result<(), SettlementErrorKind> {
         self.commands
             .try_send(ConsumerCommand::SettleThrough { token })
             .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => SettleError::ChannelFull,
-                mpsc::error::TrySendError::Closed(_) => SettleError::Closed,
+                mpsc::error::TrySendError::Full(_) => SettlementErrorKind::ChannelFull,
+                mpsc::error::TrySendError::Closed(_) => SettlementErrorKind::Closed,
             })
     }
 
@@ -497,56 +466,6 @@ impl ConsumerSetHandle {
             }
             Err(flume::RecvError::Disconnected) => Err(ConsumerError::closed()),
         }
-    }
-
-    /// Acknowledges a contiguous prefix of deliveries up to and including the
-    /// given delivery, using a single AMQP `basic.ack` with `multiple=true`.
-    ///
-    /// The prefix must be contiguous starting from `acked_prefix + 1`.
-    /// Non-contiguous prefixes or already-terminal deliveries in the range are
-    /// rejected asynchronously by the actor and surface via
-    /// [`Self::drain_errors`].
-    ///
-    /// Fire-and-forget: enqueues the command and returns immediately. The
-    /// final state of each affected delivery is updated asynchronously by the
-    /// actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the command channel is full or the consumer
-    /// is closed.
-    #[allow(clippy::unused_async)]
-    pub async fn ack_through(&self, delivery: &Delivery) -> Result<(), ConsumerError> {
-        self.try_settle_through(delivery.inner_token().clone())
-            .map_err(|e| match e {
-                SettleError::ChannelFull => ConsumerError::new(
-                    super::ConsumerErrorKind::SettlementInProgress,
-                    "settlement command channel is full",
-                ),
-                SettleError::Closed => ConsumerError::closed(),
-            })
-    }
-
-    /// Records a new connection generation for one subscription.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the subscription or actor is unavailable.
-    pub async fn update_generation(
-        &self,
-        subscription: SubscriptionId,
-        generation: u64,
-    ) -> Result<(), ConsumerError> {
-        let (completed, completion) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::UpdateGeneration {
-                subscription,
-                generation,
-                completed,
-            })
-            .await
-            .map_err(|_| ConsumerError::closed())?;
-        completion.await.map_err(|_| ConsumerError::closed())?
     }
 
     /// Closes the set and wakes all pending calls to [`Self::next`].

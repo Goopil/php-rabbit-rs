@@ -25,7 +25,7 @@ function defaultConfig(): array
             'hosts' => [['host' => '127.0.0.1', 'port' => 5672]],
             'vhost' => '/',
             'credentials' => ['username' => 'guest', 'password' => 'secret'],
-            'tls' => ['enabled' => false, 'server_name' => null],
+            'tls' => ['enabled' => false],
             'heartbeat' => 30,
         ]],
         'workers' => [],
@@ -41,7 +41,7 @@ function defaultConfigWithWorkers(): array
             'hosts' => [['host' => '127.0.0.1', 'port' => 5672]],
             'vhost' => '/',
             'credentials' => ['username' => 'guest', 'password' => 'secret'],
-            'tls' => ['enabled' => false, 'server_name' => null],
+            'tls' => ['enabled' => false],
             'heartbeat' => 30,
         ]],
         'workers' => [[

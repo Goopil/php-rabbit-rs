@@ -87,6 +87,12 @@ check_link() {
         return 0
     fi
 
+    # Skip rustdoc intra-doc links (e.g. Self::try_publish) quoted inside
+    # code blocks of plan documents; they are not file paths.
+    if [[ "${target}" == *::* ]]; then
+        return 0
+    fi
+
     # Resolve relative to the source file directory
     local resolved="${source_dir}/${target}"
 
@@ -133,42 +139,22 @@ echo "==> Checking for forbidden V1 distribution channel mentions"
 # explicitly state they are NOT channels. So we look for patterns where these
 # are presented as installation methods, not as exclusions.
 #
-# Forbidden patterns (in context of "install via"):
-#   "pecl install" (as a recommendation)
-#   "apt install" or "apt-get install" (for rabbit-rs)
-#   "yum install" or "dnf install" (for rabbit-rs)
-#   "apk add" (for rabbit-rs)
-#
 # The docs explicitly state these are NOT V1 channels, so the words appear
 # in exclusion lists. We check for active install recommendations instead.
 
-forbidden_patterns=(
-    "Install via PECL"
-    "Install with pecl"
-    "Install using apt"
-    "Install using yum"
-    "Install using dnf"
-    "Install using apk"
-    "pecl install rabbit"
-    "apt-get install rabbit-rs"
-    "yum install rabbit-rs"
-    "dnf install rabbit-rs"
-    "apk add rabbit-rs"
-)
+forbidden_re='install (via pecl|with pecl|using (apt|yum|dnf|apk))|((pecl|apt-get|yum|dnf) install|apk add) rabbit-rs'
 
 forbidden_found=0
 for md_file in "${md_files[@]}"; do
-    for pattern in "${forbidden_patterns[@]}"; do
-        if grep -qi "${pattern}" "${md_file}" 2>/dev/null; then
-            # Check if this is in an exclusion context
-            # Look at the surrounding lines for "not" or "not supported"
-            context_lines=$(grep -B 5 -A 2 -i "${pattern}" "${md_file}" 2>/dev/null || true)
-            if ! echo "${context_lines}" | grep -qiE '(not (a |an )?(V1|distribution|supported|channel)|out of scope|not maintained|not provided)'; then
-                echo "  FORBIDDEN: ${md_file#${ROOT_DIR}/} contains '${pattern}' outside exclusion context"
-                forbidden_found=$((forbidden_found + 1))
-            fi
+    if grep -qiE "${forbidden_re}" "${md_file}" 2>/dev/null; then
+        # Check if this is in an exclusion context
+        # Look at the surrounding lines for "not" or "not supported"
+        context_lines=$(grep -B 5 -A 2 -iE "${forbidden_re}" "${md_file}" 2>/dev/null || true)
+        if ! echo "${context_lines}" | grep -qiE '(not (a |an )?(V1|distribution|supported|channel)|out of scope|not maintained|not provided)'; then
+            echo "  FORBIDDEN: ${md_file#${ROOT_DIR}/} contains a forbidden V1 channel mention outside exclusion context"
+            forbidden_found=$((forbidden_found + 1))
         fi
-    done
+    fi
 done
 
 if [[ "${forbidden_found}" -gt 0 ]]; then

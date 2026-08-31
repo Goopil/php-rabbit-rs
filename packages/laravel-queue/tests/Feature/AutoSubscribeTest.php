@@ -107,7 +107,7 @@ function validAutoSubscribeConfig(): array
                 'hosts' => ['127.0.0.1:5672'],
                 'vhost' => '/',
                 'credentials' => ['username' => 'rabbit_rs', 'password' => 'rabbit_rs_lab'],
-                'tls' => ['enabled' => false, 'server_name' => null],
+                'tls' => ['enabled' => false],
                 'heartbeat' => 30,
             ],
         ],

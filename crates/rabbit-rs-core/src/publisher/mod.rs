@@ -1,5 +1,5 @@
 pub mod actor;
-pub mod confirms;
+
 pub mod delay;
 pub mod pump;
 
@@ -185,46 +185,11 @@ impl PublishRequest {
 pub struct PublisherConfig {
     pub buffer_capacity: usize,
     pub confirm_timeout: Duration,
-    pub confirms: bool,
-    pub mandatory: bool,
     pub max_buffered_bytes: u64,
     pub safety: SafetyMode,
 }
 
 impl PublisherConfig {
-    #[must_use]
-    pub const fn new(buffer_capacity: usize, confirm_timeout: Duration) -> Self {
-        Self {
-            buffer_capacity,
-            confirm_timeout,
-            confirms: true,
-            mandatory: true,
-            max_buffered_bytes: 64 * 1024 * 1024,
-            safety: SafetyMode::Safe,
-        }
-    }
-
-    #[must_use]
-    pub const fn with_flags(
-        buffer_capacity: usize,
-        confirm_timeout: Duration,
-        confirms: bool,
-        mandatory: bool,
-    ) -> Self {
-        Self {
-            buffer_capacity,
-            confirm_timeout,
-            confirms,
-            mandatory,
-            max_buffered_bytes: 64 * 1024 * 1024,
-            safety: if confirms {
-                SafetyMode::Safe
-            } else {
-                SafetyMode::Unsafe
-            },
-        }
-    }
-
     #[must_use]
     pub const fn with_safety(
         buffer_capacity: usize,
@@ -234,33 +199,21 @@ impl PublisherConfig {
         Self {
             buffer_capacity,
             confirm_timeout,
-            confirms: matches!(safety, SafetyMode::Safe),
-            mandatory: matches!(safety, SafetyMode::Safe),
             max_buffered_bytes: 64 * 1024 * 1024,
             safety,
         }
     }
 
-    #[must_use]
-    pub const fn with_byte_budget(mut self, max_buffered_bytes: u64) -> Self {
-        self.max_buffered_bytes = max_buffered_bytes;
-        self
-    }
-
+    /// Confirms are enabled only in [`SafetyMode::Safe`] mode.
     #[must_use]
     pub const fn enables_confirms(&self) -> bool {
-        match self.safety {
-            SafetyMode::Safe => self.confirms,
-            SafetyMode::Unsafe | SafetyMode::Blind => false,
-        }
+        matches!(self.safety, SafetyMode::Safe)
     }
 
+    /// Mandatory publishing is enabled only in [`SafetyMode::Safe`] mode.
     #[must_use]
     pub const fn mandatory_flag(&self) -> bool {
-        match self.safety {
-            SafetyMode::Safe => self.mandatory,
-            SafetyMode::Unsafe | SafetyMode::Blind => false,
-        }
+        matches!(self.safety, SafetyMode::Safe)
     }
 }
 

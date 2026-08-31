@@ -68,13 +68,6 @@ pub struct TopologyReconcileError {
     source: TransportError,
 }
 
-impl TopologyReconcileError {
-    #[must_use]
-    pub const fn is_permanent(&self) -> bool {
-        !self.source.is_recoverable()
-    }
-}
-
 impl fmt::Display for TopologyReconcileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "topology reconciliation failed: {}", self.source)

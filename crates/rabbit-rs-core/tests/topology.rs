@@ -1,16 +1,17 @@
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, Credentials, DeadLetterConfig, DelayConfig,
-        Endpoint, PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig,
-        TopologyMode, ValidatedConfig, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig,
+        PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
+        ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
         Subscription,
     },
+    metrics::Metrics,
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
     topology::{
@@ -23,29 +24,16 @@ use rabbit_rs_core::{
     },
 };
 
+mod common;
+
 mod helper {
     use super::*;
 
-    pub fn broker() -> BrokerConfig {
-        BrokerConfig {
-            name: "primary".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
-    }
+    pub use crate::common::broker;
 
+    #[must_use]
     pub fn broker_default() -> BrokerConfig {
-        BrokerConfig {
-            name: "default".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
+        broker("default", "/", "guest")
     }
 
     pub fn exchange(name: &str) -> ExchangeSpec {
@@ -79,7 +67,7 @@ mod helper {
         transport: &MockTransport,
     ) -> Box<dyn rabbit_rs_core::transport::ConsumerChannel> {
         transport
-            .connect(&broker())
+            .connect(&broker("primary", "/", "guest"))
             .await
             .expect("connection")
             .open_consumer()
@@ -116,7 +104,6 @@ mod helper {
             prefetch: 8,
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
-            max_message_bytes: None,
             early_ack: false,
             no_ack: false,
         }
@@ -124,7 +111,7 @@ mod helper {
 
     pub fn base_config(queue: &str) -> Config {
         Config {
-            brokers: vec![broker()],
+            brokers: vec![broker("primary", "/", "guest")],
             workers: vec![WorkerProfile {
                 name: "main".to_owned(),
                 subscriptions: vec![subscription(queue)],
@@ -274,16 +261,8 @@ fn quorum_rejects_exclusive_or_auto_delete_combinations() {
         ),
     );
 
-    assert!(
-        exclusive
-            .expect_err("exclusive quorum must fail")
-            .is_permanent()
-    );
-    assert!(
-        auto_delete
-            .expect_err("auto-delete quorum must fail")
-            .is_permanent()
-    );
+    exclusive.expect_err("exclusive quorum must fail");
+    auto_delete.expect_err("auto-delete quorum must fail");
 }
 
 #[tokio::test]
@@ -416,7 +395,7 @@ fn application_dead_letter_topology_is_compiled_only_when_enabled() {
 }
 
 #[tokio::test]
-async fn topology_incompatibility_is_reported_as_permanent() {
+async fn an_incompatible_topology_fails_reconciliation() {
     let transport = MockTransport::default();
     transport.push_operation_result(Err(TransportError::protocol(
         "PRECONDITION_FAILED inequivalent arg x-queue-type",
@@ -425,12 +404,10 @@ async fn topology_incompatibility_is_reported_as_permanent() {
     let plan = TopologyPlan::compile(TopologyMode::Declare, definition()).expect("plan");
     let mut reconciler = TopologyReconciler::new();
 
-    let error = reconciler
+    reconciler
         .reconcile(&*channel, &plan, 1)
         .await
         .expect_err("incompatible topology");
-
-    assert!(error.is_permanent());
 }
 
 #[tokio::test]
@@ -470,6 +447,7 @@ async fn a_new_connection_generation_replays_the_full_plan() {
 
 #[cfg(feature = "integration")]
 async fn integration_connect() -> Box<dyn rabbit_rs_core::transport::TransportConnection> {
+    use rabbit_rs_core::config::{Credentials, Endpoint, TlsConfig};
     use rabbit_rs_core::transport::lapin::LapinTransport;
 
     let broker = BrokerConfig {
@@ -986,18 +964,18 @@ fn application_count_survives_a_fresh_broker_delivery() {
 
 #[test]
 fn exceeding_the_configured_limit_is_a_typed_max_attempts_error() {
-    let resolver = AttemptsResolver::new(NonZeroU32::new(3));
+    let resolver = AttemptsResolver::default();
 
     let error = resolver
         .resolve(
-            &attempt_headers(&[(APPLICATION_ATTEMPTS_HEADER, "4")]),
+            &attempt_headers(&[(APPLICATION_ATTEMPTS_HEADER, "21")]),
             false,
         )
-        .expect_err("fourth attempt exceeds a limit of three");
+        .expect_err("twenty-first attempt exceeds the default limit of twenty");
 
     assert_eq!(error.kind(), AttemptsErrorKind::MaxAttempts);
-    assert_eq!(error.attempts(), 4);
-    assert_eq!(error.max_attempts(), Some(3));
+    assert_eq!(error.attempts(), 21);
+    assert_eq!(error.max_attempts(), Some(20));
 }
 
 #[test]
@@ -1065,7 +1043,7 @@ async fn broker_message_id_is_preserved_as_delivery_id() {
         "jobs",
         Arc::from(consumer_channel),
     );
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
@@ -1101,7 +1079,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
         "jobs",
         Arc::from(consumer_channel),
     );
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
@@ -1146,9 +1124,11 @@ async fn delayed_release_increments_the_application_attempt_header() {
         .open_publisher()
         .await
         .expect("publisher channel");
-    let publisher = PublisherActor::spawn(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher_channel),
-        PublisherConfig::new(8, Duration::from_secs(5)),
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe),
+        Metrics::default(),
+        None,
     );
     let subscription = Subscription::new(
         "jobs",
@@ -1158,7 +1138,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
     )
     .delayed_publisher(publisher, Destination::new("jobs", "high"))
     .delay_strategy(rabbit_rs_core::topology::delay::DelayStrategy::Plugin);
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");

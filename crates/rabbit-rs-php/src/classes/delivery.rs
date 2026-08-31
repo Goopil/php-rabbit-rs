@@ -13,7 +13,6 @@ use ext_php_rs::{
 };
 use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState, SettlementErrorKind};
 use rabbit_rs_core::transport::HeaderValue;
-use tokio::runtime::Handle;
 
 /// Native delivery and its acknowledgement token.
 #[php_class]
@@ -21,8 +20,6 @@ use tokio::runtime::Handle;
 #[php(flags = ClassFlags::Final)]
 pub struct Delivery {
     pub(crate) inner: NativeDelivery,
-    #[allow(dead_code)]
-    runtime: Handle,
     pid: u32,
 }
 
@@ -101,12 +98,8 @@ impl Delivery {
 }
 
 impl Delivery {
-    pub(crate) fn new(inner: NativeDelivery, runtime: Handle, pid: u32) -> Self {
-        Self {
-            inner,
-            runtime,
-            pid,
-        }
+    pub(crate) fn new(inner: NativeDelivery, pid: u32) -> Self {
+        Self { inner, pid }
     }
 
     fn ensure_current_process(&self, operation: &str) -> PhpResult<()> {

@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_lite::StreamExt;
-use futures_util::stream::FuturesUnordered;
+use futures_util::StreamExt;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
     options::{
@@ -166,44 +165,6 @@ impl PublisherChannel for LapinPublisherChannel {
         Ok(Box::new(LapinPublishReceipt {
             inner: confirmation,
         }))
-    }
-
-    async fn publish_batch(
-        &self,
-        requests: Vec<PublishRequest>,
-    ) -> TransportResult<Vec<Box<dyn PublishReceipt>>> {
-        let channel = self.inner.clone();
-        let mut futs = FuturesUnordered::new();
-        for request in requests {
-            let properties = publish_properties(&request);
-            let exchange = request.exchange;
-            let routing_key = request.routing_key;
-            let mandatory = request.mandatory;
-            let payload = request.payload;
-            let ch = channel.clone();
-            futs.push(async move {
-                ch.basic_publish(
-                    exchange.as_ref().into(),
-                    routing_key.as_ref().into(),
-                    BasicPublishOptions {
-                        mandatory,
-                        immediate: false,
-                    },
-                    &payload,
-                    properties,
-                )
-                .await
-                .map_err(map_lapin_error)
-            });
-        }
-        let mut receipts = Vec::with_capacity(futs.len());
-        while let Some(result) = futs.next().await {
-            let confirmation = result?;
-            receipts.push(Box::new(LapinPublishReceipt {
-                inner: confirmation,
-            }) as Box<dyn PublishReceipt>);
-        }
-        Ok(receipts)
     }
 }
 
@@ -710,7 +671,7 @@ mod tests {
 
     use super::{connection_uri, map_headers, publish_properties};
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
-    use crate::transport::{HeaderFloat, HeaderValue, PublishRequest};
+    use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
 
     #[test]
     fn uri_percent_encodes_credentials_and_vhost_as_segments() {
@@ -763,7 +724,13 @@ mod tests {
 
     #[test]
     fn outgoing_application_headers_are_merged_with_delay_header() {
-        let mut request = PublishRequest::new("jobs.delayed", "high", b"job".to_vec());
+        let mut request = PublishRequest {
+            exchange: "jobs.delayed".into(),
+            routing_key: "high".into(),
+            payload: Bytes::from_static(b"job"),
+            mandatory: true,
+            properties: PublishProperties::default(),
+        };
         request
             .properties
             .headers
@@ -785,7 +752,13 @@ mod tests {
 
     #[test]
     fn outgoing_headers_preserve_scalar_amqp_types() {
-        let mut request = PublishRequest::new("jobs", "default", b"job".to_vec());
+        let mut request = PublishRequest {
+            exchange: "jobs".into(),
+            routing_key: "default".into(),
+            payload: Bytes::from_static(b"job"),
+            mandatory: true,
+            properties: PublishProperties::default(),
+        };
         request
             .properties
             .headers

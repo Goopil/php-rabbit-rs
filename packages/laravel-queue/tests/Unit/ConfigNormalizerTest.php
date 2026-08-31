@@ -57,11 +57,9 @@ describe('native normalization', function (): void {
                 ],
                 'tls' => [
                     'enabled' => false,
-                    'server_name' => null,
                     'ca_cert' => null,
                     'client_cert' => null,
                     'client_key' => null,
-                    'verify' => 'peer',
                 ],
                 'heartbeat' => 30,
             ]],
@@ -88,7 +86,6 @@ describe('native normalization', function (): void {
                 'buckets' => [1, 5, 30, 120],
                 'max_buckets' => 8,
                 'queue_expiry_margin' => 60,
-                'detection_timeout' => 5,
             ],
             'dead_letter' => null,
             'delivery_limit' => null,
@@ -474,45 +471,19 @@ describe('TLS', function (): void {
         $config = configValidConfig();
         $config['brokers']['default']['tls'] = [
             'enabled' => true,
-            'server_name' => 'broker.internal',
             'ca_cert' => '/etc/ssl/certs/ca.pem',
             'client_cert' => '/etc/ssl/client/cert.pem',
             'client_key' => '/etc/ssl/client/key.pem',
-            'verify' => 'peer',
         ];
 
         $normalized = ConfigNormalizer::normalize($config);
 
         expect([
             'enabled' => true,
-            'server_name' => 'broker.internal',
             'ca_cert' => '/etc/ssl/certs/ca.pem',
             'client_cert' => '/etc/ssl/client/cert.pem',
             'client_key' => '/etc/ssl/client/key.pem',
-            'verify' => 'peer',
         ])->toBe($normalized['native']['brokers'][0]['tls']);
-    });
-
-    it('defaults TLS verify to peer', function (): void {
-        $config = configValidConfig();
-        $config['brokers']['default']['tls'] = ['enabled' => true];
-
-        $normalized = ConfigNormalizer::normalize($config);
-
-        expect('peer')->toBe($normalized['native']['brokers'][0]['tls']['verify']);
-    });
-
-    it('rejects an invalid TLS verify mode', function (): void {
-        $config = configValidConfig();
-        $config['brokers']['default']['tls'] = [
-            'enabled' => true,
-            'verify' => 'custom',
-        ];
-
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('brokers.default.tls.verify');
-
-        ConfigNormalizer::normalize($config);
     });
 });
 
@@ -533,11 +504,9 @@ function configValidConfig(): array
                 ],
                 'tls' => [
                     'enabled' => false,
-                    'server_name' => null,
                     'ca_cert' => null,
                     'client_cert' => null,
                     'client_key' => null,
-                    'verify' => 'peer',
                 ],
                 'heartbeat' => 30,
             ],

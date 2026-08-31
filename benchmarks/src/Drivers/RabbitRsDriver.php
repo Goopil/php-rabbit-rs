@@ -31,7 +31,7 @@ class RabbitRsDriver extends AbstractBenchmark
                 'hosts' => [['host' => Config::RABBITMQ_HOST, 'port' => Config::RABBITMQ_PORT]],
                 'vhost' => Config::RABBITMQ_VHOST,
                 'credentials' => ['username' => Config::RABBITMQ_USER, 'password' => Config::RABBITMQ_PASSWORD],
-                'tls' => ['enabled' => false, 'server_name' => null],
+                'tls' => ['enabled' => false],
                 'heartbeat' => 30,
             ]],
             'workers' => [[

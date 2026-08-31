@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     collections::BTreeMap,
     sync::Arc,
@@ -11,7 +13,7 @@ use rabbit_rs_core::{
         BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
         SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
-    consumer::{Scheduler, SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
+    consumer::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind,
@@ -67,7 +69,6 @@ mod helper {
                     prefetch: 8,
                     starvation_after: Duration::from_secs(30),
                     max_buffered_bytes: 64 * 1024 * 1024,
-                    max_message_bytes: None,
                     early_ack: false,
                     no_ack: false,
                 }],
@@ -138,7 +139,6 @@ mod helper {
                         prefetch: 8,
                         starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
-                        max_message_bytes: None,
                         early_ack: false,
                         no_ack: false,
                     },
@@ -151,7 +151,6 @@ mod helper {
                         prefetch: 8,
                         starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
-                        max_message_bytes: None,
                         early_ack: false,
                         no_ack: false,
                     },
@@ -319,12 +318,16 @@ async fn reuses_one_connection_and_publisher_for_confirmed_messages() {
     let pool = ClientPool::new(Arc::new(config()), transport.clone());
 
     let first = pool
-        .publish("default", request("first"))
+        .publish_batch(vec![("default".to_owned(), request("first"))])
         .await
+        .expect("first publish")
+        .pop()
         .expect("first publish");
     let second = pool
-        .publish("default", request("second"))
+        .publish_batch(vec![("default".to_owned(), request("second"))])
         .await
+        .expect("second publish")
+        .pop()
         .expect("second publish");
 
     assert_eq!(
@@ -446,7 +449,10 @@ async fn close_while_connecting_closes_the_uncommitted_connection_once() {
     let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
     let publishing = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("default", request("message")).await }
+        async move {
+            pool.publish_batch(vec![("default".to_owned(), request("message"))])
+                .await
+        }
     });
 
     tokio::task::yield_now().await;
@@ -473,7 +479,7 @@ async fn close_while_connecting_closes_the_uncommitted_connection_once() {
             .any(|operation| matches!(operation, TransportOperation::OpenPublisher))
     );
     assert_eq!(
-        pool.publish("default", request("after-close"))
+        pool.publish_batch(vec![("default".to_owned(), request("after-close"))])
             .await
             .expect_err("closed pool")
             .kind(),
@@ -491,11 +497,17 @@ async fn concurrent_same_broker_initialization_is_deduplicated() {
     let pool = Arc::new(ClientPool::new(Arc::new(config()), transport.clone()));
     let first = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("default", request("first")).await }
+        async move {
+            pool.publish_batch(vec![("default".to_owned(), request("first"))])
+                .await
+        }
     });
     let second = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("default", request("second")).await }
+        async move {
+            pool.publish_batch(vec![("default".to_owned(), request("second"))])
+                .await
+        }
     });
     gate.wait_entered().await;
     tokio::task::yield_now().await;
@@ -534,11 +546,17 @@ async fn independent_brokers_initialize_in_parallel() {
     ));
     let first = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("first", request("first")).await }
+        async move {
+            pool.publish_batch(vec![("first".to_owned(), request("first"))])
+                .await
+        }
     });
     let second = tokio::spawn({
         let pool = pool.clone();
-        async move { pool.publish("second", request("second")).await }
+        async move {
+            pool.publish_batch(vec![("second".to_owned(), request("second"))])
+                .await
+        }
     });
     first_gate.wait_entered().await;
     tokio::time::timeout(Duration::from_millis(10), second_gate.wait_entered())
@@ -582,7 +600,7 @@ async fn connection_states_reports_known_brokers_after_initialization() {
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let pool = ClientPool::new(Arc::new(config()), transport);
 
-    pool.publish("default", request("first"))
+    pool.publish_batch(vec![("default".to_owned(), request("first"))])
         .await
         .expect("publish");
 
@@ -795,18 +813,20 @@ async fn closing_a_multi_broker_consumer_closes_every_brokers_channels() {
 mod integration {
     use super::*;
 
+    /// Real-broker helper: the lab provisions the `rabbit_rs` user (not
+    /// `guest`) on `localhost:5672` with per-vhost permissions.
     fn broker(name: &str, vhost: &str) -> BrokerConfig {
         BrokerConfig {
             name: name.to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
+            hosts: vec![rabbit_rs_core::config::Endpoint::new("localhost", 5672)],
             vhost: vhost.to_owned(),
-            credentials: Credentials::new("rabbit_rs", "rabbit_rs_lab"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
+            credentials: rabbit_rs_core::config::Credentials::new("rabbit_rs", "rabbit_rs_lab"),
+            tls: rabbit_rs_core::config::TlsConfig::disabled(),
+            heartbeat: std::time::Duration::from_secs(30),
         }
     }
 
-    fn config_single() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
+    fn config_single(queue: &str) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
         Arc::new(
             Config {
                 brokers: vec![broker("primary", "/orders-eu")],
@@ -815,13 +835,12 @@ mod integration {
                     subscriptions: vec![SubscriptionConfig {
                         name: "jobs".to_owned(),
                         broker: "primary".to_owned(),
-                        queue: "rabbit-rs-it-publish-consume".to_owned(),
+                        queue: queue.to_owned(),
                         weight: 1,
                         priority_class: 0,
                         prefetch: 8,
                         starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
-                        max_message_bytes: None,
                         early_ack: false,
                         no_ack: false,
                     }],
@@ -860,7 +879,6 @@ mod integration {
                             prefetch: 8,
                             starvation_after: Duration::from_secs(30),
                             max_buffered_bytes: 64 * 1024 * 1024,
-                            max_message_bytes: None,
                             early_ack: false,
                             no_ack: false,
                         },
@@ -873,7 +891,6 @@ mod integration {
                             prefetch: 8,
                             starvation_after: Duration::from_secs(30),
                             max_buffered_bytes: 64 * 1024 * 1024,
-                            max_message_bytes: None,
                             early_ack: false,
                             no_ack: false,
                         },
@@ -946,19 +963,23 @@ mod integration {
     async fn publish_confirm_then_consume_and_ack() {
         use rabbit_rs_core::consumer::DeliveryState;
 
-        let queue = "rabbit-rs-it-publish-consume";
+        // Unique queue per test: these tests run in parallel and must not
+        // consume each other's messages.
+        let queue = "rabbit-rs-it-confirm";
         declare_queue("/orders-eu", queue).await;
 
-        let config = config_single();
+        let config = config_single(queue);
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 
         let outcome = pool
-            .publish(
-                "primary",
+            .publish_batch(vec![(
+                "primary".to_owned(),
                 publish_request("msg-confirm-1", queue, b"hello-confirm"),
-            )
+            )])
             .await
+            .expect("publish")
+            .pop()
             .expect("publish");
 
         assert_eq!(
@@ -983,17 +1004,17 @@ mod integration {
     async fn release_zero_requeues_and_redispatches() {
         use rabbit_rs_core::consumer::DeliveryState;
 
-        let queue = "rabbit-rs-it-publish-consume";
+        let queue = "rabbit-rs-it-release";
         declare_queue("/orders-eu", queue).await;
 
-        let config = config_single();
+        let config = config_single(queue);
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 
-        pool.publish(
-            "primary",
+        pool.publish_batch(vec![(
+            "primary".to_owned(),
             publish_request("msg-release-0", queue, b"hello-release"),
-        )
+        )])
         .await
         .expect("publish");
 
@@ -1022,16 +1043,16 @@ mod integration {
         purge_or_ignore(&pool, "orders", orders_queue).await;
         purge_or_ignore(&pool, "billing", billing_queue).await;
 
-        pool.publish(
-            "orders",
+        pool.publish_batch(vec![(
+            "orders".to_owned(),
             publish_request("msg-orders-1", orders_queue, b"from-orders"),
-        )
+        )])
         .await
         .expect("publish orders");
-        pool.publish(
-            "billing",
+        pool.publish_batch(vec![(
+            "billing".to_owned(),
             publish_request("msg-billing-1", billing_queue, b"from-billing"),
-        )
+        )])
         .await
         .expect("publish billing");
 
@@ -1052,10 +1073,10 @@ mod integration {
 
     #[tokio::test]
     async fn bulk_publish_then_consume_all() {
-        let queue = "rabbit-rs-it-publish-consume";
+        let queue = "rabbit-rs-it-bulk";
         declare_queue("/orders-eu", queue).await;
 
-        let config = config_single();
+        let config = config_single(queue);
         let pool = ClientPool::production(config);
         purge_or_ignore(&pool, "primary", queue).await;
 

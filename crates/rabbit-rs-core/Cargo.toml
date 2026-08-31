@@ -11,12 +11,10 @@ test-support = []
 integration = []
 
 [dependencies]
-arc-swap = "1"
 async-trait = "0.1"
 bytes = "1.10"
 flume = "0.12"
 fastrand = "2.3"
-futures-lite = "2.6"
 futures-util = "0.3"
 lapin = { version = "4.10", default-features = false, features = ["rustls--ring", "rustls-platform-verifier", "tokio"] }
 secrecy = { version = "0.10", features = ["serde"] }

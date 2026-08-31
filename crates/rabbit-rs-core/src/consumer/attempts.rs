@@ -15,16 +15,13 @@ pub struct AttemptsResolver {
 
 impl Default for AttemptsResolver {
     fn default() -> Self {
-        Self::new(NonZeroU32::new(20))
+        Self {
+            max_attempts: NonZeroU32::new(20),
+        }
     }
 }
 
 impl AttemptsResolver {
-    #[must_use]
-    pub const fn new(max_attempts: Option<NonZeroU32>) -> Self {
-        Self { max_attempts }
-    }
-
     /// Resolves Laravel-compatible attempts from broker and application headers.
     ///
     /// `RabbitMQ` 4.3 `x-acquired-count` is already acquisition-based, while

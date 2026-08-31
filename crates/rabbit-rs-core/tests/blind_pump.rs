@@ -14,10 +14,14 @@ use rabbit_rs_core::{
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest, PublisherConfig},
     transport::{
-        PublishConfirmation, PublishRequest as TransportPublishRequest, QueueKind,
-        mock::{MockPublishGate, MockTransport, TransportOperation},
+        PublishConfirmation, QueueKind,
+        mock::{MockPublishGate, MockTransport},
     },
 };
+
+mod common;
+
+use common::{publish_requests, wait_for_publish_count as wait_for_publishes};
 
 fn config() -> Arc<ValidatedConfig> {
     Arc::new(
@@ -67,28 +71,6 @@ fn batch(message_ids: &[&str]) -> Vec<(String, PublishRequest)> {
         .iter()
         .map(|id| ("default".to_owned(), request(id)))
         .collect()
-}
-
-fn publish_requests(transport: &MockTransport) -> Vec<TransportPublishRequest> {
-    transport
-        .operations()
-        .into_iter()
-        .filter_map(|operation| match operation {
-            TransportOperation::Publish(request) => Some(request),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Yields until the transport recorded `expected` publishes.
-async fn wait_for_publishes(transport: &MockTransport, expected: usize) {
-    for _ in 0..200 {
-        if publish_requests(transport).len() == expected {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("transport did not record {expected} publishes");
 }
 
 #[tokio::test(start_paused = true)]
@@ -167,16 +149,14 @@ async fn blind_batch_bypasses_the_publisher_actor() {
     gates[1].wait_entered().await;
 
     // The actor path retains one capacity permit per pending publication; the
-    // pump path does not. Zero in-flight permits — and a zero peak publishing
-    // depth — while both publishes are still pending proves no publish
-    // command ever reached the actor.
+    // pump path does not. Zero in-flight permits while both publishes are
+    // still pending proves no publish command ever reached the actor.
     let (in_flight, capacity) = pool.publisher_utilization();
     assert_eq!(
         in_flight, 0,
         "no actor permit may be retained in blind mode"
     );
     assert_eq!(capacity, 8);
-    assert_eq!(pool.metrics_snapshot().publishing_depth_hwm, 0);
 
     for gate in &gates {
         assert!(gate.release());
@@ -194,10 +174,12 @@ async fn blind_single_publish_resolves_confirmed_without_waiting_for_the_transpo
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(1),
-        pool.publish("default", request("m0")),
+        pool.publish_batch(vec![("default".to_owned(), request("m0"))]),
     )
     .await
     .expect("blind publish must resolve at hand-off, not on the transport")
+    .expect("blind publish succeeds")
+    .pop()
     .expect("blind publish succeeds");
     assert_eq!(
         outcome,
@@ -272,7 +254,7 @@ async fn flush_blind_resolves_immediately_on_non_blind_clients() {
         .expect("flush must not hang on an empty pool")
         .expect("flush on an empty pool succeeds");
 
-    pool.publish("default", request("m0"))
+    pool.publish_batch(vec![("default".to_owned(), request("m0"))])
         .await
         .expect("safe publish");
     tokio::time::timeout(Duration::from_secs(1), pool.flush_blind())
