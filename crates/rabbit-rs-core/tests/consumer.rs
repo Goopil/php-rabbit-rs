@@ -8,8 +8,8 @@ use bytes::Bytes;
 use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, Credentials, Endpoint, PublisherConfigSection,
-        SafetyMode, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, PublisherConfigSection, SafetyMode,
+        SchedulerConfig, SubscriptionConfig, TopologyMode, WorkerProfile,
     },
     consumer::{
         ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
@@ -25,18 +25,13 @@ use rabbit_rs_core::{
     },
 };
 
+mod common;
+
 mod helper {
     use super::*;
 
     pub fn broker(name: &str, vhost: &str) -> BrokerConfig {
-        BrokerConfig {
-            name: name.to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: vhost.to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
+        crate::common::broker(name, vhost, "guest")
     }
 
     pub fn worker_profile(name: &str, broker_name: &str, queue: &str) -> WorkerProfile {

@@ -810,16 +810,10 @@ async fn closing_a_multi_broker_consumer_closes_every_brokers_channels() {
 #[cfg(feature = "integration")]
 mod integration {
     use super::*;
+    use crate::common;
 
     fn broker(name: &str, vhost: &str) -> BrokerConfig {
-        BrokerConfig {
-            name: name.to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: vhost.to_owned(),
-            credentials: Credentials::new("rabbit_rs", "rabbit_rs_lab"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
+        crate::common::broker(name, vhost, "rabbit_rs_lab")
     }
 
     fn config_single() -> Arc<rabbit_rs_core::config::ValidatedConfig> {

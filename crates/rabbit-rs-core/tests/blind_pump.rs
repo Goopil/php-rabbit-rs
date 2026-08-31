@@ -14,10 +14,14 @@ use rabbit_rs_core::{
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest, PublisherConfig},
     transport::{
-        PublishConfirmation, PublishRequest as TransportPublishRequest, QueueKind,
-        mock::{MockPublishGate, MockTransport, TransportOperation},
+        PublishConfirmation, QueueKind,
+        mock::{MockPublishGate, MockTransport},
     },
 };
+
+mod common;
+
+use common::{publish_requests, wait_for_publish_count as wait_for_publishes};
 
 fn config() -> Arc<ValidatedConfig> {
     Arc::new(
@@ -67,28 +71,6 @@ fn batch(message_ids: &[&str]) -> Vec<(String, PublishRequest)> {
         .iter()
         .map(|id| ("default".to_owned(), request(id)))
         .collect()
-}
-
-fn publish_requests(transport: &MockTransport) -> Vec<TransportPublishRequest> {
-    transport
-        .operations()
-        .into_iter()
-        .filter_map(|operation| match operation {
-            TransportOperation::Publish(request) => Some(request),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Yields until the transport recorded `expected` publishes.
-async fn wait_for_publishes(transport: &MockTransport, expected: usize) {
-    for _ in 0..200 {
-        if publish_requests(transport).len() == expected {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("transport did not record {expected} publishes");
 }
 
 #[tokio::test(start_paused = true)]

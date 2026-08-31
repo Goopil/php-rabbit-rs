@@ -8,10 +8,7 @@ use bytes::Bytes;
 use rabbit_rs_core::metrics::Metrics;
 use rabbit_rs_core::{
     client::ClientPool,
-    config::{
-        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SafetyMode,
-        SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
-    },
+    config::{SafetyMode, TopologyMode},
     pool::connection_actor::ConnectionActor,
     pool::recovery_coordinator::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
@@ -23,59 +20,18 @@ use rabbit_rs_core::{
     },
     topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{
-        PublishConfirmation, QueueKind, Transport, TransportError, TransportErrorKind,
+        PublishConfirmation, Transport, TransportError, TransportErrorKind,
         mock::{MockTransport, TransportOperation},
     },
 };
 use tokio::{sync::watch, time::Instant};
 
+mod common;
+
 mod helper {
     use super::*;
 
-    pub fn broker() -> BrokerConfig {
-        BrokerConfig {
-            name: "primary".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
-    }
-
-    pub fn config() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
-        Arc::new(
-            Config {
-                brokers: vec![broker()],
-                workers: vec![WorkerProfile {
-                    name: "main".to_owned(),
-                    subscriptions: vec![SubscriptionConfig {
-                        name: "jobs".to_owned(),
-                        broker: "primary".to_owned(),
-                        queue: "jobs".to_owned(),
-                        weight: 1,
-                        priority_class: 0,
-                        prefetch: 4,
-                        starvation_after: Duration::from_secs(30),
-                        max_buffered_bytes: 64 * 1024 * 1024,
-                        early_ack: false,
-                        no_ack: false,
-                    }],
-                    scheduler: SchedulerConfig::weighted_fair(),
-                }],
-                topology_mode: TopologyMode::Declare,
-                delay: rabbit_rs_core::config::DelayConfig::default(),
-                dead_letter: None,
-                delivery_limit: None,
-                publisher: PublisherConfigSection::default(),
-                consumer: rabbit_rs_core::config::ConsumerConfigSection::default(),
-                queue_type: QueueKind::Quorum,
-                queue_durable: true,
-            }
-            .validate()
-            .expect("valid config"),
-        )
-    }
+    pub use crate::common::{broker, config, worker_profile};
 
     pub fn publisher_config() -> PublisherConfig {
         PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe)
@@ -104,7 +60,7 @@ mod helper {
         config: Arc<rabbit_rs_core::config::ValidatedConfig>,
     ) -> RecoveryCoordinatorConfig {
         RecoveryCoordinatorConfig {
-            broker: broker(),
+            broker: broker("primary", "/", "guest"),
             policy: RecoveryPolicy::default(),
             topology_plan: topology_plan(),
             publisher_config: publisher_config(),
@@ -186,7 +142,10 @@ use helper::*;
 #[tokio::test(start_paused = true)]
 async fn publisher_replays_unconfirmed_messages_after_recovery() {
     let transport = Arc::new(MockTransport::default());
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
 
     let coordinator =
         RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
@@ -256,7 +215,10 @@ async fn publisher_replays_unconfirmed_messages_after_recovery() {
 #[tokio::test(start_paused = true)]
 async fn consumer_generation_updates_after_reconnection_rejects_stale_acks() {
     let transport = Arc::new(MockTransport::default());
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
 
     let coordinator =
         RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
@@ -287,7 +249,10 @@ async fn consumer_generation_updates_after_reconnection_rejects_stale_acks() {
 #[tokio::test(start_paused = true)]
 async fn stale_consumer_handle_evicted_after_recovery() {
     let transport = Arc::new(MockTransport::default());
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
 
     let coordinator =
         RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
@@ -338,7 +303,10 @@ async fn stale_consumer_handle_evicted_after_recovery() {
 #[tokio::test(start_paused = true)]
 async fn deterministic_recovery_order_connection_channels_topology_consumers_publisher() {
     let transport = Arc::new(MockTransport::default());
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
 
     let coordinator =
         RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
@@ -380,7 +348,10 @@ async fn deterministic_recovery_order_connection_channels_topology_consumers_pub
 #[tokio::test(start_paused = true)]
 async fn loss_during_recovery_cancels_and_restarts() {
     let transport = Arc::new(MockTransport::default());
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
 
     let coordinator =
         RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
@@ -416,7 +387,10 @@ async fn loss_during_recovery_cancels_and_restarts() {
 #[tokio::test(start_paused = true)]
 async fn permanent_error_stops_the_recovery_loop() {
     let transport = Arc::new(MockTransport::default());
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
 
     transport.push_connect_result(Ok(()));
 
@@ -460,7 +434,10 @@ async fn recovery_failure_rolls_back_and_retries() {
     transport.push_connect_result(Ok(()));
     transport.push_consumer_result(Ok(()));
 
-    let config = config();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
     let coordinator =
         RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
 
@@ -510,7 +487,7 @@ async fn transitions_from_disconnected_through_connecting_to_ready() {
     let transport = Arc::new(MockTransport::default());
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         Arc::new(TokioClock),
         Arc::new(EqualJitter),
@@ -543,7 +520,7 @@ async fn retries_with_100_200_and_400_millisecond_backoff() {
     let clock = Arc::new(RecordingClock::default());
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         clock.clone(),
         Arc::new(IdentityJitter),
@@ -611,7 +588,7 @@ async fn injected_jitter_controls_the_observed_retry_delay() {
     transport.push_connect_result(Err(TransportError::connection("offline")));
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         Arc::new(RecordingClock::default()),
         Arc::new(AdditiveJitter(Duration::from_millis(25))),
@@ -638,7 +615,7 @@ async fn authentication_failure_is_permanent() {
     transport.push_connect_result(Err(TransportError::authentication("access refused")));
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         Arc::new(TokioClock),
         Arc::new(EqualJitter),
@@ -666,7 +643,7 @@ async fn ready_connection_loss_enters_recovery() {
     let transport = Arc::new(MockTransport::default());
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         Arc::new(RecordingClock::default()),
         Arc::new(IdentityJitter),
@@ -704,7 +681,7 @@ async fn close_interrupts_an_active_backoff() {
     transport.push_connect_result(Err(TransportError::connection("offline")));
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         Arc::new(TokioClock),
         Arc::new(EqualJitter),
@@ -727,7 +704,7 @@ async fn generation_increments_after_successful_recovery() {
     let transport = Arc::new(MockTransport::default());
     let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
-        broker(),
+        broker("primary", "/", "guest"),
         RecoveryPolicy::default(),
         Arc::new(RecordingClock::default()),
         Arc::new(IdentityJitter),
@@ -768,7 +745,13 @@ async fn pool_evicts_stale_consumer_handle_after_recovery() {
     transport.push_connect_result(Ok(()));
     transport.push_consumer_result(Ok(()));
 
-    let pool = ClientPool::new(config(), transport.clone() as Arc<dyn Transport>);
+    let pool = ClientPool::new(
+        config(
+            vec![broker("primary", "/", "guest")],
+            vec![worker_profile("main", "primary", "jobs", 4)],
+        ),
+        transport.clone() as Arc<dyn Transport>,
+    );
 
     // Get initial consumer — generation 1.
     let consumer1 = pool.consumer("main").await.expect("consumer handle");

@@ -16,11 +16,14 @@ use rabbit_rs_core::{
     recovery::{ConnectionState, IdentityJitter, RecoveryPolicy, TokioClock},
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind, ReturnedMessage, Transport,
-        TransportError,
-        mock::{MockTransport, TransportOperation},
+        TransportError, mock::MockTransport,
     },
 };
 use tokio::{sync::watch, time::Instant};
+
+mod common;
+
+use common::wait_for_publish_count;
 
 fn broker(password: &str) -> BrokerConfig {
     BrokerConfig {
@@ -59,21 +62,6 @@ fn publish_request(message_id: &str) -> PublishRequest {
         MessageProperties::new(message_id),
         Instant::now() + Duration::from_secs(30),
     )
-}
-
-async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
-    for _ in 0..100 {
-        let count = transport
-            .operations()
-            .iter()
-            .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-            .count();
-        if count == expected {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("publisher did not emit {expected} messages");
 }
 
 #[tokio::test(start_paused = true)]

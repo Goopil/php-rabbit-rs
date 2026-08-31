@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, Credentials, DeadLetterConfig, DelayConfig,
-        Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig,
-        TlsConfig, TopologyMode, ValidatedConfig, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig,
+        PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
+        ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
@@ -24,29 +24,16 @@ use rabbit_rs_core::{
     },
 };
 
+mod common;
+
 mod helper {
     use super::*;
 
-    pub fn broker() -> BrokerConfig {
-        BrokerConfig {
-            name: "primary".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
-    }
+    pub use crate::common::broker;
 
+    #[must_use]
     pub fn broker_default() -> BrokerConfig {
-        BrokerConfig {
-            name: "default".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
+        broker("default", "/", "guest")
     }
 
     pub fn exchange(name: &str) -> ExchangeSpec {
@@ -80,7 +67,7 @@ mod helper {
         transport: &MockTransport,
     ) -> Box<dyn rabbit_rs_core::transport::ConsumerChannel> {
         transport
-            .connect(&broker())
+            .connect(&broker("primary", "/", "guest"))
             .await
             .expect("connection")
             .open_consumer()
@@ -124,7 +111,7 @@ mod helper {
 
     pub fn base_config(queue: &str) -> Config {
         Config {
-            brokers: vec![broker()],
+            brokers: vec![broker("primary", "/", "guest")],
             workers: vec![WorkerProfile {
                 name: "main".to_owned(),
                 subscriptions: vec![subscription(queue)],

@@ -1,5 +1,7 @@
 //! Transport tuning tests: `frame_max`, connection URI parameters, and loud TLS file errors.
 
+mod common;
+
 use std::time::Duration;
 
 use rabbit_rs_core::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
@@ -33,28 +35,18 @@ mod helper {
     use super::*;
 
     pub fn broker(name: &str, vhost: &str) -> BrokerConfig {
-        BrokerConfig {
-            name: name.to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: vhost.to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
+        crate::common::broker(name, vhost, "guest")
     }
 }
 
-#[test]
-fn unreadable_tls_files_fail_loudly_instead_of_connecting_unprotected() {
+/// Builds the broker with the given TLS configuration, connects through the
+/// lapin transport, and asserts the failure names the offending file path.
+///
+/// `TlsConfig` fields are private, so the TLS configuration is built through
+/// deserialization exactly as the Laravel normalizer would emit it.
+fn assert_tls_loud_failure(tls_json: serde_json::Value, expected_path: &str) {
     let mut broker = helper::broker("tls-b", "/");
-    // `TlsConfig` fields are private, so the TLS configuration is built through
-    // deserialization exactly as the Laravel normalizer would emit it.
-    broker.tls = serde_json::from_value(serde_json::json!({
-        "enabled": true,
-        "ca_cert": "/nonexistent/ca.pem"
-
-    }))
-    .expect("valid TLS configuration");
+    broker.tls = serde_json::from_value(tls_json).expect("valid TLS configuration");
 
     let transport = rabbit_rs_core::transport::lapin::LapinTransport;
     let error = tokio::runtime::Builder::new_current_thread()
@@ -63,37 +55,34 @@ fn unreadable_tls_files_fail_loudly_instead_of_connecting_unprotected() {
         .expect("tokio runtime")
         .block_on(transport.connect(&broker))
         .err()
-        .expect("unreadable CA cert must fail loudly");
+        .expect("unreadable TLS material must fail loudly");
 
     assert!(
-        error.to_string().contains("/nonexistent/ca.pem"),
+        error.to_string().contains(expected_path),
         "error must identify the exact file path: {error}"
     );
 }
 
 #[test]
+fn unreadable_tls_files_fail_loudly_instead_of_connecting_unprotected() {
+    assert_tls_loud_failure(
+        serde_json::json!({
+            "enabled": true,
+            "ca_cert": "/nonexistent/ca.pem"
+        }),
+        "/nonexistent/ca.pem",
+    );
+}
+
+#[test]
 fn unreadable_client_certificate_fails_loudly_instead_of_dropping_identity() {
-    let mut broker = helper::broker("tls-c", "/");
-    broker.tls = serde_json::from_value(serde_json::json!({
-        "enabled": true,
-        "client_cert": "/nonexistent/client-cert.pem",
-        "client_key": "/nonexistent/client-key.pem"
-
-    }))
-    .expect("valid TLS configuration");
-
-    let transport = rabbit_rs_core::transport::lapin::LapinTransport;
-    let error = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
-        .block_on(transport.connect(&broker))
-        .err()
-        .expect("unreadable client certificate must fail loudly");
-
-    assert!(
-        error.to_string().contains("/nonexistent/client-cert.pem"),
-        "error must identify the exact file path: {error}"
+    assert_tls_loud_failure(
+        serde_json::json!({
+            "enabled": true,
+            "client_cert": "/nonexistent/client-cert.pem",
+            "client_key": "/nonexistent/client-key.pem"
+        }),
+        "/nonexistent/client-cert.pem",
     );
 }
 
@@ -107,28 +96,19 @@ fn unreadable_client_key_fails_loudly_instead_of_dropping_identity() {
     )
     .expect("write temporary certificate fixture");
 
-    let mut broker = helper::broker("tls-k", "/");
-    broker.tls = serde_json::from_value(serde_json::json!({
-        "enabled": true,
-        "client_cert": cert_path.display().to_string(),
-        "client_key": "/nonexistent/client-key.pem"
-
-    }))
-    .expect("valid TLS configuration");
-
-    let transport = rabbit_rs_core::transport::lapin::LapinTransport;
-    let error = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
-        .block_on(transport.connect(&broker))
-        .err()
-        .expect("unreadable client key must fail loudly");
+    let result = std::panic::catch_unwind(|| {
+        assert_tls_loud_failure(
+            serde_json::json!({
+                "enabled": true,
+                "client_cert": cert_path.display().to_string(),
+                "client_key": "/nonexistent/client-key.pem"
+            }),
+            "/nonexistent/client-key.pem",
+        );
+    });
 
     let _ = std::fs::remove_file(&cert_path);
-
-    assert!(
-        error.to_string().contains("/nonexistent/client-key.pem"),
-        "error must identify the exact file path: {error}"
-    );
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }

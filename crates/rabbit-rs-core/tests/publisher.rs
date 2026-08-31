@@ -2,9 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::{
-        BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint, SafetyMode, TlsConfig,
-    },
+    config::{Config, DelayConfig, DelayMode, SafetyMode},
     metrics::Metrics,
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
@@ -13,26 +11,22 @@ use rabbit_rs_core::{
     },
     topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
-        ExchangeKind, ExchangeSpec, PublishConfirmation, PublishRequest as TransportRequest,
-        PublisherChannel, QueueSpec, ReturnedMessage, Transport, TransportError,
+        ExchangeKind, ExchangeSpec, PublishConfirmation, PublisherChannel, QueueSpec,
+        ReturnedMessage, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
 use tokio::time::Instant;
 
+mod common;
+
 mod helper {
     use super::*;
 
-    pub fn broker() -> BrokerConfig {
-        BrokerConfig {
-            name: "primary".to_owned(),
-            hosts: vec![Endpoint::new("localhost", 5672)],
-            vhost: "/".to_owned(),
-            credentials: Credentials::new("guest", "guest"),
-            tls: TlsConfig::disabled(),
-            heartbeat: Duration::from_secs(30),
-        }
-    }
+    pub use crate::common::{
+        broker, find_publish, publish_requests as publish_operations, wait_for_publish_count,
+        wait_for_publish_count_delay,
+    };
 
     pub fn config_safety() -> PublisherConfig {
         PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe)
@@ -92,7 +86,7 @@ mod helper {
         config: PublisherConfig,
     ) -> PublisherHandle {
         let publisher = transport
-            .connect(&broker())
+            .connect(&broker("primary", "/", "guest"))
             .await
             .expect("connection")
             .open_publisher()
@@ -109,7 +103,7 @@ mod helper {
     pub async fn new_channel(transport: &MockTransport) -> Arc<dyn PublisherChannel> {
         Arc::from(
             transport
-                .connect(&broker())
+                .connect(&broker("primary", "/", "guest"))
                 .await
                 .expect("connection")
                 .open_publisher()
@@ -133,7 +127,7 @@ mod helper {
         delay_strategy: DelayStrategy,
     ) -> PublisherHandle {
         let publisher = transport
-            .connect(&broker())
+            .connect(&broker("primary", "/", "guest"))
             .await
             .expect("connection")
             .open_publisher()
@@ -145,59 +139,6 @@ mod helper {
             Metrics::default(),
             Some(delay_strategy),
         )
-    }
-
-    pub async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
-        for _ in 0..100 {
-            let count = transport
-                .operations()
-                .iter()
-                .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-                .count();
-            if count == expected {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-        panic!("publisher did not emit {expected} messages");
-    }
-
-    pub async fn wait_for_publish_count_delay(transport: &MockTransport, expected: usize) {
-        for _ in 0..200 {
-            let count = transport
-                .operations()
-                .iter()
-                .filter(|operation| matches!(operation, TransportOperation::Publish(_)))
-                .count();
-            if count == expected {
-                return;
-            }
-            tokio::time::advance(Duration::from_millis(2)).await;
-            tokio::task::yield_now().await;
-        }
-        panic!("publisher did not emit {expected} messages");
-    }
-
-    pub fn find_publish(transport: &MockTransport) -> TransportRequest {
-        transport
-            .operations()
-            .iter()
-            .find_map(|operation| match operation {
-                TransportOperation::Publish(request) => Some(request.clone()),
-                _ => None,
-            })
-            .expect("at least one publish")
-    }
-
-    pub fn publish_operations(transport: &MockTransport) -> Vec<TransportRequest> {
-        transport
-            .operations()
-            .into_iter()
-            .filter_map(|operation| match operation {
-                TransportOperation::Publish(request) => Some(request),
-                _ => None,
-            })
-            .collect()
     }
 
     pub async fn suspend(actor: &PublisherHandle) {
@@ -404,7 +345,7 @@ async fn connection_loss_before_confirm_is_replayed() {
     actor.connection_lost().await.expect("loss command");
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let replacement = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("replacement connection")
         .open_publisher()
@@ -460,7 +401,7 @@ async fn skips_enable_confirms_when_configured_off() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::NotRequested));
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
@@ -494,7 +435,7 @@ async fn calls_enable_confirms_when_configured_on() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
@@ -528,7 +469,7 @@ async fn publishes_with_mandatory_true_when_configured_on() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
@@ -567,7 +508,7 @@ async fn confirm_timeout_from_config_is_applied() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();
     let publisher = transport
-        .connect(&broker())
+        .connect(&broker("primary", "/", "guest"))
         .await
         .expect("connection")
         .open_publisher()
