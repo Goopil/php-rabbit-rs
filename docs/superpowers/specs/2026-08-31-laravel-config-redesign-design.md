@@ -207,8 +207,10 @@ iamfarhad does):
 
 ## 9. Docs & release
 
-- Rewrite `docs/configuration.md` around connections; update README quickstart
-  and `docs/octane.md` (reload semantics change).
+- Rewrite `docs/configuration.md` around connections with runnable
+  copy-paste examples: single broker, multi-broker, env strings, worker
+  profile targeting; update README quickstart and `docs/octane.md` (reload
+  semantics change).
 - CHANGELOG v0.1.0 entry: breaking config format change, migration table
   (old key → new location).
 

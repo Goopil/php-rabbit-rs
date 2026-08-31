@@ -4,6 +4,10 @@ Running trace of upcoming work. When a round starts it gets a full dated plan in
 `docs/plans/`; this file keeps the queue, motivation, scope, and success criteria so
 nothing is lost between rounds.
 
+Ground rule: every user-facing feature ships with a runnable usage example in
+its matching docs page as part of its issue's success criteria — examples land
+with the feature, never in a later docs pass.
+
 ## Landed
 
 - Native design + implementation plans (2026-07-30) — milestone details live there.
@@ -269,7 +273,9 @@ surfaces: pool knobs, AMQP transactions, failed dual-sink, poll/consume modes.
 
 Success criteria: compiler unit tests (defaults merge, env strings, escape
 hatch, exact error paths); two-connection integration test on the lab;
-`config/rabbit-rs.php` ≤ 50 lines; CHANGELOG v0.1.0 breaking entry. Core and
+`config/rabbit-rs.php` ≤ 50 lines; runnable config examples in
+`docs/configuration.md` (single broker, multi-broker, env strings) plus an
+updated README quickstart; CHANGELOG v0.1.0 breaking entry. Core and
 extension untouched.
 
 Companion (from the 2026-08-31 competitor survey, #84): **`rabbit-rs:topology`**
