@@ -132,9 +132,11 @@ mod helper {
             .open_publisher()
             .await
             .expect("publisher channel");
-        PublisherActor::spawn(
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
             Arc::from(channel),
             PublisherConfig::new(32, Duration::from_secs(5)),
+            Metrics::default(),
+            None,
         )
     }
 
@@ -176,7 +178,12 @@ async fn publisher_handle_exposes_its_confirm_timeout() {
         .await
         .expect("publisher channel");
     let timeout = Duration::from_millis(17);
-    let publisher = PublisherActor::spawn(Arc::from(channel), PublisherConfig::new(8, timeout));
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(channel),
+        PublisherConfig::new(8, timeout),
+        Metrics::default(),
+        None,
+    );
 
     assert_eq!(publisher.confirm_timeout(), timeout);
 }
@@ -205,7 +212,7 @@ async fn multiplexes_subscriptions_across_two_connections() {
         )
         .await,
     ];
-    let consumer = ConsumerSet::spawn(subscriptions)
+    let consumer = ConsumerSet::spawn_with_metrics(subscriptions, Metrics::default())
         .await
         .expect("consumer set");
     let_sources_fill().await;
@@ -230,10 +237,13 @@ async fn scheduler_selects_the_highest_priority_ready_buffer() {
     // has been pushed. This ensures both deliveries are buffered before the
     // actor dispatches, so the scheduler can select by priority.
     let low_gate = low_transport.push_delivery_gate();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&low_transport, "low", connection_key("low", "/"), 4, 0).await,
-        subscription(&high_transport, "high", connection_key("high", "/"), 4, 10).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            subscription(&low_transport, "low", connection_key("low", "/"), 4, 0).await,
+            subscription(&high_transport, "high", connection_key("high", "/"), 4, 10).await,
+        ],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     // Let the high pump push its delivery.
@@ -252,9 +262,10 @@ async fn applies_broker_qos_per_subscription_and_streams_deliveries() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"first")));
     transport.push_delivery(Ok(delivery(2, b"second")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 7, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 7, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let_sources_fill().await;
@@ -284,9 +295,10 @@ async fn expired_next_waiter_does_not_consume_the_following_delivery() {
     // first has been consumed.
     let first_gate = transport.push_delivery_gate();
     let second_gate = transport.push_delivery_gate();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -317,9 +329,10 @@ async fn multiple_expired_waiters_preserve_buffer_order() {
     transport.push_delivery(Ok(delivery(3, b"third")));
     let first_gate = transport.push_delivery_gate();
     let second_gate = transport.push_delivery_gate();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -348,9 +361,10 @@ async fn multiple_expired_waiters_preserve_buffer_order() {
 async fn consumer_tag_uses_the_raw_subscription_id() {
     let transport = MockTransport::default();
 
-    let _consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let _consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -369,9 +383,10 @@ async fn consumer_tag_uses_the_raw_subscription_id() {
 async fn ack_uses_the_delivery_generation_and_channel() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
@@ -397,9 +412,10 @@ async fn preserves_incoming_message_and_correlation_ids() {
         "broker-message-id",
         "trace-id",
     )));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -413,9 +429,10 @@ async fn preserves_incoming_message_and_correlation_ids() {
 async fn synthesizes_message_id_only_when_the_transport_property_is_absent() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -435,7 +452,7 @@ async fn partial_consumer_spawn_closes_all_open_channels() {
     transport.push_consumer_result(Ok(()));
     transport.push_consumer_result(Err(TransportError::connection("consume failed")));
 
-    ConsumerSet::spawn(vec![first, second])
+    ConsumerSet::spawn_with_metrics(vec![first, second], Metrics::default())
         .await
         .expect_err("second consumer registration fails");
 
@@ -458,9 +475,10 @@ async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
         ))));
     }
     transport.push_delivery(Ok(delivery(42, b"job")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 1, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 1, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -489,9 +507,10 @@ async fn stale_generation_ack_is_rejected_without_touching_the_new_channel() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(42, b"job")));
     let id = SubscriptionId::new("jobs");
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
@@ -528,7 +547,7 @@ async fn transport_settlement_error_marks_the_delivery_lost() {
     transport.push_consumer_result(Ok(()));
     transport.push_consumer_result(Ok(()));
     transport.push_consumer_result(Err(TransportError::connection("channel closed")));
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
@@ -555,9 +574,10 @@ async fn transport_settlement_error_marks_the_delivery_lost() {
 async fn release_zero_uses_basic_reject_with_requeue() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(9, b"job")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
@@ -595,7 +615,7 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
         .await
         .delayed_publisher(publisher, Destination::new("jobs", "high"))
         .delay_strategy(DelayStrategy::Plugin);
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
@@ -654,7 +674,7 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
         .await
         .delayed_publisher(publisher, Destination::new("jobs", "high"))
         .delay_strategy(DelayStrategy::Plugin);
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let item = consumer.next().await.expect("delivery");
@@ -693,7 +713,7 @@ async fn retryable_settlement_failure_preserves_ledger_and_allows_retry() {
         .await
         .delayed_publisher(publisher, Destination::new("jobs", "high"))
         .delay_strategy(DelayStrategy::Plugin);
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
 
@@ -747,16 +767,19 @@ async fn retryable_settlement_failure_preserves_ledger_and_allows_retry() {
 async fn consumer_tag_uses_subscription_name_without_debug_wrapper() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"job")));
-    let _consumer = ConsumerSet::spawn(vec![
-        subscription(
-            &transport,
-            "orders_high",
-            connection_key("orders_high", "/"),
-            4,
-            0,
-        )
-        .await,
-    ])
+    let _consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            subscription(
+                &transport,
+                "orders_high",
+                connection_key("orders_high", "/"),
+                4,
+                0,
+            )
+            .await,
+        ],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -795,9 +818,10 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
         )));
     }
     transport.push_delivery(Ok(delivery(1, b"job")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let_sources_fill().await;
@@ -830,9 +854,10 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
 #[tokio::test]
 async fn close_wakes_pending_next_with_a_typed_error() {
     let transport = MockTransport::default();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let waiting_consumer = consumer.clone();
@@ -852,9 +877,10 @@ async fn close_wakes_pending_next_with_a_typed_error() {
 #[tokio::test]
 async fn drop_closes_subscription_channels_without_explicit_close() {
     let transport = MockTransport::default();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -871,10 +897,13 @@ async fn drop_closes_subscription_channels_without_explicit_close() {
 #[tokio::test]
 async fn drop_closes_channels_for_multiple_subscriptions() {
     let transport = MockTransport::default();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "first", connection_key("first", "/"), 4, 0).await,
-        subscription(&transport, "second", connection_key("second", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            subscription(&transport, "first", connection_key("first", "/"), 4, 0).await,
+            subscription(&transport, "second", connection_key("second", "/"), 4, 0).await,
+        ],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -891,9 +920,10 @@ async fn drop_closes_channels_for_multiple_subscriptions() {
 #[tokio::test]
 async fn drop_does_not_double_close_when_close_was_already_called() {
     let transport = MockTransport::default();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -913,9 +943,10 @@ async fn drop_does_not_double_close_when_close_was_already_called() {
 #[tokio::test]
 async fn drop_sends_close_only_once_across_clones() {
     let transport = MockTransport::default();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -937,9 +968,10 @@ async fn drop_sends_close_only_once_across_clones() {
 #[tokio::test(start_paused = true)]
 async fn next_after_drop_returns_typed_error_not_panic() {
     let transport = MockTransport::default();
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
 
@@ -965,9 +997,10 @@ async fn next_after_drop_returns_typed_error_not_panic() {
 async fn drop_with_pending_delivery_still_closes_channels() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"job")));
-    let consumer = ConsumerSet::spawn(vec![
-        subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await,
-    ])
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0).await],
+        Metrics::default(),
+    )
     .await
     .expect("consumer set");
     let_actor_process().await;
@@ -992,7 +1025,7 @@ async fn total_prefetch_does_not_overflow_u16() {
     ];
     // 60000 + 60000 = 120000 — overflows u16 (max 65535)
     // Should not panic; buffer_size should be computed correctly
-    let consumer = ConsumerSet::spawn(subs).await;
+    let consumer = ConsumerSet::spawn_with_metrics(subs, Metrics::default()).await;
     assert!(consumer.is_ok());
     let consumer = consumer.unwrap();
     consumer.close().await.expect("close");
@@ -1006,7 +1039,9 @@ async fn settle_through_acks_contiguous_prefix() {
     transport.push_delivery(Ok(delivery(3, b"msg3")));
 
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 3, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let d1 = consumer.next().await.expect("d1");
     let d2 = consumer.next().await.expect("d2");
@@ -1043,7 +1078,9 @@ async fn settle_through_rejects_non_contiguous_prefix() {
     transport.push_delivery(Ok(delivery(3, b"msg3"))); // gap: tag 2 missing
 
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 3, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let _d1 = consumer.next().await.expect("d1"); // tag 1
     let d3 = consumer.next().await.expect("d3"); // tag 3
@@ -1070,7 +1107,9 @@ async fn try_next_batch_drains_buffer() {
     transport.push_delivery(Ok(delivery(3, b"msg3")));
 
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 3, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let_sources_fill().await;
 
@@ -1092,7 +1131,9 @@ async fn try_next_batch_returns_partial_batch_on_error() {
     transport.push_delivery(Ok(delivery(3, b"msg3")));
 
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 4, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     // Let deliveries flow into the buffer
     tokio::time::advance(Duration::from_millis(50)).await;
@@ -1131,7 +1172,9 @@ async fn flume_holds_two_prefetches_so_next_batch_fills_completely() {
     }
 
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 128, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     // Let the pumps push everything and the actor fill the flume buffer to
     // capacity before any drain.
@@ -1184,7 +1227,9 @@ async fn slow_ack_does_not_block_incoming() {
     transport.push_delivery(Ok(delivery(2, b"msg2")));
 
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let d1 = consumer.next().await.expect("delivery 1");
     // Ack d1 — with default mock, ack is fast. But the key assertion is that
@@ -1205,7 +1250,9 @@ async fn settlements_on_same_channel_are_serialized() {
     // Gate the first ack so it blocks until we release it.
     let ack_gate = transport.push_ack_gate();
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 2, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let d1 = consumer.next().await.expect("d1");
     let d2 = consumer.next().await.expect("d2");
@@ -1271,7 +1318,9 @@ async fn close_works_with_pending_settlements() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(1, b"msg1")));
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let d1 = consumer.next().await.expect("d1");
     // Don't ack — just close
@@ -1286,7 +1335,9 @@ async fn close_resolves_within_deadline_with_hanging_channel() {
     // Gate the channel close so it would hang indefinitely without a deadline.
     let _close_gate = transport.push_close_channel_gate();
     let sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let d1 = consumer.next().await.expect("d1");
     drop(d1);
@@ -1309,7 +1360,9 @@ async fn early_ack_acks_before_dispatch_to_buffer() {
 
     let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
     sub = sub.early_ack(true);
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let_sources_fill().await;
     let d = consumer.next().await.expect("delivery");
@@ -1336,7 +1389,9 @@ async fn early_ack_does_not_block_subsequent_deliveries() {
     sub = sub.early_ack(true);
     // Auto-acked deliveries must not hold back subsequent dispatches: both
     // deliveries flow through without any manual settlement.
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let_sources_fill().await;
     let d1 = consumer.next().await.expect("delivery 1");
@@ -1355,7 +1410,9 @@ async fn early_ack_delivery_settle_returns_error() {
 
     let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
     sub = sub.early_ack(true);
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let_sources_fill().await;
     let d = consumer.next().await.expect("delivery");
@@ -1390,7 +1447,9 @@ async fn early_ack_preserves_delivery_metadata() {
 
     let mut sub = subscription(&transport, "s1", connection_key("b", "/"), 1, 0).await;
     sub = sub.early_ack(true);
-    let consumer = ConsumerSet::spawn(vec![sub]).await.expect("consumer");
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
 
     let_sources_fill().await;
     let d = consumer.next().await.expect("delivery");

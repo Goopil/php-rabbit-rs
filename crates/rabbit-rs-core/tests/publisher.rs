@@ -5,6 +5,7 @@ use rabbit_rs_core::{
     config::{
         BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint, SafetyMode, TlsConfig,
     },
+    metrics::Metrics,
     publisher::{
         Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
         PublishWaiter, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
@@ -97,7 +98,12 @@ mod helper {
             .open_publisher()
             .await
             .expect("publisher");
-        PublisherActor::spawn(Arc::from(publisher), config)
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
+            Arc::from(publisher),
+            config,
+            Metrics::default(),
+            None,
+        )
     }
 
     pub async fn new_channel(transport: &MockTransport) -> Arc<dyn PublisherChannel> {
@@ -113,7 +119,12 @@ mod helper {
     }
 
     pub async fn actor_recovery(transport: &MockTransport, capacity: usize) -> PublisherHandle {
-        PublisherActor::spawn(new_channel(transport).await, config_recovery(capacity))
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
+            new_channel(transport).await,
+            config_recovery(capacity),
+            Metrics::default(),
+            None,
+        )
     }
 
     pub async fn spawn_actor_delay(
@@ -128,7 +139,12 @@ mod helper {
             .open_publisher()
             .await
             .expect("publisher");
-        PublisherActor::spawn_with_delay_strategy(Arc::from(publisher), config, delay_strategy)
+        PublisherActor::spawn_with_delay_strategy_and_metrics(
+            Arc::from(publisher),
+            config,
+            Metrics::default(),
+            Some(delay_strategy),
+        )
     }
 
     pub async fn wait_for_publish_count(transport: &MockTransport, expected: usize) {
@@ -447,7 +463,12 @@ async fn skips_enable_confirms_when_configured_off() {
         .await
         .expect("publisher");
     let config = PublisherConfig::with_flags(32, Duration::from_secs(5), false, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -476,7 +497,12 @@ async fn calls_enable_confirms_when_configured_on() {
         .await
         .expect("publisher");
     let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -505,7 +531,12 @@ async fn publishes_with_mandatory_false_when_configured_off() {
         .await
         .expect("publisher");
     let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, false);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -539,7 +570,12 @@ async fn publishes_with_mandatory_true_when_configured_on() {
         .await
         .expect("publisher");
     let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("one", b"a"))
@@ -573,7 +609,12 @@ async fn confirm_timeout_from_config_is_applied() {
         .await
         .expect("publisher");
     let config = PublisherConfig::with_flags(32, Duration::from_secs(5), true, true);
-    let actor = PublisherActor::spawn(Arc::from(publisher), config);
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        Arc::from(publisher),
+        config,
+        Metrics::default(),
+        None,
+    );
 
     let waiter = actor
         .try_publish(request_safety("slow", b"job"))
@@ -838,9 +879,11 @@ async fn unconfirmed_publish_is_replayed_identically_with_the_same_message_id() 
 async fn unconfirmed_publish_is_retained_across_connection_loss() {
     let transport = MockTransport::default();
     transport.push_pending_confirmation();
-    let actor = PublisherActor::spawn(
+    let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         new_channel(&transport).await,
         PublisherConfig::new(8, Duration::from_secs(5)),
+        Metrics::default(),
+        None,
     );
     let waiter = actor
         .try_publish(request_recovery(
@@ -1594,7 +1637,12 @@ async fn connection_event_clears_then_restores_the_blind_pump_channel() {
     let transport = MockTransport::default();
     let channel = new_channel(&transport).await;
     let config = PublisherConfig::with_safety(4, Duration::from_secs(5), SafetyMode::Blind);
-    let handle = PublisherActor::spawn(channel, config);
+    let handle = PublisherActor::spawn_with_delay_strategy_and_metrics(
+        channel,
+        config,
+        Metrics::default(),
+        None,
+    );
 
     // m1 is taken in by the pump and held pending on the gate.
     let gate = transport.push_publish_gate();

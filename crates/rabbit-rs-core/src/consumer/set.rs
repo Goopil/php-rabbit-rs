@@ -144,17 +144,6 @@ impl Subscription {
 pub struct ConsumerSet;
 
 impl ConsumerSet {
-    /// Configures all channels and starts one multiplexing actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed transport error when `QoS` or consumer registration fails.
-    pub async fn spawn(
-        subscriptions: Vec<Subscription>,
-    ) -> Result<ConsumerSetHandle, ConsumerError> {
-        Self::spawn_with_metrics(subscriptions, Metrics::default()).await
-    }
-
     /// Configures the consumer set with a metrics registry shared by its caller.
     ///
     /// # Errors

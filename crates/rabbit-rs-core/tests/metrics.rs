@@ -88,10 +88,11 @@ async fn publisher_records_accepts_confirmations_returns_and_backpressure() {
         .await
         .expect("publisher channel");
     let metrics = Metrics::default();
-    let publisher = PublisherActor::spawn_with_metrics(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
         PublisherConfig::new(1, Duration::from_secs(5)),
         metrics,
+        None,
     );
 
     let first = publisher
@@ -142,10 +143,11 @@ async fn only_ack_and_nack_are_recorded_as_confirmations() {
         .open_publisher()
         .await
         .expect("publisher channel");
-    let publisher = PublisherActor::spawn_with_metrics(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
         PublisherConfig::new(1, Duration::from_secs(5)),
         Metrics::default(),
+        None,
     );
 
     let nack = publisher
@@ -303,10 +305,11 @@ async fn concurrent_snapshots_do_not_prevent_publisher_progress() {
         .await
         .expect("publisher channel");
     let metrics = Metrics::default();
-    let publisher = PublisherActor::spawn_with_metrics(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
         PublisherConfig::new(MESSAGE_COUNT, Duration::from_secs(5)),
         metrics.clone(),
+        None,
     );
     let snapshot_reader = std::thread::spawn(move || {
         let mut latest = metrics.snapshot();

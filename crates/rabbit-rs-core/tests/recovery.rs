@@ -5,6 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use rabbit_rs_core::metrics::Metrics;
 use rabbit_rs_core::{
     client::ClientPool,
     config::{
@@ -16,7 +17,10 @@ use rabbit_rs_core::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest, PublisherConfig},
-    recovery::{Clock, ConnectionState, IdentityJitter, JitterSource, RecoveryPolicy},
+    recovery::{
+        Clock, ConnectionState, EqualJitter, IdentityJitter, JitterSource, RecoveryPolicy,
+        TokioClock,
+    },
     topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{
         PublishConfirmation, QueueKind, Transport, TransportError, TransportErrorKind,
@@ -505,7 +509,14 @@ async fn recovery_failure_rolls_back_and_retries() {
 #[tokio::test(start_paused = true)]
 async fn transitions_from_disconnected_through_connecting_to_ready() {
     let transport = Arc::new(MockTransport::default());
-    let actor = ConnectionActor::spawn(transport, broker(), RecoveryPolicy::default());
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
+        transport,
+        broker(),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        Metrics::default(),
+    );
     let mut states = actor.subscribe();
 
     assert_eq!(*states.borrow(), ConnectionState::Disconnected);
@@ -531,12 +542,13 @@ async fn retries_with_100_200_and_400_millisecond_backoff() {
         ))));
     }
     let clock = Arc::new(RecordingClock::default());
-    let actor = ConnectionActor::spawn_with_dependencies(
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
         broker(),
         RecoveryPolicy::default(),
         clock.clone(),
         Arc::new(IdentityJitter),
+        Metrics::default(),
     );
     let mut states = actor.subscribe();
 
@@ -598,12 +610,13 @@ fn exponential_backoff_is_capped_at_30_seconds() {
 async fn injected_jitter_controls_the_observed_retry_delay() {
     let transport = Arc::new(MockTransport::default());
     transport.push_connect_result(Err(TransportError::connection("offline")));
-    let actor = ConnectionActor::spawn_with_dependencies(
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
         broker(),
         RecoveryPolicy::default(),
         Arc::new(RecordingClock::default()),
         Arc::new(AdditiveJitter(Duration::from_millis(25))),
+        Metrics::default(),
     );
     let mut states = actor.subscribe();
 
@@ -624,7 +637,14 @@ async fn injected_jitter_controls_the_observed_retry_delay() {
 async fn authentication_failure_is_permanent() {
     let transport = Arc::new(MockTransport::default());
     transport.push_connect_result(Err(TransportError::authentication("access refused")));
-    let actor = ConnectionActor::spawn(transport, broker(), RecoveryPolicy::default());
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
+        transport,
+        broker(),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        Metrics::default(),
+    );
     let mut states = actor.subscribe();
 
     actor.start().await.expect("start command");
@@ -645,12 +665,13 @@ async fn authentication_failure_is_permanent() {
 #[tokio::test(start_paused = true)]
 async fn ready_connection_loss_enters_recovery() {
     let transport = Arc::new(MockTransport::default());
-    let actor = ConnectionActor::spawn_with_dependencies(
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
         broker(),
         RecoveryPolicy::default(),
         Arc::new(RecordingClock::default()),
         Arc::new(IdentityJitter),
+        Metrics::default(),
     );
     let mut states = actor.subscribe();
     actor.start().await.expect("start command");
@@ -682,7 +703,14 @@ async fn ready_connection_loss_enters_recovery() {
 async fn close_interrupts_an_active_backoff() {
     let transport = Arc::new(MockTransport::default());
     transport.push_connect_result(Err(TransportError::connection("offline")));
-    let actor = ConnectionActor::spawn(transport, broker(), RecoveryPolicy::default());
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
+        transport,
+        broker(),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        Metrics::default(),
+    );
     let mut states = actor.subscribe();
     actor.start().await.expect("start command");
     wait_for_actor(&mut states, |state| {
@@ -698,12 +726,13 @@ async fn close_interrupts_an_active_backoff() {
 #[tokio::test(start_paused = true)]
 async fn generation_increments_after_successful_recovery() {
     let transport = Arc::new(MockTransport::default());
-    let actor = ConnectionActor::spawn_with_dependencies(
+    let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
         transport,
         broker(),
         RecoveryPolicy::default(),
         Arc::new(RecordingClock::default()),
         Arc::new(IdentityJitter),
+        Metrics::default(),
     );
     let mut states = actor.subscribe();
     actor.start().await.expect("start command");

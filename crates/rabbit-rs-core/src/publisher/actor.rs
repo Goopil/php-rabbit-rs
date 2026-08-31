@@ -31,42 +31,18 @@ use super::{
 pub struct PublisherActor;
 
 impl PublisherActor {
-    #[must_use]
-    pub fn spawn(channel: Arc<dyn PublisherChannel>, config: PublisherConfig) -> PublisherHandle {
-        Self::spawn_with_metrics(channel, config, Metrics::default())
-    }
-
-    #[must_use]
-    pub fn spawn_with_metrics(
-        channel: Arc<dyn PublisherChannel>,
-        config: PublisherConfig,
-        metrics: Metrics,
-    ) -> PublisherHandle {
-        Self::spawn_inner(channel, config, metrics, None)
-    }
-
-    /// Spawns the actor with delay routing enabled.
+    /// Spawns the actor with delay routing and shared metrics.
     ///
     /// When `delay_strategy` is `Some`, the actor routes messages with `delay_ms > 0`
     /// through the `DelayRouter` before publishing.
-    #[must_use]
-    pub fn spawn_with_delay_strategy(
-        channel: Arc<dyn PublisherChannel>,
-        config: PublisherConfig,
-        delay_strategy: DelayStrategy,
-    ) -> PublisherHandle {
-        Self::spawn_inner(channel, config, Metrics::default(), Some(delay_strategy))
-    }
-
-    /// Spawns the actor with delay routing and shared metrics.
     #[must_use]
     pub fn spawn_with_delay_strategy_and_metrics(
         channel: Arc<dyn PublisherChannel>,
         config: PublisherConfig,
         metrics: Metrics,
-        delay_strategy: DelayStrategy,
+        delay_strategy: Option<DelayStrategy>,
     ) -> PublisherHandle {
-        Self::spawn_inner(channel, config, metrics, Some(delay_strategy))
+        Self::spawn_inner(channel, config, metrics, delay_strategy)
     }
 
     /// A handle whose blind publish pump is already closed (intake receiver

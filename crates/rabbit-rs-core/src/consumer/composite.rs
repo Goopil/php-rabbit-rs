@@ -483,6 +483,7 @@ mod tests {
         consumer::{
             ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionPolicy,
         },
+        metrics::Metrics,
         pool::ConnectionKey,
         transport::{
             Delivery as TransportDelivery, QueueKind, Transport, TransportError,
@@ -556,14 +557,16 @@ mod tests {
         first.push_delivery(Ok(delivery(1, b"from-first")));
         second.push_delivery(Ok(delivery(1, b"from-second")));
 
-        let left = ConsumerSet::spawn(vec![
-            subscription(&first, "jobs-first", connection_key("first")).await,
-        ])
+        let left = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&first, "jobs-first", connection_key("first")).await],
+            Metrics::default(),
+        )
         .await
         .expect("first source set");
-        let right = ConsumerSet::spawn(vec![
-            subscription(&second, "jobs-second", connection_key("second")).await,
-        ])
+        let right = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&second, "jobs-second", connection_key("second")).await],
+            Metrics::default(),
+        )
         .await
         .expect("second source set");
 
@@ -672,14 +675,16 @@ mod tests {
         second.push_delivery(Ok(delivery(1, b"from-second-1")));
         second.push_delivery(Ok(delivery(2, b"from-second-2")));
 
-        let left = ConsumerSet::spawn(vec![
-            subscription(&first, "jobs-first", connection_key("first")).await,
-        ])
+        let left = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&first, "jobs-first", connection_key("first")).await],
+            Metrics::default(),
+        )
         .await
         .expect("first source set");
-        let right = ConsumerSet::spawn(vec![
-            subscription(&second, "jobs-second", connection_key("second")).await,
-        ])
+        let right = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&second, "jobs-second", connection_key("second")).await],
+            Metrics::default(),
+        )
         .await
         .expect("second source set");
         let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
@@ -771,14 +776,16 @@ mod tests {
         first.push_delivery(Ok(delivery(1, b"from-first")));
         second.push_delivery(Ok(delivery(1, b"from-second")));
 
-        let left = ConsumerSet::spawn(vec![
-            subscription(&first, "jobs-first", connection_key("first")).await,
-        ])
+        let left = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&first, "jobs-first", connection_key("first")).await],
+            Metrics::default(),
+        )
         .await
         .expect("first source set");
-        let right = ConsumerSet::spawn(vec![
-            subscription(&second, "jobs-second", connection_key("second")).await,
-        ])
+        let right = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&second, "jobs-second", connection_key("second")).await],
+            Metrics::default(),
+        )
         .await
         .expect("second source set");
         let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
@@ -830,14 +837,16 @@ mod tests {
         first.push_delivery(Ok(delivery(1, b"from-first")));
         second.push_delivery(Ok(delivery(1, b"from-second")));
 
-        let left = ConsumerSet::spawn(vec![
-            subscription(&first, "jobs-first", connection_key("first")).await,
-        ])
+        let left = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&first, "jobs-first", connection_key("first")).await],
+            Metrics::default(),
+        )
         .await
         .expect("first source set");
-        let right = ConsumerSet::spawn(vec![
-            subscription(&second, "jobs-second", connection_key("second")).await,
-        ])
+        let right = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&second, "jobs-second", connection_key("second")).await],
+            Metrics::default(),
+        )
         .await
         .expect("second source set");
         let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
@@ -892,14 +901,16 @@ mod tests {
         }
         first.push_delivery(Ok(delivery(1, b"from-first")));
 
-        let left = ConsumerSet::spawn(vec![
-            subscription(&first, "jobs-first", connection_key("first")).await,
-        ])
+        let left = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&first, "jobs-first", connection_key("first")).await],
+            Metrics::default(),
+        )
         .await
         .expect("first source set");
-        let right = ConsumerSet::spawn(vec![
-            subscription(&second, "jobs-second", connection_key("second")).await,
-        ])
+        let right = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&second, "jobs-second", connection_key("second")).await],
+            Metrics::default(),
+        )
         .await
         .expect("second source set");
         let consumer = super::ConsumerHandle::from_sources(vec![left, right]);

@@ -108,28 +108,12 @@ impl RecoveryCoordinator {
         transport: &Arc<dyn Transport>,
         config: RecoveryCoordinatorConfig,
     ) -> RecoveryCoordinatorHandle {
-        Self::spawn_with_dependencies(
-            transport,
-            config,
-            Arc::new(crate::recovery::TokioClock),
-            Arc::new(crate::recovery::EqualJitter),
-        )
-    }
-
-    /// Spawns a coordinator with deterministic time and jitter dependencies.
-    #[must_use]
-    pub fn spawn_with_dependencies(
-        transport: &Arc<dyn Transport>,
-        config: RecoveryCoordinatorConfig,
-        clock: Arc<dyn crate::recovery::Clock>,
-        jitter: Arc<dyn crate::recovery::JitterSource>,
-    ) -> RecoveryCoordinatorHandle {
         let actor = ConnectionActor::spawn_with_dependencies_and_metrics(
             transport.clone(),
             config.broker.clone(),
             config.policy,
-            clock,
-            jitter,
+            Arc::new(crate::recovery::TokioClock),
+            Arc::new(crate::recovery::EqualJitter),
             config.metrics.clone(),
         );
 
@@ -477,7 +461,7 @@ async fn recover_generation(
             publisher_channel.clone(),
             context.publisher_config,
             context.metrics.clone(),
-            delay_strategy,
+            Some(delay_strategy),
         );
         *pub_guard = Some(handle);
     }

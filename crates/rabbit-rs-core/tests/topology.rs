@@ -11,6 +11,7 @@ use rabbit_rs_core::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
         Subscription,
     },
+    metrics::Metrics,
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig},
     topology::{
@@ -1065,7 +1066,7 @@ async fn broker_message_id_is_preserved_as_delivery_id() {
         "jobs",
         Arc::from(consumer_channel),
     );
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
@@ -1101,7 +1102,7 @@ async fn missing_broker_message_id_falls_back_to_synthetic_id() {
         "jobs",
         Arc::from(consumer_channel),
     );
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
@@ -1146,9 +1147,11 @@ async fn delayed_release_increments_the_application_attempt_header() {
         .open_publisher()
         .await
         .expect("publisher channel");
-    let publisher = PublisherActor::spawn(
+    let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher_channel),
         PublisherConfig::new(8, Duration::from_secs(5)),
+        Metrics::default(),
+        None,
     );
     let subscription = Subscription::new(
         "jobs",
@@ -1158,7 +1161,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
     )
     .delayed_publisher(publisher, Destination::new("jobs", "high"))
     .delay_strategy(rabbit_rs_core::topology::delay::DelayStrategy::Plugin);
-    let consumer = ConsumerSet::spawn(vec![subscription])
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
         .await
         .expect("consumer set");
     let delivery = consumer.next().await.expect("delivery");
