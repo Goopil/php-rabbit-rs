@@ -183,13 +183,7 @@ class AmqpExtDriver extends AbstractBenchmark
 
             $body = $envelope->getBody();
             $this->recordReceived($envelope->getMessageId() ?? '');
-            if (strlen($body) >= 8) {
-                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
-                }
-            }
+            $this->recordLatencyFromPayload($body);
             $this->consQueue->ack($envelope->getDeliveryTag());
             $consumed++;
         }
@@ -200,13 +194,7 @@ class AmqpExtDriver extends AbstractBenchmark
         return function (\AMQPEnvelope $envelope, \AMQPQueue $q) use ($count, &$consumed, $autoAck, $consumerTag): bool {
             $body = $envelope->getBody();
             $this->recordReceived($envelope->getMessageId() ?? '');
-            if (strlen($body) >= 8) {
-                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
-                }
-            }
+            $this->recordLatencyFromPayload($body);
             $consumed++;
             if (!$autoAck) {
                 $q->ack($envelope->getDeliveryTag());

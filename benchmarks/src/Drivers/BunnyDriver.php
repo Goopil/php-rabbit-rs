@@ -156,13 +156,7 @@ class BunnyDriver extends AbstractBenchmark
         return function ($message) use ($count, &$consumed, $autoAck, $channel, $consumerTag, $client): void {
             $body = $message->content;
             $this->recordReceived($message->getHeader('message-id', ''));
-            if (strlen($body) >= 8) {
-                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
-                }
-            }
+            $this->recordLatencyFromPayload($body);
             $consumed++;
             if (!$autoAck) {
                 $channel->ack($message);
@@ -192,13 +186,7 @@ class BunnyDriver extends AbstractBenchmark
 
             $body = $message->content;
             $this->recordReceived($message->getHeader('message-id', ''));
-            if (strlen($body) >= 8) {
-                $ts = unpack('P', substr($body, 0, 8))[1] ?? null;
-                if ($ts !== null) {
-                    $elapsedNs = hrtime(true) - (int) $ts;
-                    $this->recordLatency($elapsedNs / 1_000_000);
-                }
-            }
+            $this->recordLatencyFromPayload($body);
             $this->channel->ack($message);
             $consumed++;
         }

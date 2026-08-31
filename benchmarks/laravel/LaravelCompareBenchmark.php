@@ -103,7 +103,7 @@ class LaravelCompareBenchmark extends AbstractBenchmark
                             'username' => 'rabbit_rs',
                             'password' => 'rabbit_rs_lab',
                         ],
-                        'tls' => ['enabled' => false, 'server_name' => null],
+                        'tls' => ['enabled' => false],
                         'heartbeat' => 30,
                     ],
                 ],

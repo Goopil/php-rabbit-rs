@@ -5,31 +5,51 @@ declare(strict_types=1);
 
 const BASE_DIR = __DIR__ . '/..';
 
-spl_autoload_register(static function (string $class): void {
-    $prefixes = [
-        'Bench\\Drivers\\' => BASE_DIR . '/src/Drivers/',
-        'Bench\\Scenarios\\' => BASE_DIR . '/src/Scenarios/',
-        'Bench\\' => BASE_DIR . '/src/',
-    ];
-    foreach ($prefixes as $prefix => $base) {
-        if (str_starts_with($class, $prefix)) {
-            $relative = substr($class, strlen($prefix));
-            $file = $base . str_replace('\\', '/', $relative) . '.php';
-            if (is_file($file)) {
-                require_once $file;
-            }
-            return;
-        }
-    }
-});
+require_once BASE_DIR . '/vendor/autoload.php';
 
-if (is_file(BASE_DIR . '/vendor/autoload.php')) {
-    require_once BASE_DIR . '/vendor/autoload.php';
-}
-
+use Bench\AbstractBenchmark;
 use Bench\Budget;
 use Bench\Config;
 use Bench\Drivers;
+use Bench\ScenarioMode;
+
+/**
+ * Wraps a driver in the scenario decorator previously provided by the
+ * Bench\Scenarios classes: applies the scenario mode, the optional payload
+ * size override, and a labelled name, then delegates everything else.
+ */
+function decorate_scenario(
+    AbstractBenchmark $driver,
+    string $mode,
+    string $label,
+    ?int $payloadBytes = null,
+): AbstractBenchmark {
+    return new class($driver, $mode, $label, $payloadBytes) extends AbstractBenchmark {
+        public function __construct(
+            private readonly AbstractBenchmark $driver,
+            string $mode,
+            private readonly string $label,
+            ?int $payloadBytes,
+        ) {
+            $driver->setScenarioMode($mode);
+            if ($payloadBytes !== null) {
+                $driver->payloadBytes = $payloadBytes;
+            }
+        }
+
+        public function getName(): string
+        {
+            return $this->driver->getName() . " ({$this->label})";
+        }
+
+        public function setUp(): void { $this->driver->setUp(); }
+        public function tearDown(): void { $this->driver->tearDown(); }
+        public function publishMessages(int $count): void { $this->driver->publishMessages($count); }
+        public function consumeMessages(int $count): void { $this->driver->consumeMessages($count); }
+        public function purgeQueue(): void { $this->driver->purgeQueue(); }
+        public function runBenchmark(): array { return $this->driver->runBenchmark(); }
+    };
+}
 
 $scenarioFilter = null;
 $driverFilter = null;
@@ -58,11 +78,11 @@ if (class_exists(\Bunny\Client::class)) {
 }
 
 $scenarios = [
-    'fire-and-forget' => \Bench\Scenarios\FireAndForgetBenchmark::class,
-    'batch-confirm' => \Bench\Scenarios\BatchConfirmBenchmark::class,
-    'auto-ack' => \Bench\Scenarios\AutoAckBenchmark::class,
-    'laravel-dispatch' => \Bench\Scenarios\LaravelDispatchBenchmark::class,
-    'laravel-worker' => \Bench\Scenarios\LaravelWorkerBenchmark::class,
+    'fire-and-forget' => ScenarioMode::FIRE_AND_FORGET,
+    'batch-confirm' => ScenarioMode::BATCH_CONFIRM,
+    'auto-ack' => ScenarioMode::AUTO_ACK,
+    'laravel-dispatch' => ScenarioMode::LARAVEL_DISPATCH,
+    'laravel-worker' => ScenarioMode::LARAVEL_WORKER,
 ];
 
 $budgetPath = __DIR__ . '/../baselines/smoke-budget.json';
@@ -95,7 +115,7 @@ if (!$brokerReady) {
     exit(1);
 }
 
-foreach ($scenarios as $scenarioName => $scenarioClass) {
+foreach ($scenarios as $scenarioName => $scenarioMode) {
     if ($scenarioFilter !== null && $scenarioName !== $scenarioFilter) {
         continue;
     }
@@ -109,7 +129,10 @@ foreach ($scenarios as $scenarioName => $scenarioClass) {
 
         try {
             $driver = new $driverClass();
-            $benchmark = new $scenarioClass($driver);
+            $payloadBytes = str_starts_with($scenarioName, 'laravel-')
+                ? Config::MESSAGE_PAYLOAD_LARAVEL_BYTES
+                : null;
+            $benchmark = decorate_scenario($driver, $scenarioMode, $scenarioName, $payloadBytes);
             $benchmark->setUp();
             $stats = $benchmark->runBenchmark();
             $benchmark->tearDown();
