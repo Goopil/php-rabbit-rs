@@ -4,6 +4,10 @@ Running trace of upcoming work. When a round starts it gets a full dated plan in
 `docs/plans/`; this file keeps the queue, motivation, scope, and success criteria so
 nothing is lost between rounds.
 
+Ground rule: every user-facing feature ships with a runnable usage example in
+its matching docs page as part of its issue's success criteria — examples land
+with the feature, never in a later docs pass.
+
 ## Landed
 
 - Native design + implementation plans (2026-07-30) — milestone details live there.
@@ -28,6 +32,13 @@ nothing is lost between rounds.
   production-readiness issues closed on 2026-08-31 (Round 2 fixes, publish
   buffer bound, consumer deadline, Horizon after-commit, ClearableQueue,
   lazy establishment, events bridge, TLS loud failures).
+- **Technical audit (2026-08-31)** — `docs/audits/2026-08-31-technical-audit.md`:
+  7 passes (architecture, 5 parallel adversarial passes, red team, per-finding
+  verification), 40 consolidated findings, every cited location re-verified at
+  `b06b62f`. Headline: connection-loss detection has no production trigger
+  (P0), CI never runs a real-broker test, plus a family of
+  suspension-without-wake-up and silent-loss paths. Findings split into
+  Round G below.
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -174,6 +185,118 @@ Success criteria: all plan tasks green (tasks 1–7, 9–20), full quality gate,
 benchmark regression against the frozen budgets, `pie install` validated on a real
 release.
 
+## Round G — audit hardening (audit 2026-08-31, tasks 21–37)
+
+Motivation: full technical audit of 2026-08-31 (see Landed). Findings not already
+covered by Round F were split into 17 issues (#66–#82) organized as **7 file-disjoint
+parallel tracks** — maximum concurrency, minimal interference; sequence only within a
+track. Strategy decision (2026-08-31): **stabilize before features** — Round G contains
+no features; post-1.0 feature ideas are parked below.
+
+### G0 — P0/P1 (delivery contract & availability)
+
+21. **[P0][core] Transport liveness** (#66) — connection loss is never detected:
+    the connection actor only listens to commands, `TransportConnection` has no
+    error surface, lapin runs with `auto_recover = false`, consumer streams end
+    silently. A routine broker restart stops consumption and bricks publishing
+    in every PHP process until restart. Fix: transport liveness signal →
+    `connection_lost`, stream termination as a trigger, recovery-failure counter.
+22. **[P1][core] Publisher wake-up** (#67) — swallowed `Ready` event errors and
+    `delay.mode=auto` (= plugin) suspending the publisher forever on a declare
+    failure. Fix: propagate errors (generation rollback), probe the plugin in
+    auto mode, never suspend for one message's topology failure.
+23. **[P1][laravel][core] Consumer re-join** (#68) — one-shot `SourceReplaced`
+    + PHP consumer cache never evicted: workers stop consuming after every
+    recovery. Fix: evict on `SourceReplaced`/`Closed`. Depends on 21.
+24. **[P1][ci] CI runs the real thing** (#69) — `--features integration` in CI
+    (suites are currently compiled out while the lab boots), Laravel
+    integration suite wired, `|| true` removed from coverage, PHPT scenarios
+    committed and wired. Pairs with Round C (#40).
+25. **[P1][core] Poison messages settle terminally** (#70) — attempts cap
+    fabrication, capped delayed-release hot loop, unmarshable payload never
+    settled. Fix: configurable `max_attempts`, terminal settlement
+    (`reject(requeue=false)` → DLX). Complements #48.
+26. **[P1][core] Consumer bounds** (#71) — unbounded `pending_incoming` under
+    `no_ack` (documented guard never validated) + lossy `Drop` close.
+27. **[P1][core] DLQ bindings** (#72) — bindings lost for the 2nd+ subscription
+    sharing a DLQ with per-source routing keys → silent poison loss.
+28. **[P1][core] Delay validation** (#73) — delay > max TTL bucket currently
+    publishes immediately (route error swallowed); validate at the boundary.
+29. **[P1][laravel] Supervisor clean exits** (#74) — `--max-jobs` recycling
+    burns restart budget and stops the fleet after `--max-restarts`.
+
+### G1 — P2 hardening (parallel with G0 except where noted)
+
+30. **[P2][php-ext] Event callbacks** (#75) — callback exceptions destroyed,
+    single-slot theft, drain starvation on the `next()` fast path.
+31. **[P2][php-ext] Boundary correctness pack** (#76) — debug-only key
+    validation, `ackBatch` side effects, dropped array/table headers, teardown
+    flush budget + silent drops counter.
+32. **[P2][core] Admin ops through recovery** (#77) — `size`/`purge` cache a
+    raw connection forever; second AMQP connection per vhost.
+33. **[P2][core] Executable config surface** (#78) — dead `mandatory` flag
+    honored-or-rejected; `confirm_timeout: 0` / `heartbeat: 0` rejected.
+34. **[P2][core] Delay queue identity + GC** (#79) — args not in the queue
+    name (406 storms on rolling config changes); no GC of synthesized queues.
+35. **[P2][laravel] Config lifecycle** (#80) — boot-time normalization blast
+    radius; Octane reload keeps stale normalized config.
+36. **[P2][laravel] Cross-process duplicates monitoring** (#81) — status
+    command reports zeros; needs an exporter or management-API aggregation.
+    After #50.
+37. **[P3][ops] Hygiene pack** (#82) — dependabot lock, `cargo deny` in
+    `check.sh`, nextest retries=0, llvm-from-rustup, coverage-laravel
+    extension loading, lab-leak trap, bash-3.2 compat, `symfony/process`,
+    dead code, test leftovers.
+
+Success criteria: each issue is TDD per the ground rules; the Round G exit
+criterion is the audit's P0/P1 list at zero, with the CI truth issue (#69)
+proving fixes against a real broker.
+
+## Round H — connection-first Laravel config (DX, spec 2026-08-31)
+
+Motivation: two config homes (`queue.php` thin vs a 429-line `rabbit-rs.php`
+with three hand-linked namespaces), boot-time normalization blast radius
+(audit F-27/F-28). Full approved spec:
+`docs/superpowers/specs/2026-08-31-laravel-config-redesign-design.md`.
+
+Scope: one config home in `queue.connections.*` (SQS/redis idiom; multi-broker
+= multiple connections); `config/rabbit-rs.php` becomes ~40 lines of
+cross-cutting defaults; `ConnectionCompiler` replaces `ConfigNormalizer` and
+normalizes lazily per connection at `connect()` — **absorbs #80** by
+construction; env strings accepted and cast inside; dead knobs dropped from
+the published surface (complements #78 on the core side); work profile =
+connection name; multi-consumer via standard `queue:work` unchanged
+(per-process pools, per-channel consumer tags — verified collision-safe).
+Competitor takeaways kept: `connection_name` (management UI label),
+env-string casting responsibility inside the driver. Rejected from competitor
+surfaces: pool knobs, AMQP transactions, failed dual-sink, poll/consume modes.
+
+Success criteria: compiler unit tests (defaults merge, env strings, escape
+hatch, exact error paths); two-connection integration test on the lab;
+`config/rabbit-rs.php` ≤ 50 lines; runnable config examples in
+`docs/configuration.md` (single broker, multi-broker, env strings) plus an
+updated README quickstart; CHANGELOG v0.1.0 breaking entry. Core and
+extension untouched.
+
+Companion (from the 2026-08-31 competitor survey, #84): **`rabbit-rs:topology`**
+preflight command — verifies the compiled topology plan against the broker
+(exchanges/queues/bindings/arguments), prints actionable gaps, exit 1 for CI/CD
+deploy gates; `--fix` declares missing parts; doctor checks (extension loaded,
+per-connection config compiles) included. Sequenced with the config redesign
+since it reads the connection-first config.
+
+Companion (design validated 2026-08-31, #85): **Kubernetes probes** — the
+worker exports its state to a per-PID JSON statefile (~1s heartbeat, atomic
+rename) in `storage/framework/rabbit-rs/probes/`; exec probes run in separate
+processes, so the file is the only cheap channel (Horizon precedent).
+`rabbit-rs:probe {startup|ready|alive|prestop}` reads it: `alive` = freshness
+only (never the broker — restart-storm trap), `ready` = fresh + `connected`
+(worker-side ~30s hysteresis), `startup` = boot complete, `prestop` = SIGTERM
+to workers + bounded wait for drain. Hook point: `RabbitRsProbeEvaluated`
+event with mutable `verdict` (maintenance mode, external flags). Sequenced
+after Round G Track A (#66–#68): readiness needs the worker to know its real
+connection state.
+
 ## Round C — local integration harness reliability
 
 Motivation: 8 Laravel integration tests fail on this machine for pre-existing,
@@ -232,12 +355,76 @@ Success criteria: full quality gate green; deterministic paused-time tests prove
 QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
 (regression tests).
 
-## Order of execution (agreed 2026-08-30)
+## Order of execution (agreed 2026-08-30, updated 2026-08-31)
 
-Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
-Round F1 → Round C (local harness, unblocks local validation of everything after) →
-Round F2 → Round E → Round D. The PIE validation (Round F2 item 12) can start in
-parallel from F1 onward because it only depends on a release cycle, not on code.
+~~Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
+Round F1 → Round C → Round F2 → Round E → Round D~~ — Round 2 and Round F are
+landed (v0.0.8).
+
+Current queue (agreed 2026-08-31, stabilization before features):
+
+**Round C (#40)** and **Round G tracks A/B/C/D/E/F/G (#66–#82)** run
+concurrently — tracks are file-disjoint. Inside Round G: #66 (P0) first, then
+its track; Track B starts immediately in parallel; #69 pairs with #40. F2/F3
+leftovers (#50, #52, #53, #56, #58, #60) fill capacity. Round E (#42) and
+Round D (#41) stay post-1.0 performance work; #81 waits on #50.
+
+Conflict points between tracks (rebase or sequence): #66 ↔ #71 share
+`consumer/set.rs`; #67 ↔ #73 ↔ #76 share `publisher/actor.rs` /
+`conversion.rs`.
+
+1.0 gate (agreed 2026-08-31): **1.0 = Round G exit + Round H landed.** The
+Round G exit criterion is the audit's P0/P1 list at zero, with #69 proving
+fixes against a real broker; Round H (v0.1.0, connection-first config) ships
+the last breaking change before the tag. No breaking changes after 1.0 —
+features (realtime stack, multi-framework adapters) come after.
+
+## Post-1.0 feature ideas (parked — recorded so nothing is lost)
+
+From the native design ("Planned evolutions") and review discussions. None of
+this starts before the Round G stabilization exit criterion.
+
+- **Prometheus / OpenTelemetry exporters** — required by #81 (cross-process
+  duplicates monitoring); design the metrics surface once, export twice.
+- **Multiprocess `rabbit-rs:work`** (design milestone 2) — supervisor already
+  exists (WorkerSupervisor); the remaining scope is advanced subscription
+  selection and multiprocess mode on top of it.
+- **Adaptive prefetch** — Round E (#42), design and plan already approved.
+- **Additional routing and failover strategies** (host selection beyond the
+  current list rotation).
+- **Alternative AMQP backend** — only if Round D profiles justify it; the
+  `Transport` abstraction keeps this cheap.
+- **RabbitMQ Streams support** — distinct product if a real need appears
+  (design decision, out of the core crate).
+- **Per-queue publish safety inside one connection** — see Parked below;
+  arbitrate alongside Round D.
+- **Symfony Messenger transport (or other-framework adapters)** — thin
+  adapter over the extension mirroring the connection-first config surface;
+  only after Laravel consolidation (Round H) and 1.0, and after the
+  extension boundary hardening (#75, #76).
+
+### Realtime stack (2026-08-31) — suggested order 1 → 2 → 3 (each builds on the previous)
+
+1. **Request/reply (RPC) integrated up to Laravel** — typed
+   `RabbitMqRpc::call(queue, payload, timeout)` on the AMQP direct reply-to
+   pattern (`amq.rabbitmq.reply-to` pseudo-queue): core gets `reply_to` support
+   (`correlation_id` already exists in `MessageProperties`), the extension gets
+   a blocking-with-deadline call API, Laravel gets a handler API that answers
+   on the reply queue. Semantics differ from the queue contract — calls are
+   at-most-once with a typed timeout error; document the broker-restart
+   behavior explicitly. Foundation for the two items below (replies ride it).
+2. **Pusher-style front client over MQTT** — browser client (Pusher-like
+   ergonomics) speaking MQTT over WebSocket through RabbitMQ's `rabbitmq_mqtt`
+   plugin: front → MQTT → RabbitMQ → Laravel consumers, and back via publish.
+   Scope notes: auth story (per-user credentials from a signed endpoint),
+   MQTT QoS 0/1 vs the at-least-once contract, topic↔exchange mapping, small
+   JS client library, `rabbitmq_mqtt` lab profile.
+3. **Laravel Echo compatibility layer** — a server speaking enough of the
+   Pusher protocol for `laravel-echo` (private/presence channels, signed auth
+   endpoint) on top of the MQTT bridge, with channels mapped to
+   queues/topics; reuse Laravel's broadcast auth conventions. Depends on 2.
+
+- *(slot reserved — add new ideas here with a date and one-line motivation.)*
 
 ## Parked (no round yet)
 
@@ -262,6 +449,17 @@ parallel from F1 onward because it only depends on a release cycle, not on code.
   `try_publish_hot` is a pure passthrough of `try_publish` (the announced hot path
   does not exist yet); `frame_max = 1 MiB` is hardcoded in `transport/lapin.rs`;
   AGENTS.md says 6 core test files but 8 exist (blind_pump, transport_tuning).
+- **Release ordering vs design doc (documented trade-off, audit F-26)**: the
+  design doc wants the release published only after all gates; `verify-pie-install`
+  runs after `publish-release` because PIE 1.4.10 cannot resolve draft releases —
+  the verification still gates Homebrew + the Laravel split. Revisit the DAG when
+  PIE supports draft resolution.
+- **Micro-optimizations (audit F-38), unscheduled**: dead `exchange`/`routing_key`
+  copies per delivery, scheduler O(n²) `contains` + per-dispatch alloc (largely
+  superseded by Round E's scheduler rework), O(n) replay-deadline scan while
+  suspended, double property clones, `flush_batch` deep clones, `early_ack`
+  spawn-per-message, per-publish `EventBridge::drain` without callbacks. Each
+  sub-µs to µs — do only with a profile, after #41.
 
 ## Housekeeping (owner actions)
 
