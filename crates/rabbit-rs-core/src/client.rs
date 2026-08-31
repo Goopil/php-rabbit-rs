@@ -14,12 +14,15 @@ use crate::{
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
         PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
-        PublisherActor, PublisherConfig, PublisherHandle,
+        PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
     topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{Transport, TransportConnection, TransportError, lapin::LapinTransport},
 };
+
+#[cfg(any(test, feature = "test-support"))]
+use crate::publisher::PublisherActor;
 
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
 
