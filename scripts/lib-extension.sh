@@ -170,10 +170,12 @@ _ext_warn_stale_debug() {
     } >&2
 }
 
-# Print the modification time of a file as epoch seconds (portable across
-# BSD and GNU userlands; echoes 0 when it cannot be determined).
+# Print the modification time of a file as epoch seconds (GNU userland first,
+# then BSD/macOS; echoes 0 when it cannot be determined). The GNU test must
+# come first: `stat -f` on GNU means "filesystem status", which would succeed
+# with unrelated output instead of falling through.
 _ext_file_mtime() {
-    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || echo 0
 }
 
 # Format an epoch timestamp as UTC ISO-8601 (BSD date first, then GNU date,
