@@ -43,6 +43,7 @@ impl Metrics {
             acks_total: load(&self.inner.acks_total),
             rejects_total: load(&self.inner.rejects_total),
             reconnects_total: load(&self.inner.reconnects_total),
+            recovery_failures_total: load(&self.inner.recovery_failures_total),
             backpressure_total: load(&self.inner.backpressure_total),
             confirmation_latency: self.inner.confirmation_latency.snapshot(),
             settlement_latency: self.inner.settlement_latency.snapshot(),
@@ -80,6 +81,10 @@ impl Metrics {
         increment(&self.inner.reconnects_total);
     }
 
+    pub(crate) fn record_recovery_failure(&self) {
+        increment(&self.inner.recovery_failures_total);
+    }
+
     pub(crate) fn record_backpressure(&self) {
         increment(&self.inner.backpressure_total);
     }
@@ -100,6 +105,7 @@ struct MetricsInner {
     acks_total: AtomicU64,
     rejects_total: AtomicU64,
     reconnects_total: AtomicU64,
+    recovery_failures_total: AtomicU64,
     backpressure_total: AtomicU64,
     confirmation_latency: AtomicHistogram,
     settlement_latency: AtomicHistogram,
@@ -122,6 +128,8 @@ pub struct MetricsSnapshot {
     pub rejects_total: u64,
     /// Successful connections established after the initial connection.
     pub reconnects_total: u64,
+    /// Recovery generations that failed and were rolled back for a retry.
+    pub recovery_failures_total: u64,
     /// Publications rejected before acceptance because capacity was exhausted.
     pub backpressure_total: u64,
     /// End-to-end latency from publication acceptance to broker confirmation.

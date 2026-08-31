@@ -14,6 +14,7 @@ use crate::{
     config::{BrokerConfig, ValidatedConfig},
     consumer::{ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
     metrics::Metrics,
+    metrics::MetricsSnapshot,
     publisher::{PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle},
     recovery::{ConnectionState, RecoveryPolicy},
     topology::{TopologyPlan, TopologyReconciler},
@@ -169,6 +170,12 @@ impl RecoveryCoordinatorHandle {
     #[must_use]
     pub fn state(&self) -> ConnectionState {
         self.state.borrow().clone()
+    }
+
+    /// Returns a non-blocking view of the shared metrics registry.
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        self.actor.metrics_snapshot()
     }
 
     /// Waits for a connection state matching the predicate.
@@ -364,6 +371,7 @@ async fn run_coordinator(
                             }
                         };
                         if let Err(error) = result {
+                            context.metrics.record_recovery_failure();
                             eprintln!("recovery generation {generation} failed: {error}");
                             // Roll back so the next Ready re-attempts recovery.
                             last_generation = generation.saturating_sub(1);

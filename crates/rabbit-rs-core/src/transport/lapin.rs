@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -71,8 +71,34 @@ struct LapinConnection {
     inner: Connection,
 }
 
+/// Filters the lapin connection event stream down to connection errors.
+///
+/// With lapin's default `auto_recover: false`, every recoverable connection
+/// failure (including heartbeat timeouts) is emitted as `Event::Error`.
+struct LapinErrorStream {
+    events: Pin<Box<dyn futures_util::Stream<Item = lapin::Event> + Send>>,
+}
+
+#[async_trait]
+impl super::TransportErrorStream for LapinErrorStream {
+    async fn next(&mut self) -> Option<TransportError> {
+        loop {
+            let event = self.events.as_mut().next().await?;
+            if let lapin::Event::Error(error) = event {
+                return Some(map_lapin_error(error));
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl TransportConnection for LapinConnection {
+    fn error_stream(&self) -> Box<dyn super::TransportErrorStream> {
+        Box::new(LapinErrorStream {
+            events: Box::pin(self.inner.events_listener()),
+        })
+    }
+
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
         let channel = self.inner.create_channel().await.map_err(map_lapin_error)?;
         Ok(Box::new(LapinPublisherChannel { inner: channel }))
@@ -84,10 +110,24 @@ impl TransportConnection for LapinConnection {
     }
 
     async fn close(&self) -> TransportResult<()> {
-        self.inner
-            .close(200, "OK".into())
-            .await
-            .map_err(map_lapin_error)
+        match self.inner.close(200, "OK".into()).await {
+            Ok(()) => Ok(()),
+            // Closing an already-dead connection is trivially complete: the
+            // socket is gone, so there is nothing left to shut down. Pool
+            // shutdown must stay graceful after self-recovery replaced the
+            // connection the pool still caches.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    lapin::ErrorKind::InvalidConnectionState(
+                        lapin::ConnectionState::Error | lapin::ConnectionState::Closed
+                    )
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(map_lapin_error(error)),
+        }
     }
 }
 

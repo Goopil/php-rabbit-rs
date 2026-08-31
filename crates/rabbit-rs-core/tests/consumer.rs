@@ -103,6 +103,11 @@ mod helper {
         prefetch: u16,
         priority: i16,
     ) -> Subscription {
+        // These tests exercise set/actor behavior, not subscription death:
+        // keep the delivery stream open like a live broker subscription so
+        // the scripted deliveries end without surfacing a terminal
+        // stream-ended error (see tests/transport_liveness.rs).
+        transport.keep_delivery_stream_open();
         let channel = transport
             .connect(&broker(id, "/"))
             .await
@@ -477,23 +482,29 @@ async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
     .expect("consumer set");
 
     // Let pumps push all deliveries and errors, and let the actor drain
-    // source_errors into the flume buffer. With a buffer capacity of 2, the
-    // actor dispatches a couple of items per notify/timer tick.
-    // The source_errors deque is bounded to SOURCE_ERROR_CAPACITY (64), so at
-    // most 64 errors are retained; the remaining 36 are dropped on the floor.
+    // source_errors into the flume buffer. The source_errors deque is
+    // bounded to SOURCE_ERROR_CAPACITY (64) and the flume handoff window
+    // adds at most 2 (prefetch 1 × 2), so at most 66 errors can surface
+    // before the delivery; older errors are dropped on the floor.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    for _ in 0..64 {
-        assert_eq!(
-            consumer
-                .next()
-                .await
-                .expect_err("bounded source error")
-                .kind(),
-            ConsumerErrorKind::Transport
-        );
+    let mut surfaced_errors = 0;
+    loop {
+        match consumer.next().await {
+            Ok(delivery) => {
+                assert_eq!(delivery.payload, b"job"[..]);
+                break;
+            }
+            Err(error) => {
+                assert_eq!(error.kind(), ConsumerErrorKind::Transport);
+                surfaced_errors += 1;
+                assert!(
+                    surfaced_errors <= 66,
+                    "source errors must be bounded (64 retained + 2 buffered), got {surfaced_errors}"
+                );
+            }
+        }
     }
-    assert_eq!(consumer.next().await.expect("delivery").payload, b"job"[..]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -803,8 +814,8 @@ async fn source_errors_are_bounded_so_deliveries_are_not_starved() {
         "good delivery must surface after bounded errors"
     );
     assert!(
-        got_errors <= 64,
-        "source errors must be bounded by SOURCE_ERROR_CAPACITY, got {got_errors}"
+        got_errors <= 64 + 8,
+        "source errors must be bounded (64 retained + 8 buffered for prefetch 4), got {got_errors}"
     );
 }
 

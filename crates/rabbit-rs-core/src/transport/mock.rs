@@ -48,6 +48,12 @@ struct MockState {
     delivery_notify: Arc<tokio::sync::Notify>,
     operation_results: VecDeque<TransportResult<()>>,
     consumer_results: VecDeque<TransportResult<()>>,
+    /// Connection-level errors armed on the error stream, mirroring a broker
+    /// connection that dies (socket reset, heartbeat timeout).
+    connection_errors: VecDeque<TransportError>,
+    /// Wakes error streams parked on an empty queue so an error pushed after
+    /// a stream parked still surfaces. Always armed.
+    error_notify: Arc<tokio::sync::Notify>,
     queue_sizes: VecDeque<TransportResult<u32>>,
     connect_gates: VecDeque<MockOperationGateWait>,
     open_publisher_gates: VecDeque<MockOperationGateWait>,
@@ -102,6 +108,15 @@ impl MockTransport {
 
     pub fn keep_delivery_stream_open(&self) {
         self.state().keep_delivery_stream_open = true;
+    }
+
+    /// Scripts a connection-level error: every `error_stream()` created by
+    /// the current mock connection yields it once, like lapin's event
+    /// listener reporting a socket reset or heartbeat failure.
+    pub fn push_connection_error(&self, error: TransportError) {
+        let mut state = self.state();
+        state.connection_errors.push_back(error);
+        state.error_notify.notify_one();
     }
 
     pub fn push_operation_result(&self, result: TransportResult<()>) {
@@ -343,6 +358,37 @@ struct MockConnection {
     state: Arc<Mutex<MockState>>,
 }
 
+/// Pends like a live connection with no errors until one is scripted.
+struct MockErrorStream {
+    state: Arc<Mutex<MockState>>,
+}
+
+#[async_trait]
+impl super::TransportErrorStream for MockErrorStream {
+    async fn next(&mut self) -> Option<TransportError> {
+        loop {
+            let error = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.connection_errors.pop_front()
+            };
+            if let Some(error) = error {
+                return Some(error);
+            }
+            let notified = Arc::clone(
+                &self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .error_notify,
+            );
+            notified.notified().await;
+        }
+    }
+}
+
 impl MockConnection {
     fn state(&self) -> MutexGuard<'_, MockState> {
         self.state
@@ -353,6 +399,12 @@ impl MockConnection {
 
 #[async_trait]
 impl TransportConnection for MockConnection {
+    fn error_stream(&self) -> Box<dyn super::TransportErrorStream> {
+        Box::new(MockErrorStream {
+            state: self.state.clone(),
+        })
+    }
+
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
         let gate = {
             let mut state = self.state();

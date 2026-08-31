@@ -1000,6 +1000,121 @@ mod integration {
         pool.close().await.expect("close");
     }
 
+    /// Issue #66 / audit F-01: restart the broker container and the pool must
+    /// self-recover — reconnect, re-establish consumers, and confirm new
+    /// publishes — with no `connection_lost` report anywhere in the test.
+    #[tokio::test]
+    async fn broker_restart_recovers_publish_and_consume() {
+        use rabbit_rs_core::consumer::DeliveryState;
+
+        let queue = "rabbit-rs-it-restart";
+        declare_queue("/orders-eu", queue).await;
+
+        let config = config_single(queue);
+        let pool = ClientPool::production(config);
+        purge_or_ignore(&pool, "primary", queue).await;
+
+        // Sanity: everything works before the kill.
+        let outcome = pool
+            .publish_batch(vec![(
+                "primary".to_owned(),
+                publish_request("msg-restart-1", queue, b"before-restart"),
+            )])
+            .await
+            .expect("publish")
+            .pop()
+            .expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Confirmed {
+                message_id: "msg-restart-1".into(),
+            }
+        );
+
+        let consumer = pool.consumer("main").await.expect("consumer");
+        let delivery = consumer.next().await.expect("delivery");
+        assert_eq!(delivery.payload, Bytes::from_static(b"before-restart"));
+        delivery.ack().await.expect("ack");
+
+        // Kill the broker: no connection_lost report, no recovery trigger —
+        // only the transport itself can detect this.
+        let container = lab_rabbitmq_container();
+        let restarted = std::process::Command::new("docker")
+            .args(["restart", &container])
+            .output()
+            .expect("docker restart must run in the lab environment");
+        assert!(
+            restarted.status.success(),
+            "docker restart failed: {}",
+            String::from_utf8_lossy(&restarted.stderr)
+        );
+
+        // The pool must observe the loss on its own and reconnect.
+        tokio::time::timeout(Duration::from_mins(2), async {
+            while pool.metrics_snapshot().reconnects_total == 0 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("the pool must self-recover after the broker restart");
+
+        // Publishing recovers on the fresh generation.
+        let outcome = pool
+            .publish_batch(vec![(
+                "primary".to_owned(),
+                publish_request("msg-restart-2", queue, b"after-restart"),
+            )])
+            .await
+            .expect("publish after recovery")
+            .pop()
+            .expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Confirmed {
+                message_id: "msg-restart-2".into(),
+            }
+        );
+
+        // Consuming recovers: the stale pre-restart handle is evicted and a
+        // fresh consumer set delivers and settles. At-least-once allows the
+        // killed generation's unacked delivery to be redelivered first — its
+        // acknowledgement died with the connection.
+        let consumer = pool.consumer("main").await.expect("fresh consumer");
+        let mut delivery = consumer.next().await.expect("delivery after recovery");
+        for _ in 0..10 {
+            if delivery.id.as_str() == "msg-restart-2" {
+                break;
+            }
+            delivery.ack().await.expect("ack redelivered duplicate");
+            delivery = consumer.next().await.expect("next delivery");
+        }
+        assert_eq!(delivery.payload, Bytes::from_static(b"after-restart"));
+        assert_eq!(delivery.id.as_str(), "msg-restart-2");
+        delivery.ack().await.expect("ack");
+        assert_eq!(delivery.state(), DeliveryState::Acked);
+
+        assert!(pool.metrics_snapshot().reconnects_total >= 1);
+
+        pool.close().await.expect("close");
+    }
+
+    /// Finds the lab container backing `localhost:5672` (the compose project
+    /// names it `rabbitrs-rabbitmq-1`, with profile-dependent suffixes).
+    fn lab_rabbitmq_container() -> String {
+        let output = std::process::Command::new("docker")
+            .args(["ps", "--format", "{{.Names}}"])
+            .output()
+            .expect("docker must be available for the lab integration tests");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|name| name.starts_with("rabbitrs-rabbitmq-1"))
+            .max_by_key(|name| name.len())
+            .expect(
+                "lab RabbitMQ node 1 must be running; start the lab with scripts/lab-up.sh with-plugin",
+            )
+            .to_owned()
+    }
+
     #[tokio::test]
     async fn release_zero_requeues_and_redispatches() {
         use rabbit_rs_core::consumer::DeliveryState;

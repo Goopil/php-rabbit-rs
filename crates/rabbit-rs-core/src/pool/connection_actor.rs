@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -8,10 +8,17 @@ use crate::{
     recovery::{Clock, ConnectionState, JitterSource, RecoveryPolicy},
     transport::{
         ConsumerChannel, PublisherChannel, Transport, TransportConnection, TransportError,
+        TransportErrorStream,
     },
 };
 
 const COMMAND_CAPACITY: usize = 32;
+
+/// Upper bound for a single connect attempt so a silent network black hole
+/// (socket accepted by a proxy, no handshake data ever arriving) cannot
+/// block the recovery lifecycle. The attempt resolves as a recoverable
+/// connection error and the backoff policy schedules the next try.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Spawns and owns the serialized lifecycle of one broker connection.
 pub struct ConnectionActor;
@@ -185,6 +192,10 @@ struct ActorContext {
 async fn run_actor(mut context: ActorContext) {
     let mut phase = Phase::Disconnected;
     let mut connection: Option<Box<dyn TransportConnection>> = None;
+    // Liveness source of the active connection, created the moment the
+    // connection is established so no error can be missed between connect
+    // and the Ready loop.
+    let mut errors: Option<Box<dyn TransportErrorStream>> = None;
     let mut generation = 0_u64;
 
     loop {
@@ -194,12 +205,13 @@ async fn run_actor(mut context: ActorContext) {
                 handle_connecting(
                     &mut context,
                     &mut connection,
+                    &mut errors,
                     &mut generation,
                     previous_failures,
                 )
                 .await
             }
-            Phase::Ready => handle_ready(&mut context, &mut connection).await,
+            Phase::Ready => handle_ready(&mut context, &mut connection, &mut errors).await,
             Phase::Recovering { failures, error } => {
                 handle_recovering(&mut context, &mut connection, failures, &error).await
             }
@@ -244,6 +256,7 @@ async fn handle_disconnected(
 async fn handle_connecting(
     context: &mut ActorContext,
     connection: &mut Option<Box<dyn TransportConnection>>,
+    errors: &mut Option<Box<dyn TransportErrorStream>>,
     generation: &mut u64,
     previous_failures: u32,
 ) -> Option<Phase> {
@@ -256,7 +269,12 @@ async fn handle_connecting(
     tokio::pin!(connect);
     let result = loop {
         tokio::select! {
-            result = &mut connect => break result,
+            result = tokio::time::timeout(CONNECT_TIMEOUT, &mut connect) => {
+                break result
+                    .unwrap_or_else(|_| Err(TransportError::connection(
+                        "connect attempt timed out",
+                    )));
+            }
             command = context.commands.recv() => match command {
                 Some(Command::Close(completed)) => {
                     shutdown(&context.states, connection, completed).await;
@@ -279,6 +297,7 @@ async fn handle_connecting(
 
     match result {
         Ok(new_connection) => {
+            *errors = Some(new_connection.error_stream());
             *connection = Some(new_connection);
             *generation = generation.saturating_add(1);
             if *generation > 1 {
@@ -303,42 +322,79 @@ async fn handle_connecting(
 async fn handle_ready(
     context: &mut ActorContext,
     connection: &mut Option<Box<dyn TransportConnection>>,
+    errors: &mut Option<Box<dyn TransportErrorStream>>,
 ) -> Option<Phase> {
-    match context.commands.recv().await {
-        Some(Command::ConnectionLost(error)) => {
-            close_connection(connection).await;
-            if error.is_recoverable() {
-                Some(Phase::Recovering { failures: 1, error })
-            } else {
-                publish_permanent_failure(&context.states, &error);
-                Some(Phase::FailedPermanent)
+    // The liveness source lives for the whole Ready phase; every exit of
+    // this loop is a phase change where the connection dies or is closed, so
+    // the taken stream is simply dropped with the local binding.
+    let mut errors = errors.take();
+    loop {
+        tokio::select! {
+            // The transport itself reports the connection is dying (socket
+            // reset, heartbeat failure): route it exactly like a reported
+            // `Command::ConnectionLost`.
+            error = next_transport_error(&mut errors) => {
+                close_connection(connection).await;
+                return Some(route_loss(&context.states, error));
+            }
+            command = context.commands.recv() => {
+                match command {
+                    Some(Command::ConnectionLost(error)) => {
+                        close_connection(connection).await;
+                        return Some(route_loss(&context.states, error));
+                    }
+                    Some(Command::OpenPublisher(completed)) => {
+                        let result = match connection.as_deref() {
+                            Some(conn) => conn.open_publisher().await,
+                            None => Err(TransportError::closed("connection is not ready")),
+                        };
+                        let _ = completed.send(result);
+                    }
+                    Some(Command::OpenConsumer(completed)) => {
+                        let result = match connection.as_deref() {
+                            Some(conn) => conn.open_consumer().await,
+                            None => Err(TransportError::closed("connection is not ready")),
+                        };
+                        let _ = completed.send(result);
+                    }
+                    Some(Command::Start) => {}
+                    Some(Command::Close(completed)) => {
+                        shutdown(&context.states, connection, completed).await;
+                        return None;
+                    }
+                    None => {
+                        close_connection(connection).await;
+                        return None;
+                    }
+                }
             }
         }
-        Some(Command::OpenPublisher(completed)) => {
-            let result = match connection.as_deref() {
-                Some(conn) => conn.open_publisher().await,
-                None => Err(TransportError::closed("connection is not ready")),
-            };
-            let _ = completed.send(result);
-            Some(Phase::Ready)
-        }
-        Some(Command::OpenConsumer(completed)) => {
-            let result = match connection.as_deref() {
-                Some(conn) => conn.open_consumer().await,
-                None => Err(TransportError::closed("connection is not ready")),
-            };
-            let _ = completed.send(result);
-            Some(Phase::Ready)
-        }
-        Some(Command::Start) => Some(Phase::Ready),
-        Some(Command::Close(completed)) => {
-            shutdown(&context.states, connection, completed).await;
-            None
-        }
-        None => {
-            close_connection(connection).await;
-            None
-        }
+    }
+}
+
+/// Waits for the next liveness signal of the active connection. Pends
+/// forever when there is no connection, leaving commands as the only wake-up
+/// source.
+async fn next_transport_error(
+    errors: &mut Option<Box<dyn TransportErrorStream>>,
+) -> TransportError {
+    match errors {
+        Some(stream) => stream
+            .next()
+            .await
+            .unwrap_or_else(|| TransportError::connection("transport error stream ended")),
+        None => std::future::pending().await,
+    }
+}
+
+/// Routes a connection loss to recovery or permanent failure based on the
+/// error's recoverability.
+fn route_loss(states: &watch::Sender<ConnectionState>, error: TransportError) -> Phase {
+    if error.is_recoverable() {
+        Phase::Recovering { failures: 1, error }
+    } else {
+        publish_permanent_failure(states, &error);
+        Phase::FailedPermanent
     }
 }
 
