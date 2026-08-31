@@ -51,8 +51,8 @@ fn unreadable_tls_files_fail_loudly_instead_of_connecting_unprotected() {
     // deserialization exactly as the Laravel normalizer would emit it.
     broker.tls = serde_json::from_value(serde_json::json!({
         "enabled": true,
-        "ca_cert": "/nonexistent/ca.pem",
-        "verify": "peer"
+        "ca_cert": "/nonexistent/ca.pem"
+
     }))
     .expect("valid TLS configuration");
 
@@ -77,8 +77,8 @@ fn unreadable_client_certificate_fails_loudly_instead_of_dropping_identity() {
     broker.tls = serde_json::from_value(serde_json::json!({
         "enabled": true,
         "client_cert": "/nonexistent/client-cert.pem",
-        "client_key": "/nonexistent/client-key.pem",
-        "verify": "peer"
+        "client_key": "/nonexistent/client-key.pem"
+
     }))
     .expect("valid TLS configuration");
 
@@ -111,8 +111,8 @@ fn unreadable_client_key_fails_loudly_instead_of_dropping_identity() {
     broker.tls = serde_json::from_value(serde_json::json!({
         "enabled": true,
         "client_cert": cert_path.display().to_string(),
-        "client_key": "/nonexistent/client-key.pem",
-        "verify": "peer"
+        "client_key": "/nonexistent/client-key.pem"
+
     }))
     .expect("valid TLS configuration");
 

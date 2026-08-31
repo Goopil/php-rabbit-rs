@@ -49,11 +49,9 @@ See [Topology](topology.md) for mode semantics.
         ],
         'tls' => [
             'enabled' => (bool) env('RABBIT_RS_TLS', false),
-            'server_name' => env('RABBIT_RS_TLS_SERVER_NAME'),
             'ca_cert' => env('RABBIT_RS_TLS_CA_CERT'),
             'client_cert' => env('RABBIT_RS_TLS_CLIENT_CERT'),
             'client_key' => env('RABBIT_RS_TLS_CLIENT_KEY'),
-            'verify' => env('RABBIT_RS_TLS_VERIFY', 'peer'),
         ],
         'heartbeat' => (int) env('RABBIT_RS_HEARTBEAT', 30),
     ],
@@ -67,11 +65,9 @@ See [Topology](topology.md) for mode semantics.
 | `RABBIT_RS_USERNAME` | AMQP username | `guest` |
 | `RABBIT_RS_PASSWORD` | AMQP password | `guest` |
 | `RABBIT_RS_TLS` | Enable TLS | `false` |
-| `RABBIT_RS_TLS_SERVER_NAME` | SNI server name override | `null` |
 | `RABBIT_RS_TLS_CA_CERT` | Path to CA certificate PEM | `null` |
 | `RABBIT_RS_TLS_CLIENT_CERT` | Path to client certificate | `null` |
 | `RABBIT_RS_TLS_CLIENT_KEY` | Path to client private key | `null` |
-| `RABBIT_RS_TLS_VERIFY` | `peer` or `none` | `peer` |
 | `RABBIT_RS_HEARTBEAT` | Heartbeat interval in seconds | `30` |
 
 #### Multiple hosts
@@ -84,16 +80,14 @@ RABBIT_RS_HOSTS=rabbit-1:5672,rabbit-2:5672,rabbit-3:5672
 
 #### TLS configuration
 
-Enable TLS by setting `RABBIT_RS_TLS=true`. The scheme switches to `amqps://`. If `server_name` is not set, the first host is used for SNI.
+Enable TLS by setting `RABBIT_RS_TLS=true`. The scheme switches to `amqps://`.
 
 ```php
 'tls' => [
     'enabled' => true,
-    'server_name' => 'rabbit.example.com',
     'ca_cert' => '/etc/ssl/certs/rabbit-ca.pem',
     'client_cert' => '/etc/ssl/certs/client.pem',
     'client_key' => '/etc/ssl/private/client.key',
-    'verify' => 'peer', // or 'none' to skip verification (not recommended)
 ],
 ```
 
@@ -276,7 +270,6 @@ A vhost owns a distinct AMQP connection. To consume from multiple vhosts, define
         'credentials' => ['username' => 'billing', 'password' => 'secret'],
         'tls' => [
             'enabled' => true,
-            'server_name' => 'rabbit.example.com',
             'ca_cert' => '/etc/ssl/certs/rabbit-ca.pem',
         ],
         'heartbeat' => 30,

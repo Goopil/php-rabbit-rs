@@ -65,8 +65,8 @@ return [
     | credentials: Plain username/password. Never logged or exposed in Debug.
     |
     | tls:         TLS settings. Set enabled=true for amqps://. The ca_cert
-    |              is required when verify=peer. client_cert and client_key
-    |              enable mTLS. server_name sets the SNI expectation.
+    |              is required for server certificate verification. client_cert
+    |              and client_key enable mTLS.
     |
     | heartbeat:   AMQP heartbeat in seconds. If no data is exchanged for
     |              2× this interval, the connection is considered dead and
@@ -84,11 +84,9 @@ return [
             ],
             'tls' => [
                 'enabled' => (bool) env('RABBIT_RS_TLS', false),
-                'server_name' => env('RABBIT_RS_TLS_SERVER_NAME'),
                 'ca_cert' => env('RABBIT_RS_TLS_CA_CERT'),
                 'client_cert' => env('RABBIT_RS_TLS_CLIENT_CERT'),
                 'client_key' => env('RABBIT_RS_TLS_CLIENT_KEY'),
-                'verify' => env('RABBIT_RS_TLS_VERIFY', 'peer'),
             ],
             'heartbeat' => (int) env('RABBIT_RS_HEARTBEAT', 30),
         ],

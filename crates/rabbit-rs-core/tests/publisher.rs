@@ -1408,7 +1408,7 @@ fn delay_config_is_validated_and_deserialized_from_config() {
             "hosts": [{"host": "rabbit.local", "port": 5672}],
             "vhost": "/",
             "credentials": {"username": "guest", "password": "secret"},
-            "tls": {"enabled": false, "server_name": null},
+            "tls": {"enabled": false},
             "heartbeat": 30
         }],
         "workers": [{
@@ -1460,7 +1460,7 @@ fn delay_config_rejects_empty_buckets() {
             "hosts": [{"host": "rabbit.local", "port": 5672}],
             "vhost": "/",
             "credentials": {"username": "guest", "password": "secret"},
-            "tls": {"enabled": false, "server_name": null},
+            "tls": {"enabled": false},
             "heartbeat": 30
         }],
         "workers": [{
