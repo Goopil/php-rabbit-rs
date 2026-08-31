@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SafetyMode, TlsConfig,
         TopologyMode,
     },
     consumer::{ConsumerSet, Subscription},
@@ -90,7 +90,7 @@ async fn publisher_records_accepts_confirmations_returns_and_backpressure() {
     let metrics = Metrics::default();
     let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(1, Duration::from_secs(5)),
+        PublisherConfig::with_safety(1, Duration::from_secs(5), SafetyMode::Safe),
         metrics,
         None,
     );
@@ -145,7 +145,7 @@ async fn only_ack_and_nack_are_recorded_as_confirmations() {
         .expect("publisher channel");
     let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(1, Duration::from_secs(5)),
+        PublisherConfig::with_safety(1, Duration::from_secs(5), SafetyMode::Safe),
         Metrics::default(),
         None,
     );
@@ -307,7 +307,7 @@ async fn concurrent_snapshots_do_not_prevent_publisher_progress() {
     let metrics = Metrics::default();
     let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(MESSAGE_COUNT, Duration::from_secs(5)),
+        PublisherConfig::with_safety(MESSAGE_COUNT, Duration::from_secs(5), SafetyMode::Safe),
         metrics.clone(),
         None,
     );

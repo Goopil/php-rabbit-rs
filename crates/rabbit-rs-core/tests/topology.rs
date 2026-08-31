@@ -1,11 +1,11 @@
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
     config::{
         BrokerConfig, Config, ConsumerConfigSection, Credentials, DeadLetterConfig, DelayConfig,
-        Endpoint, PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig,
-        TopologyMode, ValidatedConfig, WorkerProfile,
+        Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig,
+        TlsConfig, TopologyMode, ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
@@ -275,16 +275,8 @@ fn quorum_rejects_exclusive_or_auto_delete_combinations() {
         ),
     );
 
-    assert!(
-        exclusive
-            .expect_err("exclusive quorum must fail")
-            .is_permanent()
-    );
-    assert!(
-        auto_delete
-            .expect_err("auto-delete quorum must fail")
-            .is_permanent()
-    );
+    exclusive.expect_err("exclusive quorum must fail");
+    auto_delete.expect_err("auto-delete quorum must fail");
 }
 
 #[tokio::test]
@@ -417,7 +409,7 @@ fn application_dead_letter_topology_is_compiled_only_when_enabled() {
 }
 
 #[tokio::test]
-async fn topology_incompatibility_is_reported_as_permanent() {
+async fn an_incompatible_topology_fails_reconciliation() {
     let transport = MockTransport::default();
     transport.push_operation_result(Err(TransportError::protocol(
         "PRECONDITION_FAILED inequivalent arg x-queue-type",
@@ -426,12 +418,10 @@ async fn topology_incompatibility_is_reported_as_permanent() {
     let plan = TopologyPlan::compile(TopologyMode::Declare, definition()).expect("plan");
     let mut reconciler = TopologyReconciler::new();
 
-    let error = reconciler
+    reconciler
         .reconcile(&*channel, &plan, 1)
         .await
         .expect_err("incompatible topology");
-
-    assert!(error.is_permanent());
 }
 
 #[tokio::test]
@@ -987,18 +977,18 @@ fn application_count_survives_a_fresh_broker_delivery() {
 
 #[test]
 fn exceeding_the_configured_limit_is_a_typed_max_attempts_error() {
-    let resolver = AttemptsResolver::new(NonZeroU32::new(3));
+    let resolver = AttemptsResolver::default();
 
     let error = resolver
         .resolve(
-            &attempt_headers(&[(APPLICATION_ATTEMPTS_HEADER, "4")]),
+            &attempt_headers(&[(APPLICATION_ATTEMPTS_HEADER, "21")]),
             false,
         )
-        .expect_err("fourth attempt exceeds a limit of three");
+        .expect_err("twenty-first attempt exceeds the default limit of twenty");
 
     assert_eq!(error.kind(), AttemptsErrorKind::MaxAttempts);
-    assert_eq!(error.attempts(), 4);
-    assert_eq!(error.max_attempts(), Some(3));
+    assert_eq!(error.attempts(), 21);
+    assert_eq!(error.max_attempts(), Some(20));
 }
 
 #[test]
@@ -1149,7 +1139,7 @@ async fn delayed_release_increments_the_application_attempt_header() {
         .expect("publisher channel");
     let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher_channel),
-        PublisherConfig::new(8, Duration::from_secs(5)),
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe),
         Metrics::default(),
         None,
     );

@@ -35,15 +35,15 @@ mod helper {
     }
 
     pub fn config_safety() -> PublisherConfig {
-        PublisherConfig::new(32, Duration::from_secs(5))
+        PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe)
     }
 
     pub fn config_recovery(capacity: usize) -> PublisherConfig {
-        PublisherConfig::new(capacity, Duration::from_secs(5))
+        PublisherConfig::with_safety(capacity, Duration::from_secs(5), SafetyMode::Safe)
     }
 
     pub fn publisher_config_delay() -> PublisherConfig {
-        PublisherConfig::new(32, Duration::from_secs(30))
+        PublisherConfig::with_safety(32, Duration::from_secs(30), SafetyMode::Safe)
     }
 
     pub fn request_safety(message_id: &str, payload: &'static [u8]) -> PublishRequest {
@@ -356,7 +356,7 @@ async fn confirmation_timeout_is_typed() {
     transport.push_pending_confirmation();
     let actor = actor_safety(
         &transport,
-        PublisherConfig::new(32, Duration::from_millis(10)),
+        PublisherConfig::with_safety(32, Duration::from_millis(10), SafetyMode::Safe),
     )
     .await;
     let waiter = actor
@@ -375,7 +375,11 @@ async fn confirmation_timeout_is_typed() {
 #[tokio::test(start_paused = true)]
 async fn a_full_command_buffer_returns_backpressure() {
     let transport = MockTransport::default();
-    let actor = actor_safety(&transport, PublisherConfig::new(1, Duration::from_secs(5))).await;
+    let actor = actor_safety(
+        &transport,
+        PublisherConfig::with_safety(1, Duration::from_secs(5), SafetyMode::Safe),
+    )
+    .await;
 
     let _first = actor
         .try_publish(request_safety("one", b"a"))
@@ -881,7 +885,7 @@ async fn unconfirmed_publish_is_retained_across_connection_loss() {
     transport.push_pending_confirmation();
     let actor = PublisherActor::spawn_with_delay_strategy_and_metrics(
         new_channel(&transport).await,
-        PublisherConfig::new(8, Duration::from_secs(5)),
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe),
         Metrics::default(),
         None,
     );

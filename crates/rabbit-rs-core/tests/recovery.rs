@@ -9,8 +9,8 @@ use rabbit_rs_core::metrics::Metrics;
 use rabbit_rs_core::{
     client::ClientPool,
     config::{
-        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SchedulerConfig,
-        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, SafetyMode,
+        SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     pool::connection_actor::ConnectionActor,
     pool::recovery_coordinator::{
@@ -79,7 +79,7 @@ mod helper {
     }
 
     pub fn publisher_config() -> PublisherConfig {
-        PublisherConfig::new(8, Duration::from_secs(5))
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe)
     }
 
     pub fn publish_request(message_id: &str, deadline: Instant) -> PublishRequest {

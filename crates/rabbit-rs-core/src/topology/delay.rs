@@ -106,11 +106,6 @@ impl DelayError {
             message: message.into(),
         }
     }
-
-    #[must_use]
-    pub const fn is_permanent(&self) -> bool {
-        true
-    }
 }
 
 impl fmt::Display for DelayError {

@@ -193,18 +193,6 @@ pub struct PublisherConfig {
 
 impl PublisherConfig {
     #[must_use]
-    pub const fn new(buffer_capacity: usize, confirm_timeout: Duration) -> Self {
-        Self {
-            buffer_capacity,
-            confirm_timeout,
-            confirms: true,
-            mandatory: true,
-            max_buffered_bytes: 64 * 1024 * 1024,
-            safety: SafetyMode::Safe,
-        }
-    }
-
-    #[must_use]
     pub const fn with_flags(
         buffer_capacity: usize,
         confirm_timeout: Duration,
@@ -239,12 +227,6 @@ impl PublisherConfig {
             max_buffered_bytes: 64 * 1024 * 1024,
             safety,
         }
-    }
-
-    #[must_use]
-    pub const fn with_byte_budget(mut self, max_buffered_bytes: u64) -> Self {
-        self.max_buffered_bytes = max_buffered_bytes;
-        self
     }
 
     #[must_use]

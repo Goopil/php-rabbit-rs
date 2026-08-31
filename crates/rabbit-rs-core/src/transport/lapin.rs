@@ -671,7 +671,7 @@ mod tests {
 
     use super::{connection_uri, map_headers, publish_properties};
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
-    use crate::transport::{HeaderFloat, HeaderValue, PublishRequest};
+    use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
 
     #[test]
     fn uri_percent_encodes_credentials_and_vhost_as_segments() {
@@ -724,7 +724,13 @@ mod tests {
 
     #[test]
     fn outgoing_application_headers_are_merged_with_delay_header() {
-        let mut request = PublishRequest::new("jobs.delayed", "high", b"job".to_vec());
+        let mut request = PublishRequest {
+            exchange: "jobs.delayed".into(),
+            routing_key: "high".into(),
+            payload: Bytes::from_static(b"job"),
+            mandatory: true,
+            properties: PublishProperties::default(),
+        };
         request
             .properties
             .headers
@@ -746,7 +752,13 @@ mod tests {
 
     #[test]
     fn outgoing_headers_preserve_scalar_amqp_types() {
-        let mut request = PublishRequest::new("jobs", "default", b"job".to_vec());
+        let mut request = PublishRequest {
+            exchange: "jobs".into(),
+            routing_key: "default".into(),
+            payload: Bytes::from_static(b"job"),
+            mandatory: true,
+            properties: PublishProperties::default(),
+        };
         request
             .properties
             .headers

@@ -363,20 +363,6 @@ pub struct PublisherConfigSection {
 }
 
 impl PublisherConfigSection {
-    #[must_use]
-    pub const fn new(confirms: bool, mandatory: bool, confirm_timeout: Duration) -> Self {
-        Self {
-            safety: if confirms {
-                SafetyMode::Safe
-            } else {
-                SafetyMode::Unsafe
-            },
-            confirms,
-            mandatory,
-            confirm_timeout,
-        }
-    }
-
     /// Returns the effective safety mode, deriving from legacy `confirms`/`mandatory`
     /// flags when `safety` was not explicitly set.
     ///
@@ -627,12 +613,6 @@ impl ValidatedConfig {
     #[must_use]
     pub fn worker(&self, name: &str) -> Option<&WorkerProfile> {
         self.workers.iter().find(|worker| worker.name == name)
-    }
-
-    /// Returns all broker configurations in canonical order.
-    #[must_use]
-    pub fn brokers(&self) -> &[BrokerConfig] {
-        &self.brokers
     }
 
     /// Returns all worker profiles in canonical order.

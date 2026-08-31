@@ -7,7 +7,7 @@ use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::sync::oneshot;
 
 use super::{PublishError, PublishErrorKind};
-use crate::transport::{PublishRequest as TransportRequest, PublisherChannel};
+use crate::transport::{PublishProperties, PublishRequest as TransportRequest, PublisherChannel};
 
 /// Boxed publish future tracked in the pump's in-flight set.
 type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -119,11 +119,13 @@ impl PublishPump {
         let (barrier_tx, barrier_rx) = oneshot::channel();
         self.tx
             .send_async(PumpJob {
-                request: TransportRequest::new(
-                    Arc::<str>::from(""),
-                    Arc::<str>::from(""),
-                    Bytes::new(),
-                ),
+                request: TransportRequest {
+                    exchange: Arc::<str>::from(""),
+                    routing_key: Arc::<str>::from(""),
+                    payload: Bytes::new(),
+                    mandatory: true,
+                    properties: PublishProperties::default(),
+                },
                 barrier_tx: Some(barrier_tx),
             })
             .await
@@ -565,11 +567,7 @@ mod tests {
 
         let (barrier_tx, barrier_rx) = oneshot::channel();
         tx.send_async(PumpJob {
-            request: TransportRequest::new(
-                Arc::<str>::from(""),
-                Arc::<str>::from(""),
-                Bytes::new(),
-            ),
+            request: request(""),
             barrier_tx: Some(barrier_tx),
         })
         .await

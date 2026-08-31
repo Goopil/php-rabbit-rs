@@ -9,7 +9,7 @@ use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
     config::{
         BrokerConfig, Config, ConsumerConfigSection, Credentials, Endpoint, PublisherConfigSection,
-        SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
+        SafetyMode, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     },
     consumer::{
         ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
@@ -134,7 +134,7 @@ mod helper {
             .expect("publisher channel");
         PublisherActor::spawn_with_delay_strategy_and_metrics(
             Arc::from(channel),
-            PublisherConfig::new(32, Duration::from_secs(5)),
+            PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe),
             Metrics::default(),
             None,
         )
@@ -180,7 +180,7 @@ async fn publisher_handle_exposes_its_confirm_timeout() {
     let timeout = Duration::from_millis(17);
     let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(channel),
-        PublisherConfig::new(8, timeout),
+        PublisherConfig::with_safety(8, timeout, SafetyMode::Safe),
         Metrics::default(),
         None,
     );
