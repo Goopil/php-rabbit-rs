@@ -364,12 +364,26 @@ pub struct ConsumerConfigSection {
     /// black-holed brokers.
     #[serde(deserialize_with = "deserialize_duration_millis")]
     pub wait_timeout: Duration,
+    /// Inclusive cap on resolved delivery attempts per message. Deliveries
+    /// above the cap are settled terminally (dead-lettered, or explicitly
+    /// acknowledged and logged when no dead-letter exchange is bound) instead
+    /// of being dispatched to the caller.
+    pub max_attempts: Option<u32>,
+}
+
+/// Serde default for the optional `max_attempts` key: the wrap is intentional
+/// (an explicit JSON `null` must disable the cap, the omitted key defaults to
+/// the documented limit).
+#[allow(clippy::unnecessary_wraps)]
+fn default_max_attempts() -> Option<u32> {
+    Some(crate::consumer::DEFAULT_MAX_ATTEMPTS)
 }
 
 impl Default for ConsumerConfigSection {
     fn default() -> Self {
         Self {
             wait_timeout: Duration::from_secs(30),
+            max_attempts: default_max_attempts(),
         }
     }
 }
@@ -454,6 +468,13 @@ impl Config {
             return Err(ConfigError::new(
                 "consumer.wait_timeout",
                 "wait_timeout must be between 1 second and 24 hours",
+            ));
+        }
+
+        if self.consumer.max_attempts == Some(0) {
+            return Err(ConfigError::new(
+                "consumer.max_attempts",
+                "max_attempts must be a positive integer",
             ));
         }
 
@@ -783,6 +804,7 @@ fn hash_publisher(digest: &mut Sha256, publisher: &PublisherConfigSection) {
 fn hash_consumer(digest: &mut Sha256, consumer: &ConsumerConfigSection) {
     hash_value(digest, "consumer");
     digest.update(consumer.wait_timeout.as_millis().to_be_bytes());
+    digest.update(consumer.max_attempts.unwrap_or(0).to_be_bytes());
 }
 
 fn hash_value(digest: &mut Sha256, value: &str) {
@@ -1322,6 +1344,74 @@ mod tests {
             .unwrap();
         let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
         changed.consumer.wait_timeout = Duration::from_secs(31);
+        let changed = changed.validate().unwrap();
+
+        assert_ne!(base.fingerprint(), changed.fingerprint());
+    }
+
+    #[test]
+    fn consumer_max_attempts_defaults_to_twenty() {
+        let validated = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+
+        assert_eq!(validated.consumer().max_attempts, Some(20));
+    }
+
+    #[test]
+    fn deserializes_consumer_max_attempts_from_native_config() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {
+                    "strategy": "weighted_fair",
+                    "max_in_flight": 64
+                }
+            }],
+            "topology_mode": "external",
+            "consumer": {
+                "max_attempts": 30
+            }
+        }))
+        .expect("consumer section deserializes");
+
+        let validated = candidate.validate().expect("valid config");
+        assert_eq!(validated.consumer().max_attempts, Some(30));
+    }
+
+    #[test]
+    fn rejects_zero_consumer_max_attempts() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.consumer.max_attempts = Some(0);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "consumer.max_attempts");
+    }
+
+    #[test]
+    fn consumer_max_attempts_is_part_of_the_fingerprint() {
+        let base = config(vec![Endpoint::new("rabbit.local", 5672)])
+            .validate()
+            .unwrap();
+        let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        changed.consumer.max_attempts = Some(30);
         let changed = changed.validate().unwrap();
 
         assert_ne!(base.fingerprint(), changed.fingerprint());

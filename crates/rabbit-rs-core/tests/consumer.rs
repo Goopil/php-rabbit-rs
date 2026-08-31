@@ -1629,6 +1629,7 @@ async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
         consumer: ConsumerConfigSection {
             // Minimum valid value (validation bounds wait_timeout to 1s..24h).
             wait_timeout: Duration::from_secs(1),
+            max_attempts: None,
         },
     };
 

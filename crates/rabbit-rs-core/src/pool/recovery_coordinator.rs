@@ -573,6 +573,14 @@ async fn establish_requested_profile(
         .early_ack(sub_config.early_ack)
         .no_ack(sub_config.no_ack)
         .max_buffered_bytes(sub_config.max_buffered_bytes)
+        .max_attempts(
+            context
+                .config
+                .consumer()
+                .max_attempts
+                .and_then(std::num::NonZeroU32::new),
+        )
+        .dead_letter(context.config.dead_letter().is_some())
         .delay_strategy(delay_strategy.clone());
 
         if let Some(publisher) = &pub_handle {

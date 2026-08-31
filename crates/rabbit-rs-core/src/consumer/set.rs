@@ -1,4 +1,5 @@
 use std::{
+    num::NonZeroU32,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -12,6 +13,7 @@ use super::{
     ConsumerError, Delivery, DeliveryTokenInner, SettlementError, SettlementErrorKind,
     SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
+    attempts::DEFAULT_MAX_ATTEMPTS_NON_ZERO,
 };
 use crate::{
     metrics::{Metrics, MetricsSnapshot},
@@ -39,6 +41,8 @@ pub struct Subscription {
     pub(crate) early_ack: bool,
     pub(crate) no_ack: bool,
     pub(crate) max_buffered_bytes: u64,
+    pub(crate) max_attempts: Option<NonZeroU32>,
+    pub(crate) dead_letter: bool,
     pub(crate) channel: Arc<dyn ConsumerChannel>,
     pub(crate) publisher: Option<PublisherHandle>,
     pub(crate) destination: Option<Destination>,
@@ -64,6 +68,8 @@ impl Subscription {
             early_ack: false,
             no_ack: false,
             max_buffered_bytes: 64 * 1024 * 1024,
+            max_attempts: Some(DEFAULT_MAX_ATTEMPTS_NON_ZERO),
+            dead_letter: false,
             channel,
             publisher: None,
             destination: None,
@@ -120,6 +126,24 @@ impl Subscription {
     #[must_use]
     pub const fn max_buffered_bytes(mut self, max: u64) -> Self {
         self.max_buffered_bytes = max;
+        self
+    }
+
+    /// Sets the maximum resolved delivery attempts per message. Deliveries
+    /// above the cap are settled terminally instead of being dispatched.
+    #[must_use]
+    pub const fn max_attempts(mut self, max_attempts: Option<NonZeroU32>) -> Self {
+        self.max_attempts = max_attempts;
+        self
+    }
+
+    /// Declares whether the subscription's queue is bound to a dead-letter
+    /// exchange. When `true`, poison deliveries are rejected with
+    /// `requeue=false` so the broker routes them to the DLX; when `false`,
+    /// the explicit ack-and-log policy applies.
+    #[must_use]
+    pub const fn dead_letter(mut self, dead_letter: bool) -> Self {
+        self.dead_letter = dead_letter;
         self
     }
 
