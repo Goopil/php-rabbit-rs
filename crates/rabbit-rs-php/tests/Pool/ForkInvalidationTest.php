@@ -4,28 +4,12 @@ declare(strict_types=1);
 
 uses()->group('isolation');
 
-function forkConfig(): array
-{
-    return [
-        'brokers' => [[
-            'name' => 'default',
-            'hosts' => [['host' => '127.0.0.1', 'port' => 5672]],
-            'vhost' => '/',
-            'credentials' => ['username' => 'guest', 'password' => 'secret'],
-            'tls' => ['enabled' => false, 'server_name' => null],
-            'heartbeat' => 30,
-        ]],
-        'workers' => [],
-        'topology_mode' => 'external',
-    ];
-}
-
 it('invalidates inherited pools after fork and creates a child-local registry', function () {
     if (!extension_loaded('pcntl')) {
         $this->markTestSkipped('pcntl is required');
     }
 
-    $parentPool = new \Goopil\RabbitRs\Pool(forkConfig());
+    $parentPool = new \Goopil\RabbitRs\Pool(defaultConfig());
     $parentStats = $parentPool->stats();
 
     $childPid = pcntl_fork();
@@ -43,7 +27,7 @@ it('invalidates inherited pools after fork and creates a child-local registry', 
             }
         }
 
-        $childPool = new \Goopil\RabbitRs\Pool(forkConfig());
+        $childPool = new \Goopil\RabbitRs\Pool(defaultConfig());
         $childStats = $childPool->stats();
         if ($childStats['pid'] !== getmypid()) {
             exit(12);

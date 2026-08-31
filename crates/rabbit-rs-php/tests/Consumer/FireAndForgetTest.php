@@ -3,75 +3,45 @@
 declare(strict_types=1);
 
 describe('fire-and-forget settlement', function () {
-    it('drainErrors returns empty when no settlement errors', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
-            'deliveries' => [['message_id' => 'drain-empty', 'payload' => 'test']],
-        ]);
-        $consumer = $pool->consumer('main');
-        $delivery = $consumer->next(10);
-        expect($delivery)->not->toBeNull();
+    describe('single delivery', function () {
+        beforeEach(function () {
+            $this->pool = testingPool(defaultConfigWithWorkers(), [
+                'deliveries' => [['message_id' => 'fire-forget', 'payload' => 'test']],
+            ]);
+            $this->consumer = $this->pool->consumer('main');
+            $this->delivery = $this->consumer->next(10);
+        });
 
-        $errors = $consumer->drainErrors();
-        expect($errors)->toBeEmpty();
+        afterEach(fn () => $this->pool->close());
 
-        $pool->close();
-    });
+        it('drainErrors returns empty when no settlement errors', function () {
+            expect($this->delivery)->not->toBeNull();
 
-    it('ack returns void without blocking', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
-            'deliveries' => [['message_id' => 'ack-void', 'payload' => 'test']],
-        ]);
-        $consumer = $pool->consumer('main');
-        $delivery = $consumer->next(10);
-        expect($delivery)->not->toBeNull();
+            $errors = $this->consumer->drainErrors();
+            expect($errors)->toBeEmpty();
+        });
 
-        $delivery->ack();
-        expect(true)->toBeTrue();
+        it('ack returns void without blocking', function () {
+            $this->delivery->ack();
+            expect(true)->toBeTrue();
+        });
 
-        $pool->close();
-    });
+        it('release returns void without blocking', function () {
+            $this->delivery->release();
+            expect(true)->toBeTrue();
+        });
 
-    it('release returns void without blocking', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
-            'deliveries' => [['message_id' => 'release-void', 'payload' => 'test']],
-        ]);
-        $consumer = $pool->consumer('main');
-        $delivery = $consumer->next(10);
-        expect($delivery)->not->toBeNull();
+        it('reject returns void without blocking', function () {
+            $this->delivery->reject(false);
+            expect(true)->toBeTrue();
+        });
 
-        $delivery->release();
-        expect(true)->toBeTrue();
-
-        $pool->close();
-    });
-
-    it('reject returns void without blocking', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
-            'deliveries' => [['message_id' => 'reject-void', 'payload' => 'test']],
-        ]);
-        $consumer = $pool->consumer('main');
-        $delivery = $consumer->next(10);
-        expect($delivery)->not->toBeNull();
-
-        $delivery->reject(false);
-        expect(true)->toBeTrue();
-
-        $pool->close();
-    });
-
-    it('drainErrors returns settlement errors after failed ack', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
-            'deliveries' => [['message_id' => 'drain-error', 'payload' => 'test']],
-        ]);
-        $consumer = $pool->consumer('main');
-        $delivery = $consumer->next(10);
-
-        $delivery->ack();
-        // Errors surface asynchronously — drain may be empty here
-        $errors = $consumer->drainErrors();
-        expect($errors)->toBeArray();
-
-        $pool->close();
+        it('drainErrors returns settlement errors after failed ack', function () {
+            $this->delivery->ack();
+            // Errors surface asynchronously — drain may be empty here
+            $errors = $this->consumer->drainErrors();
+            expect($errors)->toBeArray();
+        });
     });
 
     it('ackBatch bounds to 256 deliveries', function () {

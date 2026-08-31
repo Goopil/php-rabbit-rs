@@ -4,18 +4,10 @@ declare(strict_types=1);
 
 function poolConfig(string $vhost = '/'): array
 {
-    return [
-        'brokers' => [[
-            'name' => 'default',
-            'hosts' => [['host' => '127.0.0.1', 'port' => 5672]],
-            'vhost' => $vhost,
-            'credentials' => ['username' => 'guest', 'password' => 'secret'],
-            'tls' => ['enabled' => false, 'server_name' => null],
-            'heartbeat' => 30,
-        ]],
-        'workers' => [],
-        'topology_mode' => 'external',
-    ];
+    $config = defaultConfig();
+    $config['brokers'][0]['vhost'] = $vhost;
+
+    return $config;
 }
 
 describe('pool registry', function () {
