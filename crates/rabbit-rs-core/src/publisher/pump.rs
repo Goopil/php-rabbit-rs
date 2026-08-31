@@ -75,13 +75,19 @@ impl PublishPump {
 
     /// Hot-swaps the transport channel used by the background pump.
     pub fn update_channel(&self, channel: Arc<dyn PublisherChannel>) {
-        *self.channel.write().expect("pump channel lock") = Some(channel);
+        *self
+            .channel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(channel);
     }
 
     /// Clears the transport channel, causing the pump to drop messages until
     /// a new channel is provided via [`update_channel`](Self::update_channel).
     pub fn clear_channel(&self) {
-        *self.channel.write().expect("pump channel lock") = None;
+        *self
+            .channel
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Enqueues a publish job, applying backpressure by blocking the caller
@@ -197,7 +203,11 @@ async fn pump_loop(
                 // With a channel, the publish error is a silent loss (blind
                 // semantics); without one (recovery in progress) the job is
                 // dropped silently.
-                if let Some(ch) = channel.read().expect("pump channel lock").clone() {
+                if let Some(ch) = channel
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     inflight.push(Box::pin(async move {
                         let _ = ch.publish(job.request).await;
                     }));
