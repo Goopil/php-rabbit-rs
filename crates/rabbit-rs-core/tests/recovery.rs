@@ -107,6 +107,12 @@ mod helper {
             publisher_config: publisher_config(),
             config,
             metrics: rabbit_rs_core::metrics::Metrics::default(),
+            // These tests exercise the deterministic recovery sequence with
+            // the profile's consumer established, so "main" is requested up
+            // front (issue #49: recovery only establishes requested profiles).
+            requested_profiles: Arc::new(std::sync::Mutex::new(
+                ["main".to_owned()].into_iter().collect(),
+            )),
         }
     }
 

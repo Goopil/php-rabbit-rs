@@ -774,7 +774,7 @@ git commit -m "feat(laravel): warn on unbounded redelivery defaults in productio
 
 **Context:** `recover_generation` loops over **all** `worker_profiles()` of the config (`recovery_coordinator.rs:406`): a purely publishing process that declares worker profiles opens channels + `basic_consume` on all queues at each reconnection and holds unacked messages (up to prefetch per queue) — invisible blocking of queues and pointless redeliveries.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[tokio::test(start_paused = true)]
@@ -806,23 +806,31 @@ async fn only_requested_worker_profiles_are_consumed() {
 
 (Verify the exact `TransportOperation` variant for `basic_consume` in `crates/rabbit-rs-core/src/transport/mock.rs` and adapt the pattern matching.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core only_requested_worker_profiles`
 Expected: FAIL — `side.jobs` is consumed despite no request.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 1. In `crates/rabbit-rs-core/src/client.rs`, add `requested_profiles: std::sync::Mutex<std::collections::HashSet<String>>` to `ClientPool`. `consumer(profile)` inserts the profile into the set **before** triggering the coordinators.
 2. Share the set with each coordinator (passed at construction, `Arc<Mutex<HashSet<String>>>`).
 3. In `recover_generation` (`recovery_coordinator.rs:406`), filter `worker_profiles()`: only process the profiles present in the requested set. A profile added after a reconnection is established at the next `coordinator.consumer(profile)` call (the `client.consumer()` wait loop already retries).
 
-- [ ] **Step 4: Run tests to verify they pass**
+Implementation notes (deviations kept minimal): `RecoveryCoordinatorHandle::consumer`
+establishes a requested-but-missing profile on demand while `Ready` (serialized with
+`recover_generation`'s consumer phase through a shared establishment lock; same-generation
+sets are never re-established). The on-demand failure path reports connection loss so
+re-establishment is retried with backoff, mirroring the recovery-generation failure path.
+Consumer set handles close on drop, so the shared establishment helper registers the set
+in the coordinator map and callers fetch the handle from it.
+
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `rtk cargo test -p rabbit-rs-core && rtk ./scripts/check.sh`
 Expected: PASS (watch out for existing tests that expected eager establishment — adapt them if their intent is preserved).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/rabbit-rs-core

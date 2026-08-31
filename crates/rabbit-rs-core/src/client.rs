@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt,
     sync::{Arc, Mutex as StdMutex, MutexGuard},
@@ -58,6 +58,10 @@ pub struct ClientPool {
     publisher_initializers: Initializers,
     consumers: StdMutex<HashMap<String, ConsumerHandle>>,
     consumer_initializers: Initializers,
+    /// Worker profiles explicitly requested through [`ClientPool::consumer`].
+    /// Shared with every coordinator so recovery only establishes requested
+    /// consumers; declared-but-unrequested profiles stay dormant.
+    requested_profiles: Arc<StdMutex<HashSet<String>>>,
     metrics: Metrics,
 }
 
@@ -105,6 +109,7 @@ impl ClientPool {
             publisher_initializers: StdMutex::new(HashMap::new()),
             consumers: StdMutex::new(HashMap::new()),
             consumer_initializers: StdMutex::new(HashMap::new()),
+            requested_profiles: Arc::new(StdMutex::new(HashSet::new())),
             metrics: Metrics::default(),
         }
     }
@@ -335,6 +340,11 @@ impl ClientPool {
                 format!("workers.{profile}: unknown worker profile"),
             )
         })?;
+
+        // Record the request before any coordinator is triggered so that the
+        // current or next recovery generation establishes this profile's
+        // consumer channels (see `recover_generation`).
+        lock(&self.requested_profiles).insert(profile.to_owned());
 
         // Check for a cached consumer handle. If the coordinator has moved to a
         // newer generation, the cached handle is stale and must be evicted.
@@ -680,6 +690,7 @@ impl ClientPool {
             publisher_config: self.publisher_config,
             config: self.config.clone(),
             metrics: self.metrics.clone(),
+            requested_profiles: self.requested_profiles.clone(),
         };
         let coordinator = RecoveryCoordinator::spawn(&self.transport, coordinator_config);
         if self.commit(generation, &self.coordinators, broker, coordinator.clone()) {

@@ -17,7 +17,7 @@ use rabbit_rs_core::{
     },
     metrics::Metrics,
     pool::ConnectionKey,
-    publisher::{Destination, PublisherActor, PublisherConfig},
+    publisher::{Destination, MessageProperties, PublishRequest, PublisherActor, PublisherConfig},
     topology::delay::DelayStrategy,
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind, Transport, TransportError,
@@ -1674,4 +1674,137 @@ async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
         "deadline expiry must surface as a typed transport error: {error:?}"
     );
     assert_eq!(started.elapsed(), Duration::from_secs(1));
+}
+
+// ---------------------------------------------------------------------------
+// Lazy consumer establishment (issue #49)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn only_requested_worker_profiles_are_consumed() {
+    let transport = Arc::new(MockTransport::default());
+
+    // Two declared worker profiles on the same broker: "main" (queue
+    // main.jobs) and "side" (queue side.jobs).
+    let config = Config {
+        brokers: vec![broker("b", "/")],
+        workers: vec![
+            worker_profile("main", "b", "main.jobs"),
+            worker_profile("side", "b", "side.jobs"),
+        ],
+        topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        consumer: ConsumerConfigSection::default(),
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+    };
+
+    let pool = ClientPool::new(
+        Arc::new(config.validate().expect("valid config")),
+        transport.clone(),
+    );
+
+    // The process only requests the "main" profile.
+    let _handle = pool.consumer("main").await.expect("main consumer");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let operations = transport.operations();
+    let consumed_queues: Vec<&str> = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Consume(request) => Some(request.queue.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        consumed_queues.contains(&"main.jobs"),
+        "requested profile consumed: {consumed_queues:?}"
+    );
+    assert!(
+        !consumed_queues.contains(&"side.jobs"),
+        "unrequested profile must not be consumed: {consumed_queues:?}"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
+#[tokio::test(start_paused = true)]
+async fn profile_requested_after_a_publishing_phase_is_established_on_demand() {
+    let transport = Arc::new(MockTransport::default());
+
+    let config = Config {
+        brokers: vec![broker("b", "/")],
+        workers: vec![
+            worker_profile("main", "b", "main.jobs"),
+            worker_profile("side", "b", "side.jobs"),
+        ],
+        topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        consumer: ConsumerConfigSection::default(),
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+    };
+
+    let pool = ClientPool::new(
+        Arc::new(config.validate().expect("valid config")),
+        transport.clone(),
+    );
+
+    // A publishing phase starts the coordinator: generation 1 runs with no
+    // requested profile, so no queue is consumed.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let properties = MessageProperties::new("msg-1");
+    let request = PublishRequest::new(
+        Destination::new("main.jobs", "main.jobs"),
+        Bytes::from_static(b"payload"),
+        properties,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+    );
+    pool.publish("b", request).await.expect("publish");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let operations_before = transport.operations();
+    assert!(
+        !operations_before
+            .iter()
+            .any(|operation| matches!(operation, TransportOperation::Consume(_))),
+        "no queue is consumed while no profile has been requested"
+    );
+
+    // The "main" profile is requested afterwards: it must be established
+    // without waiting for a reconnection, and "side" must stay dormant.
+    let _handle = pool.consumer("main").await.expect("main consumer");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let operations = transport.operations();
+    let consumed_queues: Vec<&str> = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Consume(request) => Some(request.queue.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        consumed_queues.contains(&"main.jobs"),
+        "requested profile consumed: {consumed_queues:?}"
+    );
+    assert!(
+        !consumed_queues.contains(&"side.jobs"),
+        "unrequested profile must not be consumed: {consumed_queues:?}"
+    );
+
+    pool.close().await.expect("close pool");
 }
