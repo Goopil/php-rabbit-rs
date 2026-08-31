@@ -69,6 +69,22 @@ impl PublisherActor {
         Self::spawn_inner(channel, config, metrics, Some(delay_strategy))
     }
 
+    /// A handle whose blind publish pump is already closed (intake receiver
+    /// gone): every blind hand-off fails with [`PublishErrorKind::Closed`]
+    /// deterministically. Test-support only — pins the closed-pump publish
+    /// contract without racing on pump task exit.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_closed_pump_for_tests(
+        channel: Arc<dyn PublisherChannel>,
+        config: PublisherConfig,
+    ) -> PublisherHandle {
+        let mut handle = Self::spawn_inner(channel, config, Metrics::default(), None);
+        handle.pump = Some(Arc::new(super::pump::PublishPump::closed_for_tests()));
+        handle
+    }
+
     #[must_use]
     fn spawn_inner(
         channel: Arc<dyn PublisherChannel>,

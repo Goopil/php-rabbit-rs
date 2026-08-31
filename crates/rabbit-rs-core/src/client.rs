@@ -14,7 +14,7 @@ use crate::{
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
         PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
-        PublisherConfig, PublisherHandle,
+        PublisherActor, PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
     topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
@@ -522,6 +522,31 @@ impl ClientPool {
         broker: &str,
     ) -> Result<(), ClientError> {
         self.connection(broker).await.map(drop)
+    }
+
+    /// Replaces the cached publisher for `broker` with one whose blind
+    /// publish pump is already closed (its intake receiver is gone), keeping
+    /// the pool itself open so tests can pin the closed-pump contract of the
+    /// blind publish paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the broker connection or channel fails.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub async fn install_closed_pump_publisher_for_tests(
+        &self,
+        broker: &str,
+    ) -> Result<(), ClientError> {
+        let connection = self.connection(broker).await?;
+        let channel = connection
+            .open_publisher()
+            .await
+            .map_err(|error| ClientError::transport(&error))?;
+        let publisher =
+            PublisherActor::with_closed_pump_for_tests(channel.into(), self.publisher_config);
+        lock(&self.publishers).insert(broker.to_owned(), publisher);
+        Ok(())
     }
 
     #[cfg(any(test, feature = "test-support"))]

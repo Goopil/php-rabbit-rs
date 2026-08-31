@@ -7,7 +7,7 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    client::ClientPool,
+    client::{ClientErrorKind, ClientPool},
     config::{
         BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
         SafetyMode, TlsConfig, TopologyMode, ValidatedConfig,
@@ -234,23 +234,27 @@ async fn flush_blind_resolves_only_after_pending_publishes_reach_the_transport()
         .expect("batch enqueued");
     gate.wait_entered().await;
 
+    // A full simulated second must elapse without the flush resolving. The
+    // timeout expiry is positive proof the flush barrier was enqueued behind
+    // the gated publish and stayed parked — the assertion can no longer pass
+    // merely because the flush has not been scheduled yet (D2 non-vacuous
+    // assert, blind sibling of the pump-level test).
     let flush = tokio::spawn({
         let pool = Arc::clone(&pool);
         async move { pool.flush_blind().await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !flush.is_finished(),
-        "flush must wait for the gated publish to be handed to the transport"
-    );
-    assert!(publish_requests(&transport).is_empty());
-
-    assert!(gate.release());
-    wait_for_publishes(&transport, 1).await;
     tokio::time::timeout(Duration::from_secs(1), flush)
         .await
+        .expect_err("flush must not resolve while the gated publish has not reached the transport");
+    assert!(publish_requests(&transport).is_empty());
+
+    // Releasing the gate hands the publish to the transport: a fresh flush
+    // must then resolve promptly.
+    assert!(gate.release());
+    wait_for_publishes(&transport, 1).await;
+    tokio::time::timeout(Duration::from_secs(1), pool.flush_blind())
+        .await
         .expect("flush must not hang once the transport accepted everything")
-        .expect("flush task joins")
         .expect("flush succeeds");
 
     pool.close().await.expect("close pool");
@@ -275,6 +279,42 @@ async fn flush_blind_resolves_immediately_on_non_blind_clients() {
         .await
         .expect("flush must not hang on a non-blind publisher")
         .expect("flush on a non-blind publisher succeeds");
+
+    pool.close().await.expect("close pool");
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_batch_on_a_closed_pump_fails_immediately_and_leaves_everything_with_the_caller() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = Arc::new(blind_pool(&transport, 8));
+
+    // Install a publisher whose blind pump is already closed while the pool
+    // itself stays open.
+    pool.install_closed_pump_publisher_for_tests("default")
+        .await
+        .expect("closed-pump publisher installed");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        pool.publish_batch(batch(&["m0", "m1", "m2"])),
+    )
+    .await
+    .expect("batch on a closed pump must fail immediately, not hang");
+
+    let error = outcome.expect_err("batch on a closed pump must fail");
+    assert_eq!(
+        error.kind(),
+        ClientErrorKind::Closed,
+        "the closed pump must surface a Closed client error, got {error}"
+    );
+
+    // Nothing was enqueued, so the caller re-buffers a conservative superset
+    // (here: the whole batch) — no request may have reached the transport,
+    // and no synthetic `Confirmed` outcome may be produced.
+    assert!(
+        publish_requests(&transport).is_empty(),
+        "a batch rejected by a closed pump must not enqueue any publish"
+    );
 
     pool.close().await.expect("close pool");
 }

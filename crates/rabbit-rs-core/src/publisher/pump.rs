@@ -147,6 +147,21 @@ impl PublishPump {
     pub fn is_empty(&self) -> bool {
         self.tx.is_empty()
     }
+
+    /// A pump whose intake receiver is already gone: every hand-off fails
+    /// with [`PublishErrorKind::Closed`] deterministically. Test-support
+    /// only — pins the closed-pump contract without racing on task exit.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn closed_for_tests() -> Self {
+        let (tx, rx) = flume::bounded(1);
+        drop(rx);
+        Self {
+            tx,
+            channel: Arc::new(ArcSwapOption::from_pointee(None)),
+        }
+    }
 }
 
 impl std::fmt::Debug for PublishPump {
