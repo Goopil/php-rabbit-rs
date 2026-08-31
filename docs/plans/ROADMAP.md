@@ -373,6 +373,12 @@ Conflict points between tracks (rebase or sequence): #66 ↔ #71 share
 `consumer/set.rs`; #67 ↔ #73 ↔ #76 share `publisher/actor.rs` /
 `conversion.rs`.
 
+1.0 gate (agreed 2026-08-31): **1.0 = Round G exit + Round H landed.** The
+Round G exit criterion is the audit's P0/P1 list at zero, with #69 proving
+fixes against a real broker; Round H (v0.1.0, connection-first config) ships
+the last breaking change before the tag. No breaking changes after 1.0 —
+features (realtime stack, multi-framework adapters) come after.
+
 ## Post-1.0 feature ideas (parked — recorded so nothing is lost)
 
 From the native design ("Planned evolutions") and review discussions. None of
@@ -392,6 +398,10 @@ this starts before the Round G stabilization exit criterion.
   (design decision, out of the core crate).
 - **Per-queue publish safety inside one connection** — see Parked below;
   arbitrate alongside Round D.
+- **Symfony Messenger transport (or other-framework adapters)** — thin
+  adapter over the extension mirroring the connection-first config surface;
+  only after Laravel consolidation (Round H) and 1.0, and after the
+  extension boundary hardening (#75, #76).
 
 ### Realtime stack (2026-08-31) — suggested order 1 → 2 → 3 (each builds on the previous)
 
