@@ -158,8 +158,6 @@ pub struct SubscriptionConfig {
     pub starvation_after: Duration,
     #[serde(default = "default_max_buffered_bytes")]
     pub max_buffered_bytes: u64,
-    #[serde(default)]
-    pub max_message_bytes: Option<u64>,
     /// Best-effort mode: ACK the delivery to the broker before dispatch to PHP.
     ///
     /// When `true`, the consumer auto-acks each delivery immediately and
@@ -187,39 +185,6 @@ pub enum SchedulerStrategy {
 #[serde(deny_unknown_fields)]
 pub struct SchedulerConfig {
     pub strategy: SchedulerStrategy,
-}
-
-impl SchedulerConfig {
-    #[must_use]
-    pub const fn weighted_fair() -> Self {
-        Self {
-            strategy: SchedulerStrategy::WeightedFair,
-        }
-    }
-}
-
-/// A set of subscriptions consumed by one Laravel worker profile.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkerProfile {
-    pub name: String,
-    pub subscriptions: Vec<SubscriptionConfig>,
-    pub scheduler: SchedulerConfig,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkerProfileWire {
-    name: String,
-    subscriptions: Vec<SubscriptionConfig>,
-    scheduler: SchedulerConfigWire,
-    #[serde(default)]
-    max_in_flight: Option<u16>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SchedulerConfigWire {
-    strategy: SchedulerStrategy,
     /// Deserialized for wire compatibility with existing hand-written configs,
     /// then ignored: broker `QoS` structurally bounds un-acked deliveries per
     /// channel, so a worker-level dispatch budget would be dead weight.
@@ -228,27 +193,23 @@ struct SchedulerConfigWire {
     max_in_flight: Option<u16>,
 }
 
-impl<'de> Deserialize<'de> for WorkerProfile {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = WorkerProfileWire::deserialize(deserializer)?;
-        if wire.max_in_flight.is_some() {
-            return Err(serde::de::Error::custom(format!(
-                "workers.{}.max_in_flight moved to workers.{}.scheduler.max_in_flight",
-                wire.name, wire.name
-            )));
+impl SchedulerConfig {
+    #[must_use]
+    pub const fn weighted_fair() -> Self {
+        Self {
+            strategy: SchedulerStrategy::WeightedFair,
+            max_in_flight: None,
         }
-
-        Ok(Self {
-            name: wire.name,
-            subscriptions: wire.subscriptions,
-            scheduler: SchedulerConfig {
-                strategy: wire.scheduler.strategy,
-            },
-        })
     }
+}
+
+/// A set of subscriptions consumed by one Laravel worker profile.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerProfile {
+    pub name: String,
+    pub subscriptions: Vec<SubscriptionConfig>,
+    pub scheduler: SchedulerConfig,
 }
 
 /// Controls whether Rabbit RS mutates or only observes broker topology.
@@ -695,13 +656,6 @@ impl ConfigFingerprint {
                 digest.update(subscription.prefetch.to_be_bytes());
                 digest.update(subscription.starvation_after.as_secs().to_be_bytes());
                 digest.update(subscription.max_buffered_bytes.to_be_bytes());
-                match subscription.max_message_bytes {
-                    Some(bytes) => {
-                        hash_value(&mut digest, "max_message_bytes");
-                        digest.update(bytes.to_be_bytes());
-                    }
-                    None => hash_value(&mut digest, "no_max_message_bytes"),
-                }
                 hash_value(
                     &mut digest,
                     if subscription.early_ack {
@@ -908,8 +862,8 @@ mod tests {
         PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig,
         TlsConfig, TopologyMode, WorkerProfile,
     };
-    use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
+    use crate::transport::QueueKind;
 
     fn broker(hosts: Vec<Endpoint>) -> BrokerConfig {
         BrokerConfig {
@@ -932,7 +886,6 @@ mod tests {
             prefetch,
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
-            max_message_bytes: None,
             early_ack: false,
             no_ack: false,
         }
@@ -993,11 +946,9 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions.default");
-        assert!(
-            error
-                .to_string()
-                .contains("subscription name must be unique within a worker profile")
-        );
+        assert!(error
+            .to_string()
+            .contains("subscription name must be unique within a worker profile"));
     }
 
     #[test]
@@ -1155,12 +1106,8 @@ mod tests {
         }))
         .expect_err("legacy worker-level max_in_flight must be rejected");
 
-        assert!(error.to_string().contains("workers.main.max_in_flight"));
-        assert!(
-            error
-                .to_string()
-                .contains("workers.main.scheduler.max_in_flight")
-        );
+        assert!(error.to_string().contains("unknown field"));
+        assert!(error.to_string().contains("max_in_flight"));
     }
 
     #[test]

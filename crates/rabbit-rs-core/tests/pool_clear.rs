@@ -54,7 +54,6 @@ fn consumer_config() -> rabbit_rs_core::config::ValidatedConfig {
                 prefetch: 8,
                 starvation_after: Duration::from_secs(30),
                 max_buffered_bytes: 64 * 1024 * 1024,
-                max_message_bytes: None,
                 early_ack: false,
                 no_ack: false,
             }],
