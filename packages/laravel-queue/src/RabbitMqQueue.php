@@ -345,9 +345,17 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
                 if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
                     throw new ConnectionException($error['message'] ?? 'settlement error: ' . $kind);
                 }
-                if (isset($this->container)) {
-                    $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+                if (! isset($this->container)) {
+                    continue;
                 }
+                // A MaxAttempts settlement is terminal poison policy: with no
+                // dead-letter exchange it is an explicit, documented loss, so
+                // it is logged at error level with the core's error context.
+                if ($kind === 'MaxAttempts') {
+                    $this->container->make('log')->error('rabbit-rs: poison delivery settled', $error);
+                    continue;
+                }
+                $this->container->make('log')->warning('rabbit-rs settlement error', $error);
             }
         }
     }
