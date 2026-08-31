@@ -10,11 +10,9 @@ use std::sync::Mutex;
 
 use ext_php_rs::{
     convert::IntoZvalDyn,
-    prelude::{PhpException, PhpResult},
+    prelude::PhpResult,
     types::{ZendCallable, Zval},
 };
-
-use crate::classes::exception::RabbitRsException;
 
 /// Container for an optional PHP callable, protected by a mutex.
 ///
@@ -37,7 +35,7 @@ impl CallbackSlot {
     /// Returns a PHP exception if the given value is not callable.
     pub fn set(&self, callable: Zval) -> PhpResult<()> {
         if !callable.is_callable() {
-            return Err(PhpException::from_class::<RabbitRsException>(
+            return Err(crate::classes::exception::rabbit_exception_message(
                 "callback must be a callable PHP value".to_owned(),
             ));
         }
@@ -62,20 +60,14 @@ impl CallbackSlot {
             }
         };
         let callback = ZendCallable::new(&callable_zval).map_err(|_| {
-            PhpException::from_class::<RabbitRsException>(
+            crate::classes::exception::rabbit_exception_message(
                 "stored callback is no longer callable".to_owned(),
             )
         })?;
         callback
             .try_call(params)
             .map(|_| ())
-            .map_err(|error| PhpException::from_class::<RabbitRsException>(error.to_string()))
-    }
-}
-
-impl Default for CallbackSlot {
-    fn default() -> Self {
-        Self::new()
+            .map_err(|error| crate::classes::exception::rabbit_exception_message(error.to_string()))
     }
 }
 

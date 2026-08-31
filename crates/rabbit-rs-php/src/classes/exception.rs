@@ -26,6 +26,11 @@ pub struct BackpressureException;
 #[derive(Default)]
 pub struct ConnectionException;
 
+/// Builds a base exception value without wrapping it in `PhpResult`.
+pub(crate) fn rabbit_exception_message(message: String) -> PhpException {
+    PhpException::from_class::<RabbitRsException>(message)
+}
+
 pub(crate) fn rabbit_exception<T>(message: impl Into<String>) -> PhpResult<T> {
     Err(PhpException::from_class::<RabbitRsException>(
         message.into(),
@@ -52,13 +57,15 @@ pub(crate) fn client_exception<T>(error: &ClientError) -> PhpResult<T> {
     }
 }
 
-pub(crate) fn consumer_exception<T>(error: &ConsumerError) -> PhpResult<T> {
+/// Builds the PHP exception for a consumer error without wrapping it.
+pub(crate) fn consumer_exception_message(error: &ConsumerError) -> PhpException {
+    let message = error.to_string();
     match error.kind() {
         ConsumerErrorKind::Transport
         | ConsumerErrorKind::StaleGeneration
-        | ConsumerErrorKind::SourceReplaced => Err(
-            PhpException::from_class::<ConnectionException>(error.to_string()),
-        ),
+        | ConsumerErrorKind::SourceReplaced => {
+            PhpException::from_class::<ConnectionException>(message)
+        }
         ConsumerErrorKind::Closed
         | ConsumerErrorKind::AlreadySettled
         | ConsumerErrorKind::AlreadySettling
@@ -66,6 +73,10 @@ pub(crate) fn consumer_exception<T>(error: &ConsumerError) -> PhpResult<T> {
         | ConsumerErrorKind::Publish
         | ConsumerErrorKind::MissingPublisher
         | ConsumerErrorKind::InvalidSubscription
-        | ConsumerErrorKind::MaxAttempts => rabbit_exception(error.to_string()),
+        | ConsumerErrorKind::MaxAttempts => PhpException::from_class::<RabbitRsException>(message),
     }
+}
+
+pub(crate) fn consumer_exception<T>(error: &ConsumerError) -> PhpResult<T> {
+    Err(consumer_exception_message(error))
 }

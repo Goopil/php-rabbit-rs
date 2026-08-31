@@ -30,27 +30,21 @@ pub(crate) struct EventBridge {
 impl EventBridge {
     /// Creates a bridge bound to the given client pool, wrapped for sharing
     /// between the PHP `Pool` and `Consumer` class instances.
+    ///
+    /// The pool is held weakly: the bridge never extends the client's
+    /// lifetime, and draining after the client was dropped is a no-op.
     #[expect(
         clippy::arc_with_non_send_sync,
         reason = "the bridge is confined to the PHP thread: both owning classes are PHP objects and Zend values are never sent across Rust threads"
     )]
     pub(crate) fn shared(client: &Arc<ClientPool>) -> Arc<Self> {
-        Arc::new(Self::new(Arc::downgrade(client)))
-    }
-
-    /// Creates a bridge bound to the given client pool.
-    ///
-    /// The pool is held weakly: the bridge never extends the client's
-    /// lifetime, and draining after the client was dropped is a no-op.
-    #[must_use]
-    pub(crate) fn new(client: Weak<ClientPool>) -> Self {
-        Self {
+        Arc::new(Self {
             connection_state_callback: CallbackSlot::new(),
             backpressure_callback: CallbackSlot::new(),
             last_connection_states: Mutex::new(HashMap::new()),
             last_backpressure_total: Mutex::new(0),
-            client,
-        }
+            client: Arc::downgrade(client),
+        })
     }
 
     /// Registers the PHP callback invoked when a broker connection state changes.
