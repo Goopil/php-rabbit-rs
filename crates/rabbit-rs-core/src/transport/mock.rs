@@ -25,6 +25,7 @@ pub enum TransportOperation {
     BindQueue(BindingSpec),
     QueueSize { queue: String, result: u32 },
     PurgeQueue { queue: String },
+    DeleteQueue { queue: String },
     EnableConfirms,
     Publish(PublishRequest),
     Qos { prefetch: u16 },
@@ -510,6 +511,12 @@ impl TopologyChannel for MockPublisherChannel {
         })
     }
 
+    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
+        self.record_topology(TransportOperation::DeleteQueue {
+            queue: queue.to_owned(),
+        })
+    }
+
     async fn close(&self) -> TransportResult<()> {
         let gate = {
             let mut state = self
@@ -664,6 +671,12 @@ impl TopologyChannel for MockConsumerChannel {
 
     async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
         self.record_topology(TransportOperation::PurgeQueue {
+            queue: queue.to_owned(),
+        })
+    }
+
+    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
+        self.record_topology(TransportOperation::DeleteQueue {
             queue: queue.to_owned(),
         })
     }

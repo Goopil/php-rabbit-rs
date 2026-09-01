@@ -347,6 +347,20 @@ pub trait TopologyChannel: Send + Sync {
     /// Returns an error when the queue does not exist or the broker rejects the purge.
     async fn purge_queue(&self, queue: &str) -> TransportResult<()>;
 
+    /// Deletes a queue. A missing queue resolves successfully (idempotent
+    /// deletion).
+    ///
+    /// Emptiness is NOT enforced by the broker: quorum queues reject
+    /// `if-unused`/`if-empty` deletes. Callers must ensure the queue is safe
+    /// to delete immediately before calling, the way
+    /// [`crate::topology::delay::sweep_delay_queues`] probes with
+    /// [`Self::queue_size`] first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the broker rejects the deletion request.
+    async fn delete_queue(&self, queue: &str) -> TransportResult<()>;
+
     /// # Errors
     ///
     /// Returns an error when graceful channel shutdown fails.
