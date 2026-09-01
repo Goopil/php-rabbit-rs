@@ -460,6 +460,27 @@ this starts before the Round G stabilization exit criterion.
   adapter over the extension mirroring the connection-first config surface;
   only after Laravel consolidation (Round H) and 1.0, and after the
   extension boundary hardening (#75, #76).
+- **Worker batched prefetch in `pop()`** (2026-09-01, smoke-benchmarked) —
+  `pop()` pays one PHP↔Rust crossing per job (`Consumer::next()`, ~60µs
+  measured), capping the unit-consume shape at ~16–22k jobs/s while the same
+  smoke's `nextBatch(256)` + single `ackThrough` path sustains 41k+/s
+  (fire-and-forget consume 16.7k/s vs batch-confirm 41.2k/s; the Round 2
+  baseline shows the same inversion, so it is structural, not a regression).
+  Plan: `pop()` fills a bounded per-profile FIFO via `nextBatch(≤prefetch,
+  blockForMs)` and hands jobs out one at a time; acks stay per-job at settle
+  (no `ackThrough` — out-of-order job completion would ack unfinished jobs);
+  the buffer is bounded by the configured prefetch, a crash redelivers it
+  (at-least-once intact, duplicates measurable), and the #68 consumer-cache
+  eviction rules extend to the buffer. Escalation if ever insufficient: a
+  dedicated `rabbit-rs:consume` command with batch-completion acks — parked
+  as an idea only, it duplicates `queue:work`/WorkerSupervisor semantics and
+  weakens ack-after-job-completion. Sequenced post-1.0 (parked with #41/#42).
+- **Profile `Consumer::next()` per-call cost** (2026-09-01) — evaluation, to
+  run once everything else is done (Round G exit + Round H landed): ~60µs per
+  unit `next()` call is high for an ext-php-rs boundary; attribute the cost
+  (tokio channel hop, Zval marshalling, delivery object construction) with
+  `cargo bench`/profiling before deciding on a cheaper core fast path that
+  would benefit every consumer shape.
 
 ### Realtime stack (2026-08-31) — suggested order 1 → 2 → 3 (each builds on the previous)
 
