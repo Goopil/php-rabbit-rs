@@ -386,8 +386,16 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
             $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);
             $delivery = $consumer->next($this->blockForMilliseconds);
         } catch (ConnectionException $exception) {
+            // Connection-level consumer errors (SourceReplaced, StaleGeneration,
+            // Transport) mean the handle is retired or stale: evict it so the
+            // next pop re-fetches a fresh consumer from the pool instead of
+            // replaying the retired handle's one-shot error forever.
+            unset($this->consumers[$profile]);
             throw $exception;
         } catch (NativeException $exception) {
+            // Closed surfaces as the base native exception: the handle is
+            // terminal, the next pop must re-fetch.
+            unset($this->consumers[$profile]);
             throw QueueException::fromNative($exception);
         }
         if ($delivery === null) {

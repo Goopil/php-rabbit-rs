@@ -2,7 +2,10 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Delivery;
+use Goopil\RabbitRs\Exception as NativeException;
+use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
@@ -162,4 +165,40 @@ it('does not settle a marshable delivery on pop', function (): void {
     expect($job)->not->toBeNull()
         ->and($delivery->ackCalls)->toBe(0)
         ->and($delivery->rejectRequeues)->toBe([]);
+});
+
+it('evicts the cached consumer so the next pop re-fetches after a connection error', function (): void {
+    [$queue, $pool] = makePopQueue();
+
+    $queue->pop('orders-eu');
+    expect($pool->consumerProfiles)->toHaveCount(1);
+
+    // A connection-level error carries SourceReplaced ("re-fetch consumer"),
+    // StaleGeneration and Transport: the retired handle must not be reused.
+    $pool->consumerFor('default')->throwOnNext(
+        new ConnectionException('broker source replaced by recovery; re-fetch consumer'),
+    );
+    expect(fn () => $queue->pop('orders-eu'))->toThrow(ConnectionException::class);
+
+    // The next pop must re-fetch from the pool instead of reusing the
+    // retired handle the one-shot signal was delivered to.
+    $queue->pop('orders-eu');
+    expect($pool->consumerProfiles)->toHaveCount(2);
+});
+
+it('evicts the cached consumer so the next pop re-fetches after the consumer closed', function (): void {
+    [$queue, $pool] = makePopQueue();
+
+    $queue->pop('orders-eu');
+    expect($pool->consumerProfiles)->toHaveCount(1);
+
+    // The Closed kind surfaces as the base native exception and is wrapped
+    // in QueueException: every source retired, the handle is terminal.
+    $pool->consumerFor('default')->throwOnNext(
+        new NativeException('consumer is closed'),
+    );
+    expect(fn () => $queue->pop('orders-eu'))->toThrow(QueueException::class);
+
+    $queue->pop('orders-eu');
+    expect($pool->consumerProfiles)->toHaveCount(2);
 });
