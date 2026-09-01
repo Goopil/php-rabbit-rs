@@ -302,6 +302,22 @@ impl RecoveryCoordinatorHandle {
         self.actor.connection_lost(error).await
     }
 
+    /// Opens a publisher channel on the actor's active connection for admin
+    /// operations (`queue_size`, `purge_queue`).
+    ///
+    /// The channel is served on the single broker connection the actor owns,
+    /// so it fails while the connection is down and works again as soon as
+    /// recovery restores it — admin operations never open a second AMQP
+    /// connection per vhost.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transport error when the actor is stopped or the
+    /// channel cannot be opened on the active connection.
+    pub async fn admin_channel(&self) -> Result<Box<dyn PublisherChannel>, TransportError> {
+        self.actor.open_admin_channel().await
+    }
+
     /// Stops the coordinator and the connection actor.
     ///
     /// # Errors

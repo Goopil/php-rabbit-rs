@@ -18,7 +18,7 @@ use crate::{
     },
     recovery::ConnectionState,
     topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
-    transport::{Transport, TransportConnection, TransportError, lapin::LapinTransport},
+    transport::{PublisherChannel, Transport, TransportError, lapin::LapinTransport},
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -53,8 +53,6 @@ pub struct ClientPool {
     transport: Arc<dyn Transport>,
     publisher_config: PublisherConfig,
     lifecycle: StdMutex<PoolLifecycle>,
-    connections: StdMutex<HashMap<String, Arc<dyn TransportConnection>>>,
-    connection_initializers: Initializers,
     coordinators: StdMutex<HashMap<String, RecoveryCoordinatorHandle>>,
     coordinator_initializers: Initializers,
     publishers: StdMutex<HashMap<String, PublisherHandle>>,
@@ -104,8 +102,6 @@ impl ClientPool {
             transport,
             publisher_config,
             lifecycle: StdMutex::new(PoolLifecycle::Open { generation: 1 }),
-            connections: StdMutex::new(HashMap::new()),
-            connection_initializers: StdMutex::new(HashMap::new()),
             coordinators: StdMutex::new(HashMap::new()),
             coordinator_initializers: StdMutex::new(HashMap::new()),
             publishers: StdMutex::new(HashMap::new()),
@@ -461,11 +457,7 @@ impl ClientPool {
     /// channel failure.
     pub async fn queue_size(&self, broker: &str, queue: &str) -> Result<u32, ClientError> {
         self.ensure_open()?;
-        let connection = self.connection(broker).await?;
-        let channel = connection
-            .open_publisher()
-            .await
-            .map_err(|error| ClientError::transport(&error))?;
+        let channel = self.admin_channel(broker).await?;
         channel
             .queue_size(queue)
             .await
@@ -480,23 +472,78 @@ impl ClientPool {
     /// channel failure.
     pub async fn purge_queue(&self, broker: &str, queue: &str) -> Result<(), ClientError> {
         self.ensure_open()?;
-        let connection = self.connection(broker).await?;
-        let channel = connection
-            .open_publisher()
-            .await
-            .map_err(|error| ClientError::transport(&error))?;
+        let channel = self.admin_channel(broker).await?;
         channel
             .purge_queue(queue)
             .await
             .map_err(|error| ClientError::transport(&error))
     }
 
+    /// Opens a publisher channel for admin operations on the broker
+    /// coordinator's single connection, waiting for readiness.
+    ///
+    /// Admin operations ride the connection actor's recovery machinery
+    /// instead of caching a second raw connection (issue #77, audit F-13):
+    /// the channel fails while the connection is down and works again once
+    /// recovery restores it, and no second AMQP connection per vhost is
+    /// ever opened. The readiness wait is bounded by the configured
+    /// consumer `wait_timeout` so a prolonged outage surfaces as a typed
+    /// timeout instead of blocking the caller forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, a permanently failed
+    /// connection, a closed pool, or the readiness timeout elapsing.
+    async fn admin_channel(&self, broker: &str) -> Result<Box<dyn PublisherChannel>, ClientError> {
+        let coordinator = self.coordinator(broker).await?;
+        let wait_timeout = self.config.consumer().wait_timeout;
+        let acquisition = async {
+            loop {
+                if self.is_closed() {
+                    return Err(ClientError::closed());
+                }
+                if let Ok(channel) = coordinator.admin_channel().await {
+                    return Ok(channel);
+                }
+                match coordinator.state() {
+                    crate::recovery::ConnectionState::FailedPermanent { .. } => {
+                        return Err(ClientError::transport(&TransportError::connection(
+                            "broker connection failed permanently",
+                        )));
+                    }
+                    crate::recovery::ConnectionState::Closed => {
+                        return Err(ClientError::closed());
+                    }
+                    // The channel only becomes servable through a state
+                    // transition (recovery restoring the connection); wait
+                    // for the next one instead of spinning hot so the
+                    // deadline — and other tasks — can make progress.
+                    _ => {
+                        if coordinator.wait_for_transition().await.is_none() {
+                            return Err(ClientError::closed());
+                        }
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(wait_timeout, acquisition)
+            .await
+            .map_err(|_elapsed| {
+                ClientError::transport(&TransportError::connection(format!(
+                    "broker '{broker}' did not become ready for the admin operation within {wait_timeout:?}"
+                )))
+            })?
+    }
+
+    /// Spawns the broker coordinator (and its connection actor) without
+    /// waiting for readiness, so tests can trigger connection establishment
+    /// on a runtime and then observe the state off-runtime.
     #[cfg(test)]
-    pub(crate) async fn initialize_connection_for_tests(
+    pub(crate) async fn establish_coordinator_for_tests(
         &self,
         broker: &str,
     ) -> Result<(), ClientError> {
-        self.connection(broker).await.map(drop)
+        self.coordinator(broker).await.map(drop)
     }
 
     /// Replaces the cached publisher for `broker` with one whose blind
@@ -513,11 +560,7 @@ impl ClientPool {
         &self,
         broker: &str,
     ) -> Result<(), ClientError> {
-        let connection = self.connection(broker).await?;
-        let channel = connection
-            .open_publisher()
-            .await
-            .map_err(|error| ClientError::transport(&error))?;
+        let channel = self.admin_channel(broker).await?;
         let publisher =
             PublisherActor::with_closed_pump_for_tests(channel.into(), self.publisher_config);
         lock(&self.publishers).insert(broker.to_owned(), publisher);
@@ -592,15 +635,6 @@ impl ClientPool {
                 && first_error.is_none()
             {
                 first_error = Some(ClientError::publish(&error));
-            }
-        }
-
-        let connections = std::mem::take(&mut *lock(&self.connections));
-        for connection in connections.into_values() {
-            if let Err(error) = connection.close().await
-                && first_error.is_none()
-            {
-                first_error = Some(ClientError::transport(&error));
             }
         }
 
@@ -747,36 +781,6 @@ impl ClientPool {
             )
             .expect("external mode always compiles")
         })
-    }
-
-    async fn connection(&self, broker: &str) -> Result<Arc<dyn TransportConnection>, ClientError> {
-        let broker_config = self.config.broker(broker).cloned().ok_or_else(|| {
-            ClientError::new(
-                ClientErrorKind::Configuration,
-                format!("brokers.{broker}: unknown broker"),
-            )
-        })?;
-        let generation = self.open_generation()?;
-        if let Some(connection) = self.ready(generation, &self.connections, broker)? {
-            return Ok(connection);
-        }
-        let initializer = initializer(&self.connection_initializers, broker);
-        let _initializing = initializer.lock().await;
-        if let Some(connection) = self.ready(generation, &self.connections, broker)? {
-            return Ok(connection);
-        }
-        let connection: Arc<dyn TransportConnection> = Arc::from(
-            self.transport
-                .connect(&broker_config)
-                .await
-                .map_err(|error| ClientError::transport(&error))?,
-        );
-        if self.commit(generation, &self.connections, broker, connection.clone()) {
-            Ok(connection)
-        } else {
-            let _ = connection.close().await;
-            Err(ClientError::closed())
-        }
     }
 
     fn ensure_open(&self) -> Result<(), ClientError> {

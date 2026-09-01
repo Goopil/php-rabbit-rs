@@ -1098,6 +1098,59 @@ mod integration {
         pool.close().await.expect("close");
     }
 
+    /// Issue #77 / audit F-13: after a broker restart, `queue_size` must
+    /// succeed again without a process restart — admin operations ride the
+    /// coordinator's connection and its recovery machinery instead of a
+    /// cached raw connection that died with the broker process.
+    #[tokio::test]
+    async fn broker_restart_recovers_admin_operations() {
+        let queue = "rabbit-rs-it-admin-restart";
+        declare_queue("/orders-eu", queue).await;
+
+        let config = config_single(queue);
+        let pool = ClientPool::production(config);
+        purge_or_ignore(&pool, "primary", queue).await;
+
+        // Sanity: the admin operation works before the restart (and triggers
+        // coordinator establishment, which owns the single connection).
+        let before = pool
+            .queue_size("primary", queue)
+            .await
+            .expect("size before restart");
+        assert_eq!(before, 0);
+
+        // Restart the broker: only the transport itself can detect this; no
+        // connection_lost report is issued anywhere in the test.
+        let container = lab_rabbitmq_container();
+        let restarted = std::process::Command::new("docker")
+            .args(["restart", &container])
+            .output()
+            .expect("docker restart must run in the lab environment");
+        assert!(
+            restarted.status.success(),
+            "docker restart failed: {}",
+            String::from_utf8_lossy(&restarted.stderr)
+        );
+
+        // The pool must observe the loss on its own and reconnect.
+        tokio::time::timeout(Duration::from_mins(2), async {
+            while pool.metrics_snapshot().reconnects_total == 0 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("the pool must self-recover after the broker restart");
+
+        // The success criterion: size() succeeds again without process restart.
+        let after = tokio::time::timeout(Duration::from_mins(1), pool.queue_size("primary", queue))
+            .await
+            .expect("queue_size must not hang after recovery")
+            .expect("queue size must succeed after broker restart");
+        assert_eq!(after, 0);
+
+        pool.close().await.expect("close");
+    }
+
     /// Finds the lab container backing `localhost:5672` (the compose project
     /// names it `rabbitrs-rabbitmq-1`, with profile-dependent suffixes).
     fn lab_rabbitmq_container() -> String {

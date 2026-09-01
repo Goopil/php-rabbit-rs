@@ -219,8 +219,8 @@ track. Strategy decision (2026-08-31): **stabilize before features** — Round G
 no features; post-1.0 feature ideas are parked below.
 
 Status (2026-09-01): Tasks 21 (#66, P0), 22 (#67), 23 (#68), 24 (#69), 25 (#70),
-26 (#71), 27 (#72), 28 (#73) and Round C (#40) landed (see Landed). Still queued:
-Task 38 (#83), 29–37.
+26 (#71), 27 (#72), 28 (#73), 32 (#77) and Round C (#40) landed (see Landed).
+Still queued: Task 38 (#83), 29–31, 33–37.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
