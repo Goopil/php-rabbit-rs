@@ -23,6 +23,7 @@ use rabbit_rs_core::{
     config::SafetyMode,
     pool::{ConnectionHandle, ConnectionKey},
     runtime::RuntimeRegistry,
+    topology::delay::DelayStrategy,
 };
 
 /// Native `RabbitMQ` connection and operation pool.
@@ -32,6 +33,7 @@ use rabbit_rs_core::{
 pub struct Pool {
     handle: Arc<ConnectionHandle>,
     client: Arc<ClientPool>,
+    delay_strategy: DelayStrategy,
     pid: u32,
     bridge: Arc<EventBridge>,
     publish_buffer: Arc<PublishBuffer>,
@@ -62,6 +64,7 @@ impl Pool {
             publish_buffer: Arc::new(PublishBuffer::new(Arc::clone(&client), Arc::clone(&handle))),
             handle,
             client,
+            delay_strategy: DelayStrategy::compile(&config),
             pid: std::process::id(),
             bridge,
         })
@@ -90,11 +93,13 @@ impl Pool {
     /// Publishes one message and returns its stable message identifier.
     pub fn publish(&self, message: &ZendHashTable) -> PhpResult<String> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::publish")?;
-        let publish = conversion::publish(message, "message").map_err(|message| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                message,
-            )
-        })?;
+        let publish = conversion::publish(message, "message", &self.delay_strategy).map_err(
+            |message| {
+                ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
+                    message,
+                )
+            },
+        )?;
 
         let message_id = publish.request.properties.message_id.as_ref().to_owned();
         let payload_bytes = publish.request.payload.len();
@@ -148,11 +153,12 @@ impl Pool {
     pub fn publish_batch(&self, messages: &ZendHashTable) -> PhpResult<Vec<String>> {
         self.flush()?;
         self.ensure_open("Goopil\\RabbitRs\\Pool::publishBatch")?;
-        let publishes = conversion::publish_batch(messages).map_err(|message| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                message,
-            )
-        })?;
+        let publishes =
+            conversion::publish_batch(messages, &self.delay_strategy).map_err(|message| {
+                ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
+                    message,
+                )
+            })?;
         let requests = publishes
             .into_iter()
             .map(|publish| (publish.broker, publish.request))
@@ -327,12 +333,17 @@ fn insert_percentile(
 
 impl Pool {
     #[cfg(feature = "extension-tests")]
-    pub(crate) fn for_testing(handle: Arc<ConnectionHandle>, client: Arc<ClientPool>) -> Self {
+    pub(crate) fn for_testing(
+        handle: Arc<ConnectionHandle>,
+        client: Arc<ClientPool>,
+        delay_strategy: DelayStrategy,
+    ) -> Self {
         Self {
             publish_buffer: Arc::new(PublishBuffer::new(Arc::clone(&client), Arc::clone(&handle))),
             handle,
             bridge: EventBridge::shared(&client),
             client,
+            delay_strategy,
             pid: std::process::id(),
         }
     }

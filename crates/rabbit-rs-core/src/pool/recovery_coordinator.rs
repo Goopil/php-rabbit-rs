@@ -653,15 +653,5 @@ fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> Transp
 /// In plugin mode the strategy is `Plugin`; in TTL mode it is `TtlBuckets`.
 /// In auto mode we default to `Plugin` for the publisher path.
 fn compile_delay_strategy(config: &ValidatedConfig) -> crate::topology::delay::DelayStrategy {
-    use crate::{
-        config::DelayMode,
-        topology::delay::{DelayStrategy, TtlBucketPlan},
-    };
-    let delay = config.delay();
-    match delay.mode {
-        DelayMode::Plugin | DelayMode::Auto => DelayStrategy::Plugin,
-        DelayMode::Ttl => {
-            TtlBucketPlan::compile(delay).map_or(DelayStrategy::Plugin, DelayStrategy::TtlBuckets)
-        }
-    }
+    crate::topology::delay::DelayStrategy::compile(config)
 }

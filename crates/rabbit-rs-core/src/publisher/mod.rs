@@ -247,6 +247,9 @@ pub enum PublishErrorKind {
     Unconfirmed,
     Transport,
     Closed,
+    /// The request itself is invalid for the compiled strategy (e.g. a delay
+    /// no TTL bucket can honor). The publication was never attempted.
+    InvalidRequest,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

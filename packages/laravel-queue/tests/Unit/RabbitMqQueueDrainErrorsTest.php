@@ -126,6 +126,23 @@ it('drainSettlementErrors logs MaxAttempts errors at error level', function (): 
         && ($context['attempts'] ?? null) === 25);
 });
 
+it('drainSettlementErrors logs a refused delayed release at error level without throwing', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('default');
+    $consumer->pushError([
+        'error_kind' => 'InvalidDelay',
+        'message' => 'delay exceeds the largest configured TTL bucket (30000 ms); message msg-late rejected with requeue=false toward the dead-letter exchange',
+        'message_id' => 'msg-late',
+    ]);
+
+    Log::spy();
+    $queue->drainSettlementErrors();
+
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled'
+        && str_contains((string) ($context['message'] ?? ''), '30000 ms'));
+});
+
 it('drainSettlementErrors is a no-op when there are no errors', function (): void {
     [$queue] = makeDrainQueue();
 

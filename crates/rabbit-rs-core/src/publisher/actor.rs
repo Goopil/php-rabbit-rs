@@ -957,12 +957,22 @@ async fn ensure_delay_topology(
         return DelayTopologyOutcome::Ready;
     }
 
-    let Ok(route) = DelayRouter::route(
+    // A delay the compiled strategy cannot route (e.g. beyond the largest
+    // TTL bucket) must fail the publication terminally here: publishing it
+    // to the original exchange with an `x-delay` header a normal exchange
+    // ignores would execute the job immediately.
+    let route = match DelayRouter::route(
         strategy,
         &retained.request.destination,
         i64::try_from(delay_ms).unwrap_or(i64::MAX),
-    ) else {
-        return DelayTopologyOutcome::Ready;
+    ) {
+        Ok(route) => route,
+        Err(error) => {
+            return DelayTopologyOutcome::Failed(PublishError::new(
+                PublishErrorKind::InvalidRequest,
+                error.to_string(),
+            ));
+        }
     };
 
     if route.queue.is_none() && !state.declared_ttl_queues.contains(&route.exchange) {

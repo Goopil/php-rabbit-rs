@@ -4,7 +4,8 @@ use bytes::Bytes;
 use ext_php_rs::types::{ArrayKey, ZendHashTable, Zval};
 use rabbit_rs_core::{
     config::{Config, ValidatedConfig},
-    publisher::{Destination, MessageProperties, PublishRequest},
+    publisher::{Destination, MessageProperties, PublishRequest, delay::DelayRouter},
+    topology::delay::DelayStrategy,
     transport::{HeaderFloat, HeaderValue, PublishHeaders},
 };
 use serde_json::{Map, Number, Value};
@@ -87,16 +88,28 @@ pub(crate) fn validated_config(table: &ZendHashTable) -> Result<ValidatedConfig,
     config.validate().map_err(|error| error.to_string())
 }
 
-pub(crate) fn publish(table: &ZendHashTable, path: &str) -> Result<NativePublish, String> {
+pub(crate) fn publish(
+    table: &ZendHashTable,
+    path: &str,
+    delay_strategy: &DelayStrategy,
+) -> Result<NativePublish, String> {
     let validate_keys = cfg!(debug_assertions);
-    publish_with_budget(table, path, &mut ConversionBudget::default(), validate_keys)
+    publish_with_budget(
+        table,
+        path,
+        &mut ConversionBudget::default(),
+        validate_keys,
+        delay_strategy,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_with_budget(
     table: &ZendHashTable,
     path: &str,
     budget: &mut ConversionBudget,
     validate_keys: bool,
+    delay_strategy: &DelayStrategy,
 ) -> Result<NativePublish, String> {
     if validate_keys {
         reject_unknown_keys(
@@ -144,18 +157,41 @@ fn publish_with_budget(
     properties.delay_ms = optional_non_negative_integer(table, "delay_ms", path)?;
     properties.headers = optional_headers(table, path, budget)?;
 
+    let destination = Destination::new(exchange, routing_key);
+    validate_delay(&properties, &destination, path, delay_strategy)?;
+
     Ok(NativePublish {
         broker,
-        request: PublishRequest::new(
-            Destination::new(exchange, routing_key),
-            payload,
-            properties,
-            deadline,
-        ),
+        request: PublishRequest::new(destination, payload, properties, deadline),
     })
 }
 
-pub(crate) fn publish_batch(table: &ZendHashTable) -> Result<Vec<NativePublish>, String> {
+/// Rejects a delay the compiled strategy cannot honor before the publication
+/// is accepted: publishing it with an `x-delay` header a normal exchange
+/// ignores would deliver the message immediately.
+fn validate_delay(
+    properties: &MessageProperties,
+    destination: &Destination,
+    path: &str,
+    delay_strategy: &DelayStrategy,
+) -> Result<(), String> {
+    let Some(delay_ms) = properties.delay_ms else {
+        return Ok(());
+    };
+    if delay_ms == 0 {
+        return Ok(());
+    }
+    let delay_ms = i64::try_from(delay_ms)
+        .map_err(|_| format!("{path}.delay_ms: delay exceeds the supported range"))?;
+    DelayRouter::route(delay_strategy, destination, delay_ms)
+        .map(|_| ())
+        .map_err(|error| format!("{path}.delay_ms: {error}"))
+}
+
+pub(crate) fn publish_batch(
+    table: &ZendHashTable,
+    delay_strategy: &DelayStrategy,
+) -> Result<Vec<NativePublish>, String> {
     if !is_list(table) {
         return Err("messages: publishBatch expects a list".to_owned());
     }
@@ -178,6 +214,7 @@ pub(crate) fn publish_batch(table: &ZendHashTable) -> Result<Vec<NativePublish>,
             &path,
             &mut budget,
             validate_keys,
+            delay_strategy,
         )?);
     }
     Ok(publishes)

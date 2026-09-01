@@ -7,7 +7,7 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    config::DelayConfig,
+    config::{DelayConfig, DelayMode, ValidatedConfig},
     publisher::Destination,
     transport::{QueueKind, QueueSpec},
 };
@@ -16,6 +16,22 @@ use crate::{
 pub enum DelayStrategy {
     Plugin,
     TtlBuckets(TtlBucketPlan),
+}
+
+impl DelayStrategy {
+    /// Compiles the delay strategy a pool resolves from its configuration.
+    ///
+    /// Plugin and auto modes always resolve to [`DelayStrategy::Plugin`]; a TTL
+    /// configuration whose bucket compilation fails falls back to the plugin
+    /// strategy, matching the recovery coordinator's publisher fallback.
+    #[must_use]
+    pub fn compile(config: &ValidatedConfig) -> Self {
+        let delay = config.delay();
+        match delay.mode {
+            DelayMode::Plugin | DelayMode::Auto => Self::Plugin,
+            DelayMode::Ttl => TtlBucketPlan::compile(delay).map_or(Self::Plugin, Self::TtlBuckets),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,13 +74,24 @@ impl TtlBucketPlan {
     ///
     /// # Errors
     ///
-    /// Returns an error when the delay exceeds the largest configured bucket.
+    /// Returns an error naming the largest configured bucket when the delay
+    /// exceeds it.
     pub fn bucket_for(&self, delay: Duration) -> Result<Duration, DelayError> {
         self.buckets
             .iter()
             .copied()
             .find(|bucket| *bucket >= delay)
-            .ok_or_else(|| DelayError::new("delay exceeds the largest configured TTL bucket"))
+            .ok_or_else(|| {
+                DelayError::new(format!(
+                    "delay exceeds the largest configured TTL bucket ({} ms)",
+                    self.largest_bucket_ms()
+                ))
+            })
+    }
+
+    #[must_use]
+    fn largest_bucket_ms(&self) -> u128 {
+        self.buckets.last().map_or(0, Duration::as_millis)
     }
 
     /// Builds the durable delay queue for a destination and rounded bucket.

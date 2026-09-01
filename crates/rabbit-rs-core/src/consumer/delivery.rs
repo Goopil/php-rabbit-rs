@@ -434,6 +434,10 @@ pub enum ConsumerErrorKind {
     MissingPublisher,
     InvalidSubscription,
     MaxAttempts,
+    /// A release delay no compiled delay strategy can honor (e.g. a delay
+    /// beyond the largest TTL bucket). The delivery is settled terminally —
+    /// it is never redelivered in a loop.
+    InvalidDelay,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

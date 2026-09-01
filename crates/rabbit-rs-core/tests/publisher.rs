@@ -1246,6 +1246,77 @@ async fn zero_delay_does_not_change_routing() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn ttl_mode_refuses_a_delay_beyond_the_largest_bucket_before_any_transport_operation() {
+    let transport = MockTransport::default();
+    let plan = TtlBucketPlan::compile(&ttl_config()).expect("TTL plan");
+    let strategy = DelayStrategy::TtlBuckets(plan);
+    let actor = spawn_actor_delay(&transport, publisher_config_delay(), strategy).await;
+
+    let waiter = actor
+        .try_publish(delayed_request("too-late", 60_000))
+        .expect("publish accepted by the handle");
+
+    for _ in 0..200 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "an oversized delay must never be published immediately to the original exchange"
+    );
+    assert!(
+        !transport.operations().iter().any(|op| matches!(
+            op,
+            TransportOperation::DeclareQueue(_) | TransportOperation::DeclareExchange(_)
+        )),
+        "an oversized delay must be refused before any topology operation"
+    );
+
+    let error = waiter
+        .wait()
+        .await
+        .expect_err("the oversized delay must be refused with a typed error");
+    assert_eq!(
+        error.kind(),
+        PublishErrorKind::InvalidRequest,
+        "got: {error}"
+    );
+    assert!(
+        error.to_string().contains("30000 ms"),
+        "the error must name the largest configured bucket, got: {error}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn plugin_mode_accepts_very_large_delays() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let strategy = DelayStrategy::Plugin;
+    let actor = spawn_actor_delay(&transport, publisher_config_delay(), strategy).await;
+
+    let waiter = actor
+        .try_publish(delayed_request("long-delayed-job", 3_600_000))
+        .expect("publish");
+
+    wait_for_publish_count_delay(&transport, 1).await;
+
+    let request = find_publish(&transport);
+
+    assert!(
+        request.exchange.ends_with(".delayed"),
+        "plugin mode must publish on the delayed exchange, got: {}",
+        request.exchange
+    );
+    assert_eq!(request.properties.delay_ms, Some(3_600_000));
+
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+#[tokio::test(start_paused = true)]
 async fn plugin_mode_topology_includes_delayed_exchange_declaration() {
     let transport = MockTransport::default();
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
@@ -1456,6 +1527,20 @@ fn negative_delay_is_rejected() {
     );
 
     assert!(DelayRouter::route(&strategy, &Destination::new("jobs", "high"), -1).is_err());
+}
+
+#[test]
+fn ttl_bucket_error_names_the_largest_bucket() {
+    let plan = TtlBucketPlan::compile(&delay_config(DelayMode::Ttl)).expect("TTL plan");
+
+    let error = plan
+        .bucket_for(Duration::from_mins(1))
+        .expect_err("a delay beyond the largest bucket must be refused");
+
+    assert!(
+        error.to_string().contains("30000 ms"),
+        "the error must name the largest configured bucket in ms, got: {error}"
+    );
 }
 
 // ---------------------------------------------------------------------------
