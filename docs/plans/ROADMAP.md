@@ -209,10 +209,10 @@ parallel tracks** — maximum concurrency, minimal interference; sequence only w
 track. Strategy decision (2026-08-31): **stabilize before features** — Round G contains
 no features; post-1.0 feature ideas are parked below.
 
-Status (2026-09-01): Task 21 (#66, P0), Task 25 (#70) and Round C (#40) landed
-(see Landed). Next: 22 (#67, Track A), 26 (#71, Track B — unblocked by #66),
-27 (#72, Track B), 24 (#69, Track C). Still queued: 23 (#68, after #67), 28
-(#73), Task 38 (#83), 29–37.
+Status (2026-09-01): Task 21 (#66, P0), Task 23 (#68), Task 25 (#70) and Round C
+(#40) landed (see Landed). Next: 22 (#67, Track A), 26 (#71, Track B — unblocked
+by #66), 27 (#72, Track B), 24 (#69, Track C). Still queued: 28 (#73), Task 38
+(#83), 29–37.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
