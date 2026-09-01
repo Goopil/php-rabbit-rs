@@ -9,11 +9,24 @@ use flume::{Receiver, Sender};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::sync::oneshot;
 
-use super::{PublishError, PublishErrorKind};
+use super::{ByteBudget, PublishError, PublishErrorKind};
 use crate::transport::{PublishProperties, PublishRequest as TransportRequest, PublisherChannel};
 
 /// Boxed publish future tracked in the pump's in-flight set.
 type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// RAII guard holding one blind job's reservation against the publisher byte
+/// budget: released exactly once when the guard is dropped.
+struct BudgetGuard {
+    budget: Arc<ByteBudget>,
+    bytes: u64,
+}
+
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        self.budget.release(self.bytes);
+    }
+}
 
 /// A background pump that pipelines blind (fire-and-forget) publishes.
 ///
@@ -41,27 +54,40 @@ type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub struct PublishPump {
     tx: Sender<PumpJob>,
     channel: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>>,
+    /// Shared publisher byte budget: every accepted job holds a reservation
+    /// for its payload bytes until it leaves the pump.
+    budget: Arc<ByteBudget>,
 }
 
 struct PumpJob {
     request: TransportRequest,
     barrier_tx: Option<oneshot::Sender<()>>,
+    /// Byte-budget reservation for this job's payload. Released when the job
+    /// leaves the pump — transport exit, silent drop for lack of a channel,
+    /// or a failed hand-off on a closed pump.
+    budget: Option<BudgetGuard>,
 }
 
 impl PublishPump {
     /// Spawns a background pump task that pipelines publishes to the transport.
     ///
-    /// The intake queue is bounded by `buffer_capacity` (minimum 1) and the
+    /// The intake queue is bounded by `buffer_capacity` (minimum 1), the
     /// in-flight set by `buffer_capacity.saturating_mul(2).max(128)` — with
     /// the default capacity of 1024 this yields a queue of 1024 and up to
-    /// 2048 publishes pending on the transport.
+    /// 2048 publishes pending on the transport — and the buffered payload
+    /// bytes by the shared `byte_budget` (each job's reservation is released
+    /// when the job leaves the pump).
     ///
     /// # Panics
     ///
     /// Never panics. The pump task exits cleanly when the sender is dropped,
     /// after draining its remaining in-flight publishes.
     #[must_use]
-    pub fn spawn(channel: Arc<dyn PublisherChannel>, buffer_capacity: usize) -> Self {
+    pub fn spawn(
+        channel: Arc<dyn PublisherChannel>,
+        buffer_capacity: usize,
+        byte_budget: Arc<ByteBudget>,
+    ) -> Self {
         let (tx, rx) = flume::bounded(buffer_capacity.max(1));
         let inflight_cap = buffer_capacity.saturating_mul(2).max(128);
         let channel_slot: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>> =
@@ -70,6 +96,7 @@ impl PublishPump {
         Self {
             tx,
             channel: channel_slot,
+            budget: byte_budget,
         }
     }
 
@@ -93,14 +120,24 @@ impl PublishPump {
     /// Enqueues a publish job, applying backpressure by blocking the caller
     /// while the intake queue is full.
     ///
+    /// The caller must have reserved `request.payload.len()` bytes against
+    /// the pump's byte budget beforehand; the reservation is released by the
+    /// pump when the job leaves it.
+    ///
     /// # Errors
     ///
-    /// Returns [`PublishErrorKind::Closed`] when the pump is closed.
+    /// Returns [`PublishErrorKind::Closed`] when the pump is closed (the
+    /// reservation is released back to the budget in that case).
     pub async fn send(&self, request: TransportRequest) -> Result<(), PublishError> {
+        let bytes = u64::try_from(request.payload.len()).unwrap_or(u64::MAX);
         self.tx
             .send_async(PumpJob {
                 request,
                 barrier_tx: None,
+                budget: Some(BudgetGuard {
+                    budget: Arc::clone(&self.budget),
+                    bytes,
+                }),
             })
             .await
             .map_err(|_| PublishError::new(PublishErrorKind::Closed, "publish pump is closed"))
@@ -125,6 +162,7 @@ impl PublishPump {
                     properties: PublishProperties::default(),
                 },
                 barrier_tx: Some(barrier_tx),
+                budget: None,
             })
             .await
             .map_err(|_| PublishError::new(PublishErrorKind::Closed, "publish pump is closed"))?;
@@ -160,6 +198,7 @@ impl PublishPump {
         Self {
             tx,
             channel: Arc::new(RwLock::new(None)),
+            budget: Arc::new(ByteBudget::new(u64::MAX)),
         }
     }
 }
@@ -191,7 +230,8 @@ async fn pump_loop(
             maybe_job = rx.recv_async(), if inflight.len() < inflight_cap => {
                 let Ok(job) = maybe_job else { break };
 
-                if let Some(barrier_tx) = job.barrier_tx {
+                let PumpJob { request, barrier_tx, budget } = job;
+                if let Some(barrier_tx) = barrier_tx {
                     // Flush barrier: every job enqueued before the barrier is
                     // already in `inflight` (or was dropped for lack of a
                     // channel) — drain them all, then resolve the barrier.
@@ -202,14 +242,16 @@ async fn pump_loop(
 
                 // With a channel, the publish error is a silent loss (blind
                 // semantics); without one (recovery in progress) the job is
-                // dropped silently.
+                // dropped silently. Either way the budget reservation is
+                // released when the job leaves the pump.
                 if let Some(ch) = channel
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone()
                 {
                     inflight.push(Box::pin(async move {
-                        let _ = ch.publish(job.request).await;
+                        let _ = ch.publish(request).await;
+                        drop(budget);
                     }));
                 }
 
@@ -264,6 +306,10 @@ mod tests {
                 .await
                 .expect("publisher"),
         )
+    }
+
+    fn test_budget() -> Arc<ByteBudget> {
+        Arc::new(ByteBudget::new(u64::MAX))
     }
 
     fn request(message_id: &str) -> TransportRequest {
@@ -321,7 +367,7 @@ mod tests {
         // Intake queue of 4, in-flight cap well above 8: all eight sends must
         // be accepted while every publish is held pending by its gate.
         let gates: Vec<MockPublishGate> = (0..8).map(|_| transport.push_publish_gate()).collect();
-        let pump = PublishPump::spawn(channel, 4);
+        let pump = PublishPump::spawn(channel, 4, test_budget());
 
         for index in 0..8 {
             let send = pump.send(request(&index.to_string()));
@@ -348,7 +394,7 @@ mod tests {
         let channel = mock_channel(&transport).await;
         // buffer_capacity = 2 → intake queue of 2, in-flight cap 128.
         let gates: Vec<MockPublishGate> = (0..131).map(|_| transport.push_publish_gate()).collect();
-        let pump = PublishPump::spawn(channel, 2);
+        let pump = PublishPump::spawn(channel, 2, test_budget());
 
         // Fill the in-flight cap while every publish is gated.
         for index in 0..128 {
@@ -391,7 +437,7 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         let gate = transport.push_publish_gate();
-        let pump = PublishPump::spawn(channel, 4);
+        let pump = PublishPump::spawn(channel, 4, test_budget());
 
         pump.send(request("gated")).await.expect("send accepted");
         // Anchor: the transport worker entered the publish gate, proving the
@@ -424,7 +470,7 @@ mod tests {
     async fn flush_without_channel_resolves_after_drain_without_error() {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
-        let pump = PublishPump::spawn(channel, 4);
+        let pump = PublishPump::spawn(channel, 4, test_budget());
 
         pump.clear_channel();
         pump.send(request("dropped")).await.expect("send accepted");
@@ -440,7 +486,7 @@ mod tests {
     async fn cleared_channel_drops_jobs_and_updated_channel_resumes_publishing() {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
-        let pump = PublishPump::spawn(channel, 4);
+        let pump = PublishPump::spawn(channel, 4, test_budget());
 
         pump.clear_channel();
         pump.send(request("lost"))
@@ -478,6 +524,7 @@ mod tests {
         let pump = PublishPump {
             tx,
             channel: Arc::new(RwLock::new(Some(channel))),
+            budget: test_budget(),
         };
 
         let outcome = timeout(Duration::from_secs(1), pump.send(request("x")))
@@ -511,6 +558,7 @@ mod tests {
         tx.send_async(PumpJob {
             request: request("before"),
             barrier_tx: None,
+            budget: None,
         })
         .await
         .expect("send accepted while the pump task is alive");
@@ -532,6 +580,7 @@ mod tests {
             tx.send_async(PumpJob {
                 request: request("after"),
                 barrier_tx: None,
+                budget: None,
             }),
         )
         .await
@@ -562,6 +611,7 @@ mod tests {
         tx.send_async(PumpJob {
             request: request("pending"),
             barrier_tx: None,
+            budget: None,
         })
         .await
         .expect("enqueue publish");
@@ -571,6 +621,7 @@ mod tests {
         tx.send_async(PumpJob {
             request: request(""),
             barrier_tx: Some(barrier_tx),
+            budget: None,
         })
         .await
         .expect("enqueue barrier");
@@ -595,7 +646,7 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         let gate = transport.push_publish_gate();
-        let pump = PublishPump::spawn(channel, 4);
+        let pump = PublishPump::spawn(channel, 4, test_budget());
 
         pump.send(request("drained")).await.expect("send accepted");
         gate.wait_entered().await;

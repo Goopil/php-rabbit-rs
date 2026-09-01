@@ -74,6 +74,7 @@ impl PublisherActor {
             Some(Arc::new(super::pump::PublishPump::spawn(
                 channel.clone(),
                 config.buffer_capacity,
+                byte_budget.clone(),
             )))
         } else {
             None
@@ -194,12 +195,15 @@ impl PublisherHandle {
     /// Blind-mode publish: hands the request to the background publish pump
     /// and returns a pre-resolved waiter.
     ///
-    /// Backpressure is expressed by blocking: the returned future resolves
-    /// once the request has been enqueued in the pump's bounded intake queue —
-    /// never on a transport outcome. The returned [`PublishWaiter`] is already
-    /// resolved with a synthetic `Confirmed` outcome; blind mode never
-    /// observes confirmations, returns, or transport failures after the
-    /// hand-off (silent loss — see
+    /// The request's payload bytes are reserved against the publisher byte
+    /// budget before the hand-off — the same ceiling the confirmed path
+    /// enforces — and released by the pump when the job leaves it. Backpressure
+    /// is expressed both by that byte budget and by blocking: the returned
+    /// future resolves once the request has been enqueued in the pump's bounded
+    /// intake queue — never on a transport outcome. The returned
+    /// [`PublishWaiter`] is already resolved with a synthetic `Confirmed`
+    /// outcome; blind mode never observes confirmations, returns, or transport
+    /// failures after the hand-off (silent loss — see
     /// [`SafetyMode::Blind`](crate::config::SafetyMode::Blind)).
     ///
     /// Falls back to [`try_publish`](Self::try_publish) when no pump is
@@ -208,7 +212,8 @@ impl PublisherHandle {
     ///
     /// # Errors
     ///
-    /// Returns [`PublishErrorKind::Closed`] when the pump is closed, or the
+    /// Returns [`PublishErrorKind::Backpressure`] when the byte budget is
+    /// exhausted, [`PublishErrorKind::Closed`] when the pump is closed, or the
     /// fallback [`try_publish`](Self::try_publish) errors when no pump is
     /// configured.
     pub async fn publish_blind(
@@ -218,8 +223,19 @@ impl PublisherHandle {
         let Some(pump) = &self.pump else {
             return self.try_publish(request);
         };
+        let payload_bytes = u64::try_from(request.payload.len()).unwrap_or(u64::MAX);
+        if !self.byte_budget.try_reserve(payload_bytes) {
+            self.metrics.record_backpressure();
+            return Err(PublishError::new(
+                PublishErrorKind::Backpressure,
+                "publisher byte budget is exhausted",
+            ));
+        }
         let message_id = Arc::clone(&request.properties.message_id);
         let transport_request = into_transport_request(&request, None, false);
+        // The reservation travels with the job: the pump releases it when the
+        // job leaves the pump (transport exit, silent drop for lack of a
+        // channel, or a failed hand-off on a closed pump).
         pump.send(transport_request).await?;
         self.metrics.record_publish();
         Ok(PublishWaiter::resolved(PublishOutcome::Confirmed {

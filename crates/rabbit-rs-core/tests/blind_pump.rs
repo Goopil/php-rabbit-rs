@@ -57,6 +57,30 @@ fn blind_pool(transport: &Arc<MockTransport>, capacity: usize) -> ClientPool {
     )
 }
 
+fn blind_pool_with_byte_budget(
+    transport: &Arc<MockTransport>,
+    capacity: usize,
+    max_buffered_bytes: u64,
+) -> ClientPool {
+    ClientPool::new_for_tests(
+        config(),
+        transport.clone(),
+        PublisherConfig {
+            max_buffered_bytes,
+            ..PublisherConfig::with_safety(capacity, Duration::from_secs(5), SafetyMode::Blind)
+        },
+    )
+}
+
+fn oversized_request(message_id: &str, payload_bytes: usize) -> PublishRequest {
+    PublishRequest::new(
+        Destination::new("jobs", "default"),
+        Bytes::from(vec![0u8; payload_bytes]),
+        MessageProperties::new(message_id),
+        tokio::time::Instant::now() + Duration::from_secs(30),
+    )
+}
+
 fn request(message_id: &str) -> PublishRequest {
     PublishRequest::new(
         Destination::new("jobs", "default"),
@@ -261,6 +285,55 @@ async fn flush_blind_resolves_immediately_on_non_blind_clients() {
         .await
         .expect("flush must not hang on a non-blind publisher")
         .expect("flush on a non-blind publisher succeeds");
+
+    pool.close().await.expect("close pool");
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_publish_respects_the_byte_budget() {
+    let transport = Arc::new(MockTransport::default());
+    // 1 MiB budget: one parked 600 KiB publish must reject a second one,
+    // exactly like the confirmed path rejects on byte-budget exhaustion.
+    let gates: Vec<MockPublishGate> = (0..2).map(|_| transport.push_publish_gate()).collect();
+    let pool = Arc::new(blind_pool_with_byte_budget(&transport, 8, 1024 * 1024));
+
+    pool.publish_batch(vec![(
+        "default".to_owned(),
+        oversized_request("m0", 600 * 1024),
+    )])
+    .await
+    .expect("first publish fits the byte budget");
+    gates[0].wait_entered().await;
+
+    let error = pool
+        .publish_batch(vec![(
+            "default".to_owned(),
+            oversized_request("m1", 600 * 1024),
+        )])
+        .await
+        .expect_err("second concurrent publish exceeds the 1 MiB byte budget");
+    assert_eq!(
+        error.kind(),
+        ClientErrorKind::Backpressure,
+        "blind publishes must surface byte-budget exhaustion as Backpressure, got {error}"
+    );
+    assert!(
+        publish_requests(&transport).is_empty(),
+        "a byte-budget rejection must not enqueue anything on the transport"
+    );
+
+    // Completing the parked publish releases its reservation at transport
+    // exit: the same request is then accepted again (bounded, not leaked).
+    assert!(gates[0].release());
+    wait_for_publishes(&transport, 1).await;
+    pool.publish_batch(vec![(
+        "default".to_owned(),
+        oversized_request("m1", 600 * 1024),
+    )])
+    .await
+    .expect("byte budget must be released at transport exit");
+    assert!(gates[1].release());
+    wait_for_publishes(&transport, 2).await;
 
     pool.close().await.expect("close pool");
 }
