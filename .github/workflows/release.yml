@@ -90,13 +90,23 @@ jobs:
 
       - name: Set Docker image
         id: docker
+        env:
+          PHP: ${{ matrix.php }}
+          LIBC: ${{ matrix.libc }}
         run: |
-          PHP="${{ matrix.php }}"
-          if [[ "${{ matrix.libc }}" == "musl" ]]; then
-            echo "image=php:${PHP}-alpine" >> "$GITHUB_OUTPUT"
-          else
-            echo "image=php:${PHP}-cli" >> "$GITHUB_OUTPUT"
-          fi
+          # Digest-pinned multi-arch indexes (linux/amd64 + linux/arm64) so a
+          # base-image push cannot change the shipped toolchain. Each index
+          # serves both matrix arches. Bump deliberately: re-resolve the tag
+          # with `docker buildx imagetools inspect php:<tag>` and replace one
+          # line, or the case arm fails loudly on a new matrix cell.
+          case "${PHP}-${LIBC}" in
+            "8.4-glibc") image='php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc' ;;
+            "8.5-glibc") image='php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0' ;;
+            "8.4-musl") image='php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19' ;;
+            "8.5-musl") image='php@sha256:763e2dc50d4b0cf8d02a1d8fbeedd43f9be879c0be928b1d6f247d45c81fa28f' ;;
+            *) echo "::error::No pinned base image for PHP ${PHP} (${LIBC}). Add a digest to the map above."; exit 1 ;;
+          esac
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -303,7 +313,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -fL --output /tmp/pie.phar https://github.com/php/pie/releases/latest/download/pie.phar
+          # PIE is pinned to a tagged release (no floating "latest") and
+          # verified by sha256 before use; the attestation check below then
+          # proves provenance. Bump deliberately: update the tag, recompute
+          # the checksum (`shasum -a 256 pie.phar` on the tagged asset), and
+          # confirm `gh attestation verify --owner php` still passes.
+          curl --proto "=https" -fL --output /tmp/pie.phar https://github.com/php/pie/releases/download/1.4.10/pie.phar
+          echo "b88792235c8e80be568436d4cb043b49fd1869c89b64e83d23e2882ae19d70a8  /tmp/pie.phar" | sha256sum --strict --check -
           gh attestation verify --owner php /tmp/pie.phar
           sudo mv /tmp/pie.phar /usr/local/bin/pie
           sudo chmod +x /usr/local/bin/pie
