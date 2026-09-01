@@ -81,7 +81,6 @@ pub(crate) enum ConsumerCommand {
     SettleThrough {
         token: Arc<DeliveryTokenInner>,
     },
-    Close(oneshot::Sender<()>),
 }
 
 struct RuntimeSubscription {
@@ -104,7 +103,12 @@ struct ActorState {
     buffered_bytes: HashMap<SubscriptionId, u64>,
     max_buffered_bytes: HashMap<SubscriptionId, u64>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
+    /// Over-budget deliveries waiting for the byte budget to free up. Count
+    /// bounded by `pending_capacity`: in `no_ack` mode the broker auto-acks,
+    /// so broker `QoS` does not bound delivery and this deque would otherwise
+    /// grow without limit (audit F-04).
     pending_incoming: VecDeque<(SubscriptionId, TransportDelivery)>,
+    pending_capacity: usize,
     pending_settlements: futures_util::stream::FuturesUnordered<SettlementFuture>,
     pending_settle_throughs: futures_util::stream::FuturesUnordered<SettleThroughFuture>,
     settlement_in_flight: HashSet<ChannelKey>,
@@ -116,17 +120,21 @@ struct ActorState {
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
     error_rx: flume::Receiver<SettlementError>,
+    close_completion: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
     metrics: Metrics,
 }
 
 impl ActorState {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         subscriptions: Vec<Subscription>,
         commands: mpsc::Sender<ConsumerCommand>,
         buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
         error_tx: flume::Sender<SettlementError>,
         error_rx: flume::Receiver<SettlementError>,
+        close_completion: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
         metrics: Metrics,
+        pending_capacity: usize,
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
         let mut runtime = HashMap::new();
@@ -170,6 +178,7 @@ impl ActorState {
             max_buffered_bytes,
             channel_ledgers,
             pending_incoming: VecDeque::new(),
+            pending_capacity,
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
             pending_settle_throughs: futures_util::stream::FuturesUnordered::new(),
             settlement_in_flight: HashSet::new(),
@@ -181,6 +190,7 @@ impl ActorState {
             buffer_tx,
             error_tx,
             error_rx,
+            close_completion,
             metrics,
         }
     }
@@ -477,6 +487,9 @@ pub(crate) async fn run_actor(
     error_rx: flume::Receiver<SettlementError>,
     metrics: Metrics,
     dispatch_notify: Arc<tokio::sync::Notify>,
+    mut close_rx: tokio::sync::watch::Receiver<bool>,
+    close_completion: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
+    pending_capacity: usize,
 ) {
     let mut state = ActorState::new(
         subscriptions,
@@ -484,13 +497,17 @@ pub(crate) async fn run_actor(
         buffer_tx,
         error_tx,
         error_rx,
+        close_completion,
         metrics,
+        pending_capacity,
     );
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
     loop {
         tokio::select! {
-            command = receiver.recv() => match command {
+            command = receiver.recv(),
+                if state.pending_incoming.len() < state.pending_capacity =>
+            match command {
                 Some(ConsumerCommand::Incoming {
                     subscription,
                     result,
@@ -632,26 +649,16 @@ pub(crate) async fn run_actor(
                         }
                     }
                 }
-                Some(ConsumerCommand::Close(completed)) => {
-                    // Cancel pending settlements and clear queued work so close
-                    // cannot block on in-flight broker operations.
-                    state.pending_settlements = futures_util::stream::FuturesUnordered::new();
-                    state.pending_settle_throughs = futures_util::stream::FuturesUnordered::new();
-                    state.settlement_queues.clear();
-                    state.settle_through_queues.clear();
-                    state.settlement_in_flight.clear();
-                    for runtime in state.subscriptions.values() {
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            runtime.channel.close(),
-                        )
-                        .await;
-                    }
-                    let _ = completed.send(());
-                    return;
-                }
                 None => return,
             },
+            _ = close_rx.changed() => {
+                // Close signal from `close()` or `Drop`: independent of the
+                // command channel, so backpressure can never discard it. Only
+                // `true` is ever sent (or the sender is dropped after
+                // sending), and either way the set must close.
+                close_set(&mut state).await;
+                return;
+            }
             () = dispatch_notify.notified() => {
                 state.dispatch();
             }
@@ -875,6 +882,31 @@ fn settlement_error(
         subscription: token.subscription.clone(),
         kind,
         message: message.into(),
+    }
+}
+
+/// Shuts the consumer set down: cancels pending settlements, closes every
+/// subscription channel (bounded by a deadline so a stalled broker cannot
+/// block close), and resolves any awaiting `close()` caller.
+async fn close_set(state: &mut ActorState) {
+    // Cancel pending settlements and clear queued work so close
+    // cannot block on in-flight broker operations.
+    state.pending_settlements = futures_util::stream::FuturesUnordered::new();
+    state.pending_settle_throughs = futures_util::stream::FuturesUnordered::new();
+    state.settlement_queues.clear();
+    state.settle_through_queues.clear();
+    state.settlement_in_flight.clear();
+    for runtime in state.subscriptions.values() {
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(2), runtime.channel.close()).await;
+    }
+    if let Some(completed) = state
+        .close_completion
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
+        let _ = completed.send(());
     }
 }
 

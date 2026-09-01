@@ -999,6 +999,69 @@ async fn total_prefetch_does_not_overflow_u16() {
     consumer.close().await.expect("close");
 }
 
+/// In `no_ack` mode the broker auto-acks, so `prefetch` gives no backpressure:
+/// a consumer that stops draining would push every delivery into the actor's
+/// over-budget `pending_incoming` deque. The deque must be count-bounded (the
+/// command channel then applies pump backpressure), and no delivery may be
+/// lost to the bound (audit F-04).
+#[tokio::test(start_paused = true)]
+async fn no_ack_flood_is_bounded_and_every_delivery_still_arrives() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let channel = transport
+        .connect(&broker("flood", "/"))
+        .await
+        .expect("connection")
+        .open_consumer()
+        .await
+        .expect("consumer channel");
+    let subscription = Subscription::new(
+        "flood",
+        connection_key("flood", "/"),
+        "queue.flood",
+        Arc::from(channel),
+    )
+    .prefetch(4)
+    .early_ack(true)
+    .no_ack(true)
+    .max_buffered_bytes(7);
+    let metrics = Metrics::default();
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], metrics.clone())
+        .await
+        .expect("consumer set");
+    for tag in 1..=1024u64 {
+        transport.push_delivery(Ok(delivery(tag, b"payload")));
+    }
+
+    // The embedder never drains in this phase: absorption must stop at the
+    // pending bound plus the command channel capacity.
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+    let backpressure = metrics.snapshot().backpressure_total;
+    assert!(
+        backpressure <= 520,
+        "over-budget deliveries must not be absorbed without bound (recorded {backpressure})"
+    );
+
+    // Draining must unblock the pipeline and lose nothing.
+    let mut delivered = 0;
+    for _ in 0..20_000 {
+        let _ = consumer.try_next();
+        tokio::time::advance(Duration::from_millis(2)).await;
+        delivered = metrics.snapshot().deliveries_total;
+        if delivered == 1024 {
+            break;
+        }
+    }
+    assert_eq!(
+        delivered, 1024,
+        "every flooded delivery must still be dispatched"
+    );
+
+    consumer.close().await.expect("close");
+}
+
 #[tokio::test(start_paused = true)]
 async fn settle_through_acks_contiguous_prefix() {
     let transport = MockTransport::default();
