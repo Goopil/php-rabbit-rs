@@ -324,16 +324,40 @@ async fn handle_connecting(
             if *generation > 1 {
                 context.metrics.record_reconnect();
             }
+            crate::log::info(
+                "connection_actor",
+                format!(
+                    "broker '{}' connected (generation {})",
+                    context.config.name, *generation
+                ),
+            );
             context.states.send_replace(ConnectionState::Ready {
                 generation: *generation,
             });
             Some(Phase::Ready)
         }
-        Err(error) if error.is_recoverable() => Some(Phase::Recovering {
-            failures: previous_failures.saturating_add(1),
-            error,
-        }),
+        Err(error) if error.is_recoverable() => {
+            crate::log::warn(
+                "connection_actor",
+                format!(
+                    "broker '{}' connect attempt {} failed: {error}",
+                    context.config.name,
+                    previous_failures.saturating_add(1)
+                ),
+            );
+            Some(Phase::Recovering {
+                failures: previous_failures.saturating_add(1),
+                error,
+            })
+        }
         Err(error) => {
+            crate::log::error(
+                "connection_actor",
+                format!(
+                    "broker '{}' failed permanently: {error}",
+                    context.config.name
+                ),
+            );
             publish_permanent_failure(&context.states, &error);
             Some(Phase::FailedPermanent)
         }

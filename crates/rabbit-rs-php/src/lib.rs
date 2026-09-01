@@ -5,6 +5,7 @@
 mod callbacks;
 mod classes;
 mod conversion;
+mod sink;
 #[cfg(feature = "extension-tests")]
 mod testing;
 
@@ -24,6 +25,10 @@ extern "C" fn module_shutdown(_module_type: i32, _module_number: i32) -> i32 {
 
 #[php_module]
 pub fn module(module: ModuleBuilder) -> ModuleBuilder {
+    // MINIT: install the diagnostics sink once, before any pool exists. The
+    // sink stays silent unless RABBIT_RS_LOG selects a severity.
+    sink::install_from_env();
+
     let module = module
         .name("rabbit_rs")
         .version(env!("CARGO_PKG_VERSION"))

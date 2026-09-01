@@ -159,3 +159,48 @@ Use an external outbox when:
 - You cannot tolerate any message loss, even in the ambiguous window
 
 Without an outbox, the in-memory replay buffer covers transient network failures but not process crashes. For most Laravel applications, the default behavior is sufficient — PHP workers are typically supervised by Supervisor or Kubernetes and restart automatically.
+
+## Panic policy
+
+Rabbit RS runs as a native PHP extension: an uncaught Rust unwind crossing the FFI boundary aborts the whole PHP process. The core therefore keeps panics out of every code path reachable from a PHP operation, and routes diagnostics through the log facade (`rabbit_rs_core::log`) instead of stderr.
+
+1. Production code must not call `unwrap()`, `expect()`, or the `panic!` family on paths reachable from a PHP operation. Prefer typed errors with actionable context.
+2. A remaining `expect`/`unwrap` is accepted only as a documented, proven invariant — one that cannot fire without a prior logic bug in the same synchronous block (see the audit below).
+3. Panics in `#[cfg(test)]` code are out of scope; tests may panic freely.
+4. Background Tokio tasks must terminate cleanly on failure (log through the facade, then return) instead of panicking inside a spawned task.
+
+## Log facade
+
+- The core depends on no logging framework and never writes to stderr.
+- Embedders install one process-wide sink (`rabbit_rs_core::log::install`); the first installation wins and later calls are rejected, which keeps forks and repeated initializations deterministic.
+- Without an installed sink the core is silent; records emitted before the first install are dropped, so install at startup before spawning pools.
+- Redaction contract: call sites only log broker names, connection generations, and transport error messages — never credentials, complete broker URIs, or private certificate material. Sinks must preserve this when forwarding.
+
+## Panic audit (2026-09-01, issue #56)
+
+`rg -n 'unwrap\(\)|expect\(|panic!|unreachable!|todo!|unimplemented!'` over `crates/rabbit-rs-core/src` and `crates/rabbit-rs-php/src`, restricted to production code (`#[cfg(test)]` modules excluded).
+
+### Fixed in this round
+
+| Site | Problem | Resolution |
+| --- | --- | --- |
+| `pool/recovery_coordinator.rs` `wait_for_state` | `expect` on the state watch when the coordinator task had stopped: panic reachable from PHP-facing waits | Returns `ConnectionState::Closed` when the watch dies; `state()` also reports `Closed` for a dead watch so pool loops observe a terminal state |
+| `pool/recovery_coordinator.rs` `run_coordinator` | `expect("connection actor started")` inside a spawned task | Logs through the facade (`Level::Error`) and terminates the task cleanly |
+| `pool/recovery_coordinator.rs` recovery failure | `eprintln!` leaked diagnostics to stderr | Routed through the log facade (`Level::Warn`), carrying the typed `CoordinatorError` |
+
+### Accepted invariants (documented, no runtime conversion)
+
+| Site | Invariant |
+| --- | --- |
+| `client.rs` `topology_plan()` fallback `.expect("external mode always compiles")` | `TopologyPlan::compile` on an empty `External`-mode plan validates nothing and cannot fail; the expect guards a compile-time-true property |
+| `consumer/actor.rs` `drain_pending` `.expect("front checked above")` | `pop_front` runs only after `front()` returned `Some` in the same synchronous block with no mutation in between |
+| `consumer/attempts.rs` `DEFAULT_MAX_ATTEMPTS_NON_ZERO` | Const-evaluated `match`; the `panic!` fires at compile time if the constant is ever zero, never at runtime |
+| `topology/delay.rs` `write!(...).expect("writing to String is infallible")` | `fmt::Write for String` cannot fail |
+
+### PHP extension (`crates/rabbit-rs-php`)
+
+`callbacks.rs` (callback registry), `classes/bridge.rs`, and `classes/publish_buffer.rs` call `.expect("... mutex poisoned")` on `std::sync::Mutex` locks. A poisoned mutex requires a prior panic while the lock was held; the critical sections in these types perform no panicking operations, so the poison state is unreachable in practice. These sites stay documented rather than converted: converting them would trade a proven invariant for error propagation through FFI paths that have no meaningful recovery.
+
+## Error typing
+
+`CoordinatorError` is a typed enum (`Topology`/`Transport`/`Publisher`/`Consumer`/`Internal`) whose variants carry the typed source error; `Display` messages keep the previously surfaced context. Callers must classify through variants, never through string matching.
