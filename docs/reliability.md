@@ -28,13 +28,13 @@ A confirm timeout (`publisher.confirm_timeout`, default 30 seconds) ensures the 
 
 ## Mandatory returns
 
-Mandatory routing is **enabled by default** (`publisher.mandatory = true`). When enabled:
+Mandatory routing is **always on in safe mode** (`publisher.safety = "safe"`). When enabled:
 
 - The broker returns unroutable messages via `basic.return` instead of silently dropping them
 - `basic.return` is processed **before** the corresponding `basic.ack` — a return takes precedence over a following ACK
 - The publish call resolves with a `Returned` outcome, and the Laravel bridge throws a `QueueException`
 
-Without mandatory routing, messages published to a non-existent queue or binding are silently lost. Rabbit RS enables this by default to enforce the no-silent-loss contract.
+The legacy `publisher.mandatory = false` flag is **rejected at validation** with an actionable error: confirms without mandatory routing would let the broker silently drop unroutable messages, which breaks the no-silent-loss contract. The only supported opt-out is `publisher.safety = "unsafe"` or `"blind"`.
 
 ## Connection recovery
 
