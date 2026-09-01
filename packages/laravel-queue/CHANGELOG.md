@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Worker supervisor: clean child exits (exit 0, e.g. `--max-jobs` or `--max-time` recycling) no longer burn the restart budget — the budget resets and the worker restarts immediately without backoff; crash-loop protection (budget + exponential backoff) now applies only to non-zero exits.
+
 ## [0.0.8] - 2026-08-31
 
 ### Added

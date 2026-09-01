@@ -389,7 +389,7 @@ php artisan rabbit-rs:work --queue=default --workers=4 --max-restarts=3
 php artisan rabbit-rs:work --connection=rabbit-rs --queue=high-priority
 ```
 
-The supervisor spawns child `queue:work` processes, passes the worker index via `RABBIT_RS_WORKER`, and restarts them on exit with exponential backoff.
+The supervisor spawns child `queue:work` processes, passes the worker index via `RABBIT_RS_WORKER`, and restarts them on exit: a clean exit (0, e.g. `--max-jobs` recycling) restarts immediately without consuming the restart budget, while a non-zero exit is treated as a crash and restarted with exponential backoff up to `--max-restarts` times.
 
 | Option | Description | Default |
 | ------ | ----------- | ------- |
