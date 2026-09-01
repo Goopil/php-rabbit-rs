@@ -39,6 +39,22 @@ with the feature, never in a later docs pass.
   (P0), CI never runs a real-broker test, plus a family of
   suspension-without-wake-up and silent-loss paths. Findings split into
   Round G below.
+- **Round G wave 1 (2026-09-01)** — merged via PRs #92/#93/#94:
+  - #66 (P0): transport liveness — `TransportErrorStream` selected in the
+    Ready loop, consumer delivery-stream termination surfaces a terminal
+    error, 10s connect timeout, `recovery_failures_total`; lab kill-broker
+    test proves auto-recovery (24/24 integration).
+  - #70 (P1): poison deliveries settle terminally (DLX or documented ack),
+    `consumer.max_attempts` configurable, attempts never fabricated,
+    unmarshable payloads settled; Laravel `consumers.max_attempts` plumbed.
+  - Round C (#40): local Laravel integration harness green (3 consecutive
+    runs; 14 passed + 3 loud toxiproxy skips); 8 failure classes root-caused.
+  - Sonar note: automatic analysis ignores `sonar.cpd.exclusions` — test
+    duplication counts against the ≤3% new-code gate; keep test code
+    deduplicated (shared helpers live in `tests/Pest.php`).
+  - Follow-ups filed: #95 (consume/declare race on fresh quorum queues),
+    #96 (PublishBuffer first-publish flush), #97 (delayed bindings +
+    mandatory/safe-mode interaction).
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -192,6 +208,11 @@ covered by Round F were split into 17 issues (#66–#82) organized as **7 file-d
 parallel tracks** — maximum concurrency, minimal interference; sequence only within a
 track. Strategy decision (2026-08-31): **stabilize before features** — Round G contains
 no features; post-1.0 feature ideas are parked below.
+
+Status (2026-09-01): Task 21 (#66, P0), Task 25 (#70) and Round C (#40) landed
+(see Landed). Next: 22 (#67, Track A), 26 (#71, Track B — unblocked by #66),
+27 (#72, Track B), 24 (#69, Track C). Still queued: 23 (#68, after #67), 28
+(#73), Task 38 (#83), 29–37.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
