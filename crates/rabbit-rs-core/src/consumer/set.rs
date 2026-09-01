@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use super::{
     ConsumerError, Delivery, DeliveryTokenInner, SettlementError, SettlementErrorKind,
@@ -191,9 +191,9 @@ impl ConsumerSet {
         // per-subscription pumps plus settlement commands. Size it from the
         // total prefetch so a large prefetch does not turn every delivery
         // handoff into pump backpressure.
-        let (commands, receiver) = mpsc::channel(
-            COMMAND_CAPACITY.max(usize::try_from(total_prefetch).unwrap_or(usize::MAX)),
-        );
+        let channel_capacity =
+            COMMAND_CAPACITY.max(usize::try_from(total_prefetch).unwrap_or(usize::MAX));
+        let (commands, receiver) = mpsc::channel(channel_capacity);
         let mut streams = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
@@ -236,6 +236,14 @@ impl ConsumerSet {
             flume::bounded::<Result<Delivery, ConsumerError>>(buffer_size.max(1));
         let (error_tx, error_rx) = flume::bounded::<SettlementError>(ERROR_CHANNEL_CAPACITY);
         let dispatch_notify = Arc::new(Notify::new());
+        // Drop-close and explicit `close()` both use a dedicated watch signal
+        // instead of the shared command channel: a saturated command channel
+        // must never be able to discard a close request and leak the actor
+        // with its broker subscriptions. The explicit close registers its
+        // completion in a slot the actor resolves after closing the channels,
+        // so `close()` keeps reporting an actor that died before closing.
+        let (close_tx, close_rx) = watch::channel(false);
+        let close_completion: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
 
         tokio::spawn(run_actor(
             subscriptions,
@@ -248,6 +256,9 @@ impl ConsumerSet {
             error_rx.clone(),
             metrics.clone(),
             dispatch_notify.clone(),
+            close_rx,
+            close_completion.clone(),
+            channel_capacity,
         ));
         for (subscription, stream) in streams {
             spawn_source(subscription, stream, commands.clone());
@@ -262,6 +273,8 @@ impl ConsumerSet {
             dispatch_notify,
             generation,
             pending_error: Arc::new(Mutex::new(None)),
+            close_tx: Arc::new(close_tx),
+            close_completion,
         })
     }
 }
@@ -319,6 +332,8 @@ pub struct ConsumerSetHandle {
     dispatch_notify: Arc<Notify>,
     generation: u64,
     pending_error: Arc<Mutex<Option<ConsumerError>>>,
+    close_tx: Arc<watch::Sender<bool>>,
+    close_completion: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl ConsumerSetHandle {
@@ -333,8 +348,9 @@ impl Drop for ConsumerSetHandle {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (sender, _) = oneshot::channel();
-        let _ = self.commands.try_send(ConsumerCommand::Close(sender));
+        // The watch signal is synchronous and cannot be discarded by command
+        // backpressure, unlike a `try_send` of `ConsumerCommand::Close`.
+        let _ = self.close_tx.send(true);
     }
 }
 
@@ -503,18 +519,140 @@ impl ConsumerSetHandle {
 
     /// Closes the set and wakes all pending calls to [`Self::next`].
     ///
+    /// The close request travels on a dedicated watch signal the actor
+    /// selects on, so command-channel backpressure can never discard it.
+    ///
     /// # Errors
     ///
-    /// Returns a typed error when the actor stops before processing the first close request.
+    /// Returns a typed error when the actor stops before closing the
+    /// subscription channels.
     pub async fn close(&self) -> Result<(), ConsumerError> {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
         let (completed, completion) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::Close(completed))
-            .await
-            .map_err(|_| ConsumerError::closed())?;
+        *self
+            .close_completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(completed);
+        let _ = self.close_tx.send(true);
         completion.await.map_err(|_| ConsumerError::closed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, time::Duration};
+
+    use bytes::Bytes;
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::transport::Transport;
+    use crate::{
+        config::{BrokerConfig, Credentials, Endpoint, TlsConfig},
+        transport::{Delivery as TransportDelivery, mock::MockTransport, mock::TransportOperation},
+    };
+
+    fn test_broker() -> BrokerConfig {
+        BrokerConfig {
+            name: "test".to_owned(),
+            hosts: vec![Endpoint::new("localhost", 5672)],
+            vhost: "/".to_owned(),
+            credentials: Credentials::new("guest", "guest"),
+            tls: TlsConfig::disabled(),
+            heartbeat: Duration::from_secs(30),
+        }
+    }
+
+    /// Dropping the handle is the only close path an embedder can forget to
+    /// await, so its close signal must survive a saturated command channel:
+    /// the actor and its broker subscriptions must not leak (audit F-16).
+    #[tokio::test(start_paused = true)]
+    async fn drop_with_saturated_command_channel_still_closes_the_actor() {
+        let transport = MockTransport::default();
+        let channel = transport
+            .connect(&test_broker())
+            .await
+            .expect("connection")
+            .open_consumer()
+            .await
+            .expect("consumer channel");
+
+        let (commands, receiver) = mpsc::channel::<ConsumerCommand>(COMMAND_CAPACITY);
+        let subscription = SubscriptionId::new("jobs");
+        let delivery = || TransportDelivery {
+            delivery_tag: 1,
+            exchange: "jobs".to_owned(),
+            routing_key: "jobs".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: Arc::new(BTreeMap::new()),
+            payload: Bytes::from_static(b"payload"),
+        };
+        for _ in 0..COMMAND_CAPACITY {
+            commands
+                .try_send(ConsumerCommand::Incoming {
+                    subscription: subscription.clone(),
+                    result: Ok(delivery()),
+                })
+                .expect("channel saturated before the actor is polled");
+        }
+
+        let (buffer_tx, buffer_rx) = flume::bounded::<Result<Delivery, ConsumerError>>(1);
+        let (error_tx, error_rx) = flume::bounded::<SettlementError>(16);
+        let dispatch_notify = Arc::new(Notify::new());
+        let (close_tx, close_rx) = watch::channel(false);
+        let close_completion: Arc<Mutex<Option<oneshot::Sender<()>>>> = Arc::new(Mutex::new(None));
+        let actor = tokio::spawn(run_actor(
+            vec![Subscription::new(
+                "jobs",
+                crate::pool::ConnectionKey::from_bytes([7; 32]),
+                "queue.jobs",
+                Arc::from(channel),
+            )],
+            receiver,
+            commands.clone(),
+            buffer_tx,
+            error_tx,
+            error_rx.clone(),
+            Metrics::default(),
+            dispatch_notify.clone(),
+            close_rx,
+            close_completion.clone(),
+            COMMAND_CAPACITY,
+        ));
+
+        let handle = ConsumerSetHandle {
+            commands: commands.clone(),
+            buffer_rx,
+            error_rx,
+            metrics: Metrics::default(),
+            closed: Arc::new(AtomicBool::new(false)),
+            dispatch_notify,
+            generation: 1,
+            pending_error: Arc::new(Mutex::new(None)),
+            close_tx: Arc::new(close_tx),
+            close_completion,
+        };
+        // In a current-thread runtime the actor is not polled until the test
+        // awaits, so the channel is still saturated when `Drop` runs.
+        drop(handle);
+
+        let exited = tokio::time::timeout(Duration::from_secs(1), actor).await;
+        assert!(
+            exited.is_ok(),
+            "dropping the handle with a saturated command channel must still stop the actor"
+        );
+        assert_eq!(
+            transport
+                .operations()
+                .iter()
+                .filter(|operation| matches!(operation, TransportOperation::CloseChannel))
+                .count(),
+            1,
+            "drop-close must close the subscription channel"
+        );
     }
 }
