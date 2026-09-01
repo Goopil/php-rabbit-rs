@@ -323,7 +323,13 @@ mod tests {
     impl RuntimeFactory for CountingRuntimeFactory {
         fn create(&self) -> std::io::Result<Runtime> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Builder::new_current_thread().enable_all().build()
+            // Multi-thread with one worker, matching the production factory:
+            // client initialization spawns actor tasks, and `Handle::block_on`
+            // only polls spawned tasks on a multi-thread runtime.
+            Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
         }
     }
 
@@ -392,10 +398,29 @@ mod tests {
         handle
             .install_client(client.clone())
             .unwrap_or_else(|_| panic!("install client"));
+        // Trigger connection establishment on the runtime (this only spawns
+        // the coordinator; the connection actor connects on the runtime's
+        // worker), then wait off-runtime until the actor owns a connection.
+        // Awaiting actor-driven readiness under `Handle::block_on` from a
+        // foreign thread is not reliable here; the state watch is.
         handle
             .runtime()
-            .block_on(client.initialize_connection_for_tests(broker))
-            .expect("publish initializes connection");
+            .block_on(client.establish_coordinator_for_tests(broker))
+            .expect("coordinator established");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if matches!(
+                client.connection_states().get(broker),
+                Some(crate::recovery::ConnectionState::Ready { .. })
+            ) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "connection must be established within 5s"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         handle
     }
 

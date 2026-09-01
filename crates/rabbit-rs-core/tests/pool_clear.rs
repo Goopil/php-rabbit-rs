@@ -9,8 +9,8 @@
 //! 1. Deliveries keep flowing through the pre-existing consumer after a
 //!    purge; settlements keep reaching the broker channel.
 //! 2. A purge never re-establishes the consumer (no QoS/consume storm) and
-//!    never opens more than one extra connection, no matter how many times
-//!    it runs.
+//!    never opens an extra connection, no matter how many times it runs —
+//!    it rides the coordinator's single connection (issue #77).
 //! 3. Re-fetching the consumer after a purge returns the established set
 //!    (no handle eviction) with an unchanged connection generation.
 //!
@@ -166,11 +166,11 @@ async fn purge_between_rounds_keeps_a_pre_existing_consumer_delivering() {
         "a purge must not bump the connection generation"
     );
 
-    // No re-establishment storm: one connection for the coordinator, one for
-    // the purge path; the consumer channel was configured and registered once.
+    // No re-establishment storm: the purge rides the coordinator's single
+    // connection; the consumer channel was configured and registered once.
     assert_eq!(
         connect_count(&transport),
-        2,
+        1,
         "a purge must not open a new connection per round"
     );
     assert_eq!(
@@ -192,7 +192,7 @@ async fn purge_between_rounds_keeps_a_pre_existing_consumer_delivering() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn repeated_purges_reuse_one_cached_connection() {
+async fn repeated_purges_reuse_the_coordinator_connection() {
     let transport = Arc::new(MockTransport::default());
     transport.keep_delivery_stream_open();
     let pool = ClientPool::new(Arc::new(consumer_config()), transport.clone());
@@ -208,8 +208,8 @@ async fn repeated_purges_reuse_one_cached_connection() {
 
     assert_eq!(
         connect_count(&transport),
-        2,
-        "repeated purges must reuse one raw connection next to the coordinator's"
+        1,
+        "repeated purges must reuse the coordinator's single connection"
     );
     assert_eq!(
         count(&transport, |op| matches!(

@@ -938,3 +938,107 @@ async fn pool_evicts_stale_consumer_handle_after_recovery() {
     drop(consumer2);
     pool.close().await.expect("close pool");
 }
+
+/// Issue #77 / audit F-13: `queue_size` and `purge_queue` must ride the
+/// coordinator's single connection (and its recovery machinery) instead of
+/// caching a second raw connection per vhost.
+///
+/// Before the fix the admin path opened and cached its own connection
+/// outside the actor: the `connect_count` assertion fails (two connects),
+/// and after a broker restart the cached dead connection made these
+/// operations fail forever.
+#[tokio::test(start_paused = true)]
+async fn admin_ops_ride_the_coordinator_connection_and_survive_recovery() {
+    let transport = Arc::new(MockTransport::default());
+    transport.keep_delivery_stream_open();
+    // Initial connect + consumer, then recovery connect + consumer.
+    transport.push_connect_result(Ok(()));
+    transport.push_consumer_result(Ok(()));
+    transport.push_connect_result(Ok(()));
+    transport.push_consumer_result(Ok(()));
+
+    let pool = ClientPool::new(
+        config(
+            vec![broker("primary", "/", "guest")],
+            vec![worker_profile("main", "primary", "jobs", 4)],
+        ),
+        transport.clone() as Arc<dyn Transport>,
+    );
+
+    // Establish the coordinator connection first so the connect count
+    // discriminates: admin operations must not add a second connection.
+    let consumer = pool.consumer("main").await.expect("consumer handle");
+    drop(consumer);
+
+    transport.push_queue_size(Ok(42));
+    let size = pool
+        .queue_size("primary", "jobs")
+        .await
+        .expect("queue size on the live connection");
+    assert_eq!(size, 42);
+    pool.purge_queue("primary", "jobs")
+        .await
+        .expect("purge on the live connection");
+
+    let connect_count = transport
+        .operations()
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Connect { .. }))
+        .count();
+    assert_eq!(
+        connect_count, 1,
+        "admin operations must ride the coordinator's single connection"
+    );
+
+    // Simulate a broker restart: the actor observes the loss, recovers the
+    // connection, and admin operations work again — without process restart.
+    pool.simulate_connection_loss_for_tests("primary", TransportError::connection("socket reset"))
+        .await
+        .expect("loss reported");
+    for _ in 0..5 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+    }
+
+    transport.push_queue_size(Ok(7));
+    let size = tokio::time::timeout(Duration::from_secs(10), pool.queue_size("primary", "jobs"))
+        .await
+        .expect("queue_size must not hang after recovery")
+        .expect("queue size must succeed after recovery");
+    assert_eq!(size, 7);
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::QueueSize { queue, .. } if queue == "jobs"
+    )));
+
+    pool.close().await.expect("close pool");
+}
+
+/// Issue #77: when the connection actor failed permanently, admin
+/// operations must surface a typed error promptly instead of hanging.
+#[tokio::test(start_paused = true)]
+async fn admin_operations_fail_fast_when_the_connection_failed_permanently() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_connect_result(Err(TransportError::authentication(
+        "credentials rejected by the broker",
+    )));
+
+    let pool = ClientPool::new(
+        config(
+            vec![broker("primary", "/", "guest")],
+            vec![worker_profile("main", "primary", "jobs", 4)],
+        ),
+        transport.clone() as Arc<dyn Transport>,
+    );
+
+    let error = tokio::time::timeout(Duration::from_secs(5), pool.queue_size("primary", "jobs"))
+        .await
+        .expect("queue_size must fail instead of hanging on a permanently failed actor")
+        .expect_err("queue_size must fail on a permanently failed actor");
+    assert!(
+        format!("{error}").contains("failed permanently"),
+        "error must identify the permanent failure, got: {error}"
+    );
+
+    pool.close().await.expect("close pool");
+}

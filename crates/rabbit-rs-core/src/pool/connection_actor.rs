@@ -111,6 +111,27 @@ impl ConnectionActorHandle {
             .map_err(|_| ConnectionActorClosed)
     }
 
+    /// Opens a publisher channel on the active connection, preserving the
+    /// typed transport failure.
+    ///
+    /// Serves the same serialized [`Command::OpenPublisher`] as
+    /// [`Self::open_publisher`], but returns the transport error as-is so
+    /// admin callers can classify and surface it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TransportError`] when the actor stopped or the channel
+    /// cannot be opened on the active connection.
+    pub async fn open_admin_channel(&self) -> Result<Box<dyn PublisherChannel>, TransportError> {
+        let (completed, completion) = oneshot::channel();
+        self.send(Command::OpenPublisher(completed))
+            .await
+            .map_err(|_| TransportError::closed("connection actor is closed"))?;
+        completion
+            .await
+            .map_err(|_| TransportError::closed("connection actor is closed"))?
+    }
+
     /// Opens a consumer channel on the active connection.
     ///
     /// # Errors
