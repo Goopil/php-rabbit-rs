@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashSet,
     error::Error,
     fmt,
@@ -12,12 +13,14 @@ use tokio::{
 
 use crate::{
     config::{BrokerConfig, ValidatedConfig},
-    consumer::{ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
+    consumer::{ConsumerError, ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
     metrics::Metrics,
     metrics::MetricsSnapshot,
-    publisher::{PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle},
+    publisher::{
+        PublishError, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
+    },
     recovery::{ConnectionState, RecoveryPolicy},
-    topology::{TopologyPlan, TopologyReconciler},
+    topology::{TopologyPlan, TopologyReconcileError, TopologyReconciler},
     transport::{ConsumerChannel, PublisherChannel, Transport, TransportError, TransportErrorKind},
 };
 
@@ -58,26 +61,56 @@ struct CloseCommand {
 }
 
 /// Error returned by recovery coordinator operations.
+///
+/// Each failure carries its typed source so callers can classify it without
+/// matching message strings.
 #[derive(Debug)]
-pub struct CoordinatorError {
-    message: String,
+pub enum CoordinatorError {
+    /// The topology plan could not be reconciled on the recovered channel.
+    Topology(TopologyReconcileError),
+    /// A connection or channel operation failed.
+    Transport(TransportError),
+    /// The publisher actor rejected the recovered connection event.
+    Publisher(PublishError),
+    /// A consumer set could not be established.
+    Consumer(ConsumerError),
+    /// Coordinator-internal condition that is not a transport failure.
+    Internal(Cow<'static, str>),
 }
 
 impl CoordinatorError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
+    fn internal(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::Internal(message.into())
     }
 }
 
 impl fmt::Display for CoordinatorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        match self {
+            // `TopologyReconcileError` already identifies the failed step.
+            Self::Topology(error) => write!(formatter, "{error}"),
+            Self::Transport(error) => write!(formatter, "{error}"),
+            Self::Publisher(error) => write!(
+                formatter,
+                "publisher failed to adopt the recovered channel: {error}"
+            ),
+            Self::Consumer(error) => write!(formatter, "consumer spawn failed: {error}"),
+            Self::Internal(message) => write!(formatter, "{message}"),
+        }
     }
 }
 
-impl Error for CoordinatorError {}
+impl Error for CoordinatorError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Topology(error) => Some(error),
+            Self::Transport(error) => Some(error),
+            Self::Publisher(error) => Some(error),
+            Self::Consumer(error) => Some(error),
+            Self::Internal(_) => None,
+        }
+    }
+}
 
 /// Configuration for spawning a [`RecoveryCoordinator`].
 pub struct RecoveryCoordinatorConfig {
@@ -167,9 +200,16 @@ struct CoordinatorContext {
 
 impl RecoveryCoordinatorHandle {
     /// Returns the current connection state.
+    ///
+    /// Reports [`ConnectionState::Closed`] once the coordinator task has
+    /// stopped, instead of a stale pre-stop value.
     #[must_use]
     pub fn state(&self) -> ConnectionState {
-        self.state.borrow().clone()
+        let receiver = self.state.clone();
+        if receiver.has_changed().is_err() {
+            return ConnectionState::Closed;
+        }
+        receiver.borrow().clone()
     }
 
     /// Returns a non-blocking view of the shared metrics registry.
@@ -180,9 +220,9 @@ impl RecoveryCoordinatorHandle {
 
     /// Waits for a connection state matching the predicate.
     ///
-    /// # Panics
-    ///
-    /// Panics if the underlying coordinator task has stopped.
+    /// When the coordinator task has stopped, no transition can ever match
+    /// again; the wait resolves to [`ConnectionState::Closed`] so callers
+    /// observe a terminal state instead of blocking or panicking.
     pub async fn wait_for_state(
         &self,
         predicate: impl Fn(&ConnectionState) -> bool,
@@ -193,10 +233,9 @@ impl RecoveryCoordinatorHandle {
             if predicate(&current) {
                 return current;
             }
-            receiver
-                .changed()
-                .await
-                .expect("coordinator actor is alive");
+            if receiver.changed().await.is_err() {
+                return ConnectionState::Closed;
+            }
         }
     }
 
@@ -226,7 +265,7 @@ impl RecoveryCoordinatorHandle {
             .lock()
             .await
             .clone()
-            .ok_or_else(|| CoordinatorError::new("publisher is not ready"))
+            .ok_or_else(|| CoordinatorError::internal("publisher is not ready"))
     }
 
     /// Returns the per-broker consumer set for the given worker profile.
@@ -248,8 +287,8 @@ impl RecoveryCoordinatorHandle {
     /// Returns a typed consumer or coordinator error.
     pub async fn consumer(&self, profile: &str) -> Result<ConsumerSetHandle, CoordinatorError> {
         let not_ready =
-            || CoordinatorError::new(format!("consumer profile '{profile}' is not ready"));
-        let ConnectionState::Ready { generation } = self.state.borrow().clone() else {
+            || CoordinatorError::internal(format!("consumer profile '{profile}' is not ready"));
+        let ConnectionState::Ready { generation } = self.state() else {
             return Err(not_ready());
         };
         if let Some(handle) = self.consumers.lock().await.get(profile).cloned()
@@ -328,7 +367,7 @@ impl RecoveryCoordinatorHandle {
         self.close_tx
             .send(CloseCommand { completed })
             .await
-            .map_err(|_| CoordinatorError::new("coordinator is already closed"))?;
+            .map_err(|_| CoordinatorError::internal("coordinator is already closed"))?;
         let _ = completion.await;
         let _ = self.actor.close().await;
         if let Some(join) = self.join.lock().await.take() {
@@ -347,7 +386,16 @@ async fn run_coordinator(
     establish_lock: EstablishLock,
 ) {
     let mut state = actor.subscribe();
-    actor.start().await.expect("connection actor started");
+    if actor.start().await.is_err() {
+        // The actor stopped before the start command landed (for example the
+        // handle was closed during startup). Terminate the coordinator task
+        // cleanly instead of panicking inside a spawned task.
+        crate::log::error(
+            "recovery_coordinator",
+            "connection actor stopped before the coordinator could start it; terminating",
+        );
+        return;
+    }
 
     let mut reconciler = TopologyReconciler::new();
     let mut last_generation: u64 = 0;
@@ -388,7 +436,10 @@ async fn run_coordinator(
                         };
                         if let Err(error) = result {
                             context.metrics.record_recovery_failure();
-                            eprintln!("recovery generation {generation} failed: {error}");
+                            crate::log::warn(
+                                "recovery_coordinator",
+                                format!("recovery generation {generation} failed: {error}"),
+                            );
                             // Roll back so the next Ready re-attempts recovery.
                             last_generation = generation.saturating_sub(1);
                             // Drive the actor back to Recovering so the
@@ -450,12 +501,10 @@ async fn recover_generation(
     establish_lock: &EstablishLock,
 ) -> Result<(), CoordinatorError> {
     // Step 1: Open publisher channel.
-    let publisher_channel: Arc<dyn PublisherChannel> = Arc::from(
-        actor
-            .open_publisher()
-            .await
-            .map_err(|_| CoordinatorError::new("failed to open publisher channel"))?,
-    );
+    let publisher_channel: Arc<dyn PublisherChannel> =
+        Arc::from(actor.open_publisher().await.map_err(|_| {
+            CoordinatorError::Transport(TransportError::closed("failed to open publisher channel"))
+        })?);
 
     // Step 2: Reconcile topology (exchanges → queues → bindings).
     reconciler
@@ -465,9 +514,7 @@ async fn recover_generation(
             generation,
         )
         .await
-        .map_err(|error| {
-            CoordinatorError::new(format!("topology reconciliation failed: {error}"))
-        })?;
+        .map_err(CoordinatorError::Topology)?;
 
     // Step 3: Initialize or update the publisher actor.
     let mut pub_guard = publisher.lock().await;
@@ -483,11 +530,7 @@ async fn recover_generation(
                 topology_restored: true,
             })
             .await
-            .map_err(|error| {
-                CoordinatorError::new(format!(
-                    "publisher failed to adopt the recovered channel: {error}"
-                ))
-            })?;
+            .map_err(CoordinatorError::Publisher)?;
     } else {
         let delay_strategy = compile_delay_strategy(&context.config);
         let handle = PublisherActor::spawn_with_delay_strategy_and_metrics(
@@ -574,12 +617,12 @@ async fn establish_requested_profile(
         if sub_config.broker != context.broker.name {
             continue;
         }
-        let consumer_channel: Arc<dyn ConsumerChannel> = Arc::from(
-            actor
-                .open_consumer()
-                .await
-                .map_err(|_| CoordinatorError::new("failed to open consumer channel"))?,
-        );
+        let consumer_channel: Arc<dyn ConsumerChannel> =
+            Arc::from(actor.open_consumer().await.map_err(|_| {
+                CoordinatorError::Transport(TransportError::closed(
+                    "failed to open consumer channel",
+                ))
+            })?);
         let channel_id = u16::try_from(index.saturating_add(1)).unwrap_or(u16::MAX);
         let mut sub = Subscription::new(
             sub_config.name.clone(),
@@ -627,7 +670,7 @@ async fn establish_requested_profile(
 
     let consumer = ConsumerSet::spawn_with_metrics(subscriptions, context.metrics.clone())
         .await
-        .map_err(|error| CoordinatorError::new(format!("consumer spawn failed: {error}")))?;
+        .map_err(CoordinatorError::Consumer)?;
 
     let mut guard = consumers.lock().await;
     if let Some(old) = guard.insert(profile.to_owned(), consumer) {
