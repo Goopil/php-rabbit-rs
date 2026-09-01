@@ -82,6 +82,8 @@ function uniqueQueue(string $prefix = 'rabbit-rs-it'): string
  *
  * $configOverrides patches the live config (e.g. publisher confirms) and
  * $connectOverrides extends the connector options (e.g. block_for).
+ * $brokerHosts replaces the default broker host list (e.g. routing the
+ * connection through a per-test Toxiproxy proxy).
  */
 function integrationPoolAndQueue(
     mixed $container,
@@ -89,8 +91,12 @@ function integrationPoolAndQueue(
     array $configOverrides = [],
     array $connectOverrides = [],
     string $connectionName = 'rabbit-rs-integration',
+    ?array $brokerHosts = null,
 ): array {
     $config = array_merge(liveConfig($queueName), $configOverrides);
+    if ($brokerHosts !== null) {
+        $config['brokers']['default']['hosts'] = $brokerHosts;
+    }
     $normalized = ConfigNormalizer::normalize($config);
 
     $pool = new Pool($normalized['native']);
