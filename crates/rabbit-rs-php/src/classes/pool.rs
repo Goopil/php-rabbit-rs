@@ -269,8 +269,12 @@ impl Pool {
     }
 
     /// Returns the number of pending messages in a queue on the given broker.
+    ///
+    /// Flushes the publish buffer first so publications accepted by this
+    /// pool are counted.
     pub fn size(&self, broker: &str, queue: &str) -> PhpResult<i64> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::size")?;
+        self.publish_buffer.flush_all()?;
         match self
             .handle
             .runtime()
@@ -282,8 +286,12 @@ impl Pool {
     }
 
     /// Purges all messages from a queue on the given broker.
+    ///
+    /// Flushes the publish buffer first so buffered publications cannot
+    /// repopulate the queue after the purge.
     pub fn clear(&self, broker: &str, queue: &str) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::clear")?;
+        self.publish_buffer.flush_all()?;
         match self
             .handle
             .runtime()
