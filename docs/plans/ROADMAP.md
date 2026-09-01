@@ -64,6 +64,33 @@ with the feature, never in a later docs pass.
     (`ConsumerErrorKind::InvalidDelay`, DLX or documented ack) instead of
     hot-looping; the extension conversion rejects the delay at the boundary
     naming the limit; plugin mode unchanged.
+- **Round G waves 3–4 (2026-09-01)** — merged via PRs #103–#110:
+  - #68 (P1): workers evict cached consumers on source replacement and close
+    (the three `ConnectionException` kinds and `Closed`); lab rejoin test on a
+    dedicated vhost.
+  - #74 (P1): supervisor exit 0 = clean exit (budget reset + immediate
+    restart, no duration heuristic); crash-loop budget intact for non-zero
+    exits; four tests that encoded the bug migrated to crash mode.
+  - #77 (P2): admin operations routed through the connection actor
+    (`open_admin_channel` reuses the publisher channel path); the per-process
+    connections registry was removed — one connection per vhost is now
+    structural, not a convention.
+  - #75 (P2): extension event callbacks — thrown PHP exceptions preserved and
+    rethrown after the drain (later callbacks still fire), single-slot theft
+    fixed by a multi-callback registry + `Pool::clearEventCallbacks(): int`,
+    drain hoisted onto the `next()`/`tryNext()`/`nextBatch()` fast paths.
+  - #78 (P2): config surface enforced — `mandatory: false` rejected with a
+    `publisher.safety` migration pointer (honoring it would confirm
+    unroutable publishes = silent loss), `confirm_timeout >= 1s`,
+    `heartbeat` bounded 1..65535 s, `mandatory` dropped from the pool
+    fingerprint (validated constant).
+  - #80 (P2): Laravel config validation deferred off `boot()` (lazy
+    `rabbit-rs.config` singleton at connection resolution), env-string
+    booleans accepted via `filter_var`, Octane reload re-normalizes.
+  - #89 (P1): release pipeline — Packagist token via Bearer header from a
+    0600 temp file + `--fail` + body assertion; mirror auth via GIT_ASKPASS
+    (no token in URLs/argv); mirror force-pushes removed (fast-forward only,
+    published tags immutable); explicit job permissions.
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -218,9 +245,11 @@ parallel tracks** — maximum concurrency, minimal interference; sequence only w
 track. Strategy decision (2026-08-31): **stabilize before features** — Round G contains
 no features; post-1.0 feature ideas are parked below.
 
-Status (2026-09-01): Tasks 21 (#66, P0), 22 (#67), 23 (#68), 24 (#69), 25 (#70),
-26 (#71), 27 (#72), 28 (#73), 32 (#77) and Round C (#40) landed (see Landed).
-Still queued: Task 38 (#83), 29–31, 33–37.
+Status (2026-09-01): Tasks 21–25 (#66–#70), 26 (#71), 27 (#72), 28 (#73),
+29 (#74), 30 (#75), 32 (#77), 33 (#78), 35 (#80), 41 (#89) and Round C (#40)
+landed (see Landed). Still queued: Task 31 (#76), 34 (#79), 36 (#81), 37 (#82),
+38 (#83), 39 (#87), 40 (#88), 42 (#90), plus review follow-ups #95/#96/#97 and
+promoted P1s #56/#52.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
