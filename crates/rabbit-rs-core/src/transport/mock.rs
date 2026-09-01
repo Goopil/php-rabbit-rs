@@ -48,6 +48,9 @@ struct MockState {
     delivery_notify: Arc<tokio::sync::Notify>,
     operation_results: VecDeque<TransportResult<()>>,
     consumer_results: VecDeque<TransportResult<()>>,
+    /// Publisher-channel confirm-mode results, mirroring a broker that
+    /// rejects `confirm.select` transiently during recovery.
+    enable_confirms_results: VecDeque<TransportResult<()>>,
     /// Connection-level errors armed on the error stream, mirroring a broker
     /// connection that dies (socket reset, heartbeat timeout).
     connection_errors: VecDeque<TransportError>,
@@ -121,6 +124,10 @@ impl MockTransport {
 
     pub fn push_operation_result(&self, result: TransportResult<()>) {
         self.state().operation_results.push_back(result);
+    }
+
+    pub fn push_enable_confirms_result(&self, result: TransportResult<()>) {
+        self.state().enable_confirms_results.push_back(result);
     }
 
     pub fn push_consumer_result(&self, result: TransportResult<()>) {
@@ -520,8 +527,12 @@ impl TopologyChannel for MockPublisherChannel {
 #[async_trait]
 impl PublisherChannel for MockPublisherChannel {
     async fn enable_confirms(&self) -> TransportResult<()> {
-        self.record(TransportOperation::EnableConfirms);
-        Ok(())
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations.push(TransportOperation::EnableConfirms);
+        state.enable_confirms_results.pop_front().unwrap_or(Ok(()))
     }
 
     async fn publish(&self, request: PublishRequest) -> TransportResult<Box<dyn PublishReceipt>> {
