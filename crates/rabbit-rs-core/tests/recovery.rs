@@ -13,7 +13,10 @@ use rabbit_rs_core::{
     pool::recovery_coordinator::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
     },
-    publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest, PublisherConfig},
+    publisher::{
+        Destination, MessageProperties, PublishErrorKind, PublishOutcome, PublishRequest,
+        PublisherConfig,
+    },
     recovery::{
         Clock, ConnectionState, EqualJitter, IdentityJitter, JitterSource, RecoveryPolicy,
         TokioClock,
@@ -474,6 +477,148 @@ async fn recovery_failure_rolls_back_and_retries() {
         .expect("consumer should become available after retry");
 
     drop(consumer);
+
+    coordinator.close().await.expect("close");
+}
+
+// ---------------------------------------------------------------------------
+// Publisher wake-up (audit F-03): a failed publisher Ready event must roll
+// the generation back so recovery re-runs instead of leaving the publisher
+// suspended with its generation consumed.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn publisher_ready_event_failure_rolls_back_generation_and_recovers() {
+    let transport = Arc::new(MockTransport::default());
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    // The fresh channel of the next generation rejects confirm.select once
+    // (transient failure): recovery must not report success while the
+    // publisher stays suspended with its generation consumed.
+    transport.push_enable_confirms_result(Err(TransportError::connection("confirm.select failed")));
+    transport.push_connect_result(Ok(()));
+    coordinator
+        .connection_lost(TransportError::connection("heartbeat missed"))
+        .await
+        .expect("loss reported");
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_state(&coordinator, |s| {
+            matches!(s, ConnectionState::Ready { generation: 3 })
+        }),
+    )
+    .await
+    .expect("recovery must re-run after the publisher Ready event failure");
+
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let waiter = coordinator
+        .publisher()
+        .await
+        .expect("publisher ready")
+        .try_publish(publish_request(
+            "post-recovery",
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("publish accepted");
+    let outcome = tokio::time::timeout(Duration::from_secs(10), waiter.wait())
+        .await
+        .expect("confirmation within timeout")
+        .expect("publish must be confirmed after recovery");
+    assert_eq!(
+        outcome,
+        PublishOutcome::Confirmed {
+            message_id: "post-recovery".into()
+        }
+    );
+
+    coordinator.close().await.expect("close");
+}
+
+// ---------------------------------------------------------------------------
+// Publisher wake-up (audit F-02): `delay.mode=auto` compiles to the plugin
+// strategy, so the first delayed publish declares the `*.delayed` exchange.
+// A channel-level declare failure (540 when the plugin is absent, classified
+// recoverable by the lapin mapping) must fail that single message terminally
+// and leave the actor ready — never suspend the publisher.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn delayed_publish_declare_failure_fails_that_message_and_keeps_publisher_ready() {
+    let transport = Arc::new(MockTransport::default());
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    transport.push_operation_result(Err(TransportError::connection(
+        "exchange.declare: 540 NOT_IMPLEMENTED - x-delayed-message exchange type not registered",
+    )));
+
+    let mut properties = MessageProperties::new("delayed-one");
+    properties.delay_ms = Some(60_000);
+    let waiter = coordinator
+        .publisher()
+        .await
+        .expect("publisher ready")
+        .try_publish(PublishRequest::new(
+            Destination::new("jobs", "high"),
+            Bytes::from_static(b"payload"),
+            properties,
+            Instant::now() + Duration::from_secs(5),
+        ))
+        .expect("publish accepted");
+
+    let outcome = tokio::time::timeout(Duration::from_secs(10), waiter.wait())
+        .await
+        .expect("waiter resolved")
+        .expect_err("the delayed publish must fail terminally");
+    assert_eq!(
+        outcome.kind(),
+        PublishErrorKind::Transport,
+        "declare failure must fail the message terminally, not suspend the publisher"
+    );
+
+    // The actor stays ready: ordinary publishing keeps working.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let follow_up = coordinator
+        .publisher()
+        .await
+        .expect("publisher ready")
+        .try_publish(publish_request(
+            "still-published",
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("publish accepted");
+    let outcome = tokio::time::timeout(Duration::from_secs(10), follow_up.wait())
+        .await
+        .expect("confirmation within timeout")
+        .expect("publishing must keep working after a delayed declare failure");
+    assert_eq!(
+        outcome,
+        PublishOutcome::Confirmed {
+            message_id: "still-published".into()
+        }
+    );
 
     coordinator.close().await.expect("close");
 }

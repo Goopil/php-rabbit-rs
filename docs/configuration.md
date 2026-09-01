@@ -222,6 +222,8 @@ A delivery whose resolved attempt count exceeds `max_attempts` is settled termin
 - `plugin` — require the plugin; fail if it is not installed
 - `ttl` — always use TTL queue buckets
 
+> **Note:** when the delayed-exchange declare fails (`plugin` or `auto` mode without the plugin), the delayed publish fails terminally with a transport error; publishing never suspends and non-delayed messages keep flowing.
+
 > **Note:** when `publisher.safety` is `blind`, delayed jobs are **not** honored — the blind pump bypasses delay routing and publishes immediately. Use `safe` or `unsafe` when you need delay routing.
 
 See [Topology — Delay routing](topology.md#delay-routing) for details.

@@ -683,12 +683,6 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
 
         match ensure_delay_topology(state, &channel, &retained).await {
             DelayTopologyOutcome::Ready => {}
-            DelayTopologyOutcome::Suspend => {
-                state.replay.push_back(retained);
-                state.replay.extend(pending);
-                state.suspend(state.generation);
-                return;
-            }
             DelayTopologyOutcome::Failed(error) => {
                 state.byte_budget.release(retained.payload_bytes);
                 complete_error(retained, error);
@@ -943,7 +937,6 @@ fn transport_publish_error(error: &TransportError) -> PublishError {
 
 enum DelayTopologyOutcome {
     Ready,
-    Suspend,
     Failed(PublishError),
 }
 
@@ -987,7 +980,10 @@ async fn ensure_delay_topology(
             Ok(()) => {
                 state.declared_ttl_queues.insert(route.exchange.clone());
             }
-            Err(error) if error.is_recoverable() => return DelayTopologyOutcome::Suspend,
+            // A topology failure for this message (e.g. 540 when the
+            // delayed-message plugin is absent in `auto` mode) is never a
+            // reason to suspend the publisher: fail the single message
+            // terminally so the actor stays ready.
             Err(error) => {
                 return DelayTopologyOutcome::Failed(transport_publish_error(&error));
             }
@@ -1003,7 +999,7 @@ async fn ensure_delay_topology(
                     .declared_ttl_queues
                     .insert(Arc::from(queue_spec.name.as_str()));
             }
-            Err(error) if error.is_recoverable() => return DelayTopologyOutcome::Suspend,
+            // Same contract as the delayed-exchange declare above.
             Err(error) => {
                 return DelayTopologyOutcome::Failed(transport_publish_error(&error));
             }

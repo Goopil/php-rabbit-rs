@@ -164,7 +164,7 @@ Install the plugin:
 rabbitmq-plugins enable rabbitmq_delayed_message_exchange
 ```
 
-If the plugin is not installed, `plugin` mode fails with a permanent error.
+If the plugin is not installed, the exchange declare fails and that delayed publish fails terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working.
 
 ### TTL fallback mode
 
