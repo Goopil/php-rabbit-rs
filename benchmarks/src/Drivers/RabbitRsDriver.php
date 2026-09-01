@@ -65,10 +65,6 @@ class RabbitRsDriver extends AbstractBenchmark
                     ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,
                     ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => true,
                 },
-                'mandatory' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,
-                    ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => true,
-                },
                 'safety' => match ($this->scenarioMode) {
                     ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => 'blind',
                     ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => 'safe',
