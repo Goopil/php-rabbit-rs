@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
+use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Container\Container;
+use Illuminate\Support\Facades\Event;
 
 if (! function_exists('lifecycleNormalizedNativeConfig')) {
     function lifecycleNormalizedNativeConfig($app): array
@@ -211,6 +213,56 @@ describe('lifecycle operations', function () {
         expect(true)->toBeTrue();
     });
 });
+
+describe('config refresh on reload', function () {
+    it('reload re-binds rabbit-rs.config so fresh config values are served', function () {
+        $before = $this->app->make('rabbit-rs.config');
+        expect($before['native']['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
+
+        $this->app['config']->set('rabbit-rs.brokers.default.hosts', ['rotated:5672']);
+
+        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+
+        $after = $this->app->make('rabbit-rs.config');
+        expect($after['native']['brokers'][0]['hosts'][0]['host'])->toBe('rotated');
+    });
+
+    it('reload propagates config changes to newly resolved queue connections', function () {
+        $app = $this->app;
+        $app['config']->set('queue.connections.rabbit-rs-rotated', [
+            'driver' => 'rabbit-rs',
+        ]);
+
+        $provider = new class($app) extends RabbitMqServiceProvider {
+            protected function nativeExtensionLoaded(): bool
+            {
+                return true;
+            }
+        };
+        $provider->boot();
+
+        $pool = octaneQueuePool($app['queue']->connection('rabbit-rs-rotated'));
+        expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
+
+        $app['config']->set('rabbit-rs.brokers.default.hosts', ['rotated:5672']);
+        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+
+        $app['config']->set('queue.connections.rabbit-rs-fresh', ['driver' => 'rabbit-rs']);
+        $poolAfter = octaneQueuePool($app['queue']->connection('rabbit-rs-fresh'));
+
+        expect($poolAfter->config['brokers'][0]['hosts'][0]['host'])->toBe('rotated')
+            ->and($poolAfter)->not->toBe($pool);
+    });
+});
+
+/**
+ * Reads the native pool held by a resolved RabbitMqQueue.
+ */
+function octaneQueuePool(object $queue): Pool
+{
+    // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
+    return (new ReflectionProperty($queue, 'pool'))->getValue($queue);
+}
 
 describe('consumer cleanup', function () {
     it('flush closes consumers on current queue', function () {

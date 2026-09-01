@@ -53,25 +53,28 @@ class RabbitMqServiceProvider extends ServiceProvider
 
     private function registerQueueConnector(): void
     {
-        $config = $this->app->make('config')->get('rabbit-rs');
-        $normalizedConfig = ConfigNormalizer::normalize(is_array($config) ? $config : []);
+        $app = $this->app;
         $pools = $this->app->make(NativePoolFactory::class);
         $nativeExtensionLoaded = $this->nativeExtensionLoaded();
-        $app = $this->app;
-        $productionWarningEnabled = (bool) (is_array($config) ? ($config['production_warning'] ?? true) : true);
 
         $this->app->make('queue')->extend(
             'rabbit-rs',
-            static function () use ($app, $nativeExtensionLoaded, $normalizedConfig, $pools, $productionWarningEnabled): RabbitMqConnector {
+            static function () use ($app, $nativeExtensionLoaded, $pools): RabbitMqConnector {
                 if (! $nativeExtensionLoaded) {
                     self::throwMissingNativeExtension();
                 }
 
+                // Normalization is deferred to connection resolution so a
+                // config typo cannot crash the whole app at boot, and the
+                // re-bindable 'rabbit-rs.config' singleton lets Octane
+                // reloads pick up rotated brokers/credentials.
+                $config = $app->make('config')->get('rabbit-rs');
+
                 return new RabbitMqConnector(
                     $pools,
-                    $normalizedConfig,
+                    $app->make('rabbit-rs.config'),
                     inProductionEnvironment: static fn (): bool => $app->environment('production'),
-                    productionWarningEnabled: $productionWarningEnabled,
+                    productionWarningEnabled: (bool) (is_array($config) ? ($config['production_warning'] ?? true) : true),
                 );
             },
         );

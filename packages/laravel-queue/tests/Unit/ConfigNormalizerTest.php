@@ -490,6 +490,54 @@ describe('TLS', function (): void {
     });
 });
 
+describe('env-style booleans', function (): void {
+    it('accepts env-string booleans as Laravel env() returns them', function (string $value, bool $expected): void {
+        $config = configValidConfig();
+        $config['best_effort'] = $value;
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['best_effort'])->toBe($expected);
+    })->with([
+        '"1"' => ['1', true],
+        '"0"' => ['0', false],
+        '"true"' => ['true', true],
+        '"false"' => ['false', false],
+        '"on"' => ['on', true],
+        '"off"' => ['off', false],
+        '""' => ['', false],
+    ]);
+
+    it('accepts env-string booleans for publisher and tls flags', function (): void {
+        $config = configValidConfig();
+        $config['publisher']['confirms'] = '0';
+        $config['publisher']['mandatory'] = '1';
+        $config['brokers']['default']['tls']['enabled'] = 'true';
+
+        $normalized = ConfigNormalizer::normalize($config);
+
+        expect($normalized['publisher']['confirms'])->toBeFalse()
+            ->and($normalized['publisher']['mandatory'])->toBeTrue()
+            ->and($normalized['native']['brokers'][0]['tls']['enabled'])->toBeTrue();
+    });
+
+    it('rejects junk env-string booleans with the config path', function (): void {
+        $config = configValidConfig();
+        $config['best_effort'] = 'maybe';
+
+        expect(fn (): array => ConfigNormalizer::normalize($config))
+            ->toThrow(InvalidArgumentException::class, 'best_effort');
+    });
+
+    it('still rejects non-string non-boolean values', function (): void {
+        $config = configValidConfig();
+        $config['best_effort'] = 1;
+
+        expect(fn (): array => ConfigNormalizer::normalize($config))
+            ->toThrow(InvalidArgumentException::class, 'best_effort');
+    });
+});
+
 /**
  * @return array<string, mixed>
  */

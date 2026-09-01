@@ -417,6 +417,7 @@ When Laravel Octane is detected, the driver automatically:
 
 - Closes cached consumers after each request (prevents channel leaks)
 - Flushes all pools on worker reload
+- Re-normalizes the `rabbit-rs` config on worker reload — broker or credential rotation via env variables takes effect for connections resolved after the reload
 - Stops all pools on worker shutdown
 
 No configuration needed — the lifecycle hooks are registered by the service provider.
