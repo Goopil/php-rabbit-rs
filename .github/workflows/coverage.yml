@@ -81,7 +81,7 @@ jobs:
           extensions: json
 
       - name: Install system deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev jq
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked --quiet || true
@@ -101,8 +101,9 @@ jobs:
           LLVM_PROFILE_FILE: "${{ github.workspace }}/target/debug/rabbit-rs-php-%p.profraw"
         run: |
           mkdir -p target/coverage
+          export RABBIT_RS_EXPECTED_VERSION="$(cargo metadata --manifest-path Cargo.toml --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "rabbit-rs-php") | .version')"
           cd crates/rabbit-rs-php
-          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest || true
+          php -d extension=${{ github.workspace }}/target/debug/librabbit_rs_php.so vendor/bin/pest
 
       - name: Merge profraw files
         run: |

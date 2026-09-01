@@ -98,10 +98,12 @@ fi
 echo "Running Pest tests..."
 (cd "${PHP_EXT_DIR}" && "${PHP_BIN_PATH}" -d "extension=${ARTIFACT}" vendor/bin/pest)
 
-# --- PHPT tests (only extension_metadata.phpt) ---
-PHPT_TEST="${PHPT_DIR}/extension_metadata.phpt"
-if [[ ! -f "${PHPT_TEST}" ]]; then
-    echo "PHPT test not found: ${PHPT_TEST}" >&2
+# --- PHPT tests (all *.phpt scenarios) ---
+shopt -s nullglob
+PHPT_TESTS=("${PHPT_DIR}"/*.phpt)
+shopt -u nullglob
+if (( ${#PHPT_TESTS[@]} == 0 )); then
+    echo "No PHPT tests found in ${PHPT_DIR}" >&2
     exit 1
 fi
 
@@ -109,5 +111,7 @@ export NO_INTERACTION=1
 export REPORT_EXIT_STATUS=1
 export TEST_PHP_EXECUTABLE="${PHP_BIN_PATH}"
 
-echo "Running PHPT test (extension_metadata)..."
-"${PHP_BIN_PATH}" "${RUN_TESTS}" -n -d "extension=${ARTIFACT}" "${PHPT_TEST}"
+echo "Running PHPT tests (${#PHPT_TESTS[@]} scenarios)..."
+for PHPT_TEST in "${PHPT_TESTS[@]}"; do
+    "${PHP_BIN_PATH}" "${RUN_TESTS}" -n -d "extension=${ARTIFACT}" "${PHPT_TEST}"
+done
