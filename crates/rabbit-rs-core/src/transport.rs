@@ -270,6 +270,16 @@ pub trait Transport: Send + Sync {
 
 #[async_trait]
 pub trait TransportConnection: Send + Sync {
+    /// Returns a stream of connection-level errors (socket death, heartbeat
+    /// failure, protocol errors) that reports the liveness of this
+    /// connection.
+    ///
+    /// The caller should create the stream once per connection and select
+    /// over it: a yielded error means the connection is lost and recovery
+    /// must run. Stream termination (`None`) also means the connection is
+    /// gone.
+    fn error_stream(&self) -> Box<dyn TransportErrorStream>;
+
     /// # Errors
     ///
     /// Returns an error when the broker cannot allocate a publisher channel.
@@ -284,6 +294,14 @@ pub trait TransportConnection: Send + Sync {
     ///
     /// Returns an error when graceful connection shutdown fails.
     async fn close(&self) -> TransportResult<()>;
+}
+
+/// Connection-level liveness errors, one connection per stream.
+#[async_trait]
+pub trait TransportErrorStream: Send {
+    /// Waits for the next connection-level error. Returns `None` when the
+    /// error source is gone (the underlying connection no longer exists).
+    async fn next(&mut self) -> Option<TransportError>;
 }
 
 #[async_trait]

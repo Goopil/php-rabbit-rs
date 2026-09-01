@@ -18,7 +18,7 @@ use crate::{
     pool::ConnectionKey,
     publisher::{Destination, PublisherHandle},
     topology::delay::DelayStrategy,
-    transport::{ConsumerChannel, ConsumerRequest, DeliveryStream},
+    transport::{ConsumerChannel, ConsumerRequest, DeliveryStream, TransportError},
 };
 
 const COMMAND_CAPACITY: usize = 256;
@@ -260,6 +260,15 @@ fn spawn_source(
                 return;
             }
         }
+        // A terminated delivery stream means the subscription is dead
+        // (connection lost, channel closed). Surface one terminal error so
+        // `next()` unblocks instead of parking forever.
+        let _ = commands
+            .send(ConsumerCommand::Incoming {
+                subscription,
+                result: Err(TransportError::connection("consumer delivery stream ended")),
+            })
+            .await;
     });
 }
 

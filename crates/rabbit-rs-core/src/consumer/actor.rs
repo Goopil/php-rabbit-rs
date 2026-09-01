@@ -443,6 +443,11 @@ pub(crate) async fn run_actor(
                             ConsumerErrorKind::Transport,
                             error.to_string(),
                         ));
+                        // Surface retained errors without waiting for an
+                        // unrelated wake-up: a terminal error arriving after
+                        // the embedder is already parked in `next()` must
+                        // still reach it.
+                        state.dispatch();
                     }
                 },
                 Some(ConsumerCommand::Settle {

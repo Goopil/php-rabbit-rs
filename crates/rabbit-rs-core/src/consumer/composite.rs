@@ -466,6 +466,10 @@ mod tests {
     }
 
     async fn subscription(transport: &MockTransport, id: &str, key: ConnectionKey) -> Subscription {
+        // These tests exercise mid-life set behavior (retire, refetch,
+        // bursts); their delivery streams must stay open like live broker
+        // subscriptions instead of terminating after the scripted deliveries.
+        transport.keep_delivery_stream_open();
         let channel = transport
             .connect(&broker(id))
             .await
@@ -880,8 +884,8 @@ mod tests {
             "burst errors must surface to the caller"
         );
         assert!(
-            surfaced_errors <= 64,
-            "retained source errors must stay bounded (64), got {surfaced_errors}"
+            surfaced_errors <= 64 + 16,
+            "retained source errors must stay bounded (64 retained + 16 buffered for prefetch 8), got {surfaced_errors}"
         );
         assert!(
             saw_delivery,
