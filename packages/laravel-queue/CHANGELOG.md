@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Event callbacks: `RabbitMqQueue` clears existing event callbacks before registering its defaults, so worker/pool reuse no longer accumulates duplicate default callbacks (each native event firing once per queue construction on a shared pool). To override the defaults, call `Pool::clearEventCallbacks()` before registering a custom callback.
 - Worker supervisor: clean child exits (exit 0, e.g. `--max-jobs` or `--max-time` recycling) no longer burn the restart budget — the budget resets and the worker restarts immediately without backoff; crash-loop protection (budget + exponential backoff) now applies only to non-zero exits.
 - Config lifecycle: a `rabbit-rs` config typo no longer crashes the whole application at boot — normalization runs when a queue connection resolves, so only the driver's use fails with the validation error. Laravel env-string booleans (`'1'`, `'0'`, `'true'`, `'false'`, `'on'`, `'off'`, `''`) are accepted in boolean fields (junk strings are still rejected with the config path).
 - Octane: `octane:reload` re-normalizes the `rabbit-rs` config — broker/credential rotation via env variables now takes effect for connections resolved after the reload instead of silently serving the boot-time snapshot.

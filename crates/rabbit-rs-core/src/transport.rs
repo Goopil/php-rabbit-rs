@@ -24,6 +24,13 @@ pub enum HeaderValue {
     Binary(Bytes),
     Array(Vec<Self>),
     Table(PublishHeaders),
+    /// AMQP decimal carried losslessly between transports. PHP has no decimal
+    /// scalar, so the extension surface reports it with a once-only notice
+    /// instead of dropping it silently (audit F-22).
+    Decimal {
+        scale: u8,
+        value: u32,
+    },
 }
 
 /// A finite AMQP double stored with deterministic equality semantics.

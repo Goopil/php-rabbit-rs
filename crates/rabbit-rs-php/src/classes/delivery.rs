@@ -3,13 +3,15 @@
     reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
 )]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::exception::rabbit_exception;
 use ext_php_rs::{
     binary::Binary,
     boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
-    types::{ZendHashTable, Zval},
+    types::{ArrayKey, ZendHashTable, Zval},
 };
 use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState, SettlementErrorKind};
 use rabbit_rs_core::transport::HeaderValue;
@@ -44,7 +46,7 @@ impl Delivery {
         metadata.insert("state", state_name(self.inner.state()))?;
         let mut headers = ZendHashTable::new();
         for (key, value) in self.inner.headers.iter() {
-            insert_header(&mut headers, key, value)?;
+            insert_header(&mut headers, key.as_str(), value)?;
         }
         metadata.insert("headers", headers)?;
         Ok(metadata)
@@ -139,16 +141,48 @@ impl Delivery {
     }
 }
 
-fn insert_header(table: &mut ZendHashTable, key: &str, value: &HeaderValue) -> PhpResult<()> {
+/// Inserts one header entry, exposing AMQP field arrays/tables as nested PHP
+/// arrays so dead-letter metadata such as `x-death` stays visible to PHP
+/// (audit F-22).
+fn insert_header<'k, K>(table: &mut ZendHashTable, key: K, value: &HeaderValue) -> PhpResult<()>
+where
+    K: Into<ArrayKey<'k>> + Copy,
+{
     match value {
         HeaderValue::Void => table.insert(key, Zval::null())?,
         HeaderValue::Boolean(value) => table.insert(key, *value)?,
         HeaderValue::Integer(value) => table.insert(key, *value)?,
         HeaderValue::Double(value) => table.insert(key, value.get())?,
         HeaderValue::Binary(value) => table.insert(key, Binary::new(value.to_vec()))?,
-        HeaderValue::Array(_) | HeaderValue::Table(_) => {}
+        HeaderValue::Array(values) => {
+            let mut nested = ZendHashTable::new();
+            for (index, value) in values.iter().enumerate() {
+                insert_header(&mut nested, i64::try_from(index).unwrap_or(i64::MAX), value)?;
+            }
+            table.insert(key, nested)?;
+        }
+        HeaderValue::Table(values) => {
+            let mut nested = ZendHashTable::new();
+            for (name, value) in values {
+                insert_header(&mut nested, name.as_str(), value)?;
+            }
+            table.insert(key, nested)?;
+        }
+        HeaderValue::Decimal { .. } => notice_dropped_decimal(),
     }
     Ok(())
+}
+
+/// Emits a once-per-process PHP notice when a decimal header is dropped:
+/// PHP has no decimal scalar, so the value cannot be represented faithfully.
+fn notice_dropped_decimal() {
+    static DECIMAL_NOTICE_SENT: AtomicBool = AtomicBool::new(false);
+    if !DECIMAL_NOTICE_SENT.swap(true, Ordering::AcqRel) {
+        ext_php_rs::error::php_error(
+            &ext_php_rs::flags::ErrorType::Notice,
+            "rabbit_rs: AMQP decimal header values are not supported by PHP and were dropped",
+        );
+    }
 }
 
 const fn state_name(state: DeliveryState) -> &'static str {

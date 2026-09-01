@@ -210,6 +210,7 @@ Rabbit RS does not include a Prometheus exporter in V1, but the status command p
 | `deliveries_total` | Total deliveries received |
 | `acks_total` | Total consumer ACKs |
 | `rejects_total` | Total consumer rejects |
+| `dropped_publications_total` | Publications discarded without confirmed delivery (deadline-expired flush retries, un-attempted batches on a closing pool, unconfirmed leftovers at teardown) |
 | `confirmation_latency_p50/p95/p99` | Publisher confirmation latency (ms) |
 | `settlement_latency_p50/p95/p99` | Consumer settlement latency (ms) |
 

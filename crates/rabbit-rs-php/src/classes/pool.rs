@@ -227,6 +227,10 @@ impl Pool {
         ] {
             stats.insert(key, i64_from_counter(value))?;
         }
+        stats.insert(
+            "dropped_publications_total",
+            i64_from_counter(self.publish_buffer.dropped_publications()),
+        )?;
 
         insert_percentile(
             &mut stats,
@@ -295,11 +299,12 @@ impl Pool {
         if self.pid != std::process::id() {
             return rabbit_exception("cannot close a pool inherited across fork");
         }
-        // Flush before closing. If flush fails the error is deferred (swallowed)
-        // so close always proceeds; retriable publications were re-buffered by
-        // flush_batch (unroutable returns and deadline-expired publications are
-        // definitive and dropped) and will be lost when the handle drops. This
-        // is an accepted limitation of deferred flush in close/destruct paths.
+        // Flush before closing under full-deadline semantics: an explicit
+        // close() keeps the caller's timeout contract. If flush fails the
+        // error is deferred (swallowed) so close always proceeds; retriable
+        // publications were re-buffered by flush_batch and are counted as
+        // dropped by the destructor's bounded flush; deadline-expired
+        // publications are counted by rebuffer itself (audit F-18).
         let _ = self.flush();
         if !self.handle.is_closed()
             && let Err(error) = self.handle.runtime().block_on(self.client.close())
@@ -316,11 +321,21 @@ impl Pool {
         if self.pid != std::process::id() {
             return;
         }
-        // Deferred error path: flush errors are swallowed during GC teardown.
-        // Retriable publications were re-buffered by flush_batch but will be
-        // lost when the pool is dropped. Callers that need delivery guarantees
-        // should call flush() explicitly before the pool goes out of scope.
-        let _ = self.flush();
+        // Fixed teardown budget (audit F-18): the destructor must not block
+        // for up to the per-message timeout (30 s default, 24 h ceiling) at
+        // FPM or request shutdown. Anything the budget could not confirm is
+        // counted in `dropped_publications_total`; an explicit flush() or
+        // close() keeps full-deadline semantics.
+        self.publish_buffer.flush_teardown();
+        if matches!(self.client.safety_mode(), SafetyMode::Blind) {
+            let _ = self.handle.runtime().block_on(async {
+                tokio::time::timeout(
+                    super::publish_buffer::TEARDOWN_FLUSH_BUDGET,
+                    self.client.flush_blind(),
+                )
+                .await
+            });
+        }
     }
 }
 
