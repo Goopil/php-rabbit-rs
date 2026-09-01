@@ -472,9 +472,11 @@ this starts before the Round G stabilization exit criterion.
   the buffer is bounded by the configured prefetch, a crash redelivers it
   (at-least-once intact, duplicates measurable), and the #68 consumer-cache
   eviction rules extend to the buffer. Escalation if ever insufficient: a
-  dedicated `rabbit-rs:consume` command with batch-completion acks — parked
-  as an idea only, it duplicates `queue:work`/WorkerSupervisor semantics and
-  weakens ack-after-job-completion. Sequenced post-1.0 (parked with #41/#42).
+  batch-drain child mode inside the **existing** `rabbit-rs:work` supervisor
+  (the child loop switches from the standard `queue:work` pop-per-job to
+  `nextBatch` + batch-completion acks) — parked as an idea only: it departs
+  from standard `queue:work` semantics and weakens ack-after-job-completion.
+  Sequenced post-1.0 (parked with #41/#42).
 - **Profile `Consumer::next()` per-call cost** (2026-09-01) — evaluation, to
   run once everything else is done (Round G exit + Round H landed): ~60µs per
   unit `next()` call is high for an ext-php-rs boundary; attribute the cost
