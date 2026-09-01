@@ -86,6 +86,22 @@ describe('backpressure events', function () {
     });
 });
 
+describe('callback registration', function () {
+    it('does not accumulate duplicate default callbacks when a pool is reused', function () {
+        Event::fake();
+
+        $pool = new Pool();
+        $first = new RabbitMqQueue($pool, makeRoutes(), 'default');
+        $first->setContainer($this->app);
+        $second = new RabbitMqQueue($pool, makeRoutes(), 'other');
+        $second->setContainer($this->app);
+
+        $pool->simulateConnectionState('default', 'recovering', 1);
+
+        Event::assertDispatchedTimes(ConnectionStateChanged::class, 1);
+    });
+});
+
 describe('custom callbacks', function () {
     it('custom connection state callback overrides default event dispatch', function () {
         Event::fake();
@@ -95,6 +111,7 @@ describe('custom callbacks', function () {
         $queue->setContainer($this->app);
 
         $called = false;
+        $pool->clearEventCallbacks();
         $pool->onConnectionState(function (string $broker, string $state, int $generation) use (&$called): void {
             $called = true;
             expect($broker)->toBe('custom')
@@ -116,6 +133,7 @@ describe('custom callbacks', function () {
         $queue->setContainer($this->app);
 
         $called = false;
+        $pool->clearEventCallbacks();
         $pool->onBackpressure(function (string $broker, int $inFlight, int $capacity) use (&$called): void {
             $called = true;
             expect($broker)->toBe('custom')

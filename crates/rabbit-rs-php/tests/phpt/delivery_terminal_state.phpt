@@ -77,7 +77,8 @@ expect_true($metadata['headers']['enabled'] === true, 'boolean header metadata')
 expect_true($metadata['headers']['count'] === 42, 'integer header metadata');
 expect_true($metadata['headers']['ratio'] === 1.5, 'floating-point header metadata');
 expect_true($metadata['headers']['nothing'] === null, 'null header metadata');
-expect_true(!array_key_exists('x-death', $metadata['headers']), 'nested broker headers are omitted');
+expect_true($metadata['headers']['x-death'][0]['queue'] === 'jobs.dead', 'nested array-of-table header metadata');
+expect_true($metadata['headers']['x-death'][0]['count'] === 1, 'nested array-of-table header scalar');
 expect_true($metadata['state'] === 'pending', 'initial delivery state');
 
 $delivery->ack();

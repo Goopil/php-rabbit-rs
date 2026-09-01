@@ -638,6 +638,12 @@ fn publish_header_value(value: &HeaderValue) -> AMQPValue {
             }
             AMQPValue::FieldTable(table)
         }
+        HeaderValue::Decimal { scale, value } => {
+            AMQPValue::DecimalValue(lapin::types::DecimalValue {
+                scale: *scale,
+                value: *value,
+            })
+        }
     }
 }
 
@@ -684,7 +690,10 @@ fn map_header_value(value: &AMQPValue) -> Option<HeaderValue> {
             value.as_slice(),
         ))),
         AMQPValue::Void => Some(HeaderValue::Void),
-        AMQPValue::DecimalValue(_) => None,
+        AMQPValue::DecimalValue(decimal) => Some(HeaderValue::Decimal {
+            scale: decimal.scale,
+            value: decimal.value,
+        }),
     }
 }
 
@@ -731,7 +740,9 @@ mod tests {
     use bytes::Bytes;
     use lapin::types::{AMQPValue, FieldTable};
 
-    use super::{connection_uri, map_headers, publish_properties};
+    use super::{
+        connection_uri, map_header_value, map_headers, publish_header_value, publish_properties,
+    };
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
     use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
 
@@ -859,5 +870,26 @@ mod tests {
             headers.inner().get("name"),
             Some(AMQPValue::LongString(value)) if value.as_bytes() == b"worker"
         ));
+    }
+
+    #[test]
+    fn decimal_headers_round_trip_through_amqp() {
+        let value = lapin::types::DecimalValue {
+            scale: 2,
+            value: 1_990,
+        };
+
+        let mapped = map_header_value(&AMQPValue::DecimalValue(value))
+            .expect("decimal headers must not be silently dropped");
+        assert_eq!(
+            mapped,
+            HeaderValue::Decimal {
+                scale: 2,
+                value: 1_990
+            }
+        );
+
+        let republished = publish_header_value(&mapped);
+        assert_eq!(republished, AMQPValue::DecimalValue(value));
     }
 }

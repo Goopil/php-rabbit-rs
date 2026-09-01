@@ -10,6 +10,8 @@
 //! deliveries, so anything accepted before a pop is visible to that pop.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use std::time::Instant;
 
 use ext_php_rs::prelude::PhpResult;
@@ -29,6 +31,11 @@ pub(crate) const BUFFER_FLUSH_INTERVAL: std::time::Duration = std::time::Duratio
 pub(crate) const PUBLISH_BUFFER_MAX_MESSAGES: usize = 4096;
 /// Maximum cumulative buffered payload bytes before flushing is forced.
 pub(crate) const PUBLISH_BUFFER_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Fixed wall-clock budget for the destructor flush (audit F-18): a stalled
+/// broker must not hold process teardown hostage for up to the per-message
+/// timeout (30 s default, 24 h ceiling). Explicit `flush()` keeps the
+/// caller's full-deadline semantics.
+pub(crate) const TEARDOWN_FLUSH_BUDGET: Duration = Duration::from_millis(500);
 
 /// Shared publish buffer with batched flush semantics.
 pub(crate) struct PublishBuffer {
@@ -37,6 +44,10 @@ pub(crate) struct PublishBuffer {
     buffer: std::sync::Mutex<Vec<NativePublish>>,
     buffered_bytes: std::sync::Mutex<usize>,
     last_flush: std::sync::Mutex<Option<Instant>>,
+    /// Publications discarded without confirmed delivery: deadline-expired
+    /// drops in `rebuffer`, unattempted batches on a closing client, and
+    /// unconfirmed leftovers at teardown (audit F-18).
+    dropped_publications: AtomicU64,
 }
 
 impl PublishBuffer {
@@ -47,7 +58,14 @@ impl PublishBuffer {
             buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
             buffered_bytes: std::sync::Mutex::new(0),
             last_flush: std::sync::Mutex::new(None),
+            dropped_publications: AtomicU64::new(0),
         }
+    }
+
+    /// Returns the number of publications discarded without confirmed
+    /// delivery (deadline-expired, closing-client, or teardown drops).
+    pub(crate) fn dropped_publications(&self) -> u64 {
+        self.dropped_publications.load(Ordering::Relaxed)
     }
 
     /// Returns whether the buffer cannot accept `payload_bytes` more bytes.
@@ -116,17 +134,26 @@ impl PublishBuffer {
     }
 
     /// Re-buffers publications whose flush failed, keeping the byte counter
-    /// in sync. Publications whose deadline already expired are dropped:
-    /// they can never succeed and would poison every subsequent flush.
+    /// in sync. Publications whose deadline already expired are dropped
+    /// (counted in `dropped_publications`): they can never succeed and would
+    /// poison every subsequent flush.
     /// Re-buffered publications may exceed the buffer ceiling: they were
     /// already accepted (a `message_id` was returned) and are never dropped
     /// while they can still be delivered.
     fn rebuffer(&self, publishes: Vec<NativePublish>) {
         let now = tokio::time::Instant::now();
+        let total = publishes.len();
         let retriable: Vec<NativePublish> = publishes
             .into_iter()
             .filter(|publish| publish.request.deadline > now)
             .collect();
+        let expired = total - retriable.len();
+        if expired > 0 {
+            self.dropped_publications.fetch_add(
+                u64::try_from(expired).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+        }
         let bytes = Self::payload_bytes(&retriable);
         let mut buffer = self.buffer.lock().expect("publish buffer mutex poisoned");
         buffer.extend(retriable);
@@ -181,12 +208,49 @@ impl PublishBuffer {
                 // un-attempted or of unknown state. Conservatively re-buffer
                 // the retriable ones, oldest first, so the next flush retries
                 // them; duplicates are permitted and identifiable via
-                // `message_id`. A closing pool must not re-buffer.
-                if !matches!(error.kind(), ClientErrorKind::Closed) {
+                // `message_id`. A closing pool must not re-buffer: those
+                // publications can never be sent again, so they are counted
+                // as dropped instead of vanishing silently (audit F-18).
+                if matches!(error.kind(), ClientErrorKind::Closed) {
+                    self.dropped_publications.fetch_add(
+                        u64::try_from(publishes.len()).unwrap_or(u64::MAX),
+                        Ordering::Relaxed,
+                    );
+                } else {
                     self.rebuffer(publishes);
                 }
                 client_exception(&error)
             }
+        }
+    }
+
+    /// Flushes buffered publications under the fixed teardown budget.
+    ///
+    /// Used by the destructor path only: unlike `flush_all`, failures are
+    /// never re-buffered — the process is going away, so anything the budget
+    /// could not confirm is counted in `dropped_publications` and released.
+    pub(crate) fn flush_teardown(&self) {
+        if self.is_empty() {
+            return;
+        }
+        let publishes = self.take();
+        let requests: Vec<(String, PublishRequest)> = publishes
+            .iter()
+            .map(|publish| (publish.broker.clone(), publish.request.clone()))
+            .collect();
+        let confirmed = self
+            .handle
+            .runtime()
+            .block_on(async {
+                tokio::time::timeout(TEARDOWN_FLUSH_BUDGET, self.client.publish_batch(requests))
+                    .await
+            })
+            .is_ok_and(|result| result.is_ok());
+        if !confirmed {
+            self.dropped_publications.fetch_add(
+                u64::try_from(publishes.len()).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
         }
     }
 

@@ -61,6 +61,12 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
 
     private function registerDefaultCallbacks(): void
     {
+        // Native callbacks accumulate on a shared pool, so re-registering the
+        // defaults without clearing first would make every event fire once
+        // per queue construction (worker/pool reuse). Clearing keeps the
+        // default registration idempotent: the most recently constructed
+        // queue on a pool owns the default event dispatch.
+        $this->pool->clearEventCallbacks();
         $weak = \WeakReference::create($this);
         $this->pool->onConnectionState(
             static function (string $broker, string $state, int $generation) use ($weak): void {
@@ -85,7 +91,8 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
      * ConnectionStateChanged event through the Laravel event system.
      *
      * Register a custom callback via Pool::onConnectionState() to replace
-     * this default behavior.
+     * this default behavior; native callbacks accumulate, so call
+     * Pool::clearEventCallbacks() first to drop the defaults.
      */
     public function onConnectionState(string $broker, string $state, int $generation): void
     {
@@ -97,7 +104,8 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
      * BackpressureDetected event through the Laravel event system.
      *
      * Register a custom callback via Pool::onBackpressure() to replace
-     * this default behavior.
+     * this default behavior; native callbacks accumulate, so call
+     * Pool::clearEventCallbacks() first to drop the defaults.
      */
     public function onBackpressure(string $broker, int $inFlight, int $capacity): void
     {

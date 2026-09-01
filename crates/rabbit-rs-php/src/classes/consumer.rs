@@ -159,14 +159,17 @@ impl Consumer {
     /// Acknowledges a batch of deliveries across potentially different channels.
     ///
     /// Fire-and-forget: enqueues each settlement command without blocking.
-    /// Bounded to 256 deliveries per call.
+    /// Bounded to 256 deliveries per call. The cap is checked before any
+    /// settlement is enqueued so a rejected call has no side effects
+    /// (audit F-20).
     pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::ackBatch")?;
 
-        for (count, (_, value)) in deliveries.into_iter().enumerate() {
-            if count >= 256 {
-                return rabbit_exception("ackBatch: maximum 256 deliveries per call");
-            }
+        if deliveries.len() > 256 {
+            return rabbit_exception("ackBatch: maximum 256 deliveries per call");
+        }
+
+        for (_, value) in deliveries {
             let delivery = delivery_from_zval(value.dereference())?;
             delivery.settle_with_backpressure(rabbit_rs_core::consumer::Delivery::try_ack)?;
         }

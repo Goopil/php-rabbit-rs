@@ -322,11 +322,11 @@ namespace Goopil\RabbitRs {
             /** @var array<string, Consumer> */
             private array $consumers = [];
 
-            /** @var ?\Closure(string, string, int): void */
-            private ?\Closure $connectionStateCallback = null;
+            /** @var list<\Closure(string, string, int): void> */
+            public array $connectionStateCallbacks = [];
 
-            /** @var ?\Closure(string, int, int): void */
-            private ?\Closure $backpressureCallback = null;
+            /** @var list<\Closure(string, int, int): void> */
+            public array $backpressureCallbacks = [];
 
             /**
              * @param array<string, mixed> $config
@@ -424,40 +424,60 @@ namespace Goopil\RabbitRs {
             /**
              * Registers a PHP callback invoked when the connection state changes.
              *
+             * Mirrors the native extension: callbacks accumulate; all of them
+             * fire on each event (audit F-17).
+             *
              * @param \Closure(string, string, int): void $callback
              */
             public function onConnectionState(\Closure $callback): void
             {
-                $this->connectionStateCallback = $callback;
+                $this->connectionStateCallbacks[] = $callback;
             }
 
             /**
              * Registers a PHP callback invoked when backpressure is detected.
              *
+             * Mirrors the native extension: callbacks accumulate; all of them
+             * fire on each event (audit F-17).
+             *
              * @param \Closure(string, int, int): void $callback
              */
             public function onBackpressure(\Closure $callback): void
             {
-                $this->backpressureCallback = $callback;
+                $this->backpressureCallbacks[] = $callback;
             }
 
             /**
-             * Simulates a connection state change and invokes the registered callback.
+             * Removes every registered event callback, returning how many
+             * were removed (connection-state and backpressure combined).
+             */
+            public function clearEventCallbacks(): int
+            {
+                $removed = count($this->connectionStateCallbacks)
+                    + count($this->backpressureCallbacks);
+                $this->connectionStateCallbacks = [];
+                $this->backpressureCallbacks = [];
+
+                return $removed;
+            }
+
+            /**
+             * Simulates a connection state change and invokes every registered callback.
              */
             public function simulateConnectionState(string $broker, string $state, int $generation): void
             {
-                if ($this->connectionStateCallback !== null) {
-                    ($this->connectionStateCallback)($broker, $state, $generation);
+                foreach ($this->connectionStateCallbacks as $callback) {
+                    ($callback)($broker, $state, $generation);
                 }
             }
 
             /**
-             * Simulates a backpressure event and invokes the registered callback.
+             * Simulates a backpressure event and invokes every registered callback.
              */
             public function simulateBackpressure(string $broker, int $inFlight, int $capacity): void
             {
-                if ($this->backpressureCallback !== null) {
-                    ($this->backpressureCallback)($broker, $inFlight, $capacity);
+                foreach ($this->backpressureCallbacks as $callback) {
+                    ($callback)($broker, $inFlight, $capacity);
                 }
             }
 

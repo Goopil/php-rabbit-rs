@@ -93,42 +93,38 @@ pub(crate) fn publish(
     path: &str,
     delay_strategy: &DelayStrategy,
 ) -> Result<NativePublish, String> {
-    let validate_keys = cfg!(debug_assertions);
     publish_with_budget(
         table,
         path,
         &mut ConversionBudget::default(),
-        validate_keys,
         delay_strategy,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn publish_with_budget(
     table: &ZendHashTable,
     path: &str,
     budget: &mut ConversionBudget,
-    validate_keys: bool,
     delay_strategy: &DelayStrategy,
 ) -> Result<NativePublish, String> {
-    if validate_keys {
-        reject_unknown_keys(
-            table,
-            path,
-            &[
-                "broker",
-                "exchange",
-                "routing_key",
-                "payload",
-                "message_id",
-                "content_type",
-                "correlation_id",
-                "headers",
-                "delay_ms",
-                "timeout_ms",
-            ],
-        )?;
-    }
+    // Key validation must not depend on the build profile: a release build
+    // silently ignoring a `delay_ms` typo publishes immediately (audit F-19).
+    reject_unknown_keys(
+        table,
+        path,
+        &[
+            "broker",
+            "exchange",
+            "routing_key",
+            "payload",
+            "message_id",
+            "content_type",
+            "correlation_id",
+            "headers",
+            "delay_ms",
+            "timeout_ms",
+        ],
+    )?;
 
     let broker = required_string(table, "broker", path)?;
     let exchange = required_string(table, "exchange", path)?;
@@ -201,7 +197,6 @@ pub(crate) fn publish_batch(
         ));
     }
     let mut budget = ConversionBudget::default();
-    let validate_keys = cfg!(debug_assertions);
     let mut publishes = Vec::with_capacity(table.len());
     for (index, (_, value)) in table.iter().enumerate() {
         let path = format!("messages[{index}]");
@@ -213,7 +208,6 @@ pub(crate) fn publish_batch(
             message,
             &path,
             &mut budget,
-            validate_keys,
             delay_strategy,
         )?);
     }
