@@ -318,7 +318,7 @@ jobs:
           # proves provenance. Bump deliberately: update the tag, recompute
           # the checksum (`shasum -a 256 pie.phar` on the tagged asset), and
           # confirm `gh attestation verify --owner php` still passes.
-          curl -fL --output /tmp/pie.phar https://github.com/php/pie/releases/download/1.4.10/pie.phar
+          curl --proto "=https" -fL --output /tmp/pie.phar https://github.com/php/pie/releases/download/1.4.10/pie.phar
           echo "b88792235c8e80be568436d4cb043b49fd1869c89b64e83d23e2882ae19d70a8  /tmp/pie.phar" | sha256sum --strict --check -
           gh attestation verify --owner php /tmp/pie.phar
           sudo mv /tmp/pie.phar /usr/local/bin/pie
