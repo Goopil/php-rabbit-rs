@@ -40,6 +40,7 @@ impl Metrics {
             confirmations_total: load(&self.inner.confirmations_total),
             returns_total: load(&self.inner.returns_total),
             deliveries_total: load(&self.inner.deliveries_total),
+            duplicates_total: load(&self.inner.duplicates_total),
             acks_total: load(&self.inner.acks_total),
             rejects_total: load(&self.inner.rejects_total),
             reconnects_total: load(&self.inner.reconnects_total),
@@ -65,6 +66,11 @@ impl Metrics {
 
     pub(crate) fn record_delivery(&self) {
         increment(&self.inner.deliveries_total);
+    }
+
+    /// Records a delivery that the broker flagged as a redelivery.
+    pub(crate) fn record_duplicate(&self) {
+        increment(&self.inner.duplicates_total);
     }
 
     pub(crate) fn record_ack(&self, latency: Duration) {
@@ -102,6 +108,7 @@ struct MetricsInner {
     confirmations_total: AtomicU64,
     returns_total: AtomicU64,
     deliveries_total: AtomicU64,
+    duplicates_total: AtomicU64,
     acks_total: AtomicU64,
     rejects_total: AtomicU64,
     reconnects_total: AtomicU64,
@@ -122,6 +129,8 @@ pub struct MetricsSnapshot {
     pub returns_total: u64,
     /// Deliveries handed to a consumer caller.
     pub deliveries_total: u64,
+    /// Dispatched deliveries that the broker flagged as redeliveries.
+    pub duplicates_total: u64,
     /// Successful acknowledgements, including confirmed delayed releases.
     pub acks_total: u64,
     /// Successful immediate releases using `basic.reject` with requeue.

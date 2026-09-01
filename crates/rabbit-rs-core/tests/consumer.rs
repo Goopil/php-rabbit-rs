@@ -1062,6 +1062,33 @@ async fn no_ack_flood_is_bounded_and_every_delivery_still_arrives() {
     consumer.close().await.expect("close");
 }
 
+/// At-least-once delivery permits duplicates, but they must remain measurable:
+/// a delivery that the broker flags as redelivered is counted exactly once as
+/// a duplicate when it is dispatched to the caller.
+#[tokio::test(start_paused = true)]
+async fn redelivered_messages_are_counted_as_duplicates() {
+    let transport = MockTransport::default();
+    let mut redelivered = delivery(1, b"payload");
+    redelivered.redelivered = true;
+    transport.push_delivery(Ok(redelivered));
+    transport.push_delivery(Ok(delivery(2, b"fresh")));
+
+    let sub = subscription(&transport, "dups", connection_key("dups", "/"), 4, 0).await;
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
+
+    let _ = consumer.next().await.expect("redelivered delivery");
+    let _ = consumer.next().await.expect("fresh delivery");
+    let_actor_process().await;
+
+    let snapshot = consumer.metrics_snapshot();
+    assert_eq!(snapshot.duplicates_total, 1, "one redelivery counted");
+    assert_eq!(snapshot.deliveries_total, 2, "both deliveries counted");
+
+    consumer.close().await.expect("close");
+}
+
 #[tokio::test(start_paused = true)]
 async fn settle_through_acks_contiguous_prefix() {
     let transport = MockTransport::default();

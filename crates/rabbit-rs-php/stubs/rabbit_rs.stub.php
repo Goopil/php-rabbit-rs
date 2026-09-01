@@ -97,7 +97,7 @@ final class Pool
      * Implemented by the ext-rabbit_rs native extension.
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      *
-     * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int}
+     * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, reconnects_total: int, duplicates_total: int}
      */
     public function stats(): array
     {

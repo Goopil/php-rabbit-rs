@@ -222,6 +222,7 @@ impl Pool {
             ("backpressure_total", metrics.backpressure_total),
             ("reconnects_total", metrics.reconnects_total),
             ("deliveries_total", metrics.deliveries_total),
+            ("duplicates_total", metrics.duplicates_total),
             ("acks_total", metrics.acks_total),
             ("rejects_total", metrics.rejects_total),
         ] {
