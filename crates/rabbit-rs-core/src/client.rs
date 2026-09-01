@@ -129,16 +129,17 @@ impl ClientPool {
     /// request has been handed off to the bounded publish pump (backpressure
     /// by blocking); no transport outcome is awaited and every returned
     /// outcome is the synthetic `Confirmed` resolved at hand-off. A closed
-    /// pump fails the batch immediately, leaving the requests that were not
-    /// yet enqueued with the caller — re-buffering callers therefore
-    /// re-publish a conservative superset, and duplicates are permitted and
-    /// identifiable through their `message_id`.
+    /// pump or an exhausted publisher byte budget fails the batch immediately,
+    /// leaving the requests that were not yet enqueued with the caller —
+    /// re-buffering callers therefore re-publish a conservative superset, and
+    /// duplicates are permitted and identifiable through their `message_id`.
     ///
     /// # Errors
     ///
     /// Returns the first terminal failure after resolving every publication
-    /// that was already accepted by an actor. In blind mode the only failure
-    /// is a closed pump, which fails the batch immediately.
+    /// that was already accepted by an actor. In blind mode a byte-budget
+    /// exhaustion (`Backpressure`) or a closed pump (`Closed`) fails the batch
+    /// immediately.
     pub async fn publish_batch(
         &self,
         requests: Vec<(String, PublishRequest)>,
