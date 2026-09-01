@@ -16,7 +16,7 @@ use rabbit_rs_core::{
     consumer::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, QueueKind,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -738,6 +738,82 @@ async fn publish_batch_preserves_order_across_two_brokers() {
         .filter(|op| matches!(op, TransportOperation::OpenPublisher))
         .count();
     assert_eq!(publisher_count, 2, "one publisher per broker");
+}
+
+/// Issue #83: `publish_batch` must resolve the publications already accepted
+/// by an actor before reporting a terminal acquisition failure. When one
+/// broker's publisher acquisition fails permanently, the batch must still
+/// await the waiters collected for the brokers that were acquired.
+#[tokio::test(start_paused = true)]
+async fn publish_batch_resolves_accepted_publications_when_a_broker_acquisition_fails() {
+    let transport = Arc::new(MockTransport::default());
+    // Warm-up publish: caches the first broker's coordinator and publisher so
+    // the failing batch consumes the scripted connect failure only on the
+    // second broker, regardless of the internal grouping order.
+    transport.push_connect_result(Ok(()));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let pool = Arc::new(ClientPool::new(
+        Arc::new(two_broker_config()),
+        transport.clone(),
+    ));
+    pool.publish_batch(vec![("first".to_owned(), request("warm"))])
+        .await
+        .expect("warm-up publish");
+
+    // The second broker's connect fails permanently while the first broker's
+    // confirmation stays under the test's control.
+    transport.push_connect_result(Err(TransportError::authentication(
+        "credentials rejected by the broker",
+    )));
+    let confirmation = transport.push_controlled_confirmation();
+
+    let publishing = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move {
+            pool.publish_batch(vec![
+                ("first".to_owned(), request("accepted")),
+                ("second".to_owned(), request("discarded")),
+            ])
+            .await
+        }
+    });
+
+    // The first broker's publication is handed to its actor...
+    common::wait_for_publish_count(&transport, 2).await;
+
+    // ...and the batch must stay in-flight until that waiter resolves, even
+    // though the second broker's acquisition already failed.
+    for _ in 0..100 {
+        assert!(
+            !publishing.is_finished(),
+            "publish_batch must await the accepted waiter before reporting the acquisition failure"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    assert!(confirmation.resolve(Ok(PublishConfirmation::Ack(None))));
+    let error = publishing
+        .await
+        .expect("join")
+        .expect_err("the batch must still report the acquisition failure");
+    assert_eq!(error.kind(), ClientErrorKind::Transport);
+
+    // The accepted publication was resolved exactly once and the failed
+    // broker's message was never published.
+    let published_ids: Vec<String> = common::publish_requests(&transport)
+        .iter()
+        .filter_map(|request| request.properties.message_id.clone())
+        .collect();
+    assert!(
+        published_ids.contains(&"accepted".to_owned()),
+        "the accepted publication must be resolved: {published_ids:?}"
+    );
+    assert!(
+        !published_ids.contains(&"discarded".to_owned()),
+        "the failed broker's message must not be published: {published_ids:?}"
+    );
+
+    pool.close().await.expect("close pool");
 }
 
 // ---------------------------------------------------------------------------
