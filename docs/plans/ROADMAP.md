@@ -55,6 +55,15 @@ with the feature, never in a later docs pass.
   - Follow-ups filed: #95 (consume/declare race on fresh quorum queues),
     #96 (PublishBuffer first-publish flush), #97 (delayed bindings +
     mandatory/safe-mode interaction).
+- **Round G wave 2 (2026-09-01)**:
+  - #73 (P1): delays validated against the compiled strategy — a TTL-mode
+    publish whose delay exceeds the largest bucket is refused terminally
+    (`PublishErrorKind::InvalidRequest`) before any transport operation
+    instead of executing immediately on the original exchange; the
+    delayed-release refusal settles the original delivery terminally
+    (`ConsumerErrorKind::InvalidDelay`, DLX or documented ack) instead of
+    hot-looping; the extension conversion rejects the delay at the boundary
+    naming the limit; plugin mode unchanged.
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -209,10 +218,9 @@ parallel tracks** — maximum concurrency, minimal interference; sequence only w
 track. Strategy decision (2026-08-31): **stabilize before features** — Round G contains
 no features; post-1.0 feature ideas are parked below.
 
-Status (2026-09-01): Task 21 (#66, P0), Task 23 (#68), Task 25 (#70) and Round C
-(#40) landed (see Landed). Next: 22 (#67, Track A), 26 (#71, Track B — unblocked
-by #66), 27 (#72, Track B), 24 (#69, Track C). Still queued: 28 (#73), Task 38
-(#83), 29–37.
+Status (2026-09-01): Tasks 21 (#66, P0), 22 (#67), 23 (#68), 24 (#69), 25 (#70),
+26 (#71), 27 (#72), 28 (#73) and Round C (#40) landed (see Landed). Still queued:
+Task 38 (#83), 29–37.
 
 ### G0 — P0/P1 (delivery contract & availability)
 

@@ -73,7 +73,8 @@ pub(crate) fn consumer_exception_message(error: &ConsumerError) -> PhpException 
         | ConsumerErrorKind::Publish
         | ConsumerErrorKind::MissingPublisher
         | ConsumerErrorKind::InvalidSubscription
-        | ConsumerErrorKind::MaxAttempts => PhpException::from_class::<RabbitRsException>(message),
+        | ConsumerErrorKind::MaxAttempts
+        | ConsumerErrorKind::InvalidDelay => PhpException::from_class::<RabbitRsException>(message),
     }
 }
 

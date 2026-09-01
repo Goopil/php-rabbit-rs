@@ -675,6 +675,7 @@ pub(crate) async fn run_actor(
                         ConsumerErrorKind::StaleGeneration
                             | ConsumerErrorKind::Transport
                             | ConsumerErrorKind::MaxAttempts
+                            | ConsumerErrorKind::InvalidDelay
                     ),
                 };
 
@@ -726,10 +727,16 @@ pub(crate) async fn run_actor(
                             ));
                     }
                     // A poison delivery (attempts above the configured maximum
-                    // surfaced by a capped delayed release) must never return
-                    // to Pending: settle it terminally per the documented
-                    // policy instead of hot-requeueing it.
-                    Err(error) if error.kind() == ConsumerErrorKind::MaxAttempts => {
+                    // surfaced by a capped delayed release, or a release delay
+                    // no compiled strategy can honor) must never return to
+                    // Pending: settle it terminally per the documented policy
+                    // instead of hot-requeueing it.
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ConsumerErrorKind::MaxAttempts | ConsumerErrorKind::InvalidDelay
+                        ) =>
+                    {
                         let subscription = settlement_result.token.subscription.clone();
                         let runtime = state
                             .subscriptions
@@ -752,7 +759,7 @@ pub(crate) async fn run_actor(
                             state.record_settlement_error(SettlementError {
                                 delivery_tag,
                                 subscription,
-                                kind: ConsumerErrorKind::MaxAttempts,
+                                kind: error.kind(),
                                 message: poison_settlement_message(
                                     &error.to_string(),
                                     &settlement_result.token.message_id,
@@ -767,7 +774,7 @@ pub(crate) async fn run_actor(
                             state
                                 .record_settlement_error(settlement_error(
                                     &settlement_result.token,
-                                    ConsumerErrorKind::MaxAttempts,
+                                    error.kind(),
                                     error.to_string(),
                                 ));
                         }
@@ -1050,8 +1057,13 @@ async fn delayed_release(
     let delay_ms = i64::try_from(delay.as_millis()).map_err(|_| {
         ConsumerError::new(ConsumerErrorKind::Publish, "delay exceeds supported range")
     })?;
-    let route = DelayRouter::route(strategy, destination, delay_ms)
-        .map_err(|error| ConsumerError::new(ConsumerErrorKind::Publish, error.to_string()))?;
+    let route = DelayRouter::route(strategy, destination, delay_ms).map_err(|error| {
+        // A delay no compiled strategy can honor (e.g. beyond the largest
+        // TTL bucket) is permanent: the caller must settle the original
+        // delivery terminally instead of leaving it pending in a redelivery
+        // loop.
+        ConsumerError::new(ConsumerErrorKind::InvalidDelay, error.to_string())
+    })?;
     let mut properties = MessageProperties::new(token.message_id.as_str());
     properties.correlation_id = token.correlation_id.as_ref().map(|s| Arc::from(s.as_str()));
     properties.headers = AttemptsResolver::default()
@@ -1122,7 +1134,7 @@ fn poison_settlement_message(
         )
     } else {
         format!(
-            "{detail}; message {} acknowledged and dropped after exceeding max attempts (no dead-letter exchange configured)",
+            "{detail}; message {} acknowledged and dropped (no dead-letter exchange configured)",
             message_id.as_str()
         )
     }

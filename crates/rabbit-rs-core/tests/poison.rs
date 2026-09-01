@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    config::SafetyMode,
+    config::{DelayConfig, DelayMode, SafetyMode},
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription,
         SubscriptionPolicy,
@@ -17,7 +17,7 @@ use rabbit_rs_core::{
     metrics::Metrics,
     pool::ConnectionKey,
     publisher::{Destination, PublisherActor, PublisherConfig, PublisherHandle},
-    topology::delay::DelayStrategy,
+    topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
         Delivery as TransportDelivery, HeaderValue, Transport,
         mock::{MockTransport, TransportOperation},
@@ -146,6 +146,22 @@ mod helper {
             .iter()
             .filter(|op| matches!(op, TransportOperation::Publish(_)))
             .count()
+    }
+
+    pub fn ttl_strategy() -> DelayStrategy {
+        DelayStrategy::TtlBuckets(
+            TtlBucketPlan::compile(&DelayConfig {
+                mode: DelayMode::Ttl,
+                buckets: vec![
+                    Duration::from_secs(1),
+                    Duration::from_secs(5),
+                    Duration::from_secs(30),
+                ],
+                max_buckets: 8,
+                queue_expiry_margin: Duration::from_mins(1),
+            })
+            .expect("TTL plan"),
+        )
     }
 }
 
@@ -342,6 +358,102 @@ async fn delayed_release_at_the_cap_with_a_dlx_dead_letters_the_original() {
         "no ack when dead-lettering"
     );
     assert_eq!(publish_operations(&transport), 0, "no republish at the cap");
+}
+
+// ---------------------------------------------------------------------------
+// Delayed release beyond the largest TTL bucket (issue #73 — audit F-06)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn delayed_release_beyond_the_largest_ttl_bucket_settles_the_original_instead_of_requeueing_it()
+ {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery_with_attempts(7, "1")));
+    let publisher = publisher(&transport).await;
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            subscription(&transport, "jobs", connection_key("jobs", "/"))
+                .await
+                .delayed_publisher(publisher, Destination::new("jobs", "high"))
+                .delay_strategy(ttl_strategy()),
+        ],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let item = consumer.next().await.expect("delivery");
+
+    item.release(Duration::from_mins(1))
+        .await
+        .expect("release enqueued (fire-and-forget)");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+
+    assert_eq!(
+        item.state(),
+        DeliveryState::Acked,
+        "a refused delayed release must settle the original delivery terminally, not redeliver it"
+    );
+    assert_eq!(
+        publish_operations(&transport),
+        0,
+        "no republish may happen for a delay no bucket can honor"
+    );
+    assert_eq!(
+        ack_operations(&transport, 7),
+        1,
+        "without a DLX the documented policy is an explicit ack-and-log"
+    );
+    let errors = consumer.drain_errors();
+    assert!(
+        errors.iter().any(|error| {
+            error.kind == ConsumerErrorKind::InvalidDelay && error.message.contains("30000 ms")
+        }),
+        "the refused release must surface the delay limit, got: {errors:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn delayed_release_beyond_the_largest_ttl_bucket_with_a_dlx_dead_letters_the_original() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery_with_attempts(7, "1")));
+    let publisher = publisher(&transport).await;
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            subscription(&transport, "jobs", connection_key("jobs", "/"))
+                .await
+                .dead_letter(true)
+                .delayed_publisher(publisher, Destination::new("jobs", "high"))
+                .delay_strategy(ttl_strategy()),
+        ],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let item = consumer.next().await.expect("delivery");
+
+    item.release(Duration::from_mins(1))
+        .await
+        .expect("release enqueued (fire-and-forget)");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+
+    assert_eq!(item.state(), DeliveryState::Rejected);
+    assert_eq!(
+        reject_operations(&transport, 7, false),
+        1,
+        "with a DLX the refused release dead-letters the original delivery"
+    );
+    assert_eq!(
+        ack_operations(&transport, 7),
+        0,
+        "no ack when dead-lettering"
+    );
+    assert_eq!(
+        publish_operations(&transport),
+        0,
+        "no republish may happen for a delay no bucket can honor"
+    );
 }
 
 // ---------------------------------------------------------------------------

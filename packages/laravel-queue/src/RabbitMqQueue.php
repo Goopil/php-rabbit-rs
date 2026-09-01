@@ -348,10 +348,12 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
                 if (! isset($this->container)) {
                     continue;
                 }
-                // A MaxAttempts settlement is terminal poison policy: with no
-                // dead-letter exchange it is an explicit, documented loss, so
-                // it is logged at error level with the core's error context.
-                if ($kind === 'MaxAttempts') {
+                // A MaxAttempts or InvalidDelay settlement is terminal poison
+                // policy (attempts above the cap, or a release delay the
+                // compiled delay strategy refuses): with no dead-letter
+                // exchange it is an explicit, documented loss, so it is logged
+                // at error level with the core's error context.
+                if (in_array($kind, ['MaxAttempts', 'InvalidDelay'], true)) {
                     $this->container->make('log')->error('rabbit-rs: poison delivery settled', $error);
                     continue;
                 }

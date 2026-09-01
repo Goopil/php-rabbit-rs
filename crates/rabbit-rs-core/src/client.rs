@@ -888,9 +888,10 @@ impl ClientError {
             PublishErrorKind::Backpressure => ClientErrorKind::Backpressure,
             PublishErrorKind::Closed => ClientErrorKind::Closed,
             PublishErrorKind::Transport => ClientErrorKind::Transport,
-            PublishErrorKind::Nack | PublishErrorKind::Timeout | PublishErrorKind::Unconfirmed => {
-                ClientErrorKind::Publish
-            }
+            PublishErrorKind::InvalidRequest
+            | PublishErrorKind::Nack
+            | PublishErrorKind::Timeout
+            | PublishErrorKind::Unconfirmed => ClientErrorKind::Publish,
         };
         Self::new(kind, error.to_string())
     }

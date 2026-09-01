@@ -109,13 +109,14 @@ pub(crate) fn testing_pool(config: &ZendHashTable, scenario: &ZendHashTable) -> 
         Duration::from_secs(30),
         scenario.publisher_safety,
     );
+    let delay_strategy = rabbit_rs_core::topology::delay::DelayStrategy::compile(&config);
     let client = Arc::new(ClientPool::new_for_tests(
         config,
         Arc::new(transport),
         publisher_config,
     ));
 
-    Ok(Pool::for_testing(handle, client))
+    Ok(Pool::for_testing(handle, client, delay_strategy))
 }
 
 impl Scenario {
