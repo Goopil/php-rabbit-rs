@@ -1,0 +1,20 @@
+[
+  {
+    "name": "rabbitmq-1",
+    "listen": "0.0.0.0:24501",
+    "upstream": "rabbitmq-1:5672",
+    "enabled": true
+  },
+  {
+    "name": "rabbitmq-2",
+    "listen": "0.0.0.0:24502",
+    "upstream": "rabbitmq-2:5672",
+    "enabled": true
+  },
+  {
+    "name": "rabbitmq-3",
+    "listen": "0.0.0.0:24503",
+    "upstream": "rabbitmq-3:5672",
+    "enabled": true
+  }
+]

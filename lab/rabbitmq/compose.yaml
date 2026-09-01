@@ -116,6 +116,47 @@ services:
       rabbitmq-1-np:
         condition: service_healthy
 
+  # Toxiproxy provides the chaos suite with a lab-owned fault-injection API.
+  # The API is bound to 18474 (not the conventional 8474) and the fingerprint
+  # proxy rabbitmq-1 (upstream rabbitmq-1:5672) lets the suite prove it talks
+  # to this lab instead of a foreign instance. 24500-24509 is the listen range
+  # for per-test proxies created and deleted by the tests themselves.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    hostname: toxiproxy
+    profiles: ["with-plugin"]
+    ports:
+      - "18474:8474"
+      - "24500-24509:24500-24509"
+    volumes:
+      - ./toxiproxy/config.json:/config/config.json:ro
+    command: ["-host=0.0.0.0", "-config=/config/config.json"]
+    depends_on:
+      rabbitmq-1:
+        condition: service_healthy
+      rabbitmq-2:
+        condition: service_healthy
+      rabbitmq-3:
+        condition: service_healthy
+
+  toxiproxy-np:
+    image: ghcr.io/shopify/toxiproxy@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    hostname: toxiproxy
+    profiles: ["without-plugin"]
+    ports:
+      - "18474:8474"
+      - "24500-24509:24500-24509"
+    volumes:
+      - ./toxiproxy/config.json:/config/config.json:ro
+    command: ["-host=0.0.0.0", "-config=/config/config.json"]
+    depends_on:
+      rabbitmq-1-np:
+        condition: service_healthy
+      rabbitmq-2-np:
+        condition: service_healthy
+      rabbitmq-3-np:
+        condition: service_healthy
+
   prometheus:
     image: prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     hostname: prometheus

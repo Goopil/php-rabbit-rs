@@ -76,12 +76,61 @@ function uniqueQueue(string $prefix = 'rabbit-rs-it'): string
 }
 
 /**
+ * Single call to the lab's RabbitMQ management API (admin credentials).
+ * Returns the response body ('' on transport failure); callers that only
+ * fire-and-forget (declare/delete) ignore it.
+ */
+function managementRequest(string $method, string $url, ?string $payload = null): string
+{
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
+    if ($payload !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    }
+    $body = curl_exec($ch);
+    curl_close($ch);
+
+    return $body === false ? '' : $body;
+}
+
+function declareQueue(string $queueName): void
+{
+    managementRequest('PUT', 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName), json_encode([
+        'durable' => true,
+        'arguments' => ['x-queue-type' => 'quorum'],
+    ]));
+}
+
+function deleteQueue(string $queueName): void
+{
+    managementRequest('DELETE', 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName));
+}
+
+/**
+ * Extends the rabbit_rs user's configure permission so the native publisher
+ * can lazily declare its internal exchanges (e.g. rabbit-rs.delayed).
+ */
+function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
+{
+    managementRequest('PUT', 'http://localhost:15672/api/permissions/'.rawurlencode($vhost).'/rabbit_rs', json_encode([
+        'configure' => '^(amq\\.|rabbit-rs-it-|rabbit-rs\\.)',
+        'write' => '.*',
+        'read' => '.*',
+    ]));
+}
+
+/**
  * Builds the pool/queue pair integration tests drive, from the live lab
  * config run through the normalizer. Returns [$pool, $queue]; the caller owns
  * pool cleanup (closePoolQuietly() for post-chaos teardown).
  *
  * $configOverrides patches the live config (e.g. publisher confirms) and
  * $connectOverrides extends the connector options (e.g. block_for).
+ * $brokerHosts replaces the default broker host list (e.g. routing the
+ * connection through a per-test Toxiproxy proxy).
  */
 function integrationPoolAndQueue(
     mixed $container,
@@ -89,8 +138,12 @@ function integrationPoolAndQueue(
     array $configOverrides = [],
     array $connectOverrides = [],
     string $connectionName = 'rabbit-rs-integration',
+    ?array $brokerHosts = null,
 ): array {
     $config = array_merge(liveConfig($queueName), $configOverrides);
+    if ($brokerHosts !== null) {
+        $config['brokers']['default']['hosts'] = $brokerHosts;
+    }
     $normalized = ConfigNormalizer::normalize($config);
 
     $pool = new Pool($normalized['native']);
@@ -104,59 +157,6 @@ function integrationPoolAndQueue(
     return [$pool, $queue];
 }
 
-function declareQueue(string $queueName): void
-{
-    $url = 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName);
-    $payload = json_encode([
-        'durable' => true,
-        'arguments' => ['x-queue-type' => 'quorum'],
-    ]);
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
-    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-    curl_exec($ch);
-    curl_close($ch);
-}
-
-function deleteQueue(string $queueName): void
-{
-    $url = 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName);
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
-    curl_exec($ch);
-    curl_close($ch);
-}
-
-/**
- * Extends the rabbit_rs user's configure permission so the native publisher
- * can lazily declare its internal exchanges (e.g. rabbit-rs.delayed).
- */
-function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
-{
-    $url = 'http://localhost:15672/api/permissions/'.rawurlencode($vhost).'/rabbit_rs';
-    $payload = json_encode([
-        'configure' => '^(amq\\.|rabbit-rs-it-|rabbit-rs\\.)',
-        'write' => '.*',
-        'read' => '.*',
-    ]);
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
-    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-    curl_exec($ch);
-    curl_close($ch);
-}
-
 /**
  * Provisions the delayed-message exchange and its binding to the queue.
  *
@@ -168,34 +168,15 @@ function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
 function provisionDelayedExchange(string $queueName, string $vhost = '/orders-eu'): void
 {
     $encodedVhost = rawurlencode($vhost);
-    $requests = [
-        'PUT' => [
-            'http://localhost:15672/api/exchanges/'.$encodedVhost.'/rabbit-rs.delayed' => json_encode([
-                'type' => 'x-delayed-message',
-                'durable' => true,
-                'auto_delete' => false,
-                'internal' => false,
-                'arguments' => ['x-delayed-type' => 'direct'],
-            ]),
-        ],
-        'POST' => [
-            'http://localhost:15672/api/bindings/'.$encodedVhost.'/e/rabbit-rs.delayed/q/'.urlencode($queueName) => json_encode([
-                'routing_key' => $queueName,
-                'arguments' => [],
-            ]),
-        ],
-    ];
-
-    foreach ($requests as $method => $bodies) {
-        foreach ($bodies as $url => $payload) {
-            $ch = curl_init($url);
-            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-            curl_exec($ch);
-            curl_close($ch);
-        }
-    }
+    managementRequest('PUT', 'http://localhost:15672/api/exchanges/'.$encodedVhost.'/rabbit-rs.delayed', json_encode([
+        'type' => 'x-delayed-message',
+        'durable' => true,
+        'auto_delete' => false,
+        'internal' => false,
+        'arguments' => ['x-delayed-type' => 'direct'],
+    ]));
+    managementRequest('POST', 'http://localhost:15672/api/bindings/'.$encodedVhost.'/e/rabbit-rs.delayed/q/'.urlencode($queueName), json_encode([
+        'routing_key' => $queueName,
+        'arguments' => [],
+    ]));
 }
