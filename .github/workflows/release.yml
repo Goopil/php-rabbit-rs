@@ -9,6 +9,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Least-privilege default; jobs raise only the scopes they need.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -223,7 +227,7 @@ jobs:
     needs: [create-release, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       attestations: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -286,7 +290,7 @@ jobs:
     needs: [publish-release]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Setup PHP 8.4
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
@@ -349,11 +353,7 @@ jobs:
         if: needs.create-release.outputs.has_packagist == 'true'
         env:
           PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
-        run: |
-          curl -sS -X POST \
-            "https://packagist.org/api/update-package?username=goopil&apiToken=${PACKAGIST_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs"}}'
+        run: ./scripts/trigger-packagist-update.sh --repository https://github.com/Goopil/rabbit-rs
 
   update-homebrew-formula:
     needs: [create-release, publish-release, verify-pie-install]
@@ -426,31 +426,44 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           cd /tmp/laravel-split
-          git init
+          git init -b main
           git config user.name "rabbit-rs-ci"
           git config user.email "ci@rabbit-rs.local"
-          git checkout -b main
           git add -A
           git commit -m "Release ${GITHUB_REF_NAME}"
-          git remote add origin "https://${MIRROR_TOKEN}@github.com/Goopil/rabbit-rs-laravel.git"
-          git push origin main --force
 
-      - name: Tag the mirror
-        if: steps.check.outputs.skip == 'false'
-        run: |
-          cd /tmp/laravel-split
-          git tag -f "${GITHUB_REF_NAME}"
-          git push origin "${GITHUB_REF_NAME}" --force
+          # The token is supplied through GIT_ASKPASS so it never lands in the
+          # remote URL, .git/config, or process listings.
+          askpass="$(mktemp)"
+          trap 'rm -f "${askpass}"' EXIT
+          cat > "${askpass}" <<'ASKPASS'
+          #!/bin/sh
+          printf '%s\n' "${MIRROR_TOKEN}"
+          ASKPASS
+          chmod 700 "${askpass}"
+          export GIT_ASKPASS="${askpass}"
+          export GIT_TERMINAL_PROMPT=0
+
+          git remote add origin "https://x-access-token@github.com/Goopil/rabbit-rs-laravel.git"
+
+          # Never force-push the mirror: stack the split content on top of the
+          # mirror's current main so the push is a fast-forward, then push
+          # explicit refs. A push race or an already-published tag fails the
+          # release instead of rewriting published history.
+          if git fetch --depth=1 origin main; then
+            git reset --soft FETCH_HEAD
+          fi
+          git commit -m "Release ${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:refs/heads/main"
+
+          git tag "${GITHUB_REF_NAME}"
+          git push origin "refs/tags/${GITHUB_REF_NAME}"
 
       - name: Trigger Packagist update for rabbit-rs-laravel
         if: steps.check.outputs.skip == 'false' && steps.check.outputs.has_packagist == 'true'
         env:
           PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
-        run: |
-          curl -sS -X POST \
-            "https://packagist.org/api/update-package?username=goopil&apiToken=${PACKAGIST_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{"repository":{"url":"https://github.com/Goopil/rabbit-rs-laravel"}}'
+        run: ./scripts/trigger-packagist-update.sh --repository https://github.com/Goopil/rabbit-rs-laravel
 
       - name: Summary
         if: steps.check.outputs.skip == 'true'
