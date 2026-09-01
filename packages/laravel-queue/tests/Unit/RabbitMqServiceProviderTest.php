@@ -2,10 +2,30 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
+
+/**
+ * Boots an additional provider instance with the native extension reported as
+ * loaded (fakes are used in place of the extension) so config normalization
+ * can be observed at connection resolution.
+ */
+function bootedProviderWithFakeExtension(Container $app): RabbitMqServiceProvider
+{
+    $provider = new class($app) extends RabbitMqServiceProvider {
+        protected function nativeExtensionLoaded(): bool
+        {
+            return true;
+        }
+    };
+    $provider->register();
+    $provider->boot();
+
+    return $provider;
+}
 
 describe('RabbitMqServiceProvider', function () {
     it('reports the missing native extension when resolving the queue', function () {
@@ -15,6 +35,30 @@ describe('RabbitMqServiceProvider', function () {
 
         expect(fn () => $this->app['queue']->connection('rabbit-rs'))
             ->toThrow(RuntimeException::class, 'ext-rabbit_rs');
+    });
+
+    it('boots with env-string boolean config and normalizes at connection resolution', function () {
+        $this->app['config']->set('rabbit-rs.best_effort', '1');
+        $this->app['config']->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+        ]);
+
+        bootedProviderWithFakeExtension($this->app);
+
+        expect($this->app['queue']->connection('rabbit-rs'))
+            ->toBeInstanceOf(RabbitMqQueue::class);
+    });
+
+    it('defers config validation errors from boot to connection resolution', function () {
+        $this->app['config']->set('rabbit-rs.best_effort', 'maybe');
+        $this->app['config']->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+        ]);
+
+        bootedProviderWithFakeExtension($this->app);
+
+        expect(fn () => $this->app['queue']->connection('rabbit-rs'))
+            ->toThrow(InvalidArgumentException::class, 'best_effort');
     });
 
     it('normalizes comma-separated hosts after configuration is loaded', function () {

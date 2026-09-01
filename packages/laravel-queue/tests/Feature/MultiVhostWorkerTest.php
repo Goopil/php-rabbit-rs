@@ -114,7 +114,7 @@ describe('multi-vhost worker', function () {
 
     it('subscription enabled flag must be boolean', function () {
         $config = multiVhostConfig();
-        $config['workers']['main']['subscriptions']['disabled_legacy']['enabled'] = 'false';
+        $config['workers']['main']['subscriptions']['disabled_legacy']['enabled'] = 'maybe';
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('workers.main.subscriptions.disabled_legacy.enabled');

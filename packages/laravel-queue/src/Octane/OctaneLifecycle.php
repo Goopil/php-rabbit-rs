@@ -26,12 +26,15 @@ final class OctaneLifecycle
 
     /**
      * Called when Octane reloads the worker. All pools are flushed so
-     * the next request creates fresh connections.
+     * the next request creates fresh connections, and the normalized
+     * config singleton is dropped so the next resolution re-normalizes
+     * from the current config (broker/credential rotation via env).
      */
     public function reload(): void
     {
         $this->closeConsumersOnResolvedQueues();
         $this->flushPoolFactory();
+        $this->container->forgetInstance('rabbit-rs.config');
     }
 
     /**

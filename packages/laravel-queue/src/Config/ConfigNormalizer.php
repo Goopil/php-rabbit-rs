@@ -171,10 +171,7 @@ final class ConfigNormalizer
             self::invalid($path, self::MSG_MUST_BE_ARRAY);
         }
 
-        $enabled = $tls['enabled'] ?? false;
-        if (! is_bool($enabled)) {
-            self::invalid($path.'.enabled', 'must be a boolean');
-        }
+        $enabled = self::boolean($tls['enabled'] ?? false, $path.'.enabled');
 
         $caCert = $tls['ca_cert'] ?? null;
         if ($caCert !== null && ! is_string($caCert)) {
@@ -597,11 +594,20 @@ final class ConfigNormalizer
 
     private static function boolean(mixed $value, string $path): bool
     {
-        if (! is_bool($value)) {
-            self::invalid($path, 'must be a boolean');
+        if (is_bool($value)) {
+            return $value;
         }
 
-        return $value;
+        // Laravel env() returns strings for .env flags (e.g. '1', 'true'),
+        // so accept those forms and reject anything else strictly.
+        if (is_string($value)) {
+            $normalized = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        self::invalid($path, 'must be a boolean or an env-style boolean string (e.g. "1", "true")');
     }
 
     private static function positiveInt(mixed $value, string $path, ?int $max = null): int
