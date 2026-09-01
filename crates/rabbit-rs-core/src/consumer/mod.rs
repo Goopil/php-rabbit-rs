@@ -10,6 +10,7 @@ mod scheduler;
 
 pub use attempts::{
     APPLICATION_ATTEMPTS_HEADER, AttemptsError, AttemptsErrorKind, AttemptsResolver,
+    DEFAULT_MAX_ATTEMPTS,
 };
 pub use composite::ConsumerHandle;
 pub use delivery::{

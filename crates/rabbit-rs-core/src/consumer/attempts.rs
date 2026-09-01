@@ -5,6 +5,18 @@ use crate::transport::HeaderValue;
 
 pub const APPLICATION_ATTEMPTS_HEADER: &str = "x-rabbit-rs-attempts";
 
+/// Default inclusive cap on resolved delivery attempts. Deliveries above the
+/// cap are settled terminally by the consumer actor.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 20;
+
+/// Const-evaluated non-zero form of [`DEFAULT_MAX_ATTEMPTS`]; the `match`
+/// panics at compile time if the constant is ever set to zero.
+pub(crate) const DEFAULT_MAX_ATTEMPTS_NON_ZERO: NonZeroU32 =
+    match NonZeroU32::new(DEFAULT_MAX_ATTEMPTS) {
+        Some(value) => value,
+        None => panic!("DEFAULT_MAX_ATTEMPTS must be non-zero"),
+    };
+
 const ACQUIRED_COUNT_HEADER: &str = "x-acquired-count";
 const DELIVERY_COUNT_HEADER: &str = "x-delivery-count";
 
@@ -16,12 +28,19 @@ pub struct AttemptsResolver {
 impl Default for AttemptsResolver {
     fn default() -> Self {
         Self {
-            max_attempts: NonZeroU32::new(20),
+            max_attempts: NonZeroU32::new(DEFAULT_MAX_ATTEMPTS),
         }
     }
 }
 
 impl AttemptsResolver {
+    /// Overrides the inclusive attempts cap. `None` disables the cap.
+    #[must_use]
+    pub const fn with_max_attempts(mut self, max_attempts: Option<NonZeroU32>) -> Self {
+        self.max_attempts = max_attempts;
+        self
+    }
+
     /// Resolves Laravel-compatible attempts from broker and application headers.
     ///
     /// `RabbitMQ` 4.3 `x-acquired-count` is already acquisition-based, while

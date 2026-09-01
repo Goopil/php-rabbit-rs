@@ -52,6 +52,7 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
         private readonly int $blockForMilliseconds = 0,
         array $publisherConfig = [],
         private readonly bool $autoSubscribe = false,
+        private readonly bool $hasDeadLetter = false,
     ) {
         $this->dispatchAfterCommit = $dispatchAfterCommit;
         $this->messages = $messages ?? new MessageMapper($publisherConfig);
@@ -344,9 +345,17 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
                 if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
                     throw new ConnectionException($error['message'] ?? 'settlement error: ' . $kind);
                 }
-                if (isset($this->container)) {
-                    $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+                if (! isset($this->container)) {
+                    continue;
                 }
+                // A MaxAttempts settlement is terminal poison policy: with no
+                // dead-letter exchange it is an explicit, documented loss, so
+                // it is logged at error level with the core's error context.
+                if ($kind === 'MaxAttempts') {
+                    $this->container->make('log')->error('rabbit-rs: poison delivery settled', $error);
+                    continue;
+                }
+                $this->container->make('log')->warning('rabbit-rs settlement error', $error);
             }
         }
     }
@@ -385,11 +394,51 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
             return null;
         }
         $metadata = $delivery->metadata();
+        $queueName = $this->workerProfiles->queue($profile, $metadata['subscription'] ?? null);
 
-        return $this->marshalJob(
-            $delivery,
-            $this->workerProfiles->queue($profile, $metadata['subscription'] ?? null),
-        );
+        // Only job-construction failures (unmarshable payload, missing
+        // message id) are settled here; routing errors above must keep
+        // surfacing to the caller.
+        try {
+            return $this->marshalJob($delivery, $queueName);
+        } catch (InvalidArgumentException $exception) {
+            // A delivery that cannot be marshalled into a job would otherwise
+            // be redelivered forever with the prefetch slot burned. Settle it
+            // terminally per the documented poison policy instead of leaving
+            // it pending.
+            $this->settleUnmarshable($delivery, $metadata, $exception);
+
+            return null;
+        }
+    }
+
+    /**
+     * Settles an unmarshable delivery terminally: rejected with
+     * requeue=false toward the dead-letter exchange when one is configured,
+     * otherwise explicitly acknowledged. The action is logged loudly on the
+     * Log facade in both cases.
+     */
+    private function settleUnmarshable(
+        Delivery $delivery,
+        array $metadata,
+        InvalidArgumentException $exception,
+    ): void {
+        if ($this->hasDeadLetter) {
+            $delivery->reject(false);
+            $action = 'rejected with requeue=false toward the dead-letter exchange';
+        } else {
+            $delivery->ack();
+            $action = 'acknowledged and dropped (no dead-letter exchange configured)';
+        }
+
+        if (isset($this->container)) {
+            $this->container->make('log')->error('rabbit-rs: poison delivery settled', [
+                'message_id' => $metadata['message_id'] ?? null,
+                'attempts' => $metadata['attempts'] ?? null,
+                'reason' => $exception->getMessage(),
+                'action' => $action,
+            ]);
+        }
     }
 
     /**

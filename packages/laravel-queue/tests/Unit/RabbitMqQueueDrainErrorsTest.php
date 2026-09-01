@@ -6,6 +6,7 @@ use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
+use Illuminate\Support\Facades\Log;
 
 /**
  * @return array{RabbitMqQueue, Pool}
@@ -89,6 +90,40 @@ it('drainSettlementErrors clears errors after draining', function (): void {
     $queue->drainSettlementErrors();
 
     expect($consumer->drainErrors())->toBe([]);
+});
+
+it('drainSettlementErrors logs non-connection errors at warning level', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('default');
+    $consumer->pushError([
+        'error_kind' => 'AlreadySettled',
+        'message' => 'delivery already settled',
+    ]);
+
+    Log::spy();
+    $queue->drainSettlementErrors();
+
+    Log::shouldHaveReceived('warning');
+});
+
+it('drainSettlementErrors logs MaxAttempts errors at error level', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('default');
+    $consumer->pushError([
+        'error_kind' => 'MaxAttempts',
+        'message' => 'delivery attempts 25 exceed the configured maximum of 20 — acknowledged and dropped (no dead-letter exchange configured)',
+        'message_id' => 'msg-poison-1',
+        'attempts' => 25,
+    ]);
+
+    Log::spy();
+    $queue->drainSettlementErrors();
+
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled'
+        && str_contains((string) ($context['message'] ?? ''), 'acknowledged and dropped')
+        && ($context['attempts'] ?? null) === 25);
 });
 
 it('drainSettlementErrors is a no-op when there are no errors', function (): void {

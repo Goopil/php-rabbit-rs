@@ -11,6 +11,7 @@ final class ConfigNormalizer
     private const DEFAULT_AMQP_PORT = 5672;
     private const DEFAULT_CONSUMER_WAIT_TIMEOUT_MS = 30_000;
     private const MAX_CONSUMER_WAIT_TIMEOUT_MS = 86_400_000;
+    private const DEFAULT_MAX_ATTEMPTS = 20;
     private const MSG_MUST_BE_ARRAY = 'must be an array';
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
     private const MSG_NO_ACK = '.no_ack';
@@ -473,7 +474,12 @@ final class ConfigNormalizer
             );
         }
 
-        return ['wait_timeout' => $waitTimeout];
+        $maxAttempts = $consumers['max_attempts'] ?? self::DEFAULT_MAX_ATTEMPTS;
+        if (! is_int($maxAttempts) || $maxAttempts < 1) {
+            self::invalid('consumers.max_attempts', 'must be a positive integer');
+        }
+
+        return ['wait_timeout' => $waitTimeout, 'max_attempts' => $maxAttempts];
     }
 
     /**

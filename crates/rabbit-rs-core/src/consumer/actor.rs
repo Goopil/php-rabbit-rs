@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     future::Future,
+    num::NonZeroU32,
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
@@ -93,6 +94,8 @@ struct RuntimeSubscription {
     delay_strategy: Option<DelayStrategy>,
     early_ack: bool,
     no_ack: bool,
+    max_attempts: Option<NonZeroU32>,
+    has_dead_letter: bool,
 }
 
 struct ActorState {
@@ -154,6 +157,8 @@ impl ActorState {
                     delay_strategy: subscription.delay_strategy,
                     early_ack: subscription.early_ack,
                     no_ack: subscription.no_ack,
+                    max_attempts: subscription.max_attempts,
+                    has_dead_letter: subscription.dead_letter,
                 },
             );
         }
@@ -216,24 +221,59 @@ impl ActorState {
                 self.scheduler.mark_ready(&subscription);
                 continue;
             };
+            let generation = runtime.generation;
+            let channel_id = runtime.channel_id;
+            let connection_key = runtime.connection_key;
+            let early_ack = runtime.early_ack;
+            let no_ack = runtime.no_ack;
+            let max_attempts = runtime.max_attempts;
+            let has_dead_letter = runtime.has_dead_letter;
+            let channel = Arc::clone(&runtime.channel);
             let message_id = delivery.message_id.as_ref().map_or_else(
                 || {
                     MessageId::new(format!(
-                        "{}:{}:{}",
-                        runtime.generation, runtime.channel_id, delivery.delivery_tag
+                        "{generation}:{channel_id}:{}",
+                        delivery.delivery_tag
                     ))
                 },
                 |message_id| MessageId::new(message_id.clone()),
             );
-            let attempts = AttemptsResolver::default()
-                .resolve(&delivery.headers, delivery.redelivered)
-                .unwrap_or(if delivery.redelivered { 2 } else { 1 });
+            let resolved = AttemptsResolver::default()
+                .with_max_attempts(max_attempts)
+                .resolve(&delivery.headers, delivery.redelivered);
+            let attempts = match resolved {
+                Ok(attempts) => attempts,
+                // Best-effort mode auto-acks the delivery anyway: surface the
+                // resolve error and dispatch with the true attempt count so
+                // embedders can still fail the job on attempts.
+                Err(error) if early_ack => {
+                    self.record_settlement_error(SettlementError {
+                        delivery_tag: delivery.delivery_tag,
+                        subscription: subscription.clone(),
+                        kind: ConsumerErrorKind::MaxAttempts,
+                        message: error.to_string(),
+                    });
+                    error.attempts()
+                }
+                Err(error) => {
+                    let payload_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
+                    self.settle_poison(
+                        &subscription,
+                        has_dead_letter,
+                        delivery.delivery_tag,
+                        &message_id,
+                        payload_bytes,
+                        &error.to_string(),
+                        Duration::ZERO,
+                    );
+                    continue;
+                }
+            };
             let headers = Arc::clone(&delivery.headers);
 
-            if runtime.early_ack {
+            if early_ack {
                 let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
-                if !runtime.no_ack {
-                    let channel = runtime.channel.clone();
+                if !no_ack {
                     let tag = delivery.delivery_tag;
                     tokio::spawn(async move {
                         let _ = channel.ack(tag, false).await;
@@ -242,9 +282,9 @@ impl ActorState {
                 let item = Delivery::new_auto_acked(
                     DeliveryIdentity {
                         subscription: subscription.clone(),
-                        connection_key: runtime.connection_key,
-                        generation: runtime.generation,
-                        channel_id: runtime.channel_id,
+                        connection_key,
+                        generation,
+                        channel_id,
                         delivery_tag: delivery.delivery_tag,
                     },
                     message_id,
@@ -277,9 +317,9 @@ impl ActorState {
             let token = DeliveryToken::new(DeliveryTokenInner::pending(
                 DeliveryIdentity {
                     subscription: subscription.clone(),
-                    connection_key: runtime.connection_key,
-                    generation: runtime.generation,
-                    channel_id: runtime.channel_id,
+                    connection_key,
+                    generation,
+                    channel_id,
                     delivery_tag: delivery.delivery_tag,
                 },
                 message_id.clone(),
@@ -339,6 +379,59 @@ impl ActorState {
             let _ = self.error_rx.try_recv();
         }
         let _ = self.error_tx.send(error);
+    }
+
+    /// Settles a poison delivery — attempts above the configured maximum —
+    /// terminally, never requeueing it. With a bound dead-letter exchange the
+    /// delivery is rejected with `requeue=false` so the broker routes it to
+    /// the DLX; without one, the documented policy is an explicit acknowledge
+    /// recorded as a `MaxAttempts` settlement error (ack-and-log).
+    ///
+    /// The channel operation is fire-and-forget: a transient transport
+    /// failure redelivers the message, which re-enters this path and retries.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_poison(
+        &mut self,
+        subscription: &SubscriptionId,
+        has_dead_letter: bool,
+        delivery_tag: u64,
+        message_id: &MessageId,
+        payload_bytes: u64,
+        detail: &str,
+        settled_for: Duration,
+    ) {
+        let channel = self
+            .subscriptions
+            .get(subscription)
+            .map(|runtime| Arc::clone(&runtime.channel));
+        if let Some(channel) = channel {
+            spawn_poison_settlement(channel, has_dead_letter, delivery_tag);
+        }
+        // An unknown subscription has nothing to settle against the broker;
+        // the recorded error below still surfaces the poison condition.
+        self.record_poison_metrics(has_dead_letter, settled_for);
+        if let Some(bytes) = self.buffered_bytes.get_mut(subscription) {
+            *bytes = bytes.saturating_sub(payload_bytes);
+        }
+        if let Some(channel_key) = self.channel_key_for(subscription)
+            && let Some(ledger) = self.channel_ledgers.get_mut(&channel_key)
+        {
+            ledger.pending.remove(&delivery_tag);
+        }
+        self.record_settlement_error(SettlementError {
+            delivery_tag,
+            subscription: subscription.clone(),
+            kind: ConsumerErrorKind::MaxAttempts,
+            message: poison_settlement_message(detail, message_id, has_dead_letter),
+        });
+    }
+
+    fn record_poison_metrics(&mut self, has_dead_letter: bool, settled_for: Duration) {
+        if has_dead_letter {
+            self.metrics.record_reject(settled_for);
+        } else {
+            self.metrics.record_ack(settled_for);
+        }
     }
 
     fn drain_pending(&mut self) {
@@ -572,7 +665,9 @@ pub(crate) async fn run_actor(
                     Ok(_) => true,
                     Err(error) => matches!(
                         error.kind(),
-                        ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                        ConsumerErrorKind::StaleGeneration
+                            | ConsumerErrorKind::Transport
+                            | ConsumerErrorKind::MaxAttempts
                     ),
                 };
 
@@ -622,6 +717,53 @@ pub(crate) async fn run_actor(
                                 error.kind(),
                                 error.to_string(),
                             ));
+                    }
+                    // A poison delivery (attempts above the configured maximum
+                    // surfaced by a capped delayed release) must never return
+                    // to Pending: settle it terminally per the documented
+                    // policy instead of hot-requeueing it.
+                    Err(error) if error.kind() == ConsumerErrorKind::MaxAttempts => {
+                        let subscription = settlement_result.token.subscription.clone();
+                        let runtime = state
+                            .subscriptions
+                            .get(&subscription)
+                            .map(|runtime| (Arc::clone(&runtime.channel), runtime.has_dead_letter));
+                        if let Some((channel, has_dead_letter)) = runtime {
+                            let delivery_tag = settlement_result.token.delivery_tag;
+                            let terminal =
+                                spawn_poison_settlement(channel, has_dead_letter, delivery_tag);
+                            let settled_for = settlement_result.token.reserved_at.elapsed();
+                            if terminal == DeliveryState::Acked {
+                                state.metrics.record_ack(settled_for);
+                            } else {
+                                state.metrics.record_reject(settled_for);
+                            }
+                            settlement_result
+                                .token
+                                .state
+                                .store(terminal as u8, std::sync::atomic::Ordering::Release);
+                            state.record_settlement_error(SettlementError {
+                                delivery_tag,
+                                subscription,
+                                kind: ConsumerErrorKind::MaxAttempts,
+                                message: poison_settlement_message(
+                                    &error.to_string(),
+                                    &settlement_result.token.message_id,
+                                    has_dead_letter,
+                                ),
+                            });
+                        } else {
+                            settlement_result
+                                .token
+                                .state
+                                .store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
+                            state
+                                .record_settlement_error(settlement_error(
+                                    &settlement_result.token,
+                                    ConsumerErrorKind::MaxAttempts,
+                                    error.to_string(),
+                                ));
+                        }
                     }
                     Err(error) => {
                         settlement_result
@@ -912,6 +1054,46 @@ async fn delayed_release(
 
 fn transport_error(error: &crate::transport::TransportError) -> ConsumerError {
     ConsumerError::new(ConsumerErrorKind::Transport, error.to_string())
+}
+
+/// Fires the terminal poison channel operation: `reject(requeue=false)` so the
+/// broker dead-letters the delivery when a DLX is bound, otherwise an explicit
+/// `ack` implementing the documented ack-and-log policy. Returns the terminal
+/// delivery state the token must carry.
+fn spawn_poison_settlement(
+    channel: Arc<dyn crate::transport::ConsumerChannel>,
+    has_dead_letter: bool,
+    delivery_tag: u64,
+) -> DeliveryState {
+    if has_dead_letter {
+        tokio::spawn(async move {
+            let _ = channel.reject(delivery_tag, false).await;
+        });
+        DeliveryState::Rejected
+    } else {
+        tokio::spawn(async move {
+            let _ = channel.ack(delivery_tag, false).await;
+        });
+        DeliveryState::Acked
+    }
+}
+
+fn poison_settlement_message(
+    detail: &str,
+    message_id: &MessageId,
+    has_dead_letter: bool,
+) -> String {
+    if has_dead_letter {
+        format!(
+            "{detail}; message {} rejected with requeue=false toward the dead-letter exchange",
+            message_id.as_str()
+        )
+    } else {
+        format!(
+            "{detail}; message {} acknowledged and dropped after exceeding max attempts (no dead-letter exchange configured)",
+            message_id.as_str()
+        )
+    }
 }
 
 fn publish_error(error: &crate::publisher::PublishError) -> ConsumerError {

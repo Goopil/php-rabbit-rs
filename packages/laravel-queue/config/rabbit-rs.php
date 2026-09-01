@@ -300,10 +300,20 @@ return [
     |               against an unreachable broker — on expiry the acquisition
     |               fails with a connection error that can be retried.
     |
+    | max_attempts: Inclusive cap on resolved delivery attempts per message.
+    |               A delivery whose attempt count exceeds this value is
+    |               settled terminally instead of being dispatched: it is
+    |               rejected toward the dead-letter exchange when
+    |               topology.dead_letter is configured, otherwise explicitly
+    |               acknowledged and logged. Keep it at or above the --tries
+    |               value used by your workers so Laravel can fail poison
+    |               jobs itself before the native cap settles them.
+    |
     */
 
     'consumers' => [
         'wait_timeout' => (int) env('RABBIT_RS_CONSUMER_WAIT_TIMEOUT', 30000),
+        'max_attempts' => (int) env('RABBIT_RS_MAX_ATTEMPTS', 20),
     ],
 
     /*
