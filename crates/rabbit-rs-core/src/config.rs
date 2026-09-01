@@ -168,7 +168,9 @@ pub struct SubscriptionConfig {
     pub early_ack: bool,
 
     /// Broker-side auto-ack: `RabbitMQ` auto-acks each delivery at the protocol level,
-    /// eliminating all ack frames. Requires `early_ack = true` and `best_effort = true`.
+    /// eliminating all ack frames. Requires `early_ack = true` (enforced by
+    /// `Config::validate`); best-effort opt-in is additionally gated by the
+    /// Laravel `best_effort` flag.
     #[serde(default)]
     pub no_ack: bool,
 }
@@ -537,6 +539,13 @@ impl Config {
                 return Err(ConfigError::new(
                     path + ".starvation_after",
                     "starvation_after must be greater than zero",
+                ));
+            }
+            if subscription.no_ack && !subscription.early_ack {
+                return Err(ConfigError::new(
+                    path + ".no_ack",
+                    "no_ack requires early_ack: broker-side auto-ack bypasses prefetch, so an \
+                     unattended consumer would buffer deliveries without any bound",
                 ));
             }
         }
@@ -1247,6 +1256,31 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions.default.broker");
+    }
+
+    #[test]
+    fn rejects_no_ack_without_early_ack() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers[0].subscriptions[0].no_ack = true;
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "workers.main.subscriptions.default.no_ack");
+        assert!(
+            error.to_string().contains("no_ack requires early_ack"),
+            "error must explain the required combination, got: {error}"
+        );
+    }
+
+    #[test]
+    fn accepts_no_ack_with_early_ack() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers[0].subscriptions[0].early_ack = true;
+        candidate.workers[0].subscriptions[0].no_ack = true;
+
+        candidate
+            .validate()
+            .expect("no_ack with early_ack is the documented opt-in combination");
     }
 
     #[test]
