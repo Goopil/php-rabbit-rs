@@ -105,13 +105,19 @@ it('increases size after push', function () {
     $this->queue->push('stdClass', ['size' => 'test']);
     $this->queue->push('stdClass', ['size' => 'test2']);
 
-    // Publishes are batched in the native publish buffer and only reach the
-    // broker on the next flush (threshold, consumer drain, or explicit
-    // flush()); size() reads broker state, so flush before asserting.
-    $this->pool->flush();
-
     expect($this->queue->size($this->queueName))->toBeGreaterThanOrEqual(2);
 
     $this->queue->clear($this->queueName);
     expect($this->queue->size($this->queueName))->toBe(0);
+});
+
+it('keeps the queue empty when clear purges buffered publications', function () {
+    // Fresh queue from beforeEach: no prior flush, so both publications
+    // stay in the native publish buffer (threshold not reached).
+    $this->queue->push('stdClass', ['clear' => 'buffered-1']);
+    $this->queue->push('stdClass', ['clear' => 'buffered-2']);
+
+    $this->pool->clear('default', $this->queueName);
+
+    expect($this->pool->size('default', $this->queueName))->toBe(0);
 });
