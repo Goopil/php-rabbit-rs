@@ -158,6 +158,20 @@ final class Pool
     /**
      * Implemented by the ext-rabbit_rs native extension.
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     *
+     * Removes every registered event callback, returning how many were
+     * removed (connection-state and backpressure combined).
+     *
+     * Connections sharing one native pool each register their own callbacks;
+     * clearing allows a fresh registration to start from a clean slate.
+     */
+    public function clearEventCallbacks(): int
+    {
+    }
+
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      */
     public function close(): void
     {

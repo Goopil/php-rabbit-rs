@@ -8,6 +8,19 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Added
+
+- `Pool::clearEventCallbacks()`: removes every registered event callback (connection-state and backpressure combined) and returns how many were removed, so a connection sharing a native pool can re-register from a clean slate.
+
+### Changed
+
+- `Pool::onConnectionState()` and `Pool::onBackpressure()` now register multiple callbacks instead of replacing the previous one, so connections sharing one native pool (e.g. two Laravel connections with the same fingerprint) each keep their own callbacks.
+
+### Fixed
+
+- Exceptions thrown inside `onConnectionState`/`onBackpressure` callbacks are no longer silently destroyed: the original exception object is rethrown once the event drain finishes (when the enclosing operation itself fails, the callback exception is preserved in the `$previous` chain of the surfaced error).
+- Consumer `next()`, `tryNext()`, and `nextBatch()` drain native events on every call — previously the drain only ran when the delivery buffer was empty, so state/backpressure callbacks starved under steady traffic and dashboards showed healthy state during incidents.
+
 ## [0.0.8] - 2026-08-31
 
 ### Added

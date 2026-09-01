@@ -90,6 +90,15 @@ impl Pool {
             .set_backpressure_callback(callback.shallow_clone())
     }
 
+    /// Removes every registered event callback, returning how many were
+    /// removed (connection-state and backpressure combined).
+    ///
+    /// Connections sharing one native pool each register their own callbacks;
+    /// clearing allows a fresh registration to start from a clean slate.
+    pub fn clearEventCallbacks(&self) -> i64 {
+        i64::try_from(self.bridge.clear_event_callbacks()).unwrap_or(i64::MAX)
+    }
+
     /// Publishes one message and returns its stable message identifier.
     pub fn publish(&self, message: &ZendHashTable) -> PhpResult<String> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::publish")?;

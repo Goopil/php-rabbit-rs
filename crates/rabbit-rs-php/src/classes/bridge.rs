@@ -10,18 +10,21 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use ext_php_rs::{prelude::PhpResult, types::Zval};
+use ext_php_rs::{
+    prelude::{PhpException, PhpResult},
+    types::Zval,
+};
 use rabbit_rs_core::{client::ClientPool, recovery::ConnectionState};
 
-use crate::callbacks::CallbackSlot;
+use crate::callbacks::CallbackRegistry;
 
 /// Shared event bridge: owns the PHP callbacks and last-seen state so both
 /// `Pool` (publish path) and `Consumer` (pop path) can drain native events
 /// on the PHP thread. Callbacks are invoked only on the PHP thread, never
 /// from a Rust thread; mutexes are released before invocation.
 pub(crate) struct EventBridge {
-    connection_state_callback: CallbackSlot,
-    backpressure_callback: CallbackSlot,
+    connection_state_callbacks: CallbackRegistry,
+    backpressure_callbacks: CallbackRegistry,
     last_connection_states: Mutex<HashMap<String, (String, i64)>>,
     last_backpressure_total: Mutex<u64>,
     client: Weak<ClientPool>,
@@ -39,30 +42,43 @@ impl EventBridge {
     )]
     pub(crate) fn shared(client: &Arc<ClientPool>) -> Arc<Self> {
         Arc::new(Self {
-            connection_state_callback: CallbackSlot::new(),
-            backpressure_callback: CallbackSlot::new(),
+            connection_state_callbacks: CallbackRegistry::new(),
+            backpressure_callbacks: CallbackRegistry::new(),
             last_connection_states: Mutex::new(HashMap::new()),
             last_backpressure_total: Mutex::new(0),
             client: Arc::downgrade(client),
         })
     }
 
-    /// Registers the PHP callback invoked when a broker connection state changes.
+    /// Registers a PHP callback invoked when a broker connection state changes.
+    ///
+    /// Multiple callbacks can be registered (connections sharing one native
+    /// pool each register their own); they are cleared together via
+    /// [`EventBridge::clear_event_callbacks`].
     ///
     /// # Errors
     ///
     /// Returns a PHP exception if the given value is not callable.
     pub(crate) fn set_connection_state_callback(&self, callback: Zval) -> PhpResult<()> {
-        self.connection_state_callback.set(callback)
+        self.connection_state_callbacks.set(callback)
     }
 
-    /// Registers the PHP callback invoked when publisher backpressure is detected.
+    /// Registers a PHP callback invoked when publisher backpressure is detected.
+    ///
+    /// Multiple callbacks can be registered; see
+    /// [`EventBridge::set_connection_state_callback`].
     ///
     /// # Errors
     ///
     /// Returns a PHP exception if the given value is not callable.
     pub(crate) fn set_backpressure_callback(&self, callback: Zval) -> PhpResult<()> {
-        self.backpressure_callback.set(callback)
+        self.backpressure_callbacks.set(callback)
+    }
+
+    /// Removes every registered event callback, returning how many were
+    /// removed (connection-state and backpressure combined).
+    pub(crate) fn clear_event_callbacks(&self) -> usize {
+        self.connection_state_callbacks.clear() + self.backpressure_callbacks.clear()
     }
 
     /// Drains pending native events, invoking the registered PHP callbacks on
@@ -72,16 +88,27 @@ impl EventBridge {
     /// since the previous drain; the backpressure callback fires when the
     /// backpressure metric increased. Without a live client (already dropped)
     /// this is a no-op.
+    ///
+    /// Every registered callback is invoked even when an earlier one throws;
+    /// the first thrown exception is rethrown as-is once the drain loop
+    /// finishes so the enclosing operation surfaces it instead of silently
+    /// destroying it (audit F-17).
     pub(crate) fn drain(&self) {
         let Some(client) = self.client.upgrade() else {
             return;
         };
-        self.invoke_connection_state_callbacks(&client);
+        let state_error = self.invoke_connection_state_callbacks(&client);
         let backpressure_total = client.metrics_snapshot().backpressure_total;
-        self.invoke_backpressure_callback(&client, backpressure_total);
+        let backpressure_error = self.invoke_backpressure_callback(&client, backpressure_total);
+
+        if let Some(exception) = state_error.or(backpressure_error) {
+            // The exception object is preserved end-to-end; throwing a real
+            // object cannot fail (only abstract/interface classes can).
+            let _ = exception.throw();
+        }
     }
 
-    fn invoke_connection_state_callbacks(&self, client: &ClientPool) {
+    fn invoke_connection_state_callbacks(&self, client: &ClientPool) -> Option<PhpException> {
         let states = client.connection_states();
 
         // Collect all changed states under the lock, then release before invoking
@@ -109,16 +136,24 @@ impl EventBridge {
                 .collect()
         }; // Lock released here
 
+        let mut error = None;
         for (broker, state_name, generation) in pending {
-            let _ = self.connection_state_callback.invoke_unlocked(vec![
+            if let Err(callback_error) = self.connection_state_callbacks.invoke_unlocked(&[
                 &broker.as_str(),
                 &state_name,
                 &generation,
-            ]);
+            ]) {
+                error.get_or_insert(callback_error);
+            }
         }
+        error
     }
 
-    fn invoke_backpressure_callback(&self, client: &ClientPool, current_backpressure: u64) {
+    fn invoke_backpressure_callback(
+        &self,
+        client: &ClientPool,
+        current_backpressure: u64,
+    ) -> Option<PhpException> {
         // Determine under lock whether the backpressure metric changed, then
         // release the lock before invoking the callback to prevent deadlock
         // when the callback re-enters the pool.
@@ -135,14 +170,16 @@ impl EventBridge {
             }
         }; // Lock released here
 
-        if should_invoke {
-            let (in_flight, capacity) = client.publisher_utilization();
-            let _ = self.backpressure_callback.invoke_unlocked(vec![
-                &"global".to_string(),
-                &i64::try_from(in_flight).unwrap_or(i64::MAX),
-                &i64::try_from(capacity).unwrap_or(i64::MAX),
-            ]);
+        if !should_invoke {
+            return None;
         }
+        let (in_flight, capacity) = client.publisher_utilization();
+        let error = self.backpressure_callbacks.invoke_unlocked(&[
+            &"global".to_string(),
+            &i64::try_from(in_flight).unwrap_or(i64::MAX),
+            &i64::try_from(capacity).unwrap_or(i64::MAX),
+        ]);
+        error.err()
     }
 }
 
