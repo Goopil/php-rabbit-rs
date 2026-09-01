@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Queue\Events\JobFailed;
@@ -78,6 +79,22 @@ function declareSourceQueueWithDeadLetter(string $queueName, string $dlx, string
     curl_close($ch);
 }
 
+/**
+ * Wires the shared pool and connector used by every poison test. The pool is
+ * stored on the test case so afterEach can close it.
+ */
+function connectPoisonQueue($test, array $normalized, string $source): RabbitMqQueue
+{
+    $test->pool = new Pool($normalized['native']);
+    $connector = new RabbitMqConnector(
+        new NativePoolFactory(createPool: fn (): Pool => $test->pool),
+        $normalized,
+    );
+    $test->connector = $connector;
+
+    return $connector->connect(['queue' => $source, 'block_for' => 3]);
+}
+
 beforeEach(function () {
     if (! extension_loaded('rabbit_rs')) {
         skip('ext-rabbit_rs is required for integration tests');
@@ -116,12 +133,7 @@ it('dead-letters an unmarshable delivery when a dead-letter exchange is configur
     // basic.consume cannot race the quorum queue leader election.
     declareSourceQueueWithDeadLetter($source, $dlx, $source);
 
-    $this->pool = new Pool($normalized['native']);
-    $connector = new RabbitMqConnector(
-        new NativePoolFactory(createPool: fn (): Pool => $this->pool),
-        $normalized,
-    );
-    $this->queue = $connector->connect(['queue' => $source, 'block_for' => 3]);
+    $this->queue = connectPoisonQueue($this, $normalized, $source);
     $this->queue->setContainer($this->app);
     $this->queue->setConnectionName('rabbit-rs-poison');
 
@@ -148,12 +160,7 @@ it('acknowledges an unmarshable delivery when no dead-letter exchange is configu
 
     $normalized = ConfigNormalizer::normalize(liveConfig($source));
 
-    $this->pool = new Pool($normalized['native']);
-    $connector = new RabbitMqConnector(
-        new NativePoolFactory(createPool: fn (): Pool => $this->pool),
-        $normalized,
-    );
-    $this->queue = $connector->connect(['queue' => $source, 'block_for' => 3]);
+    $this->queue = connectPoisonQueue($this, $normalized, $source);
     $this->queue->setContainer($this->app);
     $this->queue->setConnectionName('rabbit-rs-poison');
 
@@ -176,12 +183,7 @@ it('fails a job that always throws when the maximum number of tries is reached',
 
     $normalized = ConfigNormalizer::normalize(liveConfig($source));
 
-    $this->pool = new Pool($normalized['native']);
-    $connector = new RabbitMqConnector(
-        new NativePoolFactory(createPool: fn (): Pool => $this->pool),
-        $normalized,
-    );
-    $this->queue = $connector->connect(['queue' => $source, 'block_for' => 3]);
+    $this->queue = connectPoisonQueue($this, $normalized, $source);
     $this->queue->setContainer($this->app);
     $this->queue->setConnectionName('rabbit-rs-integration');
 
@@ -191,7 +193,7 @@ it('fails a job that always throws when the maximum number of tries is reached',
         'queue' => $source,
         'block_for' => 3,
     ]);
-    $this->app['queue']->extend('rabbit-rs', fn (): RabbitMqConnector => $connector);
+    $this->app['queue']->extend('rabbit-rs', fn (): RabbitMqConnector => $this->connector);
 
     $failures = [];
     $this->app['events']->listen(JobFailed::class, function (JobFailed $event) use (&$failures): void {
