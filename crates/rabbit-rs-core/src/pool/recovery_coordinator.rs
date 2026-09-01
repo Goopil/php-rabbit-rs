@@ -456,13 +456,22 @@ async fn recover_generation(
     // Step 3: Initialize or update the publisher actor.
     let mut pub_guard = publisher.lock().await;
     if let Some(pub_handle) = pub_guard.as_ref() {
-        let _ = pub_handle
+        // A failed adoption (e.g. transient `enable_confirms` rejection on
+        // the fresh channel) must fail the generation: the coordinator rolls
+        // it back and recovery re-runs on a new generation, instead of
+        // leaving the publisher suspended with its generation consumed.
+        pub_handle
             .connection_event(PublisherConnectionEvent::Ready {
                 generation,
                 channel: publisher_channel.clone(),
                 topology_restored: true,
             })
-            .await;
+            .await
+            .map_err(|error| {
+                CoordinatorError::new(format!(
+                    "publisher failed to adopt the recovered channel: {error}"
+                ))
+            })?;
     } else {
         let delay_strategy = compile_delay_strategy(&context.config);
         let handle = PublisherActor::spawn_with_delay_strategy_and_metrics(
