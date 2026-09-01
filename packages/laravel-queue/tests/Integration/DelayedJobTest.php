@@ -2,11 +2,7 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
-use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
-use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
-use Goopil\RabbitRs\Pool;
 
 function pollForMessage(RabbitMqQueue $queue, int $timeoutSeconds): ?object
 {
@@ -32,30 +28,22 @@ beforeEach(function () {
     grantRabbitRsConfigure();
     provisionDelayedExchange($this->queueName);
 
-    $config = liveConfig($this->queueName);
-
     // The delayed-message plugin returns every mandatory publish that carries
     // an x-delay header (it defers routing and therefore cannot honour the
     // mandatory flag), and safe mode forces mandatory at the wire level. Run
     // the delay scenarios without publisher confirms so the plugin's spurious
     // return does not fail an otherwise working delayed delivery.
-    $config['publisher'] = ['confirms' => false];
-
-    $normalized = ConfigNormalizer::normalize($config);
-
-    $this->pool = new Pool($normalized['native']);
-    $factory = new NativePoolFactory(createPool: fn (): Pool => $this->pool);
+    $configOverrides = ['publisher' => ['confirms' => false]];
 
     // block_for must stay shorter than the delay used in the tests, otherwise
     // pop() blocks long enough to receive the delayed job itself and the
     // "not immediately available" assertion can never pass.
-    $connector = new RabbitMqConnector($factory, $normalized);
-    $this->queue = $connector->connect([
-        'queue' => $this->queueName,
-        'block_for' => 1,
-    ]);
-    $this->queue->setContainer($this->app);
-    $this->queue->setConnectionName('rabbit-rs-integration');
+    [$this->pool, $this->queue] = integrationPoolAndQueue(
+        $this->app,
+        $this->queueName,
+        configOverrides: $configOverrides,
+        connectOverrides: ['block_for' => 1],
+    );
 });
 
 afterEach(function () {

@@ -2,7 +2,11 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
+use Goopil\RabbitRs\Pool;
 
 require_once __DIR__.'/bootstrap.php';
 
@@ -69,6 +73,35 @@ function liveConfig(string $queueName): array
 function uniqueQueue(string $prefix = 'rabbit-rs-it'): string
 {
     return $prefix.'-'.uniqid('', true);
+}
+
+/**
+ * Builds the pool/queue pair integration tests drive, from the live lab
+ * config run through the normalizer. Returns [$pool, $queue]; the caller owns
+ * pool cleanup (closePoolQuietly() for post-chaos teardown).
+ *
+ * $configOverrides patches the live config (e.g. publisher confirms) and
+ * $connectOverrides extends the connector options (e.g. block_for).
+ */
+function integrationPoolAndQueue(
+    mixed $container,
+    string $queueName,
+    array $configOverrides = [],
+    array $connectOverrides = [],
+    string $connectionName = 'rabbit-rs-integration',
+): array {
+    $config = array_merge(liveConfig($queueName), $configOverrides);
+    $normalized = ConfigNormalizer::normalize($config);
+
+    $pool = new Pool($normalized['native']);
+    $factory = new NativePoolFactory(createPool: fn (): Pool => $pool);
+    $queue = (new RabbitMqConnector($factory, $normalized))->connect(
+        array_merge(['queue' => $queueName], $connectOverrides),
+    );
+    $queue->setContainer($container);
+    $queue->setConnectionName($connectionName);
+
+    return [$pool, $queue];
 }
 
 function declareQueue(string $queueName): void
