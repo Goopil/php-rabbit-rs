@@ -267,7 +267,10 @@ jobs:
           exit 1
 
       - name: Run Rust integration tests
-        run: cargo nextest run -p rabbit-rs-core --test '*' -j 1 --no-fail-fast
+        run: cargo nextest run -p rabbit-rs-core --test '*' --features integration -j 1 --no-fail-fast
+
+      - name: Run Laravel integration suite
+        run: ./scripts/test-integration.sh
 
       - name: Stop RabbitMQ lab
         if: always()
