@@ -348,6 +348,56 @@ async fn deterministic_recovery_order_connection_channels_topology_consumers_pub
     coordinator.close().await.expect("close");
 }
 
+/// Issue #95: a consumer acquired on demand can take the establish lock
+/// while the recovery generation is still mid topology reconcile. A fresh
+/// quorum queue rejects `basic.consume` with 404 until its `queue.declare`
+/// completes, so the establish path must not subscribe before the
+/// declaration completes — it must wait for (or perform) it.
+#[tokio::test(start_paused = true)]
+async fn on_demand_consumer_establishment_waits_for_the_queue_declaration() {
+    let transport = Arc::new(MockTransport::default());
+    // Park the recovery generation mid `queue.declare`: the topology plan is
+    // not applied yet, which is exactly the window in which an on-demand
+    // acquisition races the reconcile on the lab.
+    let gate = transport.push_declare_queue_gate();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+    gate.wait_entered().await;
+
+    // The timeout owns the establishment future: an `Elapsed` drops it, and
+    // tokio's fair locks release any guard or queued waiter on drop.
+    let raced = tokio::time::timeout(Duration::from_secs(1), coordinator.consumer("main")).await;
+    assert!(
+        raced.is_err(),
+        "consumer establishment must not complete before the queue declaration: {raced:?}"
+    );
+
+    let _ = gate.release();
+    let consumer = coordinator.consumer("main").await.expect("consumer handle");
+
+    // The declaration happened exactly once: the establish path observed the
+    // shared reconciler instead of re-declaring for the same generation.
+    let declare_count = transport
+        .operations()
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::DeclareQueue(_)))
+        .count();
+    assert_eq!(declare_count, 1);
+
+    drop(consumer);
+    coordinator.close().await.expect("close");
+}
+
 #[tokio::test(start_paused = true)]
 async fn loss_during_recovery_cancels_and_restarts() {
     let transport = Arc::new(MockTransport::default());

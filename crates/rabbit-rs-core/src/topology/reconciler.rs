@@ -20,6 +20,12 @@ impl TopologyReconciler {
         }
     }
 
+    /// Returns whether the plan has already been applied for `generation`.
+    #[must_use]
+    pub fn is_applied(&self, generation: u64) -> bool {
+        self.applied_generation == Some(generation)
+    }
+
     /// Applies a plan at most once per connection generation.
     ///
     /// # Errors

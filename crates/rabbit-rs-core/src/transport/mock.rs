@@ -62,6 +62,10 @@ struct MockState {
     connect_gates: VecDeque<MockOperationGateWait>,
     open_publisher_gates: VecDeque<MockOperationGateWait>,
     open_consumer_gates: VecDeque<MockOperationGateWait>,
+    /// Gates the next `declare_queue` so a test can park the caller mid
+    /// declaration — the channel operation runs on the caller's task, not
+    /// inside the connection actor loop, so everything else stays live.
+    declare_queue_gates: VecDeque<MockOperationGateWait>,
     close_connection_gates: VecDeque<MockOperationGateWait>,
     close_channel_gates: VecDeque<MockOperationGateWait>,
     ack_gates: VecDeque<MockOperationGateWait>,
@@ -157,6 +161,16 @@ impl MockTransport {
     pub fn push_open_consumer_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().open_consumer_gates.push_back(wait);
+        gate
+    }
+
+    /// Pushes a gate that makes the next `declare_queue` call pending until
+    /// the returned gate is released, parking the declaring task mid
+    /// declaration.
+    #[must_use]
+    pub fn push_declare_queue_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().declare_queue_gates.push_back(wait);
         gate
     }
 
@@ -482,7 +496,15 @@ impl TopologyChannel for MockPublisherChannel {
     }
 
     async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::DeclareQueue(spec.clone()))
+        let gate = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .declare_queue_gates
+            .pop_front();
+        self.record_topology(TransportOperation::DeclareQueue(spec.clone()))?;
+        wait_for_gate(gate).await;
+        Ok(())
     }
 
     async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
