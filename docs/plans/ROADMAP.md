@@ -91,6 +91,40 @@ with the feature, never in a later docs pass.
     0600 temp file + `--fail` + body assertion; mirror auth via GIT_ASKPASS
     (no token in URLs/argv); mirror force-pushes removed (fast-forward only,
     published tags immutable); explicit job permissions.
+- **Round G wave 5 (2026-09-01)** — merged via PRs #113–#117:
+  - #56 (promoted P1): log facade — `Sink` trait (Info ⊂ Warn ⊂ Error),
+    first-wins install, silent by default; stderr sink gated by the
+    `RABBIT_RS_LOG` env var at MINIT (no PHP-callable sink: callbacks cannot
+    cross Tokio threads); `CoordinatorError` typed enum replaces string
+    errors; `recovery_coordinator` panics removed (dead watch → `Closed`
+    error); panic audit in `docs/reliability.md`.
+  - #79 (P2): delay queue identity — synthesized delay queues embed an
+    8-hex args digest (SHA-256 over bucket ms, expiry margin, DLX, DLRK) so
+    rolling config changes open fresh queues instead of 406-storming;
+    `sweep_delay_queues()` GC with conservative gates (quorum queues reject
+    `if-unused`/`if-empty` on RabbitMQ 4.2).
+  - #76 (P2): extension boundary correctness — key validation no longer
+    debug-only (release builds reject typo'd options), `ackBatch` > 256
+    pre-check, Array/Table headers round-trip as nested PHP arrays (core
+    gains a `Decimal` `HeaderValue` variant + once-per-process precision
+    notice), pool teardown flush budget 500ms (was blocking up to 30s on a
+    dead broker) with a `dropped_publications_total` stat, Laravel
+    `registerDefaultCallbacks` clears stale callbacks first.
+  - #90 (P1): release pipeline pinning — multi-arch PHP build images
+    digest-pinned, PIE 1.4.10 pinned + sha256-verified before attestation
+    check, matrix cells fail loudly, `curl --proto "=https"` on the phar
+    download (Sonar flagged the redirect loophole).
+  - #88 (P1): chaos suite pinned to the lab — lab ships a digest-pinned
+    toxiproxy (port 18474) with fingerprint proxies; the suite fails loudly
+    on a foreign/dead instance, runs each scenario through a private proxy
+    (unique name, 24504–24509 range, deleted in teardown), kills both proxy
+    legs (a single-leg `reset_peer` leaves sockets half-open), and covers
+    9 scenarios (TCP reset before confirm / before ACK, leader shutdown,
+    node restart, consumer partition, channel topology error, delay plugin
+    down, bad credentials, SIGTERM with unacked work).
+  - Sonar note: the duplication gate (≤3% new code) bit the chaos PR at
+    5.0% — resolved with a `managementRequest()` helper and pattern reuse;
+    the wave-1 rule "keep test code deduplicated" stands.
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -246,10 +280,10 @@ track. Strategy decision (2026-08-31): **stabilize before features** — Round G
 no features; post-1.0 feature ideas are parked below.
 
 Status (2026-09-01): Tasks 21–25 (#66–#70), 26 (#71), 27 (#72), 28 (#73),
-29 (#74), 30 (#75), 32 (#77), 33 (#78), 35 (#80), 41 (#89) and Round C (#40)
-landed (see Landed). Still queued: Task 31 (#76), 34 (#79), 36 (#81), 37 (#82),
-38 (#83), 39 (#87), 40 (#88), 42 (#90), plus review follow-ups #95/#96/#97 and
-promoted P1s #56/#52.
+29 (#74), 30 (#75), 31 (#76), 32 (#77), 33 (#78), 34 (#79), 35 (#80),
+40 (#88), 41 (#89), 42 (#90) and Round C (#40) landed (see Landed), plus
+promoted P1 #56. Still queued: Task 36 (#81), 37 (#82), 38 (#83), 39 (#87),
+plus review follow-ups #95/#96/#97 and promoted P1 #52.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
