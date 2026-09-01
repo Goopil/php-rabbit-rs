@@ -319,7 +319,9 @@ pub struct PublisherConfigSection {
     pub safety: SafetyMode,
     /// Deprecated: use `safety = "safe"` instead. Defaults to true for backward compat.
     pub confirms: bool,
-    /// Deprecated: use `safety = "safe"` instead. Defaults to true for backward compat.
+    /// Deprecated: must be `true` (or omitted). `false` is rejected at validation —
+    /// mandatory routing is part of the safe delivery guarantee; opt out with
+    /// `safety = "unsafe"` or `"blind"`.
     pub mandatory: bool,
     #[serde(deserialize_with = "deserialize_duration_millis")]
     pub confirm_timeout: Duration,
@@ -441,6 +443,14 @@ impl Config {
                     "at least one host is required",
                 ));
             }
+            if broker.heartbeat < Duration::from_secs(1)
+                || broker.heartbeat > Duration::from_secs(u64::from(u16::MAX))
+            {
+                return Err(ConfigError::new(
+                    format!("brokers.{}.heartbeat", broker.name),
+                    "heartbeat must be between 1 and 65535 seconds (AMQP wire limit)",
+                ));
+            }
 
             broker.hosts.sort_unstable();
         }
@@ -477,6 +487,22 @@ impl Config {
             return Err(ConfigError::new(
                 "consumer.max_attempts",
                 "max_attempts must be a positive integer",
+            ));
+        }
+
+        if !self.publisher.mandatory {
+            return Err(ConfigError::new(
+                "publisher.mandatory",
+                "mandatory=false is no longer supported: mandatory routing is part of the safe \
+                 delivery guarantee; opt out with publisher.safety = \"unsafe\" or \"blind\" \
+                 instead",
+            ));
+        }
+
+        if self.publisher.confirm_timeout < Duration::from_secs(1) {
+            return Err(ConfigError::new(
+                "publisher.confirm_timeout",
+                "confirm_timeout must be at least 1 second",
             ));
         }
 
@@ -799,14 +825,8 @@ fn hash_publisher(digest: &mut Sha256, publisher: &PublisherConfigSection) {
             "no_confirms"
         },
     );
-    hash_value(
-        digest,
-        if publisher.mandatory {
-            "mandatory"
-        } else {
-            "no_mandatory"
-        },
-    );
+    // `publisher.mandatory` is validated to `true` before fingerprinting, so a
+    // dead value must not split pools.
     digest.update(publisher.confirm_timeout.as_millis().to_be_bytes());
 }
 
@@ -889,9 +909,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BrokerConfig, Config, ConsumerConfigSection, Credentials, DelayConfig, Endpoint,
-        PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy, SubscriptionConfig,
-        TlsConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, ConfigFingerprint, ConsumerConfigSection, Credentials, DelayConfig,
+        Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy,
+        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -1452,6 +1472,83 @@ mod tests {
     }
 
     #[test]
+    fn rejects_deprecated_mandatory_false_with_safety_guidance() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.publisher.mandatory = false;
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "publisher.mandatory");
+        assert!(
+            error.to_string().contains("publisher.safety"),
+            "error must point at the safety replacement, got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_confirm_timeout() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.publisher.confirm_timeout = Duration::ZERO;
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "publisher.confirm_timeout");
+    }
+
+    #[test]
+    fn accepts_confirm_timeout_of_one_second() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.publisher.confirm_timeout = Duration::from_secs(1);
+
+        candidate
+            .validate()
+            .expect("confirm_timeout at the 1s lower bound is valid");
+    }
+
+    #[test]
+    fn rejects_zero_heartbeat_with_the_broker_path() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.brokers[0].heartbeat = Duration::ZERO;
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "brokers.default.heartbeat");
+    }
+
+    #[test]
+    fn rejects_heartbeat_above_the_amqp_wire_limit() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.brokers[0].heartbeat = Duration::from_secs(u64::from(u16::MAX) + 1);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "brokers.default.heartbeat");
+    }
+
+    #[test]
+    fn accepts_heartbeat_at_the_amqp_wire_limit() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.brokers[0].heartbeat = Duration::from_secs(u64::from(u16::MAX));
+
+        candidate
+            .validate()
+            .expect("65535s is the AMQP wire limit and must be accepted");
+    }
+
+    #[test]
+    fn mandatory_no_longer_splits_the_fingerprint() {
+        let base = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        changed.publisher.mandatory = false;
+
+        assert_eq!(
+            ConfigFingerprint::calculate(&base),
+            ConfigFingerprint::calculate(&changed),
+            "the deprecated mandatory flag must not influence the fingerprint"
+        );
+    }
+
+    #[test]
     fn deserializes_publisher_section_from_milliseconds() {
         let candidate = serde_json::from_value::<Config>(json!({
             "brokers": [{
@@ -1480,7 +1577,7 @@ mod tests {
             "topology_mode": "external",
             "publisher": {
                 "confirms": false,
-                "mandatory": false,
+                "mandatory": true,
                 "confirm_timeout": 5000
             }
         }))
@@ -1489,7 +1586,7 @@ mod tests {
         let validated = candidate.validate().expect("valid config");
         let publisher = validated.publisher();
         assert!(!publisher.confirms);
-        assert!(!publisher.mandatory);
+        assert!(publisher.mandatory);
         assert_eq!(publisher.confirm_timeout, Duration::from_secs(5));
     }
 

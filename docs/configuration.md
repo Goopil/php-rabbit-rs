@@ -68,7 +68,7 @@ See [Topology](topology.md) for mode semantics.
 | `RABBIT_RS_TLS_CA_CERT` | Path to CA certificate PEM | `null` |
 | `RABBIT_RS_TLS_CLIENT_CERT` | Path to client certificate | `null` |
 | `RABBIT_RS_TLS_CLIENT_KEY` | Path to client private key | `null` |
-| `RABBIT_RS_HEARTBEAT` | Heartbeat interval in seconds | `30` |
+| `RABBIT_RS_HEARTBEAT` | Heartbeat interval in seconds (1–65535) | `30` |
 
 #### Multiple hosts
 
@@ -170,15 +170,15 @@ Set `enabled => false` to exclude a subscription without removing it from config
 | `RABBIT_RS_SAFETY` | Delivery guarantee level: `safe`, `unsafe` or `blind` | `safe` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
 
-Publisher confirms and mandatory routing are **enabled by default**. This provides at-least-once delivery guarantees. Disabling either is possible but removes safety guarantees — see [Reliability](reliability.md).
+Publisher confirms and mandatory routing are **enabled by default**. This provides at-least-once delivery guarantees. Disabling confirms is possible but removes safety guarantees — see [Reliability](reliability.md).
 
 - `confirms: true` — the publisher waits for a broker ACK before resolving the publish call
-- `mandatory: true` — the broker returns unroutable messages instead of silently dropping them
-- `confirm_timeout` — how long to wait for a confirm before timing out (milliseconds)
+- `mandatory` — deprecated; must be `true` (or omitted). `false` is rejected at validation: mandatory routing is part of the safe guarantee, opt out with `safety = "unsafe"` or `"blind"`
+- `confirm_timeout` — how long to wait for a confirm before timing out (milliseconds, minimum 1000)
 
 #### Safety modes
 
-The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) selects the delivery guarantee level. An explicit `unsafe` or `blind` value takes precedence over the legacy `confirms`/`mandatory` flags; the default `safe` keeps deriving from them (`confirms=false` ⇒ `unsafe`).
+The `safety` setting (`publisher.safety`, env `RABBIT_RS_SAFETY`, values `safe`, `unsafe` or `blind`) selects the delivery guarantee level. An explicit `unsafe` or `blind` value takes precedence over the legacy `confirms`/`mandatory` flags; the default `safe` keeps deriving from `confirms` (`confirms=false` ⇒ `unsafe`). The legacy `mandatory` flag must stay `true`: setting it to `false` is rejected at validation (see above).
 
 - `safe` (default) — at-least-once: confirm mode + mandatory routing. Publications are retained in bounded process memory and replayed with their original `message_id` across connection recovery.
 - `unsafe` — synchronous socket write without confirms. The message reached the kernel socket buffer, but a broker-side failure can still lose it.
