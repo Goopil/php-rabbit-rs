@@ -31,6 +31,7 @@ const ADMIN_USER = 'admin';
 const ADMIN_PASS = 'admin_lab';
 const LAB_FINGERPRINT_PROXY = 'rabbitmq-1';
 const LAB_FINGERPRINT_UPSTREAM = 'rabbitmq-1:5672';
+const TOXIPROXY_PROXIES_PATH = '/proxies';
 const CHAOS_PROXY_PORT_MIN = 24504;
 const CHAOS_PROXY_PORT_MAX = 24509;
 const PRIMARY_NODE = 'rabbit@rabbitmq-1';
@@ -68,7 +69,7 @@ function toxiproxyRequest(string $method, string $path, ?string $payload = null)
  */
 function assertLabToxiproxy(): void
 {
-    [$status, $body] = toxiproxyRequest('GET', '/proxies/' . LAB_FINGERPRINT_PROXY);
+    [$status, $body] = toxiproxyRequest('GET', TOXIPROXY_PROXIES_PATH . '/' . LAB_FINGERPRINT_PROXY);
 
     if ($status === 404) {
         \PHPUnit\Framework\Assert::fail(sprintf(
@@ -117,7 +118,7 @@ function createChaosProxy(): array
 
     for ($attempt = 0; $attempt < 4; $attempt++) {
         $port = random_int(CHAOS_PROXY_PORT_MIN, CHAOS_PROXY_PORT_MAX);
-        [$status, $body] = toxiproxyRequest('POST', '/proxies', json_encode([
+        [$status] = toxiproxyRequest('POST', TOXIPROXY_PROXIES_PATH, json_encode([
             'name' => $name,
             'listen' => '0.0.0.0:'.$port,
             'upstream' => LAB_FINGERPRINT_UPSTREAM,
@@ -139,7 +140,7 @@ function createChaosProxy(): array
 
 function deleteChaosProxy(string $name): void
 {
-    toxiproxyRequest('DELETE', '/proxies/'.$name);
+    toxiproxyRequest('DELETE', TOXIPROXY_PROXIES_PATH.'/'.$name);
 }
 
 /**
@@ -176,7 +177,7 @@ function addToxic(string $proxy, string $name, string $type, string $stream, flo
             : [],
     ]);
 
-    [$status, $body] = toxiproxyRequest('POST', '/proxies/'.$proxy.'/toxics', $payload);
+    [$status, $body] = toxiproxyRequest('POST', TOXIPROXY_PROXIES_PATH.'/'.$proxy.'/toxics', $payload);
 
     // A toxic that fails to apply would turn the scenario into a vacuous
     // pass; fail loudly instead.
@@ -193,7 +194,7 @@ function addToxic(string $proxy, string $name, string $type, string $stream, flo
 
 function removeToxic(string $proxy, string $name): void
 {
-    toxiproxyRequest('DELETE', '/proxies/'.$proxy.'/toxics/'.$name);
+    toxiproxyRequest('DELETE', TOXIPROXY_PROXIES_PATH.'/'.$proxy.'/toxics/'.$name);
 }
 
 /**
