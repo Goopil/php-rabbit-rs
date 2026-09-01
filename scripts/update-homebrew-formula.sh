@@ -92,6 +92,17 @@ fi
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
+# The MIRROR_TOKEN is supplied through GIT_ASKPASS so it never lands in the
+# remote URL, .git/config, or process listings.
+ASKPASS_FILE="${TMP_DIR}/git-askpass"
+cat > "${ASKPASS_FILE}" <<'ASKPASS'
+#!/bin/sh
+printf '%s\n' "${MIRROR_TOKEN}"
+ASKPASS
+chmod 700 "${ASKPASS_FILE}"
+export GIT_ASKPASS="${ASKPASS_FILE}"
+export GIT_TERMINAL_PROMPT=0
+
 declare -A SHAS
 
 for php_ver in 8.4 8.5; do
@@ -117,7 +128,7 @@ done
 
 TAP_DIR="${TMP_DIR}/homebrew-rabbit-rs"
 echo "==> Cloning ${TAP_REPO}"
-git clone --depth 1 "https://${MIRROR_TOKEN}@github.com/${TAP_REPO}.git" "${TAP_DIR}" 2>&1 | sed 's|https://[^@]*@|https://|g'
+git clone --depth 1 "https://x-access-token@github.com/${TAP_REPO}.git" "${TAP_DIR}"
 
 # --- update the formula using ruby --------------------------------------------
 #
@@ -164,7 +175,7 @@ git config user.email "ci@rabbit-rs.local"
 git add "${FORMULA_PATH}"
 if ! git diff --cached --quiet; then
     git commit -m "Update formula to v${VERSION}"
-    git push origin main 2>&1 | sed 's|https://[^@]*@|https://|g'
+    git push origin main
 else
     echo "==> Formula already up to date for v${VERSION} -- nothing to commit"
 fi
