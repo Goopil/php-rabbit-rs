@@ -9,26 +9,29 @@
 use std::sync::Mutex;
 
 use ext_php_rs::{
-    convert::IntoZvalDyn,
-    prelude::PhpResult,
+    convert::{IntoZval, IntoZvalDyn},
+    error::Error,
+    prelude::{PhpException, PhpResult},
     types::{ZendCallable, Zval},
 };
 
-/// Container for an optional PHP callable, protected by a mutex.
+/// Registry of PHP callables, protected by a mutex.
 ///
-/// The callable is stored as an owned `Zval` and converted to a `ZendCallable`
-/// at invocation time. The mutex is only held briefly during registration and
-/// invocation, never across `block_on` or async boundaries.
-pub struct CallbackSlot(Mutex<Option<Zval>>);
+/// Multiple callables can be registered: connections sharing one native pool
+/// (e.g. two Laravel connections with the same fingerprint) each register
+/// their own callbacks and all of them fire (audit F-17). The mutex is only
+/// held briefly during registration and invocation, never across `block_on`
+/// or async boundaries.
+pub struct CallbackRegistry(Mutex<Vec<Zval>>);
 
-impl CallbackSlot {
-    /// Creates an empty callback slot.
+impl CallbackRegistry {
+    /// Creates an empty callback registry.
     #[must_use]
     pub fn new() -> Self {
-        Self(Mutex::new(None))
+        Self(Mutex::new(Vec::new()))
     }
 
-    /// Stores a PHP callable, replacing any previously registered callback.
+    /// Registers a PHP callable, keeping any previously registered callbacks.
     ///
     /// # Errors
     ///
@@ -39,43 +42,84 @@ impl CallbackSlot {
                 "callback must be a callable PHP value".to_owned(),
             ));
         }
-        let mut slot = self.0.lock().expect("callback mutex poisoned");
-        *slot = Some(callable);
+        self.0
+            .lock()
+            .expect("callback registry mutex poisoned")
+            .push(callable);
         Ok(())
     }
 
-    /// Invokes the stored callback without holding the internal mutex.
+    /// Removes every registered callback, returning how many were removed.
+    pub fn clear(&self) -> usize {
+        self.0
+            .lock()
+            .expect("callback registry mutex poisoned")
+            .drain(..)
+            .count()
+    }
+
+    /// Invokes every registered callback without holding the internal mutex.
     ///
-    /// The callable `Zval` is shallow-cloned under the mutex, the mutex is
-    /// released, and only then is the PHP callback invoked. This prevents
-    /// deadlocks when the callback re-enters the pool (e.g., calling
-    /// `stats()` which needs to acquire other mutexes that the caller may
-    /// hold).
-    pub fn invoke_unlocked(&self, params: Vec<&dyn IntoZvalDyn>) -> PhpResult<()> {
-        let callable_zval = {
-            let slot = self.0.lock().expect("callback mutex poisoned");
-            match &*slot {
-                Some(zv) => zv.shallow_clone(),
-                None => return Ok(()),
+    /// The callable `Zval`s are shallow-cloned under the mutex, the mutex is
+    /// released, and only then are the PHP callbacks invoked. This prevents
+    /// deadlocks when a callback re-enters the pool (e.g., calling `stats()`
+    /// which needs to acquire other mutexes that the caller may hold).
+    ///
+    /// Every registered callback is invoked even when an earlier one fails;
+    /// the first failure is returned so the caller can rethrow the original
+    /// exception instead of silently destroying it (audit F-17).
+    pub fn invoke_unlocked(&self, params: &[&dyn IntoZvalDyn]) -> PhpResult<()> {
+        let callables = {
+            let registry = self.0.lock().expect("callback registry mutex poisoned");
+            registry.iter().map(Zval::shallow_clone).collect::<Vec<_>>()
+        }; // Lock released here
+
+        let mut error: Option<PhpException> = None;
+        for callable_zval in callables {
+            let Ok(callback) = ZendCallable::new(&callable_zval) else {
+                error.get_or_insert_with(|| {
+                    crate::classes::exception::rabbit_exception_message(
+                        "stored callback is no longer callable".to_owned(),
+                    )
+                });
+                continue;
+            };
+            match callback.try_call(params.to_vec()) {
+                Ok(_) => {}
+                // Preserve the thrown exception object so it is rethrown as-is
+                // instead of being stringified and destroyed.
+                Err(Error::Exception(exception)) => {
+                    let mut object = Zval::new();
+                    if exception.set_zval(&mut object, false).is_ok() {
+                        let mut thrown = crate::classes::exception::rabbit_exception_message(
+                            "registered callback threw an exception".to_owned(),
+                        );
+                        thrown.set_object(Some(object));
+                        error.get_or_insert(thrown);
+                    }
+                }
+                Err(other) => {
+                    error.get_or_insert_with(|| {
+                        crate::classes::exception::rabbit_exception_message(other.to_string())
+                    });
+                }
             }
-        };
-        let callback = ZendCallable::new(&callable_zval).map_err(|_| {
-            crate::classes::exception::rabbit_exception_message(
-                "stored callback is no longer callable".to_owned(),
-            )
-        })?;
-        callback
-            .try_call(params)
-            .map(|_| ())
-            .map_err(|error| crate::classes::exception::rabbit_exception_message(error.to_string()))
+        }
+        match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
-impl std::fmt::Debug for CallbackSlot {
+impl std::fmt::Debug for CallbackRegistry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("CallbackSlot")
-            .field("set", &self.0.lock().is_ok_and(|slot| slot.is_some()))
+            .debug_struct("CallbackRegistry")
+            .field(
+                "registered",
+                &self.0.lock().map_or(0, |registry| registry.len()),
+            )
             .finish_non_exhaustive()
     }
 }

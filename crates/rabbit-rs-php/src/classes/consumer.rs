@@ -44,6 +44,10 @@ impl Consumer {
     pub fn next(&self, timeoutMs: i64) -> PhpResult<Option<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::next")?;
         self.drain_publish_buffer()?;
+        // Drain before the fast path too: a delivery being immediately
+        // available must not starve the state/backpressure callbacks (audit
+        // F-21). The drain is cheap and idempotent.
+        self.bridge.drain();
 
         // Fast path: check the flume buffer without block_on.
         if let Some(delivery) = self
@@ -67,14 +71,10 @@ impl Consumer {
     pub fn tryNext(&self) -> PhpResult<Option<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::tryNext")?;
         self.drain_publish_buffer()?;
+        self.bridge.drain();
         match self.handle.try_next() {
             Ok(Some(delivery)) => Ok(Some(self.wrap_delivery(delivery))),
-            Ok(None) => {
-                // Buffer empty: drain native events before returning, mirroring
-                // the drain performed before the blocking wait in next().
-                self.bridge.drain();
-                Ok(None)
-            }
+            Ok(None) => Ok(None),
             Err(error) => consumer_exception(&error),
         }
     }
@@ -88,6 +88,8 @@ impl Consumer {
     pub fn nextBatch(&self, max: i64, timeoutMs: i64) -> PhpResult<Vec<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::nextBatch")?;
         self.drain_publish_buffer()?;
+        // Drain before the fast path too, mirroring next() (audit F-21).
+        self.bridge.drain();
 
         let max = usize::try_from(max).map_err(|_| {
             rabbit_exception_message("max must be a non-negative integer".to_owned())
