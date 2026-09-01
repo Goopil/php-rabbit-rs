@@ -75,8 +75,16 @@ impl PublishBuffer {
     }
 
     /// Buffers one accepted publication.
+    ///
+    /// The first publication of a batch arms the interval deadline so a
+    /// batch is time-flushed even when it never reaches the size threshold
+    /// (issue #96): a fresh pool's first publish would otherwise sit in the
+    /// buffer until the threshold, a drain, or an explicit flush.
     pub(crate) fn enqueue(&self, publish: NativePublish) {
         let payload_bytes = publish.request.payload.len();
+        if self.buffered_len() == 0 {
+            *self.last_flush.lock().expect("last_flush mutex poisoned") = Some(Instant::now());
+        }
         let mut buffer = self.buffer.lock().expect("publish buffer mutex poisoned");
         buffer.push(publish);
         drop(buffer);
@@ -88,9 +96,11 @@ impl PublishBuffer {
 
     /// Returns whether the buffer reached a flush trigger.
     ///
-    /// The interval clock starts at the first flush, never at construction:
-    /// a process that publishes once and then consumes must not have its
-    /// publication flushed by an interval that started before the publish.
+    /// The interval clock is armed by the first publication of each batch
+    /// (an enqueue into an empty buffer) and reset by every flush, so the
+    /// deadline measures how long the oldest buffered publication has been
+    /// waiting: a batch is flushed once it is older than the interval even
+    /// if it never reaches the size threshold.
     pub(crate) fn should_flush(&self) -> bool {
         self.buffered_len() >= BUFFER_THRESHOLD
             || self
