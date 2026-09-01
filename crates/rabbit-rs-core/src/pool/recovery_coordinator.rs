@@ -161,6 +161,7 @@ impl RecoveryCoordinator {
         let context = Arc::new(CoordinatorContext {
             broker: config.broker,
             topology_plan: config.topology_plan,
+            reconciler: Mutex::new(TopologyReconciler::new()),
             publisher_config: config.publisher_config,
             config: config.config,
             metrics: config.metrics,
@@ -192,6 +193,11 @@ impl RecoveryCoordinator {
 struct CoordinatorContext {
     broker: BrokerConfig,
     topology_plan: TopologyPlan,
+    /// Shared topology reconciler: the recovery generation and the on-demand
+    /// consumer establishment path both apply the plan through it, so
+    /// whichever runs first declares the topology and the other observes the
+    /// generation as applied (issue #95: declaration before subscription).
+    reconciler: Mutex<TopologyReconciler>,
     publisher_config: PublisherConfig,
     config: Arc<ValidatedConfig>,
     metrics: Metrics,
@@ -397,7 +403,6 @@ async fn run_coordinator(
         return;
     }
 
-    let mut reconciler = TopologyReconciler::new();
     let mut last_generation: u64 = 0;
 
     loop {
@@ -414,7 +419,6 @@ async fn run_coordinator(
                             r = recover_generation(
                                 &actor,
                                 &context,
-                                &mut reconciler,
                                 generation,
                                 &publisher,
                                 &consumers,
@@ -494,7 +498,6 @@ async fn run_coordinator(
 async fn recover_generation(
     actor: &ConnectionActorHandle,
     context: &CoordinatorContext,
-    reconciler: &mut TopologyReconciler,
     generation: u64,
     publisher: &SharedPublisher,
     consumers: &SharedConsumers,
@@ -507,7 +510,14 @@ async fn recover_generation(
         })?);
 
     // Step 2: Reconcile topology (exchanges → queues → bindings).
-    reconciler
+    //
+    // The reconciler is shared with the on-demand consumer establishment
+    // path: whichever runs first for this generation declares the topology,
+    // so `basic.consume` is always issued after the plan is applied.
+    context
+        .reconciler
+        .lock()
+        .await
         .reconcile(
             publisher_channel.as_ref(),
             &context.topology_plan,
@@ -667,6 +677,26 @@ async fn establish_requested_profile(
     if subscriptions.is_empty() {
         return Ok(());
     }
+
+    // Declaration before subscription (issue #95): this path can win the
+    // establish lock while the recovery generation is still mid reconcile —
+    // or before it even starts. A fresh quorum queue rejects `basic.consume`
+    // with 404 until its `queue.declare` completes, so apply the topology
+    // plan here when the generation has not been reconciled yet. The shared
+    // reconciler makes the two paths idempotent: whoever runs first
+    // declares, the other observes the generation as applied.
+    let mut reconciler = context.reconciler.lock().await;
+    if !reconciler.is_applied(generation) {
+        let channel = actor.open_publisher().await.map_err(|_| {
+            CoordinatorError::Transport(TransportError::closed("failed to open topology channel"))
+        })?;
+        let result = reconciler
+            .reconcile(channel.as_ref(), &context.topology_plan, generation)
+            .await;
+        let _ = channel.close().await;
+        result.map_err(CoordinatorError::Topology)?;
+    }
+    drop(reconciler);
 
     let consumer = ConsumerSet::spawn_with_metrics(subscriptions, context.metrics.clone())
         .await

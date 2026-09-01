@@ -903,6 +903,13 @@ mod integration {
     }
 
     fn config_single(queue: &str) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
+        config_with_mode(queue, TopologyMode::External)
+    }
+
+    fn config_with_mode(
+        queue: &str,
+        topology_mode: TopologyMode,
+    ) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
         Arc::new(
             Config {
                 brokers: vec![broker("primary", "/orders-eu")],
@@ -922,7 +929,7 @@ mod integration {
                     }],
                     scheduler: SchedulerConfig::weighted_fair(),
                 }],
-                topology_mode: TopologyMode::External,
+                topology_mode,
                 delay: rabbit_rs_core::config::DelayConfig::default(),
                 dead_letter: None,
                 delivery_limit: None,
@@ -934,6 +941,15 @@ mod integration {
             .validate()
             .expect("valid config"),
         )
+    }
+
+    /// Unique per run so parallel lab runs and reruns never collide.
+    fn unique_suffix() -> String {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos()
+            .to_string()
     }
 
     fn config_two_vhosts() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
@@ -1359,5 +1375,56 @@ mod integration {
         }
 
         pool.close().await.expect("close");
+    }
+
+    /// Issue #95: consuming a NEVER-pre-declared quorum queue must not race
+    /// the topology reconcile — `basic.consume` must be issued only after the
+    /// queue's `queue.declare` completes. `RabbitMQ` rejects the consume with
+    /// 404 on quorum queues otherwise, burning a recovery generation. Every
+    /// other lab test pre-declares its queue, which masked this race, so this
+    /// scenario runs several rounds against fresh queues and requires the
+    /// consumer to be ready with zero reconnects (no generation burned).
+    #[tokio::test]
+    async fn fresh_quorum_queue_consumer_does_not_race_declaration() {
+        for iteration in 0..5 {
+            let queue = format!("rabbit-rs-it-95-{}-{iteration}", unique_suffix());
+            // Declare mode: the coordinator's plan owns the fresh queue; the
+            // test itself never pre-declares it.
+            let config = config_with_mode(&queue, TopologyMode::Declare);
+            let pool = ClientPool::production(config);
+
+            let consumer = pool
+                .consumer("main")
+                .await
+                .expect("consumer on a never-declared quorum queue");
+            assert_eq!(
+                pool.metrics_snapshot().reconnects_total,
+                0,
+                "acquiring a consumer on a fresh quorum queue must not burn a recovery generation"
+            );
+
+            let message_id = format!("msg-95-{iteration}");
+            let outcome = pool
+                .publish_batch(vec![(
+                    "primary".to_owned(),
+                    publish_request(&message_id, &queue, b"fresh-quorum"),
+                )])
+                .await
+                .expect("publish to the fresh queue")
+                .pop()
+                .expect("publish");
+            assert_eq!(
+                outcome,
+                PublishOutcome::Confirmed {
+                    message_id: message_id.clone().into(),
+                }
+            );
+
+            let delivery = consumer.next().await.expect("delivery");
+            assert_eq!(delivery.id.as_str(), message_id);
+            delivery.ack().await.expect("ack");
+
+            pool.close().await.expect("close");
+        }
     }
 }
