@@ -78,6 +78,11 @@ mod helper {
         id: &str,
         key: ConnectionKey,
     ) -> Subscription {
+        // These tests exercise poison settlement, not subscription death:
+        // keep the delivery stream open like a live broker subscription so
+        // the scripted deliveries end without surfacing a terminal
+        // stream-ended error (see tests/transport_liveness.rs).
+        transport.keep_delivery_stream_open();
         let channel = transport
             .connect(&broker(id, "/"))
             .await
