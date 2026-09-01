@@ -320,6 +320,9 @@ impl ActorState {
                     *bytes = bytes.saturating_sub(delivery_bytes);
                 }
                 self.metrics.record_delivery();
+                if attempts > 1 {
+                    self.metrics.record_duplicate();
+                }
                 self.metrics.record_ack(Duration::ZERO);
                 continue;
             }
@@ -368,6 +371,9 @@ impl ActorState {
                 self.scheduler.mark_empty(&subscription);
             }
             self.metrics.record_delivery();
+            if attempts > 1 {
+                self.metrics.record_duplicate();
+            }
         }
     }
 
