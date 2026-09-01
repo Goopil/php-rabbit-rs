@@ -18,8 +18,10 @@ describe('WorkerSupervisor integration', function () {
     });
 
     it('spawned worker receives worker index via environment', function () {
+        // Crash mode keeps the run bounded: a clean-exiting child now recycles
+        // indefinitely, so the supervisor would never return on its own.
         $supervisor = makeSupervisor(workers: 1, maxRestarts: 1, extraEnv: [
-            'RABBIT_RS_STUB_MODE' => 'exit-clean',
+            'RABBIT_RS_STUB_MODE' => 'crash',
         ]);
 
         $supervisor->run();
@@ -32,7 +34,7 @@ describe('WorkerSupervisor integration', function () {
 
     it('multiple workers each receive distinct index', function () {
         $supervisor = makeSupervisor(workers: 2, maxRestarts: 1, extraEnv: [
-            'RABBIT_RS_STUB_MODE' => 'exit-clean',
+            'RABBIT_RS_STUB_MODE' => 'crash',
         ]);
 
         $supervisor->run();
@@ -73,6 +75,154 @@ describe('WorkerSupervisor integration', function () {
         expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS);
         // Initial + maxRestarts attempts.
         expect(supervisorInvocationCount(0))->toBe(1 + 2);
+    });
+
+    it('clean exits do not burn the restart budget', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+
+        // Five clean cycles (more than maxRestarts=3) followed by crashes:
+        // clean recycling must reset the budget each time, then crash
+        // protection must still trip with a fresh budget.
+        $modes = ['exit-clean', 'exit-clean', 'exit-clean', 'exit-clean', 'exit-clean', 'crash', 'crash', 'crash', 'crash'];
+        $calls = 0;
+        $factory = static function () use (&$calls, $modes, $stubPath, $stateDir): Process {
+            $mode = $modes[$calls] ?? 'crash';
+            $calls++;
+
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER'         => '0',
+                'RABBIT_RS_STUB_MODE'      => $mode,
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+        );
+
+        $exit = $supervisor->run();
+
+        // 5 clean recycles + initial crash + 3 crash restarts, then stop.
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS)
+            ->and($calls)->toBe(9);
+    });
+
+    it('restarts clean exits immediately without waiting out backoff', function () {
+        // Run the supervisor in a subprocess: with clean recycling it would
+        // otherwise never return on its own.
+        $script = writeSupervisorScript(mode: 'exit-clean', maxRestarts: 3, baseBackoffSeconds: 2);
+        $process = new Process([PHP_BINARY, $script, test()->stateDir]);
+        $process->start();
+
+        // Five clean cycles must complete quickly. With the bug (clean exits
+        // burn the budget) the fleet stops after 4 cycles; with backoff on
+        // clean restarts the 5th start would land at >= 30s.
+        $deadline = microtime(true) + 3.0;
+        $survived = false;
+        while (microtime(true) < $deadline) {
+            if (supervisorInvocationCount(0) >= 5) {
+                $survived = true;
+                break;
+            }
+            usleep(20_000);
+        }
+
+        expect($survived)->toBeTrue('worker should survive past max-restarts clean cycles without backoff');
+
+        $supervisorPid = $process->getPid();
+        expect($supervisorPid)->not->toBeNull();
+        posix_kill($supervisorPid, SIGTERM);
+
+        $process->wait();
+
+        expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
+    });
+
+    it('recycles clean exits inline without pcntl and without burning the budget', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+
+        $modes = ['exit-clean', 'exit-clean', 'exit-clean', 'exit-clean', 'exit-clean', 'crash', 'crash'];
+        $calls = 0;
+        $factory = static function () use (&$calls, $modes, $stubPath, $stateDir): Process {
+            $mode = $modes[$calls] ?? 'crash';
+            $calls++;
+
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER'         => '0',
+                'RABBIT_RS_STUB_MODE'      => $mode,
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
+        $supervisor = new class(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+        ) extends WorkerSupervisor {
+            protected function canFork(): bool
+            {
+                return false;
+            }
+        };
+
+        $exit = $supervisor->run();
+
+        // 5 clean recycles (budget reset each time) + initial crash + 1 crash restart.
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS)
+            ->and($calls)->toBe(7);
+    });
+
+    it('clean-exiting worker keeps recycling while another worker crash-loops', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+
+        $starts = [0 => 0, 1 => 0];
+        $factory = static function (int $workerIndex) use (&$starts, $stubPath, $stateDir): Process {
+            $starts[$workerIndex]++;
+
+            if ($workerIndex === 0) {
+                // Crash-loops: each run dies non-zero after ~1.2s.
+                return new Process([PHP_BINARY, '-r', 'usleep(1200000); exit(1);'], null, [
+                    'RABBIT_RS_WORKER' => '0',
+                ]);
+            }
+
+            // Recycles cleanly every few hundred milliseconds.
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER'         => '1',
+                'RABBIT_RS_STUB_MODE'      => 'exit-clean',
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            connection: 'rabbit-rs',
+            queue: 'default',
+            workers: 2,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+        );
+
+        $exit = $supervisor->run();
+
+        // Crash protection intact: worker 0 trips max restarts...
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS)
+            // ...with exactly its budget (initial + 1 restart)...
+            ->and($starts[0])->toBe(2)
+            // ...while the clean worker recycled far beyond the crash budget.
+            ->and(supervisorInvocationCount(1))->toBeGreaterThanOrEqual(5);
     });
 
     it('stops all children when one worker exceeds max restarts', function () {
@@ -133,7 +283,7 @@ describe('WorkerSupervisor integration', function () {
         $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
             return new Process([PHP_BINARY, $stubPath], null, [
                 'RABBIT_RS_WORKER'         => (string) $workerIndex,
-                'RABBIT_RS_STUB_MODE'      => 'exit-clean',
+                'RABBIT_RS_STUB_MODE'      => 'crash',
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
         };
@@ -325,8 +475,18 @@ function supervisorCleanupStateDir(string $dir): void
     @rmdir($dir);
 }
 
-function writeSupervisorScript(): string
-{
+/**
+ * Build a self-contained supervisor script for subprocess runs.
+ *
+ * @param  string  $mode  Stub mode for the child worker.
+ * @param  int  $maxRestarts  Supervisor max-restarts budget.
+ * @param  int  $baseBackoffSeconds  Supervisor base backoff.
+ */
+function writeSupervisorScript(
+    string $mode = 'run',
+    int $maxRestarts = 1,
+    int $baseBackoffSeconds = 0,
+): string {
     $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
     $autoloadPath = dirname(__DIR__, 2) . '/vendor/autoload.php';
 
@@ -337,11 +497,11 @@ function writeSupervisorScript(): string
     $code .= "\$stubPath = " . var_export($stubPath, true) . ";\n";
     $code .= "\$stateDir = \$argv[1];\n";
     $code .= "\$factory = static function (int \$workerIndex) use (\$stubPath, \$stateDir): \\Symfony\\Component\\Process\\Process {\n";
-    $code .= "    \$env = ['RABBIT_RS_WORKER' => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => 'run', 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
+    $code .= "    \$env = ['RABBIT_RS_WORKER' => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => " . var_export($mode, true) . ", 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
     $code .= "    return new \\Symfony\\Component\\Process\\Process([PHP_BINARY, \$stubPath], null, \$env);\n";
     $code .= "};\n";
     $code .= "\$supervisor = new \\Goopil\\RabbitRs\\Laravel\\Console\\WorkerSupervisor(\n";
-    $code .= "    connection: 'rabbit-rs', queue: 'default', workers: 1, maxRestarts: 1, baseBackoffSeconds: 0,\n";
+    $code .= "    connection: 'rabbit-rs', queue: 'default', workers: 1, maxRestarts: {$maxRestarts}, baseBackoffSeconds: {$baseBackoffSeconds},\n";
     $code .= "    processFactory: \$factory,\n";
     $code .= ");\n";
     $code .= "exit(\$supervisor->run());\n";

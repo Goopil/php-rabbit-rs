@@ -114,8 +114,10 @@ class WorkerSupervisor
     /**
      * Starts the supervisor loop. Each child runs queue:work with the configured
      * connection and queue. On signal SIGTERM/SIGINT, children are stopped
-     * gracefully. On unexpected exit, children are restarted with backoff
-     * until maxRestarts is reached.
+     * gracefully. A clean child exit (exit code 0, e.g. --max-jobs recycling)
+     * restarts the child immediately and resets its crash budget; a non-zero
+     * exit is a crash: the child is restarted with backoff until maxRestarts
+     * is reached.
      *
      * When ext-pcntl is not available and a single worker is configured, the
      * child runs in the foreground without forking ({@see runInline()}); no
@@ -165,6 +167,15 @@ class WorkerSupervisor
         while (true) {
             $process->wait();
 
+            if ($this->isCleanExit($process)) {
+                // Planned recycling (e.g. --max-jobs reached): reset the
+                // crash budget and restart immediately, without backoff.
+                $restarts = 0;
+                $process = $this->startProcess(0);
+
+                continue;
+            }
+
             if (! $this->shouldRestart($restarts)) {
                 return self::EXIT_MAX_RESTARTS;
             }
@@ -173,6 +184,17 @@ class WorkerSupervisor
             $restarts++;
             $process = $this->startProcess(0);
         }
+    }
+
+    /**
+     * Whether the child exited cleanly (planned recycling, e.g. --max-jobs
+     * or --max-time reached): exit code 0. A clean exit resets the crash
+     * budget and restarts immediately; only non-zero exits are treated as
+     * crashes and consume the restart budget with backoff.
+     */
+    private function isCleanExit(Process $process): bool
+    {
+        return $process->getExitCode() === self::EXIT_CLEAN;
     }
 
     private function runInternal(): int
@@ -203,6 +225,15 @@ class WorkerSupervisor
             $now = microtime(true);
             foreach ($processes as $index => $process) {
                 if ($process->isRunning()) {
+                    continue;
+                }
+
+                if ($this->isCleanExit($process)) {
+                    // Planned recycling (e.g. --max-jobs reached): reset the
+                    // crash budget and restart immediately, without backoff.
+                    $restartCounts[$index] = 0;
+                    $processes[$index] = $this->startProcess($index);
+
                     continue;
                 }
 
