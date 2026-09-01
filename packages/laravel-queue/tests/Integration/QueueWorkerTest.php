@@ -2,12 +2,7 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
-use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
-use Goopil\RabbitRs\Laravel\RabbitMqQueue;
-use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
-use Goopil\RabbitRs\Pool;
 
 beforeEach(function () {
     if (! extension_loaded('rabbit_rs')) {
@@ -17,19 +12,11 @@ beforeEach(function () {
     $this->queueName = uniqueQueue();
     declareQueue($this->queueName);
 
-    $config = liveConfig($this->queueName);
-    $normalized = ConfigNormalizer::normalize($config);
-
-    $this->pool = new Pool($normalized['native']);
-    $factory = new NativePoolFactory(createPool: fn (): Pool => $this->pool);
-
-    $connector = new RabbitMqConnector($factory, $normalized);
-    $this->queue = $connector->connect([
-        'queue' => $this->queueName,
-        'block_for' => 3,
-    ]);
-    $this->queue->setContainer($this->app);
-    $this->queue->setConnectionName('rabbit-rs-integration');
+    [$this->pool, $this->queue] = integrationPoolAndQueue(
+        $this->app,
+        $this->queueName,
+        connectOverrides: ['block_for' => 3],
+    );
 });
 
 afterEach(function () {
@@ -117,6 +104,11 @@ it('increases size after push', function () {
 
     $this->queue->push('stdClass', ['size' => 'test']);
     $this->queue->push('stdClass', ['size' => 'test2']);
+
+    // Publishes are batched in the native publish buffer and only reach the
+    // broker on the next flush (threshold, consumer drain, or explicit
+    // flush()); size() reads broker state, so flush before asserting.
+    $this->pool->flush();
 
     expect($this->queue->size($this->queueName))->toBeGreaterThanOrEqual(2);
 
