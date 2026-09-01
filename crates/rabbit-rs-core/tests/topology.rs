@@ -1225,3 +1225,539 @@ async fn delayed_release_increments_the_application_attempt_header() {
             .contains_key("x-delivery-count")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Delay queue identity (issue #79): the queue name must bind the arguments
+// so two configs with different margins never fight over one declaration.
+// ---------------------------------------------------------------------------
+
+fn ttl_plan_with_margin(margin: Duration) -> rabbit_rs_core::topology::delay::TtlBucketPlan {
+    rabbit_rs_core::topology::delay::TtlBucketPlan::compile(&DelayConfig {
+        mode: rabbit_rs_core::config::DelayMode::Ttl,
+        buckets: vec![
+            Duration::from_secs(1),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+        ],
+        max_buckets: 8,
+        queue_expiry_margin: margin,
+    })
+    .expect("valid TTL plan")
+}
+
+#[test]
+fn delay_queues_with_different_arguments_get_different_names() {
+    let short_margin = ttl_plan_with_margin(Duration::from_mins(1));
+    let long_margin = ttl_plan_with_margin(Duration::from_mins(2));
+    let destination = Destination::new("jobs", "high");
+
+    let short = short_margin
+        .queue_for(&destination, Duration::from_secs(5))
+        .expect("queue for short margin");
+    let long = long_margin
+        .queue_for(&destination, Duration::from_secs(5))
+        .expect("queue for long margin");
+
+    assert_ne!(
+        short.name, long.name,
+        "distinct delay arguments must not declare the same queue name: \
+         rolling deploys would fight over one declaration (406 storms)"
+    );
+    assert!(short.name.starts_with("rabbit-rs.delay."));
+    assert!(long.name.starts_with("rabbit-rs.delay."));
+    assert!(
+        short.name.ends_with(".5000") && long.name.ends_with(".5000"),
+        "the bucket stays readable in the name: {} vs {}",
+        short.name,
+        long.name
+    );
+    assert_eq!(short.expires, Some(Duration::from_secs(65)));
+    assert_eq!(long.expires, Some(Duration::from_secs(125)));
+}
+
+#[test]
+fn identical_delay_arguments_reuse_the_same_queue_name() {
+    let plan = ttl_plan_with_margin(Duration::from_mins(1));
+    let destination = Destination::new("jobs", "high");
+
+    let first = plan
+        .queue_for(&destination, Duration::from_secs(5))
+        .expect("first queue");
+    let second = plan
+        .queue_for(&destination, Duration::from_secs(5))
+        .expect("second queue");
+
+    assert_eq!(first.name, second.name);
+}
+
+// ---------------------------------------------------------------------------
+// Synthesized delay-queue GC (issue #79): a conservative maintenance sweep.
+// ---------------------------------------------------------------------------
+
+use rabbit_rs_core::topology::delay::{
+    SweepKeptReason, legacy_delay_queue_name, sweep_delay_queues,
+};
+
+#[tokio::test]
+async fn delay_queue_sweep_deletes_orphans_and_keeps_live_queues() {
+    let transport = MockTransport::default();
+    let connection = transport
+        .connect(&broker_default())
+        .await
+        .expect("connection");
+    let channel = connection
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+
+    let plan = ttl_plan_with_margin(Duration::from_mins(1));
+    let destination = Destination::new("jobs", "high");
+    let live = plan
+        .queue_for(&destination, Duration::from_secs(5))
+        .expect("live queue");
+    let orphan_1s = legacy_delay_queue_name(&destination, Duration::from_secs(1));
+    let orphan_5s = legacy_delay_queue_name(&destination, Duration::from_secs(5));
+    let orphan_30s = legacy_delay_queue_name(&destination, Duration::from_secs(30));
+
+    // Scripted broker (candidates probed in sorted order: 1 s, 30 s, 5 s):
+    // the 1 s and 5 s legacy orphans are empty and deletable, the 30 s
+    // legacy orphan still drains in-flight messages. The live queue must be
+    // recognized without touching the broker.
+    transport.push_queue_size(Ok(0));
+    transport.push_queue_size(Ok(3));
+    transport.push_queue_size(Ok(0));
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Ok(()));
+
+    let sweep = sweep_delay_queues(
+        channel.as_ref(),
+        &plan,
+        std::slice::from_ref(&destination),
+        std::slice::from_ref(&live.name),
+    )
+    .await;
+
+    assert_eq!(
+        sweep.deleted,
+        vec![orphan_1s.clone(), orphan_5s.clone()],
+        "every empty legacy orphan of a known destination must be deleted"
+    );
+    assert_eq!(sweep.absent, Vec::<String>::new());
+    assert!(
+        sweep
+            .kept
+            .iter()
+            .any(|kept| kept.name == orphan_30s && kept.reason == SweepKeptReason::HasMessages),
+        "an orphan still draining messages must be kept: {:?}",
+        sweep.kept
+    );
+    assert!(
+        sweep
+            .kept
+            .iter()
+            .any(|kept| kept.name == live.name && kept.reason == SweepKeptReason::InCurrentPlan),
+        "a queue the current plan still produces must be kept: {:?}",
+        sweep.kept
+    );
+
+    let operations = transport.operations();
+    assert!(
+        operations.contains(&TransportOperation::DeleteQueue { queue: orphan_1s })
+            && operations.contains(&TransportOperation::DeleteQueue { queue: orphan_5s }),
+        "the empty orphans must be deleted: {operations:?}",
+    );
+    assert!(
+        !operations
+            .iter()
+            .any(|operation| matches!(operation, TransportOperation::DeleteQueue { queue } if *queue == live.name)),
+        "the live queue must never be deleted"
+    );
+    assert!(
+        !operations
+            .iter()
+            .any(|operation| matches!(operation, TransportOperation::DeleteQueue { queue } if *queue == orphan_30s)),
+        "the draining orphan must never be deleted"
+    );
+}
+
+#[tokio::test]
+async fn delay_queue_sweep_never_touches_unknown_or_foreign_queues() {
+    let transport = MockTransport::default();
+    let connection = transport
+        .connect(&broker_default())
+        .await
+        .expect("connection");
+    let channel = connection
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+
+    let plan = ttl_plan_with_margin(Duration::from_mins(1));
+    let destination = Destination::new("jobs", "high");
+
+    // The three derived legacy orphans of the known destination are already
+    // gone (probes fail); the foreign and unknown-destination candidates
+    // must be kept without ever reaching the broker.
+    transport.push_queue_size(Err(TransportError::protocol("NOT_FOUND")));
+    transport.push_queue_size(Err(TransportError::protocol("NOT_FOUND")));
+    transport.push_queue_size(Err(TransportError::protocol("NOT_FOUND")));
+
+    let sweep = sweep_delay_queues(
+        channel.as_ref(),
+        &plan,
+        std::slice::from_ref(&destination),
+        &[
+            "jobs".to_owned(),
+            "rabbit-rs.delay.0123456789abcdef.9999".to_owned(),
+        ],
+    )
+    .await;
+
+    assert!(sweep.deleted.is_empty());
+    assert_eq!(sweep.absent.len(), 3);
+    assert!(
+        sweep
+            .kept
+            .iter()
+            .any(|kept| kept.name == "jobs" && kept.reason == SweepKeptReason::NotSynthesized)
+    );
+    assert!(
+        sweep
+            .kept
+            .iter()
+            .any(|kept| kept.name == "rabbit-rs.delay.0123456789abcdef.9999"
+                && kept.reason == SweepKeptReason::UnknownDestination),
+        "queues of unknown destinations must never be swept: {:?}",
+        sweep.kept
+    );
+    assert!(
+        !transport
+            .operations()
+            .iter()
+            .any(|operation| matches!(operation, TransportOperation::DeleteQueue { .. })),
+        "nothing may be deleted when every candidate is kept or absent"
+    );
+}
+
+#[tokio::test]
+async fn delay_queue_sweep_reports_absent_queues_without_deleting() {
+    let transport = MockTransport::default();
+    let connection = transport
+        .connect(&broker_default())
+        .await
+        .expect("connection");
+    let channel = connection
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+
+    let plan = rabbit_rs_core::topology::delay::TtlBucketPlan::compile(&DelayConfig {
+        mode: rabbit_rs_core::config::DelayMode::Ttl,
+        buckets: vec![Duration::from_secs(1)],
+        max_buckets: 8,
+        queue_expiry_margin: Duration::from_mins(1),
+    })
+    .expect("valid TTL plan");
+    let destination = Destination::new("jobs", "high");
+    let orphan = legacy_delay_queue_name(&destination, Duration::from_secs(1));
+
+    transport.push_queue_size(Err(TransportError::protocol(
+        "NOT_FOUND - no queue 'rabbit-rs.delay.abc' in vhost '/'",
+    )));
+
+    let sweep = sweep_delay_queues(channel.as_ref(), &plan, &[destination], &[]).await;
+
+    assert!(sweep.deleted.is_empty());
+    assert_eq!(sweep.absent, vec![orphan]);
+}
+
+#[tokio::test]
+async fn delay_queue_sweep_keeps_queues_when_the_delete_is_refused() {
+    let transport = MockTransport::default();
+    let connection = transport
+        .connect(&broker_default())
+        .await
+        .expect("connection");
+    let channel = connection
+        .open_publisher()
+        .await
+        .expect("publisher channel");
+
+    let plan = rabbit_rs_core::topology::delay::TtlBucketPlan::compile(&DelayConfig {
+        mode: rabbit_rs_core::config::DelayMode::Ttl,
+        buckets: vec![Duration::from_secs(1)],
+        max_buckets: 8,
+        queue_expiry_margin: Duration::from_mins(1),
+    })
+    .expect("valid TTL plan");
+    let destination = Destination::new("jobs", "high");
+    let orphan = legacy_delay_queue_name(&destination, Duration::from_secs(1));
+
+    transport.push_queue_size(Ok(0));
+    transport.push_operation_result(Err(TransportError::connection("broker refused the delete")));
+
+    let sweep = sweep_delay_queues(channel.as_ref(), &plan, &[destination], &[]).await;
+
+    assert!(sweep.deleted.is_empty());
+    assert!(
+        sweep
+            .kept
+            .iter()
+            .any(|kept| kept.name == orphan && kept.reason == SweepKeptReason::DeleteRefused),
+        "a refused delete must be reported as kept: {:?}",
+        sweep.kept
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lab-gated: the GC against a real broker (run with --features integration).
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "integration")]
+mod delay_gc_lab {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use bytes::Bytes;
+
+    use rabbit_rs_core::{
+        config::{BrokerConfig, Credentials, DelayConfig, Endpoint, TlsConfig},
+        publisher::Destination,
+        topology::delay::{
+            SweepKeptReason, TtlBucketPlan, legacy_delay_queue_name, sweep_delay_queues,
+        },
+        transport::{
+            Headers, PublishProperties, PublishRequest, PublisherChannel, QueueKind, QueueSpec,
+            Transport, lapin::LapinTransport,
+        },
+    };
+
+    fn lab_broker() -> BrokerConfig {
+        BrokerConfig {
+            name: "lab".to_owned(),
+            hosts: vec![Endpoint::new("localhost", 5672)],
+            vhost: "/orders-eu".to_owned(),
+            // The lab `rabbit_rs` user is deliberately restricted to
+            // `^(amq\.|rabbit-rs-it-)` for configure operations; declaring
+            // and deleting the reserved `rabbit-rs.delay.*` namespace needs
+            // the lab admin, mirroring the operator's admin channel in
+            // production.
+            credentials: Credentials::new("admin", "admin_lab"),
+            tls: TlsConfig::disabled(),
+            heartbeat: Duration::from_secs(30),
+        }
+    }
+
+    /// Unique per run so parallel lab runs and reruns never collide.
+    fn unique_suffix() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock must advance")
+            .as_nanos();
+        format!("{nanos:x}")
+    }
+
+    /// The queue shape the pre-identity scheme synthesized.
+    fn legacy_spec(name: String, destination: &Destination, bucket: Duration) -> QueueSpec {
+        QueueSpec {
+            name,
+            durable: true,
+            exclusive: false,
+            auto_delete: false,
+            kind: QueueKind::Quorum,
+            dead_letter_exchange: Some(destination.exchange.to_string()),
+            dead_letter_routing_key: Some(destination.routing_key.to_string()),
+            message_ttl: Some(bucket),
+            expires: Some(bucket + Duration::from_mins(1)),
+            delivery_limit: None,
+            arguments: Headers::new(),
+        }
+    }
+
+    /// Declares the lab fixtures: an empty legacy orphan, a legacy orphan
+    /// still draining one message, the live queue of the current plan and a
+    /// foreign queue.
+    async fn declare_lab_fixtures(
+        channel: &dyn PublisherChannel,
+        plan: &TtlBucketPlan,
+        destination: &Destination,
+    ) -> (String, String, QueueSpec, String) {
+        let suffix = unique_suffix();
+        let empty_orphan = legacy_delay_queue_name(destination, Duration::from_secs(1));
+        let draining_orphan = legacy_delay_queue_name(destination, Duration::from_secs(30));
+        let live = plan
+            .queue_for(destination, Duration::from_secs(1))
+            .expect("live queue");
+        let foreign = format!("rabbit-rs-it-79-{suffix}-keep-me");
+
+        channel
+            .declare_queue(&legacy_spec(
+                empty_orphan.clone(),
+                destination,
+                Duration::from_secs(1),
+            ))
+            .await
+            .expect("declare empty orphan");
+        channel
+            .declare_queue(&legacy_spec(
+                draining_orphan.clone(),
+                destination,
+                Duration::from_secs(30),
+            ))
+            .await
+            .expect("declare draining orphan");
+        channel
+            .declare_queue(&live)
+            .await
+            .expect("declare live queue");
+        channel
+            .declare_queue(&legacy_spec(
+                foreign.clone(),
+                destination,
+                Duration::from_secs(1),
+            ))
+            .await
+            .expect("declare foreign queue");
+        channel
+            .publish(PublishRequest {
+                exchange: "".into(),
+                routing_key: draining_orphan.clone().into(),
+                payload: Bytes::from_static(b"in-flight"),
+                mandatory: false,
+                properties: PublishProperties::default(),
+            })
+            .await
+            .expect("publish into the draining orphan");
+        (empty_orphan, draining_orphan, live, foreign)
+    }
+
+    /// Best-effort destructive cleanup: purge then delete, retrying until
+    /// the broker accepts everything.
+    async fn cleanup_lab_queues(
+        connection: &dyn rabbit_rs_core::transport::TransportConnection,
+        queues: Vec<String>,
+    ) {
+        let cleanup_channel = connection.open_publisher().await.expect("cleanup channel");
+        let mut survivors = queues;
+        for _ in 0..3 {
+            let mut pending = Vec::new();
+            for queue in survivors {
+                let _ = cleanup_channel.purge_queue(&queue).await;
+                if cleanup_channel.delete_queue(&queue).await.is_err() {
+                    pending.push(queue);
+                }
+            }
+            if pending.is_empty() {
+                break;
+            }
+            survivors = pending;
+        }
+        let _ = cleanup_channel.close().await;
+    }
+
+    #[tokio::test]
+    async fn sweep_deletes_legacy_delay_orphans_on_the_real_broker() {
+        let transport = LapinTransport;
+        let connection = transport
+            .connect(&lab_broker())
+            .await
+            .expect("lab connection");
+        let channel = connection
+            .open_publisher()
+            .await
+            .expect("publisher channel");
+
+        let suffix = unique_suffix();
+        let destination = Destination::new(format!("rabbit-rs-it-79-{suffix}"), "high");
+        let plan = TtlBucketPlan::compile(&DelayConfig {
+            mode: rabbit_rs_core::config::DelayMode::Ttl,
+            buckets: vec![Duration::from_secs(1), Duration::from_secs(30)],
+            max_buckets: 8,
+            queue_expiry_margin: Duration::from_mins(1),
+        })
+        .expect("valid TTL plan");
+
+        let (empty_orphan, draining_orphan, live, foreign) =
+            declare_lab_fixtures(channel.as_ref(), &plan, &destination).await;
+
+        let sweep = sweep_delay_queues(
+            channel.as_ref(),
+            &plan,
+            std::slice::from_ref(&destination),
+            &[foreign.clone(), live.name.clone()],
+        )
+        .await;
+
+        assert_eq!(
+            sweep.deleted,
+            vec![empty_orphan.clone()],
+            "the empty legacy orphan must be deleted: {sweep:?}",
+        );
+        assert_eq!(sweep.absent, Vec::<String>::new());
+        assert!(
+            sweep
+                .kept
+                .iter()
+                .any(|kept| kept.name == draining_orphan
+                    && kept.reason == SweepKeptReason::HasMessages),
+            "the draining orphan must be kept: {:?}",
+            sweep.kept
+        );
+        assert!(
+            sweep
+                .kept
+                .iter()
+                .any(|kept| kept.name == live.name && kept.reason == SweepKeptReason::InCurrentPlan),
+            "the live queue must be kept without being probed: {:?}",
+            sweep.kept
+        );
+        assert!(
+            sweep
+                .kept
+                .iter()
+                .any(|kept| kept.name == foreign && kept.reason == SweepKeptReason::NotSynthesized),
+            "the foreign queue must be kept: {:?}",
+            sweep.kept
+        );
+
+        // Broker state: the survivors first — a passive declare of a
+        // missing queue is a hard NOT_FOUND that closes the channel, so the
+        // absence check runs last.
+        for survivor in [&draining_orphan, &live.name, &foreign] {
+            channel
+                .verify_queue(&legacy_spec(survivor.clone(), &destination, Duration::ZERO))
+                .await
+                .unwrap_or_else(|error| panic!("queue '{survivor}' must survive: {error}"));
+        }
+        assert!(
+            channel
+                .verify_queue(&legacy_spec(
+                    empty_orphan.clone(),
+                    &destination,
+                    Duration::ZERO
+                ))
+                .await
+                .is_err(),
+            "the empty orphan must be gone from the broker"
+        );
+
+        cleanup_lab_queues(
+            connection.as_ref(),
+            vec![draining_orphan, live.name.clone(), foreign],
+        )
+        .await;
+        connection.close().await.expect("close lab connection");
+    }
+}
+
+#[test]
+fn legacy_delay_queue_names_match_the_pre_identity_scheme() {
+    // The pre-#79 name was hash16(exchange, 0, routing_key) + "." + bucket
+    // ms. Pinning the exact digest freezes the GC's migration contract:
+    // legacy names must keep matching the queues the previous version
+    // synthesized, or the sweep would miss them.
+    let destination = Destination::new("jobs", "high");
+    assert_eq!(
+        legacy_delay_queue_name(&destination, Duration::from_secs(1)),
+        "rabbit-rs.delay.52b5affb8584cc92.1000"
+    );
+}

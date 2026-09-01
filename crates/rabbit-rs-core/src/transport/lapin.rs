@@ -8,7 +8,7 @@ use lapin::{
     options::{
         BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, BasicQosOptions,
         BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
-        QueueDeclareOptions, QueuePurgeOptions,
+        QueueDeclareOptions, QueueDeleteOptions, QueuePurgeOptions,
     },
     tcp::OwnedTLSConfig,
     types::{AMQPValue, FieldArray, FieldTable},
@@ -169,6 +169,10 @@ impl TopologyChannel for LapinPublisherChannel {
             .map_err(map_lapin_error)
     }
 
+    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
+        delete_queue(&self.inner, queue).await
+    }
+
     async fn close(&self) -> TransportResult<()> {
         close_channel(&self.inner).await
     }
@@ -263,6 +267,10 @@ impl TopologyChannel for LapinConsumerChannel {
             .await
             .map(|_| ())
             .map_err(map_lapin_error)
+    }
+
+    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
+        delete_queue(&self.inner, queue).await
     }
 
     async fn close(&self) -> TransportResult<()> {
@@ -547,6 +555,20 @@ async fn queue_size(channel: &Channel, queue: &str) -> TransportResult<u32> {
 
 fn duration_millis(duration: std::time::Duration) -> u32 {
     u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
+}
+
+/// Deletes a queue. A missing queue resolves successfully (idempotent
+/// deletion). `RabbitMQ` quorum queues — which the synthesized delay queues
+/// are — do not support the `if-unused`/`if-empty` flags (hard
+/// `NOT_IMPLEMENTED` that also closes the channel), so emptiness must be
+/// ensured by the caller immediately before deleting, as
+/// [`crate::topology::delay::sweep_delay_queues`] does.
+async fn delete_queue(channel: &Channel, queue: &str) -> TransportResult<()> {
+    channel
+        .queue_delete(queue.to_owned().into(), QueueDeleteOptions::default())
+        .await
+        .map(|_| ())
+        .map_err(map_lapin_error)
 }
 
 async fn bind_queue(channel: &Channel, spec: &BindingSpec) -> TransportResult<()> {

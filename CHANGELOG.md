@@ -11,9 +11,11 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 ### Added
 
 - `Pool::clearEventCallbacks()`: removes every registered event callback (connection-state and backpressure combined) and returns how many were removed, so a connection sharing a native pool can re-register from a clean slate.
+- Conservative GC for synthesized TTL delay queues: `topology::delay::sweep_delay_queues()` (Rust core) deletes orphaned `rabbit-rs.delay.*` queues through an admin channel once a rolling deploy completes. It only touches the reserved `rabbit-rs.delay.*` prefix, only queues of destinations it is given, keeps every name the current plan still produces and every queue still draining messages, and re-probes emptiness immediately before each delete (quorum queues reject `if-empty`/`if-unused` deletes).
 
 ### Changed
 
+- TTL delay-queue names now bind the declaring arguments: `rabbit-rs.delay.{destination}.{args}.{bucket}` where `{args}` fingerprints `x-message-ttl`, `x-expires` and the dead-letter target. Two configurations with different buckets or `queue_expiry_margin` values therefore declare distinct queues instead of fighting over one name — `PRECONDITION_FAILED` (406) storms during rolling deploys are gone. Queues synthesized by the previous naming scheme drain through their own message TTL and dead-letter exchange and are eventually deleted by their `x-expires`; the new sweep accelerates the cleanup.
 - `Pool::onConnectionState()` and `Pool::onBackpressure()` now register multiple callbacks instead of replacing the previous one, so connections sharing one native pool (e.g. two Laravel connections with the same fingerprint) each keep their own callbacks.
 
 ### Fixed
