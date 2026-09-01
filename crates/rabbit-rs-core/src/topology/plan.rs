@@ -203,14 +203,22 @@ impl TopologyPlan {
                 });
                 seen_exchanges.push(dead_letter.exchange.clone());
             }
+            // The DLQ queue is declared once per queue name, but every
+            // (queue, exchange, routing_key) triple gets its own binding:
+            // per-source routing keys differ between subscriptions sharing a
+            // DLQ, and the DLX republish is not mandatory — a missing binding
+            // silently drops dead-lettered messages.
             if !seen_dlqs.contains(&dead_letter.queue) {
                 queues.push(QueueDefinition::new(dead_letter.queue.clone()).compile()?);
                 seen_dlqs.push(dead_letter.queue.clone());
-                bindings.push(BindingSpec {
-                    queue: dead_letter.queue.clone(),
-                    exchange: dead_letter.exchange.clone(),
-                    routing_key: dead_letter.routing_key.clone(),
-                });
+            }
+            let binding = BindingSpec {
+                queue: dead_letter.queue.clone(),
+                exchange: dead_letter.exchange.clone(),
+                routing_key: dead_letter.routing_key.clone(),
+            };
+            if !bindings.contains(&binding) {
+                bindings.push(binding);
             }
         }
 

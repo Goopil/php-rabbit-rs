@@ -394,6 +394,53 @@ fn application_dead_letter_topology_is_compiled_only_when_enabled() {
     );
 }
 
+#[test]
+fn two_subscriptions_sharing_a_dead_letter_queue_produce_one_binding_per_routing_key() {
+    let mut config = base_config("jobs.one");
+    config.dead_letter = Some(DeadLetterConfig {
+        enabled: true,
+        exchange: "jobs.dlx".to_owned(),
+        queue: "jobs.failed".to_owned(),
+        routing_key: None, // per-source defaults apply: routing key = sub queue
+    });
+    // Second subscription sharing the same dead-letter queue.
+    config.workers[0]
+        .subscriptions
+        .push(subscription("jobs.two"));
+
+    let plan = build_plan_from_config(&config.validate().expect("valid config"));
+
+    // The shared DLQ is still declared exactly once.
+    assert_eq!(
+        plan.queues()
+            .iter()
+            .filter(|queue| queue.name == "jobs.failed")
+            .count(),
+        1,
+        "the shared dead-letter queue must be declared exactly once",
+    );
+
+    // One binding per (dlq, routing_key) pair. The DLX republish is not
+    // mandatory, so a missing binding silently drops dead-lettered messages
+    // (audit F-05).
+    let dlq_bindings: Vec<_> = plan
+        .bindings()
+        .iter()
+        .filter(|binding| binding.queue == "jobs.failed")
+        .collect();
+    assert_eq!(
+        dlq_bindings.len(),
+        2,
+        "both subscriptions must have a binding into the shared DLQ",
+    );
+    let routing_keys: Vec<_> = dlq_bindings
+        .iter()
+        .map(|binding| binding.routing_key.as_str())
+        .collect();
+    assert!(routing_keys.contains(&"jobs.one"));
+    assert!(routing_keys.contains(&"jobs.two"));
+}
+
 #[tokio::test]
 async fn an_incompatible_topology_fails_reconciliation() {
     let transport = MockTransport::default();

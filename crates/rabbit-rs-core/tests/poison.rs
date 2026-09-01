@@ -559,4 +559,167 @@ mod real_broker {
 
         pool.close().await.expect("close pool");
     }
+
+    #[tokio::test]
+    async fn real_broker_shared_dead_letter_queue_routes_per_source_routing_keys() {
+        // Two source queues share ONE dead-letter queue with per-source
+        // default routing keys. Before the F-05 fix only the first
+        // (dlq, routing_key) binding was declared, so a poison message from
+        // the second subscription was silently dropped by the DLX (its
+        // republish is not mandatory). This test dead-letters through the
+        // SECOND binding end to end.
+        let suffix = unique_suffix();
+        let (source_one, source_two, dlx, dlq) = declare_shared_dlq_topology(&suffix).await;
+
+        let pool = ClientPool::production(shared_dlq_pool_config(
+            source_one.clone(),
+            source_two.clone(),
+            dlx.clone(),
+            dlq.clone(),
+        ));
+
+        // Poison the SECOND subscription: it must be dead-lettered into the
+        // shared DLQ through the second (dlq, routing_key) binding.
+        pool.publish_batch(vec![(
+            "primary".to_owned(),
+            poison_request(&format!("dlq-share-{suffix}"), &source_two),
+        )])
+        .await
+        .expect("publish poison to the second source");
+
+        let consumer = pool.consumer("main").await.expect("consumer");
+        let dispatched = tokio::time::timeout(Duration::from_secs(2), consumer.next()).await;
+        assert!(
+            dispatched.is_err(),
+            "a poison delivery must never be dispatched to the application",
+        );
+
+        assert_eq!(
+            pool.queue_size("primary", &source_two)
+                .await
+                .expect("source two size"),
+            0,
+            "the poison delivery must be settled out of the source queue",
+        );
+        assert_eq!(
+            pool.queue_size("primary", &dlq).await.expect("dlq size"),
+            1,
+            "the second subscription's dead-letter routing key must reach the shared DLQ",
+        );
+        let errors = consumer.drain_errors();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == ConsumerErrorKind::MaxAttempts),
+            "the poison settlement must surface a MaxAttempts error, got: {errors:?}",
+        );
+
+        pool.close().await.expect("close pool");
+    }
+
+    /// Declares two source queues and a DLX/DLQ pair shared by both, one
+    /// dead-letter binding per (DLQ, routing key) pair, against the lab.
+    async fn declare_shared_dlq_topology(suffix: &str) -> (String, String, String, String) {
+        let source_one = format!("rabbit-rs-it-dlq-share-a-{suffix}");
+        let source_two = format!("rabbit-rs-it-dlq-share-b-{suffix}");
+        let dlx = format!("rabbit-rs-it-dlq-share-{suffix}.dlx");
+        let dlq = format!("rabbit-rs-it-dlq-share-{suffix}.failed");
+
+        let conn = LapinTransport
+            .connect(&lab_broker("topology", "/orders-eu"))
+            .await
+            .expect("connect to lab");
+        let channel = conn.open_publisher().await.expect("publisher channel");
+
+        let definition = TopologyDefinition::new(
+            vec![],
+            vec![
+                QueueDefinition::new(&source_one),
+                QueueDefinition::new(&source_two),
+            ],
+            vec![],
+        )
+        .with_dead_letter(DeadLetterDefinition::new(
+            &source_one,
+            &dlx,
+            &dlq,
+            &source_one,
+        ))
+        .with_dead_letter(DeadLetterDefinition::new(
+            &source_two,
+            &dlx,
+            &dlq,
+            &source_two,
+        ));
+        let plan = TopologyPlan::compile(TopologyMode::Declare, definition).expect("compile plan");
+        assert_eq!(
+            plan.bindings()
+                .iter()
+                .filter(|binding| binding.queue == dlq)
+                .count(),
+            2,
+            "one binding per (dlq, routing_key) pair in the compiled plan",
+        );
+
+        TopologyReconciler::new()
+            .reconcile(channel.as_ref(), &plan, 1)
+            .await
+            .expect("declare shared-dlq topology");
+
+        channel.close().await.expect("close channel");
+        conn.close().await.expect("close connection");
+
+        (source_one, source_two, dlx, dlq)
+    }
+
+    /// Pool with one worker subscribing to both sources, dead-lettering into
+    /// the shared DLQ (default per-source routing keys, `TopologyMode::External`).
+    fn shared_dlq_pool_config(
+        source_one: String,
+        source_two: String,
+        dlx: String,
+        dlq: String,
+    ) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
+        let subscription = |name: &str, queue: String| SubscriptionConfig {
+            name: name.to_owned(),
+            broker: "primary".to_owned(),
+            queue,
+            weight: 1,
+            priority_class: 0,
+            prefetch: 8,
+            starvation_after: Duration::from_secs(30),
+            max_buffered_bytes: 64 * 1024 * 1024,
+            early_ack: false,
+            no_ack: false,
+        };
+
+        Arc::new(
+            rabbit_rs_core::config::Config {
+                brokers: vec![lab_broker("primary", "/orders-eu")],
+                workers: vec![WorkerProfile {
+                    name: "main".to_owned(),
+                    subscriptions: vec![
+                        subscription("share-a", source_one),
+                        subscription("share-b", source_two),
+                    ],
+                    scheduler: SchedulerConfig::weighted_fair(),
+                }],
+                topology_mode: TopologyMode::External,
+                delay: DelayConfig::default(),
+                dead_letter: Some(DeadLetterConfig {
+                    enabled: true,
+                    exchange: dlx,
+                    queue: dlq,
+                    routing_key: None,
+                }),
+                delivery_limit: None,
+                publisher: PublisherConfigSection::default(),
+                consumer: ConsumerConfigSection::default(),
+                queue_type: QueueKind::Quorum,
+                queue_durable: true,
+            }
+            .validate()
+            .expect("valid config"),
+        )
+    }
 }
