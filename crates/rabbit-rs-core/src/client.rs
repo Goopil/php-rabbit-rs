@@ -156,7 +156,26 @@ impl ClientPool {
         let mut terminal_error = None;
 
         for (broker, msgs) in by_broker {
-            let publisher = self.publisher(&broker).await?;
+            let publisher = match self.publisher(&broker).await {
+                Ok(publisher) => publisher,
+                Err(error) => {
+                    if blind {
+                        // Same contract as a closed pump: fail the batch
+                        // immediately, leaving the un-enqueued requests with
+                        // the caller (Task 1 contract).
+                        return Err(error);
+                    }
+                    // Publications already accepted by earlier brokers'
+                    // actors must still be resolved (issue #83): record a
+                    // terminal error for this broker's indices and keep
+                    // collecting the remaining brokers.
+                    terminal_error.get_or_insert_with(|| error.clone());
+                    for (original_index, _request) in msgs {
+                        outcomes[original_index] = Some(Err(error.clone()));
+                    }
+                    continue;
+                }
+            };
             for (original_index, request) in msgs {
                 let result = if blind {
                     let message_id = Arc::clone(&request.properties.message_id);
