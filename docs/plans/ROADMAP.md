@@ -164,6 +164,95 @@ with the feature, never in a later docs pass.
   verify-release draft-visibility fix; full pipeline green (10 builds,
   attestation verify, publish, PIE install end-to-end, Laravel split,
   Homebrew formula).
+- **External review triage (2026-09-02)** — independent review of the
+  project (GO decision): the consumer advantage is real (4–6×), the safe
+  publish path is the throughput ceiling, and the benchmarks should stop
+  working around the consumer. Directive: **stop features → fix consumer →
+  optimize confirms → prove results → ship 1.0.** Triaged into Round I
+  (#126, P0), Round D promoted to P0 pre-1.0 (#41), Round J (#127–#129,
+  P1); feature freeze until the P0s land.
+
+## Round I — consumer correctness under stress (P0, external review 2026-09-02)
+
+Motivation: external review (see Landed) — the benchmark suite still works
+around the consumer, and issue #111 (flaky 30 s consumer-ready timeout,
+~1 in 4 extension Pest runs) is open. P0: no new features until this round
+is green. Tracker: #126.
+
+Where we already are: the ack-pipeline stall was root-caused and fixed in
+Round 2 (#36/#43, settlement-error channel non-blocking; re-bench
+`stall_recoveries = 0` in 30/30 worker rounds), pre-fill missing deliveries
+fixed (#37), declare-before-consume enforced (#95). `benchmarks/driver-bench/bin/bench.php`
+still carries the workarounds the review flagged (400-consecutive-null
+stall detection + connection rebuild, consumer-created-after-fill
+ordering).
+
+Scope:
+
+1. **#111**: reproduce (20-run loop), root-cause the suspected
+   RuntimeRegistry cross-test pollution (which entry leaks, from which
+   test), fix, 20 consecutive clean runs.
+2. **Verify the stall fix under stress** — chaos suite + long-running soak
+   (sustained pop+ack worker). If a stall reappears, root-cause it; never
+   re-patch a benchmark workaround.
+3. **Reconnect correctness proof**: kill the broker mid-consume →
+   auto-recovery → resume; assert ACKs are generation-aware (stale ACKs
+   rejected, redelivery happens); extend the chaos suite where a scenario
+   is missing.
+4. **No silent loss**: 0-loss invariant asserted on every scenario.
+5. **Remove the benchmark workarounds** from `driver-bench/bin/bench.php`:
+   delete the silent stall-rebuild and the consumer-ordering dance; keep
+   loud failure detection only (fail the run instead of silently
+   recovering).
+6. Regression + stress tests (Rust integration + PHP) for every root cause
+   fixed.
+
+Definition of Done (long-running worker): connect → consume → ack → lose
+RabbitMQ → reconnect → resume — no manual intervention, no silent loss.
+
+Success criteria: #111 closed with 20 clean runs; benchmark workarounds
+deleted (runs fail loudly instead); soak + chaos green; quality gate
+`./scripts/check.sh` green.
+
+## Round J — proof and packaging (P1, external review 2026-09-02)
+
+Motivation: external review — turn the benchmarks into product proof and
+make installation boring before 1.0. Three file-disjoint tracks, trackers
+#127–#129.
+
+### J1 — benchmark proof (#127)
+
+Every published result set (all suites, all archived JSON) surfaces
+throughput, p50/p95/p99, losses, duplicates, reconnects, stall recoveries,
+safety mode, and RabbitMQ + PHP configuration (add reconnects where
+missing). Framing becomes workload-scoped — "on this workload, with this
+configuration and these guarantees, rabbit-rs reaches X msg/s against Y" —
+with driver semantics/configuration differences explicit; no absolute
+"N× faster" claims. Delivery semantics documented next to the numbers:
+at-least-once (duplicates possible and measured), replay buffer is
+process-memory only (not durable across a PHP crash — external outbox for
+cross-process durability).
+
+### J2 — installation matrix (#128)
+
+Validate PHP 8.4 + 8.5 (NTS), Linux x86_64 + ARM64 (glibc + musl), macOS
+ARM64, Laravel 12 + 13, and PIE install/upgrade/rollback. The release
+pipeline already digest-pins images and blocks on `verify-pie-install`
+(#90, v0.0.9); extend with musl + ARM64 + Laravel 13 + upgrade/rollback.
+Coordinate with #58 (composer-level install friction) — do not duplicate.
+
+### J3 — product positioning (#129)
+
+README rewrite around: "Native Rust RabbitMQ transport for high-throughput,
+long-running PHP/Laravel workers." Benchmarks front and center; safety
+ladder shown as a trade-off (blind ~76.8k → unsafe ~62.5k → safe ~9.8k
+msg/s); limitations documented (duplicates, in-memory replay buffer,
+confirmed-publish ceiling pending Round D).
+
+Success criteria: archived result sets carry the full metric set;
+comparison docs use workload-scoped claims; install matrix green or
+explicitly best-effort with loud failures; README leads with the consumer
+advantage and documents limitations.
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -445,6 +534,11 @@ criteria enforced by the harness.
 
 ## Round D — dispatch gap investigation
 
+**Promoted to P0 pre-1.0 by the external review of 2026-09-02** (was
+post-1.0 performance work); sequenced after Round I, before Round J. Scope
+extended with the review's batching/pipelining questions — see the tracker
+comment on #41.
+
 Motivation: the publish-side gap is now precisely localized. In fire-and-forget
 rabbit-rs already leads (framework: 76 794 vs 31 182 ops/s vs vladimir, ~2.46×;
 transport: ~2.8×) — nothing to optimize there. The whole remaining gap is the
@@ -454,7 +548,9 @@ transport: ~2.8×) — nothing to optimize there. The whole remaining gap is the
 62.5k (×1.23) → safe 9.8k (×6.4) — the unsafe→safe step is the target.
 Secondary target: batch-confirm at transport level, 0.68× vs bunny/amqplib.
 
-Precondition: Round 2 landed and re-benched (clean consumer baseline).
+Precondition: Round 2 landed and re-benched (clean consumer baseline); now
+also **Round I (#126)** — profile and optimize against a consumer that no
+longer needs workarounds.
 
 Scope: profile the safe publish path end to end — flamegraphs plus per-stage
 breakdown (PHP extension boundary, pump hand-off per message, confirm waiter,
@@ -487,29 +583,62 @@ Success criteria: full quality gate green; deterministic paused-time tests prove
 QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
 (regression tests).
 
-## Order of execution (agreed 2026-08-30, updated 2026-08-31)
+## Order of execution (agreed 2026-08-30, updated 2026-09-02)
 
 ~~Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
 Round F1 → Round C → Round F2 → Round E → Round D~~ — Round 2 and Round F are
 landed (v0.0.8).
 
-Current queue (agreed 2026-08-31, stabilization before features):
+Current queue (updated 2026-09-02 after the external review — **stop
+features → fix consumer → optimize confirms → prove results → ship 1.0**):
 
-**Round C (#40)** and **Round G tracks A/B/C/D/E/F/G (#66–#82)** run
-concurrently — tracks are file-disjoint. Inside Round G: #66 (P0) first, then
-its track; Track B starts immediately in parallel; #69 pairs with #40. F2/F3
-leftovers (#50, #52, #53, #56, #58, #60) fill capacity. Round E (#42) and
-Round D (#41) stay post-1.0 performance work; #81 waits on #50.
+1. **Round I (#126, P0)** — consumer correctness under stress: #111 first
+   (it also flakes the ext Pest suite ~1 run in 4), then soak/chaos
+   verification of the Round 2 stall fix, reconnect + generation-aware ACK
+   proof, benchmark workaround removal.
+2. **Round D (#41, P0, promoted)** — confirmed-publish
+   batching/pipelining; profile before optimizing.
+3. **Round J (#127–#129, P1)** — benchmark proof, installation matrix,
+   README repositioning (file-disjoint tracks; #128 has external CI
+   latency and can start in parallel).
+4. **Round G exit, parallel**: #97 (review follow-up: delayed bindings +
+   mandatory/safe-mode), #81 (duplicates monitoring — unblocked by #50),
+   #82 (P3/P4 ops sweep, last). F2/F3 leftovers (#53, #58, #60) fill
+   capacity.
+5. **Round H (v0.1.0)** — connection-first config, last breaking change
+   before the tag.
+
+Feature freeze until the P0s land: Round E (#42) and the other parked ideas
+(Kubernetes probes #85, topology command #84, Prometheus, realtime stack)
+stay parked — the review's P2 list confirms the freeze.
 
 Conflict points between tracks (rebase or sequence): #66 ↔ #71 share
 `consumer/set.rs`; #67 ↔ #73 ↔ #76 share `publisher/actor.rs` /
 `conversion.rs`.
 
-1.0 gate (agreed 2026-08-31): **1.0 = Round G exit + Round H landed.** The
+1.0 gate (agreed 2026-08-31, extended 2026-09-02 with the review's DoD):
+**1.0 = Round G exit + Round H landed + Round I/J delivered.** The
 Round G exit criterion is the audit's P0/P1 list at zero, with #69 proving
 fixes against a real broker; Round H (v0.1.0, connection-first config) ships
-the last breaking change before the tag. No breaking changes after 1.0 —
-features (realtime stack, multi-framework adapters) come after.
+the last breaking change before the tag. The review's 1.0 Definition of
+Done, on top of that gate:
+
+- **Correctness**: no known missed-delivery race; no known ACK stall;
+  deterministic reconnect; generation-safe ACKs; recovery tested under
+  load; long-duration tests.
+- **Reliability**: confirm failures tested; replay tested; duplicate
+  semantics documented; crash limitations documented; graceful shutdown
+  validated.
+- **Performance**: benchmarks reproducible; consumer advantage
+  demonstrated; publish modes clearly compared; confirm batching studied
+  (Round D); p50/p95/p99 available.
+- **Packaging**: architectures + PHP versions validated (Round J2);
+  installation documented; upgrade + rollback tested.
+- **Operations**: long-running workers; RabbitMQ reconnect; graceful
+  shutdown; status/health checks; usable metrics.
+
+No breaking changes after 1.0 — features (realtime stack, multi-framework
+adapters) come after.
 
 ## Post-1.0 feature ideas (parked — recorded so nothing is lost)
 
