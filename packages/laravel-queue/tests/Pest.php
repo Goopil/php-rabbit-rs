@@ -14,6 +14,9 @@ uses(TestCase::class)->in(__DIR__);
 
 class TestException extends \Exception {}
 
+/** Default test connection name: brokers and worker profiles compile under it. */
+const INTEGRATION_CONNECTION = 'rabbit-rs-integration';
+
 /**
  * Raw connection-shaped config (queue.connections.* entry) for the lab.
  */
@@ -57,17 +60,17 @@ function managementRequest(string $method, string $url, ?string $payload = null)
     return $body === false ? '' : $body;
 }
 
-function declareQueue(string $queueName): void
+function declareQueue(string $queueName, string $vhost = '/orders-eu'): void
 {
-    managementRequest('PUT', 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName), json_encode([
+    managementRequest('PUT', 'http://localhost:15672/api/queues/'.rawurlencode($vhost).'/'.urlencode($queueName), json_encode([
         'durable' => true,
         'arguments' => ['x-queue-type' => 'quorum'],
     ]));
 }
 
-function deleteQueue(string $queueName): void
+function deleteQueue(string $queueName, string $vhost = '/orders-eu'): void
 {
-    managementRequest('DELETE', 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName));
+    managementRequest('DELETE', 'http://localhost:15672/api/queues/'.rawurlencode($vhost).'/'.urlencode($queueName));
 }
 
 /**
@@ -98,20 +101,25 @@ function integrationPoolAndQueue(
     string $queueName,
     array $configOverrides = [],
     array $connectOverrides = [],
-    string $connectionName = 'rabbit-rs-integration',
+    string $connectionName = INTEGRATION_CONNECTION,
     ?array $brokerHosts = null,
 ): array {
     $config = array_merge(liveConfig($queueName), $configOverrides);
     if ($brokerHosts !== null) {
         $config['hosts'] = $brokerHosts;
     }
+    $connectConfig = array_merge($config, $connectOverrides);
+
+    // The connector resolves its compile-time name by reverse lookup in
+    // queue.connections; register the exact connect config so the queue's
+    // routes and worker profiles are named after this connection and match
+    // the pool compiled below.
+    $container['config']->set('queue.connections.'.$connectionName, $connectConfig);
 
     $compiled = ConnectionCompiler::compile($connectionName, $config);
     $pool = new Pool($compiled['native']);
     $factory = new NativePoolFactory(createPool: fn (): Pool => $pool);
-    $queue = (new RabbitMqConnector($factory))->connect(
-        array_merge($config, $connectOverrides),
-    );
+    $queue = (new RabbitMqConnector($factory))->connect($connectConfig);
     $queue->setContainer($container);
     $queue->setConnectionName($connectionName);
 

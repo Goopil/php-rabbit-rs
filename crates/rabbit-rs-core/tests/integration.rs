@@ -1141,6 +1141,10 @@ mod integration {
             String::from_utf8_lossy(&restarted.stderr)
         );
 
+        // The boot re-imports the lab definitions, which resets the
+        // rabbit-rs.* configure permission the recovery reconcile needs.
+        restore_configure_permission();
+
         // The pool must observe the loss on its own and reconnect.
         tokio::time::timeout(Duration::from_mins(2), async {
             while pool.metrics_snapshot().reconnects_total == 0 {
@@ -1224,6 +1228,10 @@ mod integration {
             String::from_utf8_lossy(&restarted.stderr)
         );
 
+        // The boot re-imports the lab definitions, which resets the
+        // rabbit-rs.* configure permission the recovery reconcile needs.
+        restore_configure_permission();
+
         // The pool must observe the loss on its own and reconnect.
         tokio::time::timeout(Duration::from_mins(2), async {
             while pool.metrics_snapshot().reconnects_total == 0 {
@@ -1258,6 +1266,47 @@ mod integration {
                 "lab RabbitMQ node 1 must be running; start the lab with scripts/lab-up.sh with-plugin",
             )
             .to_owned()
+    }
+
+    /// Restores the `rabbit_rs` configure permission after a node restart.
+    ///
+    /// The lab re-imports its stored definitions.json on every node boot,
+    /// which resets the permission to the stored narrow pattern; declare-mode
+    /// pools re-declare the rabbit-rs.delayed exchange (issue #97), so every
+    /// recovery generation after the restart fails topology reconciliation
+    /// until the widened pattern is granted again. rabbitmqctl blocks until
+    /// the node accepts commands, so polling its exit status also waits out
+    /// the boot.
+    fn restore_configure_permission() {
+        use std::time::{Duration, Instant};
+
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let output = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    &lab_rabbitmq_container(),
+                    "rabbitmqctl",
+                    "set_permissions",
+                    "-p",
+                    "/orders-eu",
+                    "rabbit_rs",
+                    "^(amq\\.|rabbit-rs-it-|rabbit-rs\\.)",
+                    ".*",
+                    ".*",
+                ])
+                .output()
+                .expect("docker exec must run in the lab environment");
+            if output.status.success() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the lab never restored the rabbit-rs configure permission after the node restart: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::thread::sleep(Duration::from_secs(1));
+        }
     }
 
     #[tokio::test]

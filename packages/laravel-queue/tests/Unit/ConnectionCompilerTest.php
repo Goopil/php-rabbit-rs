@@ -546,9 +546,8 @@ describe('subscriptions escape hatch', function (): void {
     });
 
     it('fires the early_ack guard before the no_ack best_effort guard', function (): void {
-        // Same precedence as the ConfigNormalizer ack rules: the no_ack
-        // best_effort message is unreachable when early_ack already lacks
-        // best_effort.
+        // Guard precedence: the no_ack best_effort message is unreachable
+        // when early_ack already lacks best_effort.
         expect(fn (): array => ConnectionCompiler::compile('orders', [
             'queue' => 'default',
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]],

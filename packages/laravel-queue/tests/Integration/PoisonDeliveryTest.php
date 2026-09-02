@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
@@ -81,18 +81,25 @@ function declareSourceQueueWithDeadLetter(string $queueName, string $dlx, string
 
 /**
  * Wires the shared pool and connector used by every poison test. The pool is
- * stored on the test case so afterEach can close it.
+ * stored on the test case so afterEach can close it. $config is the
+ * connection-shaped config (queue.connections.* entry); it doubles as the
+ * package defaults so the minimal per-test connect config compiles to the
+ * same topology the pool was built from.
  */
-function connectPoisonQueue($test, array $normalized, string $source): RabbitMqQueue
+function connectPoisonQueue($test, $app, array $config, string $source): RabbitMqQueue
 {
-    $test->pool = new Pool($normalized['native']);
+    $compiled = ConnectionCompiler::compile('rabbit-rs-poison', $config);
+    $test->pool = new Pool($compiled['native']);
     $connector = new RabbitMqConnector(
         new NativePoolFactory(createPool: fn (): Pool => $test->pool),
-        $normalized,
+        $config,
     );
     $test->connector = $connector;
 
-    return $connector->connect(['queue' => $source, 'block_for' => 3]);
+    $connectConfig = ['queue' => $source, 'block_for' => 3];
+    $app['config']->set('queue.connections.rabbit-rs-poison', $connectConfig);
+
+    return $connector->connect($connectConfig);
 }
 
 beforeEach(function () {
@@ -130,15 +137,14 @@ it('dead-letters an unmarshable delivery when a dead-letter exchange is configur
     $this->cleanupExchanges = [$dlx];
 
     $config = liveConfig($source);
-    $config['topology']['dead_letter'] = ['exchange' => $dlx, 'queue' => $dlq, 'routing_key' => null];
-    $normalized = ConfigNormalizer::normalize($config);
+    $config['dead_letter'] = ['exchange' => $dlx, 'queue' => $dlq, 'routing_key' => null];
 
     // The declare-mode reconcile defaults the dead-letter routing key to the
     // source queue name; pre-declare with identical arguments so the worker's
     // basic.consume cannot race the quorum queue leader election.
     declareSourceQueueWithDeadLetter($source, $dlx, $source);
 
-    $this->queue = connectPoisonQueue($this, $normalized, $source);
+    $this->queue = connectPoisonQueue($this, $this->app, $config, $source);
     $this->queue->setContainer($this->app);
     $this->queue->setConnectionName('rabbit-rs-poison');
 
@@ -163,9 +169,9 @@ it('acknowledges an unmarshable delivery when no dead-letter exchange is configu
     $source = uniqueQueue('rabbit-rs-it-poison-ack');
     $this->cleanupQueues = [$source];
 
-    $normalized = ConfigNormalizer::normalize(liveConfig($source));
+    $normalized = liveConfig($source);
 
-    $this->queue = connectPoisonQueue($this, $normalized, $source);
+    $this->queue = connectPoisonQueue($this, $this->app, $normalized, $source);
     $this->queue->setContainer($this->app);
     $this->queue->setConnectionName('rabbit-rs-poison');
 
@@ -186,14 +192,18 @@ it('fails a job that always throws when the maximum number of tries is reached',
     $source = uniqueQueue('rabbit-rs-it-poison-worker');
     $this->cleanupQueues = [$source];
 
-    $normalized = ConfigNormalizer::normalize(liveConfig($source));
+    $normalized = liveConfig($source);
 
-    $this->queue = connectPoisonQueue($this, $normalized, $source);
+    $this->queue = connectPoisonQueue($this, $this->app, $normalized, $source);
     $this->queue->setContainer($this->app);
-    $this->queue->setConnectionName('rabbit-rs-integration');
+    $this->queue->setConnectionName('rabbit-rs-poison');
 
     $this->app->instance('queue.failer', new NullFailedJobProvider);
-    $this->app['config']->set('queue.connections.rabbit-rs-worker-it', [
+    // The worker resolves this connection through the app; registering the
+    // exact connect config under the pool's connection name keeps the
+    // reverse-lookup name (and thus the compiled worker profile) aligned
+    // with the shared pool.
+    $this->app['config']->set('queue.connections.rabbit-rs-poison', [
         'driver' => 'rabbit-rs',
         'queue' => $source,
         'block_for' => 3,
@@ -209,9 +219,9 @@ it('fails a job that always throws when the maximum number of tries is reached',
 
     $worker = $this->app->make('queue.worker');
     // First run: the job fires once, throws, attempts (1) < maxTries (2) → release.
-    $worker->runNextJob('rabbit-rs-worker-it', $source, new WorkerOptions(maxTries: 2));
+    $worker->runNextJob('rabbit-rs-poison', $source, new WorkerOptions(maxTries: 2));
     // Second run: the redelivered job reports attempts (2) >= maxTries (2) → fail.
-    $worker->runNextJob('rabbit-rs-worker-it', $source, new WorkerOptions(maxTries: 2));
+    $worker->runNextJob('rabbit-rs-poison', $source, new WorkerOptions(maxTries: 2));
 
     expect($failures)->toHaveCount(1)
         ->and($failures[0]->job->attempts())->toBe(2)

@@ -123,10 +123,7 @@ it('rejoins a recovered broker after the cached consumer retires', function () {
     rejoinDeclareQueue($this->queueName);
 
     $config = liveConfig($this->queueName);
-    $config['brokers']['default']['vhost'] = '/billing';
-    $config['brokers'] = ['rejoin-broker' => $config['brokers']['default']];
-    $config['routes'] = ['default' => ['broker' => 'rejoin-broker', 'exchange' => '', 'routing_key' => '{queue}']];
-    $config['workers']['default']['subscriptions']['default']['broker'] = 'rejoin-broker';
+    $config['vhost'] = '/billing';
 
     [$this->pool, $this->queue] = integrationPoolAndQueue(
         $this->app,
