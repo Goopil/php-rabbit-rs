@@ -815,11 +815,24 @@ fn into_transport_request(
             })
         });
 
-    let (exchange, routing_key, delay_ms) = routed.unwrap_or((
-        request.destination.exchange.clone(),
-        request.destination.routing_key.clone(),
-        request.properties.delay_ms,
-    ));
+    let (exchange, routing_key, delay_ms, mandatory) = match routed {
+        // The delayed-message plugin defers routing and cannot honour the
+        // mandatory flag: every mandatory publish carrying an `x-delay` header
+        // comes back as unroutable. Delayed publishes keep publisher confirms
+        // — the documented confirms-without-mandatory case (issue #97).
+        Some((exchange, routing_key, delay_ms)) => (
+            exchange,
+            routing_key,
+            delay_ms,
+            mandatory && delay_ms.is_none(),
+        ),
+        None => (
+            request.destination.exchange.clone(),
+            request.destination.routing_key.clone(),
+            request.properties.delay_ms,
+            mandatory,
+        ),
+    };
 
     TransportRequest {
         exchange,
@@ -992,16 +1005,7 @@ async fn ensure_delay_topology(
     };
 
     if route.queue.is_none() && !state.declared_ttl_queues.contains(&route.exchange) {
-        let spec = crate::transport::ExchangeSpec {
-            name: route.exchange.as_ref().to_owned(),
-            kind: crate::transport::ExchangeKind::Delayed(Box::new(
-                crate::transport::ExchangeKind::Direct,
-            )),
-            durable: true,
-            auto_delete: false,
-            internal: false,
-            arguments: crate::transport::Headers::new(),
-        };
+        let spec = crate::topology::delay::delayed_exchange_spec(&route.exchange);
         match channel.declare_exchange(&spec).await {
             Ok(()) => {
                 state.declared_ttl_queues.insert(route.exchange.clone());

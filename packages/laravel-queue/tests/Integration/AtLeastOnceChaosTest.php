@@ -251,6 +251,12 @@ function startNode(string $node): void
         }
         usleep(2000000); // 2 seconds
     }
+
+    // The lab re-imports definitions.json on every node boot, which resets
+    // the rabbit_rs configure permission to the stored narrow pattern; the
+    // driver's recovery re-declares rabbit-rs.delayed (issue #97), so the
+    // widened permission must be restored after every node restart.
+    grantRabbitRsConfigure();
 }
 
 function nodeToContainer(string $node): string
@@ -415,6 +421,11 @@ beforeEach(function () {
     if (! extension_loaded('rabbit_rs')) {
         skip('ext-rabbit_rs is required for chaos tests');
     }
+
+    // Declare-mode pools with the default auto delay strategy now provision
+    // the rabbit-rs.delayed exchange themselves (issue #97); the lab's stored
+    // configure permission only allows amq.* and rabbit-rs-it-* names.
+    grantRabbitRsConfigure();
 
     $this->queueName = uniqueQueue('rabbit-rs-it-chaos');
     declareQueue($this->queueName);

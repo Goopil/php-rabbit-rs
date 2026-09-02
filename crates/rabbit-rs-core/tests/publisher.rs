@@ -1158,6 +1158,58 @@ async fn plugin_mode_publishes_on_delayed_exchange_with_x_delay_header() {
     ));
 }
 
+/// The delayed-message plugin defers routing and cannot honour the mandatory
+/// flag: every mandatory publish carrying an `x-delay` header is returned as
+/// unroutable. Safe mode keeps publisher confirms for delayed publishes but
+/// must never set the mandatory flag at the wire level (issue #97).
+#[tokio::test(start_paused = true)]
+async fn safe_mode_publishes_delayed_messages_without_mandatory() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor =
+        spawn_actor_delay(&transport, publisher_config_delay(), DelayStrategy::Plugin).await;
+
+    let waiter = actor
+        .try_publish(delayed_request("delayed-job", 5_000))
+        .expect("publish");
+
+    wait_for_publish_count_delay(&transport, 1).await;
+
+    let request = find_publish(&transport);
+    assert!(
+        !request.mandatory,
+        "a plugin-mode delayed publish must not be mandatory at the wire level"
+    );
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn safe_mode_publishes_normal_messages_with_mandatory() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor =
+        spawn_actor_delay(&transport, publisher_config_delay(), DelayStrategy::Plugin).await;
+
+    let waiter = actor
+        .try_publish(immediate_request("immediate-job"))
+        .expect("publish");
+
+    wait_for_publish_count_delay(&transport, 1).await;
+
+    let request = find_publish(&transport);
+    assert!(
+        request.mandatory,
+        "a normal publish must keep mandatory=true in safe mode"
+    );
+    assert!(matches!(
+        waiter.wait().await,
+        Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
 #[tokio::test(start_paused = true)]
 async fn ttl_mode_publishes_on_ttl_queue_with_dead_letter_to_original() {
     let transport = MockTransport::default();

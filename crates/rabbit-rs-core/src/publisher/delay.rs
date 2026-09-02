@@ -1,6 +1,10 @@
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
-use crate::{publisher::Destination, topology::delay::DelayStrategy, transport::QueueSpec};
+use crate::{
+    publisher::Destination,
+    topology::delay::{DelayStrategy, delayed_exchange_name},
+    transport::QueueSpec,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DelayedRoute {
@@ -69,11 +73,3 @@ impl fmt::Display for DelayRoutingError {
 }
 
 impl Error for DelayRoutingError {}
-
-fn delayed_exchange_name(exchange: &str) -> String {
-    if exchange.is_empty() {
-        "rabbit-rs.delayed".to_owned()
-    } else {
-        format!("{exchange}.delayed")
-    }
-}

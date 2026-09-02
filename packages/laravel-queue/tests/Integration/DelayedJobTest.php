@@ -26,14 +26,6 @@ beforeEach(function () {
     $this->queueName = uniqueQueue('rabbit-rs-it-delay');
     declareQueue($this->queueName);
     grantRabbitRsConfigure();
-    provisionDelayedExchange($this->queueName);
-
-    // The delayed-message plugin returns every mandatory publish that carries
-    // an x-delay header (it defers routing and therefore cannot honour the
-    // mandatory flag), and safe mode forces mandatory at the wire level. Run
-    // the delay scenarios without publisher confirms so the plugin's spurious
-    // return does not fail an otherwise working delayed delivery.
-    $configOverrides = ['publisher' => ['confirms' => false]];
 
     // block_for must stay shorter than the delay used in the tests, otherwise
     // pop() blocks long enough to receive the delayed job itself and the
@@ -41,7 +33,6 @@ beforeEach(function () {
     [$this->pool, $this->queue] = integrationPoolAndQueue(
         $this->app,
         $this->queueName,
-        configOverrides: $configOverrides,
         connectOverrides: ['block_for' => 1],
     );
 });

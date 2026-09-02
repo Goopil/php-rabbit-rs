@@ -156,27 +156,3 @@ function integrationPoolAndQueue(
 
     return [$pool, $queue];
 }
-
-/**
- * Provisions the delayed-message exchange and its binding to the queue.
- *
- * The native publisher declares the rabbit-rs.delayed exchange lazily but
- * does not bind queues to it: per the design doc's topology section, bindings
- * are provisioned by the infrastructure, so the harness provisions both the
- * exchange and the binding before delayed publishes.
- */
-function provisionDelayedExchange(string $queueName, string $vhost = '/orders-eu'): void
-{
-    $encodedVhost = rawurlencode($vhost);
-    managementRequest('PUT', 'http://localhost:15672/api/exchanges/'.$encodedVhost.'/rabbit-rs.delayed', json_encode([
-        'type' => 'x-delayed-message',
-        'durable' => true,
-        'auto_delete' => false,
-        'internal' => false,
-        'arguments' => ['x-delayed-type' => 'direct'],
-    ]));
-    managementRequest('POST', 'http://localhost:15672/api/bindings/'.$encodedVhost.'/e/rabbit-rs.delayed/q/'.urlencode($queueName), json_encode([
-        'routing_key' => $queueName,
-        'arguments' => [],
-    ]));
-}

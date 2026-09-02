@@ -9,6 +9,11 @@ beforeEach(function () {
         skip('ext-rabbit_rs is required for integration tests');
     }
 
+    // Declare-mode pools with the default auto delay strategy now provision
+    // the rabbit-rs.delayed exchange themselves (issue #97); the lab's stored
+    // configure permission only allows amq.* and rabbit-rs-it-* names.
+    grantRabbitRsConfigure();
+
     $this->queueName = uniqueQueue();
     declareQueue($this->queueName);
 

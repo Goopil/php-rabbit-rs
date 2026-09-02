@@ -2,8 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
+    client::ClientPool,
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig,
+        BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig, DelayMode,
         PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
         ValidatedConfig, WorkerProfile,
     },
@@ -157,50 +158,19 @@ mod helper {
         config
     }
 
+    pub fn config_with_delay_mode(queue: &str, mode: DelayMode) -> Config {
+        let mut config = base_config(queue);
+        config.delay = DelayConfig {
+            mode,
+            ..DelayConfig::default()
+        };
+        config
+    }
+
+    /// Delegates to the production plan builder so plan-shape tests exercise
+    /// the same code path a pool runs.
     pub fn build_plan_from_config(config: &ValidatedConfig) -> TopologyPlan {
-        let queue_type = config.queue_type();
-        let queue_durable = config.queue_durable();
-        let queues: Vec<_> = config
-            .worker_profiles()
-            .iter()
-            .flat_map(|worker| &worker.subscriptions)
-            .map(|sub| {
-                let mut qd = QueueDefinition::new(&sub.queue)
-                    .kind(queue_type)
-                    .durable(queue_durable);
-                if let Some(limit) = config.delivery_limit() {
-                    qd = qd.delivery_limit(limit);
-                }
-                qd
-            })
-            .collect();
-
-        let mut topology = TopologyDefinition::new(vec![], queues, vec![]);
-        if let Some(dl) = config.dead_letter()
-            && dl.enabled
-        {
-            for sub in config
-                .worker_profiles()
-                .iter()
-                .flat_map(|w| &w.subscriptions)
-            {
-                let routing_key = dl.routing_key.clone().unwrap_or_else(|| sub.queue.clone());
-                topology = topology.with_dead_letter(DeadLetterDefinition::new(
-                    sub.queue.clone(),
-                    dl.exchange.clone(),
-                    dl.queue.clone(),
-                    routing_key,
-                ));
-            }
-        }
-
-        TopologyPlan::compile(config.topology_mode(), topology).unwrap_or_else(|_error| {
-            TopologyPlan::compile(
-                TopologyMode::External,
-                TopologyDefinition::new(vec![], vec![], vec![]),
-            )
-            .expect("external mode always compiles")
-        })
+        TopologyPlan::from_config(config)
     }
 
     pub fn attempt_headers(values: &[(&str, &str)]) -> Headers {
@@ -745,6 +715,83 @@ async fn reconciler_declares_dlx_dlq_and_binding_for_dead_letter_config() {
         )),
         "should bind DLQ to DLX"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Delayed plugin-mode topology (issue #97)
+// ---------------------------------------------------------------------------
+
+/// In declare mode with a plugin-routed delay strategy (plugin or auto mode),
+/// the pool must declare the `rabbit-rs.delayed` exchange and bind every
+/// subscription queue to it with the queue-name routing key, so delayed
+/// delivery works without operator-provisioned bindings.
+#[tokio::test(start_paused = true)]
+async fn declare_mode_binds_subscription_queues_to_the_delayed_exchange() {
+    let transport = Arc::new(MockTransport::default());
+    let config = common::config(
+        vec![broker("primary", "/", "guest")],
+        vec![common::worker_profile("main", "primary", "jobs", 4)],
+    );
+    let pool = ClientPool::new(config, transport.clone());
+
+    let consumer = pool.consumer("main").await.expect("consumer");
+
+    let operations = transport.operations();
+    assert!(
+        operations.iter().any(|op| matches!(
+            op,
+            TransportOperation::DeclareExchange(e)
+                if e.name == "rabbit-rs.delayed"
+                    && matches!(e.kind, ExchangeKind::Delayed(_))
+                    && e.durable
+        )),
+        "declare mode must declare the rabbit-rs.delayed exchange"
+    );
+    assert!(
+        operations.iter().any(|op| matches!(
+            op,
+            TransportOperation::BindQueue(b)
+                if b.exchange == "rabbit-rs.delayed"
+                    && b.queue == "jobs"
+                    && b.routing_key == "jobs"
+        )),
+        "declare mode must bind every subscription queue to the delayed exchange with its queue-name routing key"
+    );
+
+    drop(consumer);
+    pool.close().await.expect("close pool");
+}
+
+/// TTL-mode delay routing never publishes to the delayed exchange, so the
+/// plan must not declare or bind it.
+#[tokio::test(start_paused = true)]
+async fn ttl_mode_does_not_bind_the_delayed_exchange() {
+    let transport = Arc::new(MockTransport::default());
+    let validated = config_with_delay_mode("jobs", DelayMode::Ttl)
+        .validate()
+        .expect("valid config");
+    let pool = ClientPool::new(Arc::new(validated), transport.clone());
+
+    let consumer = pool.consumer("main").await.expect("consumer");
+
+    let operations = transport.operations();
+    assert!(
+        operations.iter().all(|op| !matches!(
+            op,
+            TransportOperation::DeclareExchange(e) if e.name == "rabbit-rs.delayed"
+        )),
+        "TTL mode must not declare the delayed exchange"
+    );
+    assert!(
+        operations.iter().all(|op| !matches!(
+            op,
+            TransportOperation::BindQueue(b) if b.exchange == "rabbit-rs.delayed"
+        )),
+        "TTL mode must not bind the delayed exchange"
+    );
+
+    drop(consumer);
+    pool.close().await.expect("close pool");
 }
 
 #[test]

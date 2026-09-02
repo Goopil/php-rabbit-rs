@@ -8,7 +8,7 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    config::{SafetyMode, TopologyMode, ValidatedConfig},
+    config::{SafetyMode, ValidatedConfig},
     consumer::{ConsumerError, ConsumerHandle},
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
@@ -17,7 +17,7 @@ use crate::{
         PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
-    topology::{DeadLetterDefinition, QueueDefinition, TopologyDefinition, TopologyPlan},
+    topology::TopologyPlan,
     transport::{PublisherChannel, Transport, TransportError, lapin::LapinTransport},
 };
 
@@ -736,7 +736,7 @@ impl ClientPool {
             return Ok(coordinator);
         }
 
-        let topology_plan = self.build_topology_plan();
+        let topology_plan = TopologyPlan::from_config(&self.config);
         let coordinator_config = RecoveryCoordinatorConfig {
             broker: broker_config,
             policy: crate::recovery::RecoveryPolicy::default(),
@@ -753,54 +753,6 @@ impl ClientPool {
             let _ = coordinator.close().await;
             Err(ClientError::closed())
         }
-    }
-
-    fn build_topology_plan(&self) -> TopologyPlan {
-        let queue_type = self.config.queue_type();
-        let queue_durable = self.config.queue_durable();
-        let queues: Vec<_> = self
-            .config
-            .worker_profiles()
-            .iter()
-            .flat_map(|worker| &worker.subscriptions)
-            .map(|sub| {
-                let mut qd = QueueDefinition::new(&sub.queue)
-                    .kind(queue_type)
-                    .durable(queue_durable);
-                if let Some(limit) = self.config.delivery_limit() {
-                    qd = qd.delivery_limit(limit);
-                }
-                qd
-            })
-            .collect();
-
-        let mut topology = TopologyDefinition::new(vec![], queues, vec![]);
-        if let Some(dl) = self.config.dead_letter()
-            && dl.enabled
-        {
-            for sub in self
-                .config
-                .worker_profiles()
-                .iter()
-                .flat_map(|w| &w.subscriptions)
-            {
-                let routing_key = dl.routing_key.clone().unwrap_or_else(|| sub.queue.clone());
-                topology = topology.with_dead_letter(DeadLetterDefinition::new(
-                    sub.queue.clone(),
-                    dl.exchange.clone(),
-                    dl.queue.clone(),
-                    routing_key,
-                ));
-            }
-        }
-
-        TopologyPlan::compile(self.config.topology_mode(), topology).unwrap_or_else(|_error| {
-            TopologyPlan::compile(
-                TopologyMode::External,
-                TopologyDefinition::new(vec![], vec![], vec![]),
-            )
-            .expect("external mode always compiles")
-        })
     }
 
     fn ensure_open(&self) -> Result<(), ClientError> {

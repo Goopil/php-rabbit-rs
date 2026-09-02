@@ -9,11 +9,42 @@ use sha2::{Digest, Sha256};
 use crate::{
     config::{DelayConfig, DelayMode, ValidatedConfig},
     publisher::Destination,
-    transport::{QueueKind, QueueSpec, TopologyChannel},
+    transport::{ExchangeKind, ExchangeSpec, Headers, QueueKind, QueueSpec, TopologyChannel},
 };
 
 /// Prefix reserved by Rabbit RS for the synthesized TTL delay queues.
 pub const DELAY_QUEUE_PREFIX: &str = "rabbit-rs.delay.";
+
+/// Name reserved by Rabbit RS for the plugin-mode delayed exchange used with
+/// the default-exchange route convention (route exchange empty, queue-name
+/// routing key).
+pub const DELAYED_EXCHANGE_NAME: &str = "rabbit-rs.delayed";
+
+/// Names the plugin-mode delayed exchange a destination publishes through:
+/// `rabbit-rs.delayed` for the default exchange, `{exchange}.delayed`
+/// otherwise.
+#[must_use]
+pub fn delayed_exchange_name(exchange: &str) -> String {
+    if exchange.is_empty() {
+        DELAYED_EXCHANGE_NAME.to_owned()
+    } else {
+        format!("{exchange}.delayed")
+    }
+}
+
+/// The durable `x-delayed-message` (direct) exchange spec for a delayed
+/// exchange name.
+#[must_use]
+pub fn delayed_exchange_spec(name: &str) -> ExchangeSpec {
+    ExchangeSpec {
+        name: name.to_owned(),
+        kind: ExchangeKind::Delayed(Box::new(ExchangeKind::Direct)),
+        durable: true,
+        auto_delete: false,
+        internal: false,
+        arguments: Headers::new(),
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DelayStrategy {
