@@ -41,21 +41,24 @@ php -m | grep rabbit_rs
 
 ## rabbit-rs:work supervisor
 
-The `rabbit-rs:work` command supervises multiple `queue:work` child processes:
+The `rabbit-rs:work` command supervises `queue:work` child processes across connections. With no flags it **fans out**: one `queue:work` child per rabbit-rs connection, each consuming every queue defined on its connection (its `queue` key first, then its `subscriptions` queues); `--workers` spawns children per connection:
 
 ```bash
-php artisan rabbit-rs:work --workers=4 --queue=main
+php artisan rabbit-rs:work --workers=4
 ```
+
+`--queue=x,y` resolves each name **by definition**: a name matches a connection's `queue` key or one of its `subscriptions` aliases, every (connection, queue) pair whose definition matches is consumed, and an unknown name fails with a typed error listing the available queues. Combining `--connection` and `--queue` intersects both filters.
 
 ### Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--connection` | Queue connection name | `rabbit-rs` |
-| `--queue` | Worker profile name | `default` |
-| `--workers` | Number of child processes | `1` |
+| `--connection` | Comma-separated connection names | Every rabbit-rs connection |
+| `--queue` | Comma-separated queue names, resolved by definition (connection `queue` key or `subscriptions` alias) | Every defined queue |
+| `--workers` | Child workers per connection | `1` |
 | `--max-restarts` | Max restarts per worker before giving up | `3` |
 | `--backoff` | Base backoff in seconds (doubles on each restart, max 60) | `1` |
+| `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | Propagated to each `queue:work` child | `60`, `—`, `128`, `—`, `—` |
 | `--rabbit-rs-worker` | Worker index (set by the supervisor, not by users) | — |
 
 ### Signal handling
@@ -75,7 +78,7 @@ php artisan rabbit-rs:work --workers=4 --queue=main
 
 ### How it works
 
-1. The supervisor spawns N child processes, each running `php artisan queue:work`
+1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work --connection=<name> --queue=<q1,q2>`
 2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER={i}` environment variable
 3. The supervisor monitors child processes every 100ms
 4. If a child exits unexpectedly, the supervisor waits (backoff seconds) and restarts it
@@ -97,7 +100,7 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=/var/www/html
-ExecStart=/usr/bin/php artisan rabbit-rs:work --workers=4 --queue=main --max-restarts=0
+ExecStart=/usr/bin/php artisan rabbit-rs:work --workers=4 --max-restarts=0
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -121,7 +124,7 @@ Set `--max-restarts=0` to disable the internal restart limit and let systemd han
 
 ```ini
 [program:rabbit-rs-worker]
-command=php /var/www/html/artisan rabbit-rs:work --workers=4 --queue=main --max-restarts=0
+command=php /var/www/html/artisan rabbit-rs:work --workers=4 --max-restarts=0
 directory=/var/www/html
 user=www-data
 autostart=true
@@ -157,7 +160,7 @@ spec:
       containers:
         - name: worker
           image: your-app:latest
-          command: ["php", "artisan", "rabbit-rs:work", "--workers=2", "--queue=main"]
+          command: ["php", "artisan", "rabbit-rs:work", "--workers=2"]
           env:
             - name: RABBIT_RS_HOSTS
               value: "rabbitmq-0:5672,rabbitmq-1:5672,rabbitmq-2:5672"

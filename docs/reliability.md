@@ -2,7 +2,7 @@
 
 Rabbit RS provides at-least-once delivery. Silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable.
 
-The documented exception is `publisher.safety = blind`: an explicit fire-and-forget mode (silent loss possible) that is configurable through the Laravel package (`publisher.safety`, env `RABBIT_RS_SAFETY`) as well as the raw native extension configuration — an explicit `blind` (or `unsafe`) value takes precedence over the legacy `confirms`/`mandatory` flags; see [Configuration](configuration.md).
+The documented exception is `safety = blind`: an explicit fire-and-forget mode (silent loss possible), set per connection (`safety` key) or package-wide (env `RABBIT_RS_SAFETY`) as well as in the raw native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](configuration.md#safety-modes).
 
 ## At-least-once contract
 
@@ -17,24 +17,24 @@ This means your jobs **must be idempotent**. Use the `message_id` to detect and 
 
 ## Publisher confirms
 
-Publisher confirms are **enabled by default** (`publisher.confirms = true`). When enabled:
+Publisher confirms are **enabled by default** (`safety = "safe"`, the default, derives `confirms = true`). When enabled:
 
 1. The publisher calls `confirm.select` on the channel
 2. Each published message is assigned a sequence number
 3. The broker sends `basic.ack` (confirmed) or `basic.nack` (rejected) with the sequence number
 4. The publish call resolves only after the confirm is received
 
-A confirm timeout (`publisher.confirm_timeout`, default 30 seconds) ensures the call does not hang indefinitely.
+A confirm timeout (connection key `confirm_timeout`, default 30000 ms) ensures the call does not hang indefinitely.
 
 ## Mandatory returns
 
-Mandatory routing is **always on in safe mode** (`publisher.safety = "safe"`). When enabled:
+Mandatory routing is **always on in safe mode** (`safety = "safe"`, which derives `mandatory = true`). When enabled:
 
 - The broker returns unroutable messages via `basic.return` instead of silently dropping them
 - `basic.return` is processed **before** the corresponding `basic.ack` — a return takes precedence over a following ACK
 - The publish call resolves with a `Returned` outcome, and the Laravel bridge throws a `QueueException`
 
-The legacy `publisher.mandatory = false` flag is **rejected at validation** with an actionable error: confirms without mandatory routing would let the broker silently drop unroutable messages, which breaks the no-silent-loss contract. The only supported opt-out is `publisher.safety = "unsafe"` or `"blind"`.
+There is no separate `mandatory` config key: it is derived from `safety` (`safe` → confirms + mandatory, `unsafe` → confirms only, `blind` → neither) — a connection key named `mandatory` hits the unknown-key rejection with an actionable error. The supported opt-outs from mandatory routing are `safety = "unsafe"` or `"blind"`.
 
 ### Delayed publishes
 
