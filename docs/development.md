@@ -11,7 +11,7 @@ Rabbit RS is a monorepo with three layers, each in a different language:
 │  packages/laravel-queue/                        │
 │  Laravel queue driver (PHP)                     │
 │  - RabbitMqConnector, RabbitMqQueue, etc.       │
-│  - ConfigNormalizer maps Laravel config → native│
+│  - ConnectionCompiler maps queue config → native│
 └────────────────────┬────────────────────────────┘
                      │ calls
 ┌────────────────────▼────────────────────────────┐
@@ -92,7 +92,7 @@ Pure PHP package (`goopil/rabbit-rs-laravel`). Uses Pest for tests.
 | `src/Jobs/` | `RabbitMqJob` — job wrapper around native Delivery |
 | `src/Console/` | `rabbit-rs:work` and `rabbit-rs:status` commands |
 | `src/Octane/` | Octane lifecycle hooks (flush, reload, stop) |
-| `src/Config/` | `ConfigNormalizer` — maps Laravel config to native config |
+| `src/Config/` | `ConnectionCompiler` — compiles queue.php connections to native config |
 | `src/Support/` | `NativePoolFactory` — pool factory with fork safety |
 | `tests/Unit/` | Unit tests (fake classes, no extension) |
 | `tests/Feature/` | Feature tests (fake classes, no extension) |

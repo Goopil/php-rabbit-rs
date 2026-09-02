@@ -20,7 +20,23 @@ pie install goopil/rabbit-rs-native
 composer require goopil/rabbit-rs-laravel
 ```
 
-**Step 3 — Publish the config:**
+**Step 3 — Configure the connection:**
+
+Add a rabbit-rs connection to `config/queue.php` (one connection = one broker = one native pool):
+
+```php
+'connections' => [
+    'rabbit-rs' => [
+        'driver' => 'rabbit-rs',
+        'queue' => env('RABBIT_RS_QUEUE', 'default'),
+        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+        'username' => env('RABBIT_RS_USERNAME', 'guest'),
+        'password' => env('RABBIT_RS_PASSWORD', 'guest'),
+    ],
+],
+```
+
+Optionally publish the cross-cutting defaults and tune them:
 
 ```bash
 php artisan vendor:publish --tag="rabbit-rs-config"
@@ -44,6 +60,8 @@ ProcessOrder::dispatch(42);
 ```bash
 # Consume
 php artisan queue:work --connection=rabbit-rs
+# or the supervised fan-out across every rabbit-rs connection:
+php artisan rabbit-rs:work
 ```
 
 ## What is Rabbit RS?

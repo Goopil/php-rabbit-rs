@@ -8,6 +8,38 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-02
+
+### Added
+
+- Laravel: connection-first configuration — every broker, its credentials, routes, and consumer profile now live on a single `queue.connections.*` connection in `config/queue.php` (the SQS/redis idiom); `config/rabbit-rs.php` shrinks to ~50 lines of cross-cutting defaults merged under every rabbit-rs connection (per sub-key for `tls`, `delay`, `dead_letter`). There is **no compatibility shim** for the old shape (pre-1.0 break; see the migration table below).
+- Laravel: compilation is lazy, per connection, at `connect()` — a config typo only fails the queue driver's use instead of crashing the whole application at boot, Laravel env strings (`'1'`, `'true'`, `'on'`, `"64"`, …) are cast inside the driver, and any error carries the exact `queue.connections.<name>.<key>` path.
+- Laravel: `rabbit-rs:work` fans out across connections — with no flags it consumes every queue defined on every rabbit-rs connection (one supervised `queue:work` child per connection); `--connection=a,b` targets connections explicitly; `--queue=x,y` resolves names **by definition** (the connection's `queue` key or a `subscriptions` alias) with a typed error listing available names; a queue defined on two targeted connections is consumed on both; `--workers` now spawns children per connection.
+- Laravel: two queue connections with byte-identical arrays compile to the same fingerprint and share one native pool per process (documented feature).
+- Laravel: `octane:reload` forgets the queue manager's resolved connections, so the next request recompiles each connection from the current config — broker/credential rotation via env takes effect without stale brokers.
+
+### Changed
+
+- **Breaking (Laravel):** the old `config/rabbit-rs.php` namespaces (`brokers.*`, `routes.*`, `workers.*`) are gone. Migrate your config:
+
+  | Old key (`config/rabbit-rs.php`) | New location |
+  |---|---|
+  | `brokers.<b>.hosts` / `.credentials` / `.tls` / `.heartbeat` | connection `hosts` / `username` + `password` / `tls` / `heartbeat` |
+  | `routes.<q>.exchange` / `.routing_key` | connection `exchange` / `routing_key` (`{queue}` placeholder unchanged) |
+  | `workers.<w>.subscriptions.*` | connection `subscriptions` escape hatch; without it, one subscription is derived from the connection's `queue` |
+  | `workers.<w>` profile targeting | `rabbit-rs:work --connection=<name>` |
+  | `publisher.confirms` / `publisher.mandatory` | `safety` only (`safe`/`unsafe`/`blind` derive confirms and mandatory) |
+  | `scheduler.strategy` | deleted — dead knob (a single strategy existed) |
+  | `prefetch.mode` | deleted — dead knob |
+  | `brokers.<b>.management_url` (env `RABBIT_RS_MANAGEMENT_URL`) | connection key `management_url`, read by `rabbit-rs:status` |
+  | `consumers.max_attempts` (env `RABBIT_RS_MAX_ATTEMPTS`) | connection key `max_attempts` (default 20) |
+  | `routes.default.exchange` (env `RABBIT_RS_EXCHANGE`) | connection key `exchange` (default `laravel.jobs`) |
+  | `workers.default.subscriptions.default.queue` (env `RABBIT_RS_QUEUE`) | connection key `queue` (required, no default) |
+
+  The env hooks `RABBIT_RS_MAX_ATTEMPTS`, `RABBIT_RS_EXCHANGE`, and `RABBIT_RS_QUEUE` are silently dropped from the package config — those values now live as plain connection keys (`max_attempts`, `exchange`, `queue`); wire them with `env()` directly on the connection in `queue.php` if you need an env hook (see [docs/configuration.md](docs/configuration.md)). The same applies to the former broker env hooks `RABBIT_RS_HOSTS`/`RABBIT_RS_VHOST`/`RABBIT_RS_USERNAME`/`RABBIT_RS_PASSWORD`.
+- Laravel: `hosts` strings with empty segments (e.g. `"host1:5672,,host2"`) are now strictly rejected with a typed config error instead of silently skipping the empty segment; at least one host is required.
+- Laravel: unknown keys — on the connection or inside `tls`, `delay`, `dead_letter`, `subscriptions` — are rejected with their full config path; strictness is otherwise unchanged (`dead_letter` required with `delivery_limit`, `no_ack` requires `early_ack` + `best_effort`, range checks).
+
 ## [0.0.9] - 2026-09-01
 
 ### Added
@@ -150,7 +182,8 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/Goopil/rabbit-rs/compare/v0.0.6...v0.0.7

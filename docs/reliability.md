@@ -154,7 +154,7 @@ Native pool metrics — including `duplicates_total` — are **per-process by de
 - `acks_total` / `rejects_total` — settlement counts
 - `duplicates_total` — post-redelivery duplicates handled by this process
 
-**Queue counters (cross-process).** Set the optional per-broker key `brokers.<name>.management_url` (e.g. `http://broker-host:15672`) and the status command fetches per-queue counters from the RabbitMQ management API, across every process touching the queue:
+**Queue counters (cross-process).** Set the optional per-connection key `queue.connections.<name>.management_url` (e.g. `http://broker-host:15672`) and the status command fetches per-queue counters from the RabbitMQ management API, across every process touching the queue:
 
 - `messages_delivered` / `messages_acked` — broker-side delivery and settlement totals
 - `messages_redelivered` — an **approximate duplicate signal**: at-least-once also redelivers after a consumer crash, so a redelivery is not necessarily a duplicate. Watch for sustained growth correlated with reconnects.

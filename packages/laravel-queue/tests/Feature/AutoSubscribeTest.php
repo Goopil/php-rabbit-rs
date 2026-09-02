@@ -142,8 +142,8 @@ describe('auto_subscribe pop', function () {
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage(
-            "No worker profile subscribes to queue 'emails'. "
-            .'Configure workers.*.subscriptions.*.queue=emails or enable auto_subscribe.'
+            "No worker profile subscribes to queue 'emails': define it in "
+            .'queue.connections.<name> (queue key or subscriptions) or enable auto_subscribe.'
         );
 
         $queue->pop('emails');

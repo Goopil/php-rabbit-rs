@@ -384,8 +384,8 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
             if ($profile === null) {
                 if (! $this->autoSubscribe) {
                     throw new InvalidArgumentException(
-                        "No worker profile subscribes to queue '{$queueName}'. "
-                        ."Configure workers.*.subscriptions.*.queue={$queueName} or enable auto_subscribe.",
+                        "No worker profile subscribes to queue '{$queueName}': define it in "
+                        .'queue.connections.<name> (queue key or subscriptions) or enable auto_subscribe.',
                     );
                 }
 
