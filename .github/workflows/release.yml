@@ -237,7 +237,10 @@ jobs:
     needs: [create-release, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # contents:write is required to SEE the release while it is still a
+      # draft: draft releases are invisible to tokens without push access,
+      # so tag-based lookups (gh release view/download) 404 with contents:read.
+      contents: write
       attestations: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
