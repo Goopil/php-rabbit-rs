@@ -298,6 +298,170 @@ describe('delay', function (): void {
     });
 });
 
+describe('package defaults', function (): void {
+    it('fills every gap from the package defaults', function (): void {
+        expect(ConnectionCompiler::compile('orders', ['queue' => 'default'], packageDefaults()))
+            ->toBe(referenceCompiled('orders'));
+    });
+
+    it('lets the connection value win over the package default for scalars', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'prefetch' => 7,
+            'safety' => 'blind',
+        ], array_merge(packageDefaults(), ['prefetch' => 100, 'safety' => 'safe']));
+
+        expect($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe(7)
+            ->and($compiled['publisher']['safety'])->toBe('blind')
+            ->and($compiled['publisher']['confirms'])->toBeFalse();
+    });
+
+    it('merges the delay section per sub-key', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'delay' => ['mode' => 'ttl'],
+        ], ['delay' => ['buckets' => [10, 20, 30]]]);
+
+        expect($compiled['native']['delay'])->toBe([
+            'mode' => 'ttl',
+            'buckets' => [10, 20, 30],
+            'max_buckets' => 8,
+            'queue_expiry_margin' => 60,
+        ]);
+    });
+
+    it('lets connection sub-keys win over package default sub-keys', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'delay' => ['mode' => 'ttl', 'buckets' => [60]],
+        ], ['delay' => ['mode' => 'plugin', 'buckets' => [10, 20], 'queue_expiry_margin' => 5]]);
+
+        expect($compiled['native']['delay'])->toBe([
+            'mode' => 'ttl',
+            'buckets' => [60],
+            'max_buckets' => 8,
+            'queue_expiry_margin' => 5,
+        ]);
+    });
+
+    it('merges the tls section per sub-key', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'tls' => ['enabled' => 'true'],
+        ], ['tls' => [
+            'enabled' => false,
+            'ca_cert' => '/etc/rabbit/ca.pem',
+            'client_cert' => '/etc/rabbit/client.pem',
+            'client_key' => '/etc/rabbit/client.key',
+        ]]);
+
+        expect($compiled['native']['brokers'][0]['tls'])->toBe([
+            'enabled' => true,
+            'ca_cert' => '/etc/rabbit/ca.pem',
+            'client_cert' => '/etc/rabbit/client.pem',
+            'client_key' => '/etc/rabbit/client.key',
+        ]);
+    });
+
+    it('merges the dead_letter section per sub-key', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'dead_letter' => ['exchange' => 'orders.dlx'],
+        ], ['dead_letter' => ['queue' => 'orders.dlq', 'routing_key' => 'dead']]);
+
+        expect($compiled['native']['dead_letter'])->toBe([
+            'enabled' => true,
+            'exchange' => 'orders.dlx',
+            'queue' => 'orders.dlq',
+            'routing_key' => 'dead',
+        ]);
+    });
+
+    it('passes unknown top-level default keys through when the connection omits them', function (): void {
+        expect(ConnectionCompiler::compile('orders', ['queue' => 'default'], [
+            'production_warning' => true,
+            'worker' => ['strategy' => 'weighted_fair'],
+        ]))->toBe(referenceCompiled('orders'));
+    });
+
+    it('tolerates a connection key the package defaults already define', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'worker' => ['custom']], [
+            'worker' => ['strategy' => 'weighted_fair'],
+        ]);
+
+        expect($compiled)->toBe(referenceCompiled('orders'));
+    });
+
+    it('rejects an unknown top-level connection key that no default covers', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'prefetchh' => 10], packageDefaults()))
+            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.prefetchh: unknown key');
+    });
+
+    it('casts env-style default values after the merge', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default'], [
+            'confirm_timeout' => '30000',
+            'wait_timeout' => '5000',
+            'heartbeat' => '15',
+            'best_effort' => '1',
+            'prefetch' => '32',
+            'auto_subscribe' => '0',
+        ]);
+
+        expect($compiled['publisher']['confirm_timeout'])->toBe(30000)
+            ->and($compiled['native']['consumer']['wait_timeout'])->toBe(5000)
+            ->and($compiled['native']['brokers'][0]['heartbeat'])->toBe(15)
+            ->and($compiled['best_effort'])->toBeTrue()
+            ->and($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe(32)
+            ->and($compiled['auto_subscribe'])->toBeFalse();
+    });
+
+    it('applies section validation after defaults fill the gaps', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default'], array_merge(packageDefaults(), [
+            'delivery_limit' => 20,
+            'dead_letter' => ['exchange' => 'dlx', 'queue' => 'dlq'],
+        ]));
+
+        expect($compiled['native']['delivery_limit'])->toBe(20)
+            ->and($compiled['native']['dead_letter']['exchange'])->toBe('dlx');
+    });
+
+    it('rejects a default delivery_limit whose dead_letter the connection nulls out', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'dead_letter' => null], array_merge(packageDefaults(), [
+            'delivery_limit' => 20,
+            'dead_letter' => ['exchange' => 'dlx', 'queue' => 'dlq'],
+        ])))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.dead_letter');
+    });
+});
+
+/**
+ * Package defaults as the service provider will feed them: the package
+ * config minus brokers, routes, and workers — including keys the compiler
+ * passes through (worker, production_warning).
+ *
+ * @return array<string, mixed>
+ */
+function packageDefaults(): array
+{
+    return [
+        'heartbeat' => 30,
+        'tls' => ['enabled' => false, 'ca_cert' => null, 'client_cert' => null, 'client_key' => null],
+        'safety' => 'safe',
+        'confirm_timeout' => 30000,
+        'prefetch' => 64,
+        'wait_timeout' => 30000,
+        'topology_mode' => 'declare',
+        'queue_type' => 'quorum',
+        'queue_durable' => true,
+        'delivery_limit' => null,
+        'dead_letter' => null,
+        'delay' => ['mode' => 'auto', 'buckets' => [1, 5, 30, 120], 'max_buckets' => 8, 'queue_expiry_margin' => 60],
+        'worker' => ['strategy' => 'weighted_fair'],
+        'auto_subscribe' => true,
+        'production_warning' => true,
+        'best_effort' => false,
+    ];
+}
+
 /**
  * @return array<string, mixed>
  */

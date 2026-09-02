@@ -21,8 +21,30 @@ final class ConnectionCompiler
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
 
     /**
+     * Top-level connection keys the compiler consumes. `driver` is read by
+     * the queue dispatcher before compilation, not here.
+     */
+    private const CONNECTION_KEYS = [
+        'driver', 'queue', 'management_url',
+        'hosts', 'vhost', 'username', 'password', 'tls', 'heartbeat',
+        'exchange', 'routing_key',
+        'safety', 'confirm_timeout',
+        'prefetch', 'wait_timeout', 'max_attempts',
+        'best_effort', 'auto_subscribe',
+        'topology_mode',
+        'queue_type', 'queue_durable', 'delivery_limit', 'dead_letter',
+        'delay',
+    ];
+
+    /**
+     * Sections whose package default merges per sub-key instead of
+     * wholesale.
+     */
+    private const MERGED_SECTIONS = ['tls', 'delay', 'dead_letter'];
+
+    /**
      * @param array<string, mixed> $config
-     * @param array<string, mixed> $defaults package defaults merged under $config (unused until the defaults deep-merge lands)
+     * @param array<string, mixed> $defaults package defaults merged under $config: every key the connection omits falls back to these (per sub-key for tls, delay, and dead_letter), and unknown top-level connection keys are only tolerated when a default covers them
      * @return array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
@@ -35,6 +57,9 @@ final class ConnectionCompiler
     public static function compile(string $name, array $config, array $defaults = []): array
     {
         $path = 'queue.connections.'.$name;
+
+        $config = self::mergeDefaults($config, $defaults);
+        self::rejectUnknownKeys($config, array_merge(self::CONNECTION_KEYS, array_keys($defaults)), $path);
 
         $queue = self::string($config['queue'] ?? null, $path.'.queue');
         $broker = self::broker($name, $config, $path);
@@ -69,6 +94,40 @@ final class ConnectionCompiler
             'best_effort' => $bestEffort,
             'auto_subscribe' => $autoSubscribe,
         ];
+    }
+
+    /**
+     * Package defaults fill every key the connection omits; the connection
+     * value — including an explicit null — always wins. Only the three known
+     * nested sections merge per sub-key; every other key merges wholesale.
+     * Keys unknown to the compiler may ride in through $defaults (e.g.
+     * worker, production_warning) and are ignored downstream.
+     *
+     * @param array<string, mixed> $config
+     * @param array<string, mixed> $defaults
+     * @return array<string, mixed>
+     */
+    private static function mergeDefaults(array $config, array $defaults): array
+    {
+        foreach ($defaults as $key => $default) {
+            if (! array_key_exists($key, $config)) {
+                $config[$key] = $default;
+                continue;
+            }
+            if (! in_array($key, self::MERGED_SECTIONS, true)
+                || ! is_array($default)
+                || ! is_array($config[$key])
+            ) {
+                continue;
+            }
+            foreach ($default as $subKey => $subDefault) {
+                if (! array_key_exists($subKey, $config[$key])) {
+                    $config[$key][$subKey] = $subDefault;
+                }
+            }
+        }
+
+        return $config;
     }
 
     /**
