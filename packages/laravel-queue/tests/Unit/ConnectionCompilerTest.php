@@ -433,6 +433,188 @@ describe('package defaults', function (): void {
     });
 });
 
+describe('subscriptions escape hatch', function (): void {
+    it('replaces the derived subscription with the escape-hatch list', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'best_effort' => true,
+            'subscriptions' => [
+                'jobs' => ['queue' => 'orders.jobs'],
+                'alerts' => [
+                    'queue' => 'orders.alerts',
+                    'weight' => 3,
+                    'priority_class' => 2,
+                    'prefetch' => 8,
+                    'starvation_after' => 10,
+                    'early_ack' => true,
+                    'no_ack' => false,
+                ],
+            ],
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'])->toBe([
+            [
+                'name' => 'jobs',
+                'broker' => 'orders',
+                'queue' => 'orders.jobs',
+                'weight' => 1,
+                'priority_class' => 0,
+                'prefetch' => 64,
+                'starvation_after' => 30,
+                'early_ack' => false,
+                'no_ack' => false,
+            ],
+            [
+                'name' => 'alerts',
+                'broker' => 'orders',
+                'queue' => 'orders.alerts',
+                'weight' => 3,
+                'priority_class' => 2,
+                'prefetch' => 8,
+                'starvation_after' => 10,
+                'early_ack' => true,
+                'no_ack' => false,
+            ],
+        ]);
+    });
+
+    it('falls back to the connection prefetch and casts env integers per subscription', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'prefetch' => '32',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => '2', 'priority_class' => '1']],
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'][0])->toBe([
+            'name' => 'jobs',
+            'broker' => 'orders',
+            'queue' => 'orders.jobs',
+            'weight' => 2,
+            'priority_class' => 1,
+            'prefetch' => 32,
+            'starvation_after' => 30,
+            'early_ack' => false,
+            'no_ack' => false,
+        ]);
+    });
+
+    it('rejects an empty subscriptions array', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'subscriptions' => []]))
+            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions');
+    });
+
+    it('rejects unknown keys inside a subscription', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'enabled' => true]],
+        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.enabled: unknown key');
+    });
+
+    it('requires a non-empty queue per subscription', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => []],
+        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.queue');
+    });
+
+    it('rejects an empty subscription alias', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['' => ['queue' => 'orders.jobs']],
+        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions');
+    });
+
+    it('rejects early_ack without best_effort with the exact message', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true]],
+        ]))->toThrow(
+            InvalidArgumentException::class,
+            'queue.connections.orders.subscriptions.jobs.early_ack: early_ack is not allowed in reliable mode — set best_effort=true to opt in',
+        );
+    });
+
+    it('rejects no_ack without early_ack with the exact message', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'best_effort' => true,
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'no_ack' => true]],
+        ]))->toThrow(
+            InvalidArgumentException::class,
+            "queue.connections.orders.subscriptions.jobs.no_ack: no_ack=true requires early_ack=true for subscription 'jobs'",
+        );
+    });
+
+    it('fires the early_ack guard before the no_ack best_effort guard', function (): void {
+        // Same precedence as the ConfigNormalizer ack rules: the no_ack
+        // best_effort message is unreachable when early_ack already lacks
+        // best_effort.
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]],
+        ]))->toThrow(
+            InvalidArgumentException::class,
+            'queue.connections.orders.subscriptions.jobs.early_ack: early_ack is not allowed in reliable mode — set best_effort=true to opt in',
+        );
+    });
+
+    it('accepts the full no_ack combination when best_effort opts in', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'best_effort' => true,
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]],
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'][0]['early_ack'])->toBeTrue()
+            ->and($compiled['native']['workers'][0]['subscriptions'][0]['no_ack'])->toBeTrue();
+    });
+
+    it('bounds weight between 1 and 65535', function (int $value, bool $valid): void {
+        $compile = fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => $value]],
+        ]);
+
+        if ($valid) {
+            expect($compile()['native']['workers'][0]['subscriptions'][0]['weight'])->toBe($value);
+        } else {
+            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.weight');
+        }
+    })->with([
+        'zero' => [0, false],
+        'at the maximum' => [65_535, true],
+        'beyond the maximum' => [65_536, false],
+    ]);
+
+    it('bounds priority_class to i16', function (int $value, bool $valid): void {
+        $compile = fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'priority_class' => $value]],
+        ]);
+
+        if ($valid) {
+            expect($compile()['native']['workers'][0]['subscriptions'][0]['priority_class'])->toBe($value);
+        } else {
+            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.priority_class');
+        }
+    })->with([
+        'at the minimum' => [-32_768, true],
+        'at the maximum' => [32_767, true],
+        'below the minimum' => [-32_769, false],
+        'beyond the maximum' => [32_768, false],
+    ]);
+
+    it('rejects two subscriptions sharing the same queue', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => [
+                'jobs' => ['queue' => 'orders.jobs'],
+                'mirror' => ['queue' => 'orders.jobs'],
+            ],
+        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.mirror.queue');
+    });
+});
+
 /**
  * Package defaults as the service provider will feed them: the package
  * config minus brokers, routes, and workers — including keys the compiler

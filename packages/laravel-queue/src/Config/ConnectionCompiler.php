@@ -25,7 +25,7 @@ final class ConnectionCompiler
      * the queue dispatcher before compilation, not here.
      */
     private const CONNECTION_KEYS = [
-        'driver', 'queue', 'management_url',
+        'driver', 'queue', 'subscriptions', 'management_url',
         'hosts', 'vhost', 'username', 'password', 'tls', 'heartbeat',
         'exchange', 'routing_key',
         'safety', 'confirm_timeout',
@@ -63,10 +63,10 @@ final class ConnectionCompiler
 
         $queue = self::string($config['queue'] ?? null, $path.'.queue');
         $broker = self::broker($name, $config, $path);
-        $worker = self::worker($name, $queue, $config, $path);
+        $bestEffort = self::boolean($config['best_effort'] ?? false, $path.'.best_effort');
+        $worker = self::worker($name, $queue, $config, $bestEffort, $path);
         $topology = self::topology($config, $path);
         $publisher = self::publisher($config, $path);
-        $bestEffort = self::boolean($config['best_effort'] ?? false, $path.'.best_effort');
         $autoSubscribe = self::boolean($config['auto_subscribe'] ?? true, $path.'.auto_subscribe');
 
         return [
@@ -258,26 +258,115 @@ final class ConnectionCompiler
     }
 
     /**
+     * Without the `subscriptions` key, one subscription named "default" is
+     * derived from the connection's queue. With it, the escape-hatch list
+     * replaces the derivation: the alias is the array key and the broker is
+     * always this connection.
+     *
      * @param array<string, mixed> $config
      * @return array{name: string, subscriptions: list<array<string, mixed>>, scheduler: array{strategy: string}}
      */
-    private static function worker(string $name, string $queue, array $config, string $path): array
+    private static function worker(string $name, string $queue, array $config, bool $bestEffort, string $path): array
     {
+        $subscriptions = $config['subscriptions'] ?? null;
+
+        if ($subscriptions === null) {
+            return [
+                'name' => $name,
+                'subscriptions' => [
+                    self::subscription($name, 'default', ['queue' => $queue], $config, $bestEffort, $path),
+                ],
+                'scheduler' => ['strategy' => 'weighted_fair'],
+            ];
+        }
+
+        if (! is_array($subscriptions) || $subscriptions === []) {
+            self::invalid($path.'.subscriptions', 'must contain at least one subscription');
+        }
+
+        $seenQueues = [];
+        $compiled = [];
+        foreach ($subscriptions as $alias => $entry) {
+            $alias = (string) $alias;
+            if ($alias === '') {
+                self::invalid($path.'.subscriptions', 'subscription keys must be non-empty strings');
+            }
+
+            $subscriptionPath = $path.'.subscriptions.'.$alias;
+            if (! is_array($entry)) {
+                self::invalid($subscriptionPath, self::MSG_MUST_BE_ARRAY);
+            }
+
+            $queueName = self::string($entry['queue'] ?? null, $subscriptionPath.'.queue');
+            if (isset($seenQueues[$queueName])) {
+                self::invalid($subscriptionPath.'.queue', "duplicates the queue of subscription '{$seenQueues[$queueName]}'");
+            }
+            $seenQueues[$queueName] = $alias;
+
+            $compiled[] = self::subscription($name, $alias, $entry, $config, $bestEffort, $subscriptionPath);
+        }
+
         return [
             'name' => $name,
-            'subscriptions' => [[
-                'name' => 'default',
-                'broker' => $name,
-                'queue' => $queue,
-                'weight' => 1,
-                'priority_class' => 0,
-                'prefetch' => self::positiveInt($config['prefetch'] ?? 64, $path.'.prefetch', 65535),
-                'starvation_after' => 30,
-                'early_ack' => false,
-                'no_ack' => false,
-            ]],
+            'subscriptions' => $compiled,
             'scheduler' => ['strategy' => 'weighted_fair'],
         ];
+    }
+
+    /**
+     * Ack flags follow the reliable-mode rules: early_ack and no_ack both
+     * require best_effort, and no_ack additionally requires early_ack.
+     *
+     * @param array<string, mixed> $subscription
+     * @param array<string, mixed> $config
+     * @return array{name: string, broker: string, queue: string, weight: int, priority_class: int, prefetch: int, starvation_after: int, early_ack: bool, no_ack: bool}
+     */
+    private static function subscription(string $name, string $alias, array $subscription, array $config, bool $bestEffort, string $path): array
+    {
+        self::rejectUnknownKeys(
+            $subscription,
+            ['queue', 'weight', 'priority_class', 'prefetch', 'starvation_after', 'early_ack', 'no_ack'],
+            $path,
+        );
+
+        $earlyAck = self::boolean($subscription['early_ack'] ?? false, $path.'.early_ack');
+        if ($earlyAck && ! $bestEffort) {
+            self::invalid($path.'.early_ack', 'early_ack is not allowed in reliable mode — set best_effort=true to opt in');
+        }
+
+        $noAck = self::boolean($subscription['no_ack'] ?? false, $path.'.no_ack');
+        if ($noAck && ! $earlyAck) {
+            self::invalid($path.'.no_ack', "no_ack=true requires early_ack=true for subscription '{$alias}'");
+        }
+        if ($noAck && ! $bestEffort) {
+            self::invalid($path.'.no_ack', "no_ack=true requires best_effort=true for subscription '{$alias}'");
+        }
+
+        return [
+            'name' => $alias,
+            'broker' => $name,
+            'queue' => self::string($subscription['queue'] ?? null, $path.'.queue'),
+            'weight' => self::positiveInt($subscription['weight'] ?? 1, $path.'.weight', 65535),
+            'priority_class' => self::boundedI16($subscription['priority_class'] ?? 0, $path.'.priority_class'),
+            'prefetch' => self::positiveInt(
+                $subscription['prefetch'] ?? ($config['prefetch'] ?? 64),
+                $path.'.prefetch',
+                65535,
+            ),
+            'starvation_after' => self::positiveInt($subscription['starvation_after'] ?? 30, $path.'.starvation_after'),
+            'early_ack' => $earlyAck,
+            'no_ack' => $noAck,
+        ];
+    }
+
+    private static function boundedI16(mixed $value, string $path): int
+    {
+        $value = self::integer($value, $path);
+        if ($value < -32768 || $value > 32767) {
+            self::invalid($path, 'must be an integer between -32768 and 32767');
+        }
+
+        return $value;
     }
 
     /**
