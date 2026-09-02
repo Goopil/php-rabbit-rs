@@ -660,4 +660,22 @@ function configInvalidConfigurations(): iterable
         },
         'topology.dead_letter',
     ];
+    yield 'management_url that is not a string' => [
+        static function (array &$config): void {
+            $config['brokers']['default']['management_url'] = 15672;
+        },
+        'brokers.default.management_url',
+    ];
 }
+
+describe('management url', function (): void {
+    it('keeps native broker config unchanged by management_url', function (mixed $value): void {
+        $config = configValidConfig();
+        $config['brokers']['default']['management_url'] = $value;
+        $withKey = ConfigNormalizer::normalize($config);
+
+        unset($config['brokers']['default']['management_url']);
+
+        expect(ConfigNormalizer::normalize($config))->toBe($withKey);
+    })->with([null, '', '   ', 'http://mq.local:15672']);
+});
