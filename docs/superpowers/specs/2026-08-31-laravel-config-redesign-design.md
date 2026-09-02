@@ -1,7 +1,7 @@
 # Design — Laravel configuration: connection-first
 
 - **Date:** 2026-08-31
-- **Status:** approved (brainstorm session with owner); awaiting implementation plan
+- **Status:** approved; §5 amended after owner review; awaiting implementation plan
 - **Source:** 2026-08-31 technical audit (`docs/audits/2026-08-31-technical-audit.md`, F-27, F-28, F-31) + competitor review (vyuldashev/laravel-queue-rabbitmq, iamfarhad/LaravelRabbitMQ)
 - **Absorbs:** #80 (config lifecycle: boot blast radius + Octane stale normalization)
 - **Aligns with:** #78 (dead knobs removed from the published surface happen here, on the Laravel side)
@@ -156,12 +156,26 @@ iamfarhad does):
 - Worker profile = connection name. `WorkerProfileResolver` maps connection
   names to profiles; auto-profiles (`__auto__.<queue>`) are unchanged for
   plain queue names.
-- `rabbit-rs:work --connection=orders` — default: the default queue connection
-  when it is a rabbit-rs connection; otherwise the command requires an explicit
-  `--connection` and errors with the list of available rabbit-rs connections. `--connection=a,b` synthesizes one work
-  profile spanning both connections' subscriptions (the native profile model
-  already supports multi-broker subscriptions). `--queue=a,b` filters
-  subscriptions within the selected connections (auto_subscribe fills gaps).
+- `rabbit-rs:work` with no flags fans out: it consumes every queue defined
+  across ALL rabbit-rs connections in `queue.php` — one subscription per
+  (connection, queue) pair, one native profile spanning them (the native
+  profile model already supports multi-broker subscriptions). Connections
+  not concerned by any resolved queue stay lazy: their pool never opens.
+  The fan-out spans rabbit-rs connections only; mixing drivers (redis, sqs)
+  in one process is a framework constraint (`WorkCommand` resolves a single
+  connection) and remains N processes, as with every Laravel driver.
+- `--connection=a,b` — explicit targeting: restricts the fan-out to the
+  listed connections and their defined queues.
+- `--queue=a,b,c` — resolves each name BY DEFINITION, never by wild
+  declaration: a name matches a connection's `queue` key or a key in its
+  `subscriptions` escape hatch. Every (connection, queue) pair whose
+  definition matches is consumed. An unknown name errors with the list of
+  available queues. A queue name defined on two connections is consumed on
+  both (documented). Combining `--connection` and `--queue` intersects both
+  filters.
+- Compound targeting (`connection@queue`) is deliberately not provided:
+  AMQP queue names contain dots (ambiguous), and composing `--connection`
+  with `--queue` already covers the use case. Revisit if a real need appears.
 - Multi-consumer via standard `queue:work`: N processes, each with its own
   process-local native pool and channels. Consumer tags are per-channel
   (`rabbit-rs.<subscription>`) — AMQP requires uniqueness per channel only, so
@@ -200,8 +214,10 @@ iamfarhad does):
 - **Feature:** service provider registers without the extension (existing
   assertion kept); connector resolves two connections → two distinct native
   configs; same-config connections fingerprint identically (pool reuse kept).
-- **Feature (work command):** `--connection` defaults, comma list, `--queue`
-  filtering, auto-subscribe interaction.
+- **Feature (work command):** no-flag fan-out across all rabbit-rs
+  connections (non-concerned connections stay lazy), `--connection` comma
+  list, `--queue` by-definition resolution, unknown-queue typed error,
+  same-name queue consumed on both connections, flag intersection.
 - **Integration (lab):** two connections → two brokers/vhosts publish+consume
   end-to-end; multi-process `queue:work` consumers on one queue.
 
