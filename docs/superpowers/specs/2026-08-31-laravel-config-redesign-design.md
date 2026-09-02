@@ -157,10 +157,12 @@ iamfarhad does):
   names to profiles; auto-profiles (`__auto__.<queue>`) are unchanged for
   plain queue names.
 - `rabbit-rs:work` with no flags fans out: it consumes every queue defined
-  across ALL rabbit-rs connections in `queue.php` — one subscription per
-  (connection, queue) pair, one native profile spanning them (the native
-  profile model already supports multi-broker subscriptions). Connections
-  not concerned by any resolved queue stay lazy: their pool never opens.
+  across ALL rabbit-rs connections in `queue.php` — one `queue:work` child
+  process per targeted connection (the framework's `WorkCommand` resolves a
+  single connection), whose native worker profile spans all of that
+  connection's queues with the native `weighted_fair` scheduler. Cross-
+  connection fairness is process-level, as with every Laravel driver.
+  Connections not targeted stay lazy: their pool never opens.
   The fan-out spans rabbit-rs connections only; mixing drivers (redis, sqs)
   in one process is a framework constraint (`WorkCommand` resolves a single
   connection) and remains N processes, as with every Laravel driver.
