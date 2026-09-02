@@ -10,7 +10,8 @@ describe('consume-side publish buffer flush', function () {
         ]);
 
         // Two publishes below the buffer threshold stay buffered: no threshold
-        // is reached and no prior flush started the interval clock.
+        // is reached and the interval armed by the first publish has not
+        // elapsed yet (the two publishes are back-to-back).
         $pool->publish(pubMessage('buffered-1', 'payload', [], 5000));
         $pool->publish(pubMessage('buffered-2', 'payload', [], 5000));
         expect($pool->stats()['publishes_total'])->toBe(0);

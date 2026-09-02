@@ -107,6 +107,11 @@ final class Pool
      * Implemented by the ext-rabbit_rs native extension.
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      * @noinspection PhpUnusedParameterInspection
+     *
+     * Returns the number of pending messages in a queue on the given broker.
+     *
+     * Flushes the publish buffer first so publications accepted by this
+     * pool are counted.
      */
     public function size(string $broker, string $queue): int
     {

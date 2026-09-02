@@ -453,8 +453,18 @@ it('recovers from TCP reset before publisher confirm', function () {
     // Inject TCP reset on this test's own proxy.
     addToxic($this->chaosProxy, 'reset-before-confirm', 'reset_peer', 'downstream', 1.0, 100);
 
-    // Attempt to publish during the outage.
+    // Attempt to publish during the outage. flush() puts the publication on
+    // the wire NOW: a publication still held in the process-side publish
+    // buffer never crosses the proxy, so the reset_peer toxic (which fires on
+    // traffic) would never trigger and the scenario would be vacuous.
     $published = pushAllowingFailure($this->queue, 'chaos-reset-1');
+    if ($published) {
+        try {
+            $this->pool->flush();
+        } catch (\Throwable) {
+            $published = false; // the reset killed the connection mid-confirm
+        }
+    }
 
     // Remove the toxic.
     removeToxic($this->chaosProxy, 'reset-before-confirm');
@@ -519,8 +529,11 @@ it('redelivers after TCP reset between confirm and ACK', function () {
 it('survives quorum leader shutdown', function () {
     $this->queue->clear($this->queueName);
 
-    // Publish before the leader shutdown.
+    // Publish before the leader shutdown and put it on the wire: a
+    // publication still in the process-side publish buffer would be dropped
+    // by the recreatePool teardown below instead of facing the outage.
     $this->queue->push('stdClass', ['msg' => 'chaos-leader-1']);
+    $this->pool->flush();
 
     // Find and stop the leader node.
     $leader = getQueueLeader($this->queueName);
@@ -554,8 +567,11 @@ it('survives quorum leader shutdown', function () {
 it('survives node restart', function () {
     $this->queue->clear($this->queueName);
 
-    // Publish before restart.
+    // Publish before restart and put it on the wire (same reasoning as the
+    // leader-shutdown scenario: recreatePool must not drop a buffered
+    // publication).
     $this->queue->push('stdClass', ['msg' => 'chaos-restart-1']);
+    $this->pool->flush();
 
     // Stop and start rabbitmq-1.
     stopNode(PRIMARY_NODE);
