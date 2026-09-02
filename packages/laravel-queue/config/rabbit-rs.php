@@ -72,6 +72,13 @@ return [
     |              2× this interval, the connection is considered dead and
     |              recovery kicks in. Keep below your TCP keepalive threshold.
     |
+    | management_url: Optional RabbitMQ management API base URL (e.g.
+    |              http://localhost:15672). When set, `rabbit-rs:status`
+    |              adds cross-process queue counters (delivered, acked,
+    |              redelivered) fetched from the management API. The broker's
+    |              AMQP credentials are reused for HTTP basic auth. Null
+    |              (default) disables the section.
+    |
     */
 
     'brokers' => [
@@ -89,6 +96,7 @@ return [
                 'client_key' => env('RABBIT_RS_TLS_CLIENT_KEY'),
             ],
             'heartbeat' => (int) env('RABBIT_RS_HEARTBEAT', 30),
+            'management_url' => env('RABBIT_RS_MANAGEMENT_URL'),
         ],
     ],
 

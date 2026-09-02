@@ -111,6 +111,7 @@ final class ConfigNormalizer
             $username = self::string($credentials['username'] ?? null, $path.'.credentials.username');
             $password = self::string($credentials['password'] ?? null, $path.'.credentials.password', true);
             $tls = self::tls($broker['tls'] ?? [], $path.'.tls');
+            self::managementUrl($broker['management_url'] ?? null, $path.'.management_url');
 
             $normalized[] = [
                 'name' => (string) $name,
@@ -123,6 +124,21 @@ final class ConfigNormalizer
         }
 
         return $normalized;
+    }
+
+    /**
+     * Management API base URL is a Laravel-only key (used by rabbit-rs:status,
+     * not by the native extension): validated here, never propagated to native
+     * config. Null or blank disables the feature.
+     */
+    private static function managementUrl(mixed $url, string $path): void
+    {
+        if ($url === null || (is_string($url) && trim($url) === '')) {
+            return;
+        }
+        if (! is_string($url)) {
+            self::invalid($path, self::MSG_MUST_BE_NULL_OR_STRING);
+        }
     }
 
     /**

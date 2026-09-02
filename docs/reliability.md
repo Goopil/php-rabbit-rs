@@ -135,20 +135,27 @@ Duplicates are expected and normal. They occur in these scenarios:
 1. **Make jobs idempotent** — use `message_id` or business keys to detect duplicate work
 2. **Use `attempts()`** — the `RabbitMqJob::attempts()` method returns the delivery count from `x-acquired-count` or `x-delivery-count` headers
 3. **Set `delivery_limit`** — quorum queues dead-letter messages that exceed the limit; `dead_letter` must be configured when `delivery_limit` is set
-4. **Monitor duplicates** — track `reconnects_total` and `deliveries_total` metrics; spikes indicate recovery-induced duplicates
+4. **Monitor duplicates** — see *Measuring duplicates* below; cross-process `messages_redelivered` is the observable duplicate signal
 
 ### Measuring duplicates
 
-The status command shows metrics:
+Native pool metrics — including `duplicates_total` — are **per-process by design**: they count post-redelivery duplicates handled by *that* process. Every worker process has its own counters, and `rabbit-rs:status` creates a brand-new pool inside the artisan CLI process, so the native metrics it prints are **same-process only** and read zero in a fresh CLI process.
 
-```bash
-php artisan rabbit-rs:status
-```
+`php artisan rabbit-rs:status` therefore observes two distinct things:
 
-Key metrics:
+**Native pool metrics (same-process only).** Useful from inside a long-lived process; always zeros in a fresh CLI process:
+
 - `reconnects_total` — number of connection recoveries (each can cause duplicates)
 - `deliveries_total` — total deliveries received
 - `acks_total` / `rejects_total` — settlement counts
+- `duplicates_total` — post-redelivery duplicates handled by this process
+
+**Queue counters (cross-process).** Set the optional per-broker key `brokers.<name>.management_url` (e.g. `http://broker-host:15672`) and the status command fetches per-queue counters from the RabbitMQ management API, across every process touching the queue:
+
+- `messages_delivered` / `messages_acked` — broker-side delivery and settlement totals
+- `messages_redelivered` — an **approximate duplicate signal**: at-least-once also redelivers after a consumer crash, so a redelivery is not necessarily a duplicate. Watch for sustained growth correlated with reconnects.
+
+An in-process Prometheus exporter is the planned evolution for per-process counters; it is deliberately not provided today.
 
 ## When to use an external outbox
 
