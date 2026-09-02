@@ -8,12 +8,16 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-09-01
+
 ### Added
 
 - `Pool::clearEventCallbacks()`: removes every registered event callback (connection-state and backpressure combined) and returns how many were removed, so a connection sharing a native pool can re-register from a clean slate.
 - Conservative GC for synthesized TTL delay queues: `topology::delay::sweep_delay_queues()` (Rust core) deletes orphaned `rabbit-rs.delay.*` queues through an admin channel once a rolling deploy completes. It only touches the reserved `rabbit-rs.delay.*` prefix, only queues of destinations it is given, keeps every name the current plan still produces and every queue still draining messages, and re-probes emptiness immediately before each delete (quorum queues reject `if-empty`/`if-unused` deletes).
 - `Pool::stats()` now reports `dropped_publications_total`: publications the extension discarded without confirmed delivery (deadline-expired flush retries, un-attempted batches on a closing pool, and unconfirmed leftovers at teardown).
+- `Pool::stats()` now reports `duplicates_total`: deliveries the broker flags as redelivered (redelivery flag, `x-delivery-count`/`x-acquired-count` > 1) are counted once at dispatch, so duplicates stay measurable per the at-least-once contract. Poison deliveries settled terminally are not counted (they never reach the caller).
 - AMQP `Array`/`Table` delivery headers are now exposed as nested PHP arrays, so dead-letter metadata such as `x-death` is visible to PHP. AMQP `Decimal` header values are dropped with a once-per-process PHP notice (PHP has no decimal scalar).
+- Opt-in stderr logging from the native extension: set `RABBIT_RS_LOG` to `info`, `warn` (or `warning`) or `error` to install a severity-threshold stderr sink at startup. Without it the extension stays silent; embedders can install their own sink programmatically (first install wins).
 
 ### Changed
 
@@ -21,9 +25,24 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 - `Pool::onConnectionState()` and `Pool::onBackpressure()` now register multiple callbacks instead of replacing the previous one, so connections sharing one native pool (e.g. two Laravel connections with the same fingerprint) each keep their own callbacks.
 - Laravel: `RabbitMqQueue` clears existing event callbacks before registering its defaults, so worker/pool reuse no longer accumulates duplicate default callbacks (each event firing once per queue construction). To override the defaults, call `Pool::clearEventCallbacks()` before registering a custom callback.
 - Publish key validation no longer depends on the build profile: release builds reject unknown publish fields exactly like debug builds (a `delay_ms` typo can no longer publish immediately).
+- Configuration surface is enforced: `publisher.mandatory: false` is rejected with a `publisher.safety` migration pointer (honoring it would confirm unroutable publishes = silent loss), `publisher.confirm_timeout` must be ≥ 1 s, and `heartbeat` is bounded to 1..65535 s.
+- Laravel: `rabbit-rs` config validation no longer runs at `boot()` — a typo only fails the queue driver's use instead of the whole application; Laravel env-string booleans (`'1'`, `'true'`, `'on'`, …) are accepted; `octane:reload` re-normalizes the config so env-based credential rotation takes effect.
+- Blind (fire-and-forget) publishes reserve their payload bytes against the publisher byte budget: an over-budget stream is rejected with backpressure instead of silently growing process memory (the message-count bound already applied).
 
 ### Fixed
 
+- Broker connection loss is detected and recovered from automatically: delivery-stream termination and transport error streams trigger recovery, `recovery_failures_total` counts failed generations, and a routine broker restart no longer stops consumption or bricks publishing until the PHP process restarts.
+- Workers rejoin a recovered broker: cached consumers are evicted when their source is replaced or closed instead of stopping consumption after every recovery.
+- Poison deliveries settle terminally: `consumer.max_attempts` caps redelivery, and over-cap or unmarshable deliveries are rejected to the dead-letter exchange (or documented ack) instead of being redelivered forever.
+- Consumer delivery pressure is bounded under `no_ack` (`pending_incoming`), and pool close no longer loses buffered work.
+- DLQ bindings are applied for every subscription sharing a dead-letter queue (previously only the first), so poison messages routed per source are not silently lost.
+- Delays are validated against the compiled delay strategy: a TTL-mode delay larger than the largest bucket is refused terminally before any transport operation instead of executing immediately; a delayed-release refusal settles the original delivery terminally instead of hot-looping.
+- Publisher wake-up: `delay.mode=auto` probes the delay plugin, and a failed topology declare no longer suspends the publisher forever (errors propagate with generation rollback).
+- `size()` and `clear()` flush the publish buffer first, so both report/act on the true broker state — previously the first ≤63 publications of a fresh pool stayed in process memory: `size()` returned 0 for accepted messages and `clear()` purged a queue the buffered publications later repopulated.
+- The publish buffer arms its flush deadline on the first publication of a batch, so small batches are time-flushed by age at the next trigger instead of waiting for the size threshold.
+- `publishBatch()` honors its documented error contract: publications already accepted by an actor are resolved before the first terminal failure is returned, instead of being discarded when a later broker's acquisition fails mid-batch.
+- Topology declaration happens before consumer subscription on the recovery and on-demand establishment paths, so a fresh quorum queue can no longer reject `basic.consume` with a 404 and burn a recovery generation.
+- Admin operations (`size`, `clear`) run through the connection actor on the per-vhost connection, so they participate in recovery instead of caching a raw connection forever.
 - Exceptions thrown inside `onConnectionState`/`onBackpressure` callbacks are no longer silently destroyed: the original exception object is rethrown once the event drain finishes (when the enclosing operation itself fails, the callback exception is preserved in the `$previous` chain of the surfaced error).
 - Consumer `next()`, `tryNext()`, and `nextBatch()` drain native events on every call — previously the drain only ran when the delivery buffer was empty, so state/backpressure callbacks starved under steady traffic and dashboards showed healthy state during incidents.
 - `Consumer::ackBatch()` now enforces the 256-delivery cap before enqueueing any settlement, so a rejected call has no side effects instead of settling 256 deliveries and then throwing.
@@ -131,7 +150,8 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/Goopil/rabbit-rs/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/Goopil/rabbit-rs/compare/v0.0.5...v0.0.6
