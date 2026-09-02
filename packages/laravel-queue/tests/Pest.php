@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Goopil\RabbitRs\Pool;
@@ -19,6 +20,21 @@ const INTEGRATION_CONNECTION = 'rabbit-rs-integration';
 
 /** Default lab vhost the shared helpers operate on. */
 const ORDERS_VHOST = '/orders-eu';
+
+/**
+ * Boots a service provider instance whose extension check succeeds, so queue
+ * connections resolve end-to-end with the fake Pool classes from the test
+ * bootstrap (Unit/Feature tests run without the compiled extension).
+ */
+function bootFakeNativeExtension(mixed $app): void
+{
+    (new class($app) extends RabbitMqServiceProvider {
+        protected function nativeExtensionLoaded(): bool
+        {
+            return true;
+        }
+    })->boot();
+}
 
 /**
  * Raw connection-shaped config (queue.connections.* entry) for the lab.

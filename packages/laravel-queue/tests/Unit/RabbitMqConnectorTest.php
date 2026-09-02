@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 
 function connectorProperty(object $object, string $name): mixed
@@ -23,12 +22,7 @@ beforeEach(function (): void {
         'queue' => 'secondary',
     ]);
 
-    (new class($this->app) extends RabbitMqServiceProvider {
-        protected function nativeExtensionLoaded(): bool
-        {
-            return true;
-        }
-    })->boot();
+    bootFakeNativeExtension($this->app);
 });
 
 it('resolves the RabbitMQ driver through the queue manager', function (): void {
@@ -54,9 +48,9 @@ it('creates distinct pools for connections with different brokers', function ():
     $euPool = connectorProperty($manager->connection('rabbit-rs-eu'), 'pool');
     $usPool = connectorProperty($manager->connection('rabbit-rs-us'), 'pool');
 
-    expect($euPool)->not->toBe($usPool)
-        ->and($euPool->config['brokers'][0]['name'])->toBe('rabbit-rs-eu')
-        ->and($usPool->config['brokers'][0]['name'])->toBe('rabbit-rs-us');
+    expect($usPool)->not->toBe($euPool)
+        ->and($usPool->config['brokers'][0]['name'])->toBe('rabbit-rs-us')
+        ->and($euPool->config['brokers'][0]['name'])->toBe('rabbit-rs-eu');
 });
 
 it('shares one pool for connections with byte-identical configuration', function (): void {

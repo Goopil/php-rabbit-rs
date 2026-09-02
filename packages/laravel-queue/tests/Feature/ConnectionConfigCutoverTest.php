@@ -2,19 +2,8 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Support\Facades\Http;
-
-function bootProviderWithFakeExtension($app): void
-{
-    (new class($app) extends RabbitMqServiceProvider {
-        protected function nativeExtensionLoaded(): bool
-        {
-            return true;
-        }
-    })->boot();
-}
 
 function cutoverQueuePool(object $queue): Pool
 {
@@ -23,7 +12,7 @@ function cutoverQueuePool(object $queue): Pool
 }
 
 beforeEach(function (): void {
-    bootProviderWithFakeExtension($this->app);
+    bootFakeNativeExtension($this->app);
 });
 
 describe('connection-first config cutover', function () {

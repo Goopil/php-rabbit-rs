@@ -17,47 +17,37 @@ describe('connection compilation', function (): void {
 });
 
 describe('hosts', function (): void {
-    it('splits a flat comma-separated hosts string into sorted endpoints', function (): void {
-        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => 'rabbit-b:5673,rabbit-a']);
+    it('parses flat and array host lists into sorted endpoints', function (array|string $hosts, array $expected): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => $hosts]);
 
-        expect($compiled['native']['brokers'][0]['hosts'])->toBe([
-            ['host' => 'rabbit-a', 'port' => 5672],
-            ['host' => 'rabbit-b', 'port' => 5673],
-        ]);
-    });
-
-    it('accepts the documented flat string form verbatim', function (): void {
-        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => 'a:5672,b:5672']);
-
-        expect($compiled['native']['brokers'][0]['hosts'])->toBe([
-            ['host' => 'a', 'port' => 5672],
-            ['host' => 'b', 'port' => 5672],
-        ]);
-    });
-
-    it('accepts an array of host strings', function (): void {
-        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => ['rabbit-b:5673', 'rabbit-a']]);
-
-        expect($compiled['native']['brokers'][0]['hosts'])->toBe([
-            ['host' => 'rabbit-a', 'port' => 5672],
-            ['host' => 'rabbit-b', 'port' => 5673],
-        ]);
-    });
+        expect($compiled['native']['brokers'][0]['hosts'])->toBe($expected);
+    })->with([
+        'flat comma-separated string, sorted' => [
+            'rabbit-b:5673,rabbit-a',
+            [hostEndpoint('rabbit-a', 5672), hostEndpoint('rabbit-b', 5673)],
+        ],
+        'flat string accepted verbatim' => [
+            'a:5672,b:5672',
+            [hostEndpoint('a', 5672), hostEndpoint('b', 5672)],
+        ],
+        'array of host strings' => [
+            ['rabbit-b:5673', 'rabbit-a'],
+            [hostEndpoint('rabbit-a', 5672), hostEndpoint('rabbit-b', 5673)],
+        ],
+    ]);
 
     it('parses a bracketed IPv6 endpoint', function (): void {
         $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => '[::1]:5672']);
 
-        expect($compiled['native']['brokers'][0]['hosts'])->toBe([['host' => '::1', 'port' => 5672]]);
+        expect($compiled['native']['brokers'][0]['hosts'])->toBe([hostEndpoint('::1', 5672)]);
     });
 
     it('rejects an out-of-range port with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => '127.0.0.1:70000']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.hosts.0');
+        expectCompileRejected(['hosts' => '127.0.0.1:70000'], 'queue.connections.orders.hosts.0');
     });
 
     it('rejects empty hosts with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'hosts' => []]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.hosts');
+        expectCompileRejected(['hosts' => []], 'queue.connections.orders.hosts');
     });
 });
 
@@ -82,8 +72,7 @@ describe('env booleans', function (): void {
     ]);
 
     it('rejects a junk boolean string with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'best_effort' => 'maybe']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.best_effort');
+        expectCompileRejected(['best_effort' => 'maybe'], 'queue.connections.orders.best_effort');
     });
 
     it('casts env booleans on the other boolean keys', function (): void {
@@ -121,13 +110,11 @@ describe('env integers', function (): void {
     });
 
     it('rejects a junk integer string with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'prefetch' => 'abc']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.prefetch');
+        expectCompileRejected(['prefetch' => 'abc'], 'queue.connections.orders.prefetch');
     });
 
     it('range-checks cast integers', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'heartbeat' => '-1']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.heartbeat');
+        expectCompileRejected(['heartbeat' => '-1'], 'queue.connections.orders.heartbeat');
     });
 });
 
@@ -135,12 +122,10 @@ describe('publisher safety', function (): void {
     it('derives confirms and mandatory from the safety mode', function (string $safety, bool $confirms, bool $mandatory): void {
         $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'safety' => $safety]);
 
-        expect($compiled['publisher'])->toBe([
-            'safety' => $safety,
-            'confirms' => $confirms,
-            'mandatory' => $mandatory,
-            'confirm_timeout' => 30000,
-        ])->and($compiled['native']['publisher'])->toBe($compiled['publisher']);
+        expect($compiled['publisher'])->toBe(array_merge(
+            referenceCompiled('orders')['publisher'],
+            ['safety' => $safety, 'confirms' => $confirms, 'mandatory' => $mandatory],
+        ))->and($compiled['native']['publisher'])->toBe($compiled['publisher']);
     })->with([
         'safe' => ['safe', true, true],
         'unsafe' => ['unsafe', true, false],
@@ -148,8 +133,7 @@ describe('publisher safety', function (): void {
     ]);
 
     it('rejects an unknown safety mode with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'safety' => 'careless']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.safety');
+        expectCompileRejected(['safety' => 'careless'], 'queue.connections.orders.safety');
     });
 });
 
@@ -177,13 +161,13 @@ describe('queue key', function (): void {
 
 describe('bounds', function (): void {
     it('bounds wait_timeout between 1000 and 86400000', function (int $value, bool $valid): void {
-        $compile = fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'wait_timeout' => $value]);
-
-        if ($valid) {
-            expect($compile()['native']['consumer']['wait_timeout'])->toBe($value);
-        } else {
-            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.wait_timeout');
-        }
+        expectBounded(
+            fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'wait_timeout' => $value]),
+            fn (array $compiled): int => $compiled['native']['consumer']['wait_timeout'],
+            $value,
+            $valid,
+            'queue.connections.orders.wait_timeout',
+        );
     })->with([
         'below the minimum' => [999, false],
         'at the minimum' => [1000, true],
@@ -192,13 +176,13 @@ describe('bounds', function (): void {
     ]);
 
     it('bounds prefetch between 1 and 65535', function (int $value, bool $valid): void {
-        $compile = fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'prefetch' => $value]);
-
-        if ($valid) {
-            expect($compile()['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe($value);
-        } else {
-            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.prefetch');
-        }
+        expectBounded(
+            fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'prefetch' => $value]),
+            fn (array $compiled): int => $compiled['native']['workers'][0]['subscriptions'][0]['prefetch'],
+            $value,
+            $valid,
+            'queue.connections.orders.prefetch',
+        );
     })->with([
         'zero' => [0, false],
         'at the maximum' => [65_535, true],
@@ -206,13 +190,13 @@ describe('bounds', function (): void {
     ]);
 
     it('bounds confirm_timeout to at least 1000', function (int $value, bool $valid): void {
-        $compile = fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'confirm_timeout' => $value]);
-
-        if ($valid) {
-            expect($compile()['publisher']['confirm_timeout'])->toBe($value);
-        } else {
-            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.confirm_timeout');
-        }
+        expectBounded(
+            fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'confirm_timeout' => $value]),
+            fn (array $compiled): int => $compiled['publisher']['confirm_timeout'],
+            $value,
+            $valid,
+            'queue.connections.orders.confirm_timeout',
+        );
     })->with([
         'below the minimum' => [999, false],
         'at the minimum' => [1000, true],
@@ -228,15 +212,13 @@ describe('management url', function (): void {
     })->with([null, '', '   ', 'https://mq.local:15672']);
 
     it('rejects a non-string management_url with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'management_url' => 15672]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.management_url');
+        expectCompileRejected(['management_url' => 15672], 'queue.connections.orders.management_url');
     });
 });
 
 describe('topology', function (): void {
     it('rejects delivery_limit without dead_letter', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'delivery_limit' => 20]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.dead_letter');
+        expectCompileRejected(['delivery_limit' => 20], 'queue.connections.orders.dead_letter');
     });
 
     it('propagates delivery_limit with dead_letter into the native config', function (): void {
@@ -257,13 +239,11 @@ describe('topology', function (): void {
     });
 
     it('rejects an unknown topology_mode with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'topology_mode' => 'managed']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.topology_mode');
+        expectCompileRejected(['topology_mode' => 'managed'], 'queue.connections.orders.topology_mode');
     });
 
     it('rejects an unknown queue_type with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'queue_type' => 'lazy']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.queue_type');
+        expectCompileRejected(['queue_type' => 'lazy'], 'queue.connections.orders.queue_type');
     });
 });
 
@@ -276,25 +256,21 @@ describe('credentials and tls', function (): void {
     });
 
     it('allows an empty password but rejects an empty username', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'username' => '']))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.username');
+        expectCompileRejected(['username' => ''], 'queue.connections.orders.username');
     });
 
     it('rejects a non-string tls certificate path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'tls' => ['ca_cert' => 5]]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.tls.ca_cert');
+        expectCompileRejected(['tls' => ['ca_cert' => 5]], 'queue.connections.orders.tls.ca_cert');
     });
 });
 
 describe('delay', function (): void {
     it('rejects an unknown delay mode with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'delay' => ['mode' => 'cron']]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.delay.mode');
+        expectCompileRejected(['delay' => ['mode' => 'cron']], 'queue.connections.orders.delay.mode');
     });
 
     it('rejects empty delay buckets with the exact path', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'delay' => ['buckets' => []]]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.delay.buckets');
+        expectCompileRejected(['delay' => ['buckets' => []]], 'queue.connections.orders.delay.buckets');
     });
 });
 
@@ -393,8 +369,7 @@ describe('package defaults', function (): void {
     });
 
     it('rejects an unknown top-level connection key that no default covers', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'prefetchh' => 10], packageDefaults()))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.prefetchh: unknown key');
+        expectCompileRejected(['prefetchh' => 10], 'queue.connections.orders.prefetchh: unknown key', packageDefaults());
     });
 
     it('casts env-style default values after the merge', function (): void {
@@ -453,28 +428,14 @@ describe('subscriptions escape hatch', function (): void {
         ]);
 
         expect($compiled['native']['workers'][0]['subscriptions'])->toBe([
-            [
-                'name' => 'jobs',
-                'broker' => 'orders',
-                'queue' => 'orders.jobs',
-                'weight' => 1,
-                'priority_class' => 0,
-                'prefetch' => 64,
-                'starvation_after' => 30,
-                'early_ack' => false,
-                'no_ack' => false,
-            ],
-            [
-                'name' => 'alerts',
-                'broker' => 'orders',
-                'queue' => 'orders.alerts',
+            subscription('jobs'),
+            subscription('alerts', [
                 'weight' => 3,
                 'priority_class' => 2,
                 'prefetch' => 8,
                 'starvation_after' => 10,
                 'early_ack' => true,
-                'no_ack' => false,
-            ],
+            ]),
         ]);
     });
 
@@ -485,62 +446,46 @@ describe('subscriptions escape hatch', function (): void {
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => '2', 'priority_class' => '1']],
         ]);
 
-        expect($compiled['native']['workers'][0]['subscriptions'][0])->toBe([
-            'name' => 'jobs',
-            'broker' => 'orders',
-            'queue' => 'orders.jobs',
-            'weight' => 2,
-            'priority_class' => 1,
-            'prefetch' => 32,
-            'starvation_after' => 30,
-            'early_ack' => false,
-            'no_ack' => false,
-        ]);
+        expect($compiled['native']['workers'][0]['subscriptions'][0])->toBe(
+            subscription('jobs', ['weight' => 2, 'priority_class' => 1, 'prefetch' => 32]),
+        );
     });
 
     it('rejects an empty subscriptions array', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'subscriptions' => []]))
-            ->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions');
+        expectCompileRejected(['subscriptions' => []], 'queue.connections.orders.subscriptions');
     });
 
     it('rejects unknown keys inside a subscription', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'enabled' => true]],
-        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.enabled: unknown key');
+        expectCompileRejected(
+            ['subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'enabled' => true]]],
+            'queue.connections.orders.subscriptions.jobs.enabled: unknown key',
+        );
     });
 
     it('requires a non-empty queue per subscription', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['jobs' => []],
-        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.queue');
+        expectCompileRejected(
+            ['subscriptions' => ['jobs' => []]],
+            'queue.connections.orders.subscriptions.jobs.queue',
+        );
     });
 
     it('rejects an empty subscription alias', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['' => ['queue' => 'orders.jobs']],
-        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions');
+        expectCompileRejected(
+            ['subscriptions' => ['' => ['queue' => 'orders.jobs']]],
+            'queue.connections.orders.subscriptions',
+        );
     });
 
     it('rejects early_ack without best_effort with the exact message', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true]],
-        ]))->toThrow(
-            InvalidArgumentException::class,
+        expectCompileRejected(
+            ['subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true]]],
             'queue.connections.orders.subscriptions.jobs.early_ack: early_ack is not allowed in reliable mode — set best_effort=true to opt in',
         );
     });
 
     it('rejects no_ack without early_ack with the exact message', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'best_effort' => true,
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'no_ack' => true]],
-        ]))->toThrow(
-            InvalidArgumentException::class,
+        expectCompileRejected(
+            ['best_effort' => true, 'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'no_ack' => true]]],
             "queue.connections.orders.subscriptions.jobs.no_ack: no_ack=true requires early_ack=true for subscription 'jobs'",
         );
     });
@@ -548,11 +493,8 @@ describe('subscriptions escape hatch', function (): void {
     it('fires the early_ack guard before the no_ack best_effort guard', function (): void {
         // Guard precedence: the no_ack best_effort message is unreachable
         // when early_ack already lacks best_effort.
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]],
-        ]))->toThrow(
-            InvalidArgumentException::class,
+        expectCompileRejected(
+            ['subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]]],
             'queue.connections.orders.subscriptions.jobs.early_ack: early_ack is not allowed in reliable mode — set best_effort=true to opt in',
         );
     });
@@ -569,16 +511,16 @@ describe('subscriptions escape hatch', function (): void {
     });
 
     it('bounds weight between 1 and 65535', function (int $value, bool $valid): void {
-        $compile = fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => $value]],
-        ]);
-
-        if ($valid) {
-            expect($compile()['native']['workers'][0]['subscriptions'][0]['weight'])->toBe($value);
-        } else {
-            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.weight');
-        }
+        expectBounded(
+            fn (): array => ConnectionCompiler::compile('orders', [
+                'queue' => 'default',
+                'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => $value]],
+            ]),
+            fn (array $compiled): int => $compiled['native']['workers'][0]['subscriptions'][0]['weight'],
+            $value,
+            $valid,
+            'queue.connections.orders.subscriptions.jobs.weight',
+        );
     })->with([
         'zero' => [0, false],
         'at the maximum' => [65_535, true],
@@ -586,16 +528,16 @@ describe('subscriptions escape hatch', function (): void {
     ]);
 
     it('bounds priority_class to i16', function (int $value, bool $valid): void {
-        $compile = fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'priority_class' => $value]],
-        ]);
-
-        if ($valid) {
-            expect($compile()['native']['workers'][0]['subscriptions'][0]['priority_class'])->toBe($value);
-        } else {
-            expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.jobs.priority_class');
-        }
+        expectBounded(
+            fn (): array => ConnectionCompiler::compile('orders', [
+                'queue' => 'default',
+                'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'priority_class' => $value]],
+            ]),
+            fn (array $compiled): int => $compiled['native']['workers'][0]['subscriptions'][0]['priority_class'],
+            $value,
+            $valid,
+            'queue.connections.orders.subscriptions.jobs.priority_class',
+        );
     })->with([
         'at the minimum' => [-32_768, true],
         'at the maximum' => [32_767, true],
@@ -604,13 +546,13 @@ describe('subscriptions escape hatch', function (): void {
     ]);
 
     it('rejects two subscriptions sharing the same queue', function (): void {
-        expect(fn (): array => ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
-            'subscriptions' => [
+        expectCompileRejected(
+            ['subscriptions' => [
                 'jobs' => ['queue' => 'orders.jobs'],
                 'mirror' => ['queue' => 'orders.jobs'],
-            ],
-        ]))->toThrow(InvalidArgumentException::class, 'queue.connections.orders.subscriptions.mirror.queue');
+            ]],
+            'queue.connections.orders.subscriptions.mirror.queue',
+        );
     });
 });
 
@@ -641,6 +583,65 @@ function packageDefaults(): array
         'production_warning' => true,
         'best_effort' => false,
     ];
+}
+
+/**
+ * A compiled broker endpoint.
+ *
+ * @return array{host: string, port: int}
+ */
+function hostEndpoint(string $host, int $port): array
+{
+    return ['host' => $host, 'port' => $port];
+}
+
+/**
+ * Asserts the compiler rejects a connection overriding the given keys with
+ * the exact argument-exception path.
+ *
+ * @param array<string, mixed> $override
+ */
+function expectCompileRejected(array $override, string $path, ?array $defaults = null): void
+{
+    expect(fn (): array => ConnectionCompiler::compile('orders', array_merge(fullConnection(), $override), $defaults ?? []))
+        ->toThrow(InvalidArgumentException::class, $path);
+}
+
+/**
+ * Asserts a bounded integer setting: valid values land in the compiled config
+ * at the given path, invalid ones throw with the exact compiler path.
+ *
+ * @param callable(): array $compile
+ * @param callable(array): int $read
+ */
+function expectBounded(callable $compile, callable $read, int $value, bool $valid, string $path): void
+{
+    if ($valid) {
+        expect($read($compile()))->toBe($value);
+    } else {
+        expect($compile)->toThrow(InvalidArgumentException::class, $path);
+    }
+}
+
+/**
+ * A compiled subscription row for the reference 'orders' broker.
+ *
+ * @param array<string, mixed> $overrides
+ * @return array<string, mixed>
+ */
+function subscription(string $name, array $overrides = []): array
+{
+    return array_merge([
+        'name' => $name,
+        'broker' => 'orders',
+        'queue' => 'orders.' . $name,
+        'weight' => 1,
+        'priority_class' => 0,
+        'prefetch' => 64,
+        'starvation_after' => 30,
+        'early_ack' => false,
+        'no_ack' => false,
+    ], $overrides);
 }
 
 /**

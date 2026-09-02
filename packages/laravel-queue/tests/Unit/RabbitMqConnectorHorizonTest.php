@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 
 beforeEach(function (): void {
     $this->app['config']->set('queue.connections.rabbit-rs', [
@@ -12,12 +11,7 @@ beforeEach(function (): void {
         'queue' => 'default',
     ]);
 
-    (new class($this->app) extends RabbitMqServiceProvider {
-        protected function nativeExtensionLoaded(): bool
-        {
-            return true;
-        }
-    })->boot();
+    bootFakeNativeExtension($this->app);
 });
 
 it('instantiates HorizonRabbitMqQueue when worker=horizon', function (): void {

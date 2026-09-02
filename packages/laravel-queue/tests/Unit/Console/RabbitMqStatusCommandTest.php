@@ -6,6 +6,18 @@ use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 
 const FAILED_TO_COLLECT_STATS = 'Failed to collect stats';
 
+/**
+ * Binds a NativePoolFactory whose pool creation always throws.
+ */
+function bindFailingPoolFactory($app): void
+{
+    $app->instance(NativePoolFactory::class, new NativePoolFactory(
+        createPool: static function (): \Goopil\RabbitRs\Pool {
+            throw new TestException('broker unreachable');
+        },
+    ));
+}
+
 beforeEach(function () {
     config()->set('queue.connections.rabbit-rs', [
         'driver' => 'rabbit-rs',
@@ -15,13 +27,7 @@ beforeEach(function () {
 
 describe('RabbitMqStatusCommand exit codes', function () {
     it('returns FAILURE when stats collection throws', function () {
-        $factory = new NativePoolFactory(
-            createPool: static function (): \Goopil\RabbitRs\Pool {
-                throw new TestException('broker unreachable');
-            },
-        );
-
-        $this->app->instance(NativePoolFactory::class, $factory);
+        bindFailingPoolFactory($this->app);
 
         $this->artisan('rabbit-rs:status')
             ->assertFailed()
@@ -34,13 +40,7 @@ describe('RabbitMqStatusCommand exit codes', function () {
     });
 
     it('returns FAILURE with json format when stats collection throws', function () {
-        $factory = new NativePoolFactory(
-            createPool: static function (): \Goopil\RabbitRs\Pool {
-                throw new TestException('broker unreachable');
-            },
-        );
-
-        $this->app->instance(NativePoolFactory::class, $factory);
+        bindFailingPoolFactory($this->app);
 
         $this->artisan('rabbit-rs:status --format=json')
             ->assertFailed()

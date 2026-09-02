@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
@@ -144,17 +143,11 @@ describe('lifecycle operations', function () {
     });
 
     it('reload calls close on the cached pool', function () {
-        $pool = new Pool();
-        $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pool,
-        );
-        $this->app->instance(NativePoolFactory::class, $factory);
+        [$pool, $factory] = trackedPoolFactory($this->app);
 
-        $config = lifecycleCompiledNativeConfig($this->app);
-        $factory->make($config);
+        $factory->make(lifecycleCompiledNativeConfig($this->app));
 
-        $lifecycle = new OctaneLifecycle($this->app);
-        $lifecycle->reload();
+        (new OctaneLifecycle($this->app))->reload();
 
         expect($pool->closeCalls)->toBe(1);
     });
@@ -173,33 +166,21 @@ describe('lifecycle operations', function () {
     });
 
     it('worker stop calls close on the cached pool', function () {
-        $pool = new Pool();
-        $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pool,
-        );
-        $this->app->instance(NativePoolFactory::class, $factory);
+        [$pool, $factory] = trackedPoolFactory($this->app);
 
-        $config = lifecycleCompiledNativeConfig($this->app);
-        $factory->make($config);
+        $factory->make(lifecycleCompiledNativeConfig($this->app));
 
-        $lifecycle = new OctaneLifecycle($this->app);
-        $lifecycle->stop();
+        (new OctaneLifecycle($this->app))->stop();
 
         expect($pool->closeCalls)->toBe(1);
     });
 
     it('flush does not close pools', function () {
-        $pool = new Pool();
-        $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pool,
-        );
-        $this->app->instance(NativePoolFactory::class, $factory);
+        [$pool, $factory] = trackedPoolFactory($this->app);
 
-        $config = lifecycleCompiledNativeConfig($this->app);
-        $factory->make($config);
+        $factory->make(lifecycleCompiledNativeConfig($this->app));
 
-        $lifecycle = new OctaneLifecycle($this->app);
-        $lifecycle->flush();
+        (new OctaneLifecycle($this->app))->flush();
 
         expect($pool->closeCalls)->toBe(0);
     });
@@ -223,21 +204,7 @@ describe('config refresh on reload', function () {
             'queue' => 'default',
         ]);
 
-        $provider = new class($app) extends RabbitMqServiceProvider {
-            protected function nativeExtensionLoaded(): bool
-            {
-                return true;
-            }
-        };
-        $provider->boot();
-
-        $pool = octaneQueuePool($app['queue']->connection('rabbit-rs'));
-        expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
-
-        $app['config']->set('queue.connections.rabbit-rs.hosts', 'rotated:5672');
-        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
-
-        $poolAfter = octaneQueuePool($app['queue']->connection('rabbit-rs'));
+        [$pool, $poolAfter] = resolveRotateAndReload($app, 'rabbit-rs');
 
         expect($poolAfter->config['brokers'][0]['hosts'][0]['host'])->toBe('rotated')
             ->and($poolAfter)->not->toBe($pool);
@@ -250,19 +217,7 @@ describe('config refresh on reload', function () {
             'queue' => 'default',
         ]);
 
-        $provider = new class($app) extends RabbitMqServiceProvider {
-            protected function nativeExtensionLoaded(): bool
-            {
-                return true;
-            }
-        };
-        $provider->boot();
-
-        $pool = octaneQueuePool($app['queue']->connection('rabbit-rs-rotated'));
-        expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
-
-        $app['config']->set('queue.connections.rabbit-rs-rotated.hosts', 'rotated:5672');
-        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+        [$pool] = resolveRotateAndReload($app, 'rabbit-rs-rotated');
 
         $app['config']->set('queue.connections.rabbit-rs-fresh', [
             'driver' => 'rabbit-rs',
@@ -283,6 +238,41 @@ function octaneQueuePool(object $queue): Pool
 {
     // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
     return (new ReflectionProperty($queue, 'pool'))->getValue($queue);
+}
+
+/**
+ * Binds a NativePoolFactory whose make() always returns a tracked Pool.
+ *
+ * @return array{0: Pool, 1: NativePoolFactory}
+ */
+function trackedPoolFactory($app): array
+{
+    $pool = new Pool();
+    $factory = new NativePoolFactory(
+        createPool: static fn (array $config): Pool => $pool,
+    );
+    $app->instance(NativePoolFactory::class, $factory);
+
+    return [$pool, $factory];
+}
+
+/**
+ * Boots the fake-extension provider, resolves the given connection, then
+ * rotates its hosts config and dispatches the Octane reload event.
+ *
+ * @return array{0: Pool, 1: Pool} pools resolved before and after the reload
+ */
+function resolveRotateAndReload($app, string $connection): array
+{
+    bootFakeNativeExtension($app);
+
+    $pool = octaneQueuePool($app['queue']->connection($connection));
+    expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
+
+    $app['config']->set("queue.connections.{$connection}.hosts", 'rotated:5672');
+    Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+
+    return [$pool, octaneQueuePool($app['queue']->connection($connection))];
 }
 
 describe('consumer cleanup', function () {

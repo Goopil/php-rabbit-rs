@@ -19,6 +19,49 @@ function singlePlan(string $connection = 'rabbit-rs', string $queue = 'default')
     return [['connection' => $connection, 'queues' => [$queue]]];
 }
 
+/**
+ * Asserts the given worker option reaches the child command verbatim.
+ */
+function expectOptionPropagation(string $option, int $value): void
+{
+    $supervisor = new WorkerSupervisor(
+        plan: singlePlan(),
+        workers: 1,
+        maxRestarts: 1,
+        baseBackoffSeconds: 0,
+        options: [$option => $value],
+    );
+
+    expect($supervisor->buildChildCommands()[0])->toContain("--{$option}={$value}");
+}
+
+/**
+ * Runs a fork-less supervisor and asserts the ext-pcntl SupervisorException.
+ *
+ * @param list<array{connection: string, queues: list<string>}> $plan
+ */
+function expectPcntlMissingException(array $plan, int $workers): void
+{
+    $supervisor = new class(
+        plan: $plan,
+        workers: $workers,
+        maxRestarts: 1,
+        baseBackoffSeconds: 0,
+    ) extends WorkerSupervisor {
+        protected function canFork(): bool
+        {
+            return false;
+        }
+    };
+
+    try {
+        $supervisor->run();
+        expect(false)->toBeTrue('run() should have thrown');
+    } catch (SupervisorException $e) {
+        expect(str_contains($e->getMessage(), 'ext-pcntl is required'))->toBeTrue();
+    }
+}
+
 describe('buildChildCommands', function (): void {
     it('builds one command per plan entry with workers=1', function (): void {
         $supervisor = new WorkerSupervisor(
@@ -109,63 +152,23 @@ describe('buildChildCommands option propagation', function (): void {
     });
 
     it('propagates timeout option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            plan: singlePlan(),
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['timeout' => 30],
-        );
-
-        expect($supervisor->buildChildCommands()[0])->toContain('--timeout=30');
+        expectOptionPropagation('timeout', 30);
     });
 
     it('propagates tries option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            plan: singlePlan(),
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['tries' => 5],
-        );
-
-        expect($supervisor->buildChildCommands()[0])->toContain('--tries=5');
+        expectOptionPropagation('tries', 5);
     });
 
     it('propagates memory option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            plan: singlePlan(),
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['memory' => 256],
-        );
-
-        expect($supervisor->buildChildCommands()[0])->toContain('--memory=256');
+        expectOptionPropagation('memory', 256);
     });
 
     it('propagates max-jobs option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            plan: singlePlan(),
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['max-jobs' => 100],
-        );
-
-        expect($supervisor->buildChildCommands()[0])->toContain('--max-jobs=100');
+        expectOptionPropagation('max-jobs', 100);
     });
 
     it('propagates max-time option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            plan: singlePlan(),
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['max-time' => 3600],
-        );
-
-        expect($supervisor->buildChildCommands()[0])->toContain('--max-time=3600');
+        expectOptionPropagation('max-time', 3600);
     });
 
     it('propagates all worker options together', function (): void {
@@ -289,47 +292,13 @@ describe('backoff', function (): void {
 
 describe('pcntl availability', function (): void {
     it('throws SupervisorException when ext-pcntl is missing and more than one child is configured', function (): void {
-        $supervisor = new class(
-            plan: singlePlan(),
-            workers: 2,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-        ) extends WorkerSupervisor {
-            protected function canFork(): bool
-            {
-                return false;
-            }
-        };
-
-        try {
-            $supervisor->run();
-            expect(false)->toBeTrue('run() should have thrown');
-        } catch (SupervisorException $e) {
-            expect(str_contains($e->getMessage(), 'ext-pcntl is required'))->toBeTrue();
-        }
+        expectPcntlMissingException(singlePlan(), 2);
     });
 
     it('throws SupervisorException when ext-pcntl is missing and the plan spawns multiple children', function (): void {
-        $supervisor = new class(
-            plan: [
-                ['connection' => 'eu', 'queues' => ['orders']],
-                ['connection' => 'us', 'queues' => ['orders']],
-            ],
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-        ) extends WorkerSupervisor {
-            protected function canFork(): bool
-            {
-                return false;
-            }
-        };
-
-        try {
-            $supervisor->run();
-            expect(false)->toBeTrue('run() should have thrown');
-        } catch (SupervisorException $e) {
-            expect(str_contains($e->getMessage(), 'ext-pcntl is required'))->toBeTrue();
-        }
+        expectPcntlMissingException([
+            ['connection' => 'eu', 'queues' => ['orders']],
+            ['connection' => 'us', 'queues' => ['orders']],
+        ], 1);
     });
 });
