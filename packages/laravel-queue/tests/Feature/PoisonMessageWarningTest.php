@@ -42,6 +42,7 @@ describe('poison-message production warning', function () {
         config([
             'queue.connections.rabbit-rs' => [
                 'driver' => 'rabbit-rs',
+                'queue' => 'default',
                 'production_warning' => true,
             ],
         ]);
@@ -56,12 +57,13 @@ describe('poison-message production warning', function () {
         config([
             'queue.connections.rabbit-rs' => [
                 'driver' => 'rabbit-rs',
+                'queue' => 'default',
                 'production_warning' => true,
-            ],
-            'rabbit-rs.topology.queue.delivery_limit' => 20,
-            'rabbit-rs.topology.dead_letter' => [
-                'exchange' => 'dlx.jobs',
-                'queue' => 'dead.jobs',
+                'delivery_limit' => 20,
+                'dead_letter' => [
+                    'exchange' => 'dlx.jobs',
+                    'queue' => 'dead.jobs',
+                ],
             ],
         ]);
         bootProviderWithFakeNativeExtension($this->app);
@@ -77,6 +79,7 @@ describe('poison-message production warning', function () {
         config([
             'queue.connections.rabbit-rs' => [
                 'driver' => 'rabbit-rs',
+                'queue' => 'default',
                 'production_warning' => false,
             ],
         ]);
@@ -90,6 +93,7 @@ describe('poison-message production warning', function () {
         config([
             'queue.connections.rabbit-rs' => [
                 'driver' => 'rabbit-rs',
+                'queue' => 'default',
                 'production_warning' => true,
             ],
         ]);
@@ -104,10 +108,12 @@ describe('poison-message production warning', function () {
         config([
             'queue.connections.rabbit-rs-a' => [
                 'driver' => 'rabbit-rs',
+                'queue' => 'default',
                 'production_warning' => true,
             ],
             'queue.connections.rabbit-rs-b' => [
                 'driver' => 'rabbit-rs',
+                'queue' => 'default',
                 'production_warning' => true,
             ],
         ]);

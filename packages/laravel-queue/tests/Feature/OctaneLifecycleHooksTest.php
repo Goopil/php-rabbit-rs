@@ -5,14 +5,15 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\Facades\Event;
 
-function hooksNormalizedNativeConfig($app): array
+function hooksCompiledNativeConfig($app): array
 {
-    $config = $app['config']->get('rabbit-rs');
-    $normalized = \Goopil\RabbitRs\Laravel\Config\ConfigNormalizer::normalize(
-        is_array($config) ? $config : [],
+    $compiled = \Goopil\RabbitRs\Laravel\Config\ConnectionCompiler::compile(
+        'rabbit-rs',
+        ['queue' => 'default'],
+        is_array($app['config']->get('rabbit-rs')) ? $app['config']->get('rabbit-rs') : [],
     );
 
-    return $normalized['native'];
+    return $compiled['native'];
 }
 
 describe('Octane lifecycle hooks', function () {
@@ -30,7 +31,7 @@ describe('Octane lifecycle hooks', function () {
 
     it('WorkerReload event triggers pool flush', function () {
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = hooksNormalizedNativeConfig($this->app);
+        $config = hooksCompiledNativeConfig($this->app);
         $pool = $factory->make($config);
 
         Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
@@ -41,7 +42,7 @@ describe('Octane lifecycle hooks', function () {
 
     it('WorkerStopping event triggers pool flush', function () {
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = hooksNormalizedNativeConfig($this->app);
+        $config = hooksCompiledNativeConfig($this->app);
         $pool = $factory->make($config);
 
         Event::dispatch(new \Laravel\Octane\Events\WorkerStopping());

@@ -25,16 +25,16 @@ final class OctaneLifecycle
     }
 
     /**
-     * Called when Octane reloads the worker. All pools are flushed so
-     * the next request creates fresh connections, and the normalized
-     * config singleton is dropped so the next resolution re-normalizes
-     * from the current config (broker/credential rotation via env).
+     * Called when Octane reloads the worker. All pools are flushed and the
+     * queue manager's resolved connections are dropped, so the next request
+     * recompiles every connection from the current config (broker/credential
+     * rotation via env).
      */
     public function reload(): void
     {
         $this->closeConsumersOnResolvedQueues();
         $this->flushPoolFactory();
-        $this->container->forgetInstance('rabbit-rs.config');
+        $this->forgetResolvedConnections();
     }
 
     /**
@@ -54,6 +54,33 @@ final class OctaneLifecycle
     {
         if ($this->container->bound(NativePoolFactory::class)) {
             $this->container->make(NativePoolFactory::class)->flush();
+        }
+    }
+
+    /**
+     * Drops the queue manager's resolved connections so the next resolution
+     * recompiles each connection from the current config. Fails silent by
+     * design: if the property ever disappears from the framework, a stale
+     * pool merely survives until the next request's pool factory flush.
+     *
+     * ponytail: reflection clears QueueManager::$connections — no public API
+     * exists in Laravel 13; switch to one if added upstream.
+     */
+    private function forgetResolvedConnections(): void
+    {
+        if (! $this->container->bound('queue')) {
+            return;
+        }
+
+        try {
+            $manager = $this->container->make('queue');
+            $property = new \ReflectionProperty($manager, 'connections');
+            $value = $property->getValue($manager);
+            if (is_array($value)) {
+                $property->setValue($manager, []);
+            }
+        } catch (\ReflectionException) {
+            // Property gone (future Laravel core change): no-op.
         }
     }
 

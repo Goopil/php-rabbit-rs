@@ -7,9 +7,19 @@ use Illuminate\Support\Facades\Http;
 const STATUS_QUEUE_JSON_COMMAND = 'rabbit-rs:status --format=json';
 const STATUS_MGMT_URL = 'http://mq.local:15672';
 
+beforeEach(function () {
+    config()->set('queue.connections.rabbit-rs', [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+        'vhost' => '/',
+        'username' => 'guest',
+        'password' => 'guest',
+        'management_url' => STATUS_MGMT_URL,
+    ]);
+});
+
 describe('status command queue stats', function () {
     it('json output includes queue counters from the management api', function () {
-        config()->set('rabbit-rs.brokers.default.management_url', STATUS_MGMT_URL);
         Http::fake([
             STATUS_MGMT_URL.'/api/queues/*' => Http::response([
                 'messages_delivered' => 10,
@@ -32,7 +42,6 @@ describe('status command queue stats', function () {
     });
 
     it('requests the vhost-encoded queue endpoint', function () {
-        config()->set('rabbit-rs.brokers.default.management_url', STATUS_MGMT_URL);
         Http::fake(['*' => Http::response([])]);
 
         $this->artisan(STATUS_QUEUE_JSON_COMMAND)->assertSuccessful();
@@ -43,7 +52,6 @@ describe('status command queue stats', function () {
     });
 
     it('defaults missing management counters to zero', function () {
-        config()->set('rabbit-rs.brokers.default.management_url', STATUS_MGMT_URL);
         Http::fake(['*' => Http::response([])]);
 
         $this->artisan(STATUS_QUEUE_JSON_COMMAND)
@@ -54,7 +62,6 @@ describe('status command queue stats', function () {
     });
 
     it('degrades gracefully when the management api fails', function () {
-        config()->set('rabbit-rs.brokers.default.management_url', STATUS_MGMT_URL);
         Http::fake(['*' => Http::response(['error' => 'boom'], 500)]);
 
         $this->artisan('rabbit-rs:status')
@@ -63,7 +70,6 @@ describe('status command queue stats', function () {
     });
 
     it('human output shows cross-process queue metrics', function () {
-        config()->set('rabbit-rs.brokers.default.management_url', STATUS_MGMT_URL);
         Http::fake(['*' => Http::response([
             'messages_delivered' => 10,
             'messages_acked' => 8,
@@ -73,12 +79,11 @@ describe('status command queue stats', function () {
         $this->artisan('rabbit-rs:status')
             ->assertSuccessful()
             ->expectsOutputToContain('Queue Metrics')
-            ->expectsOutputToContain('default/default')
+            ->expectsOutputToContain('rabbit-rs/default')
             ->expectsOutputToContain('redelivered');
     });
 
     it('human output states that redeliveries also count crash requeues', function () {
-        config()->set('rabbit-rs.brokers.default.management_url', STATUS_MGMT_URL);
         Http::fake(['*' => Http::response([])]);
 
         $this->artisan('rabbit-rs:status')
@@ -87,6 +92,7 @@ describe('status command queue stats', function () {
     });
 
     it('human output reports when the management url is not configured', function () {
+        config()->set('queue.connections.rabbit-rs.management_url', null);
         Http::fake(['*' => Http::response([])]);
 
         $this->artisan('rabbit-rs:status')
@@ -97,6 +103,7 @@ describe('status command queue stats', function () {
     });
 
     it('json output reports when the management url is not configured', function () {
+        config()->set('queue.connections.rabbit-rs.management_url', null);
         Http::fake(['*' => Http::response([])]);
 
         $this->artisan(STATUS_QUEUE_JSON_COMMAND)

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
@@ -14,59 +14,20 @@ uses(TestCase::class)->in(__DIR__);
 
 class TestException extends \Exception {}
 
+/**
+ * Raw connection-shaped config (queue.connections.* entry) for the lab.
+ */
 function liveConfig(string $queueName): array
 {
     return [
-        'topology_mode' => 'declare',
-        'brokers' => [
-            'default' => [
-                'hosts' => ['127.0.0.1:5672'],
-                'vhost' => '/orders-eu',
-                'credentials' => [
-                    'username' => 'rabbit_rs',
-                    'password' => 'rabbit_rs_lab',
-                ],
-                'tls' => ['enabled' => false],
-                'heartbeat' => 30,
-            ],
-        ],
-        'routes' => [
-            'default' => [
-                'broker' => 'default',
-                'exchange' => '',
-                'routing_key' => '{queue}',
-            ],
-        ],
-        'workers' => [
-            'default' => [
-                'scheduler' => [
-                    'strategy' => 'weighted_fair',
-                ],
-                'subscriptions' => [
-                    'default' => [
-                        'enabled' => true,
-                        'broker' => 'default',
-                        'queue' => $queueName,
-                        'weight' => 1,
-                        'priority_class' => 0,
-                        'prefetch' => ['mode' => 'fixed', 'value' => 16],
-                        'starvation_after' => 30,
-                    ],
-                ],
-            ],
-        ],
-        'publisher' => [
-            'confirms' => true,
-            'mandatory' => true,
-        ],
-        'topology' => [
-            'queue' => [
-                'type' => 'quorum',
-                'durable' => true,
-                'delivery_limit' => null,
-            ],
-            'dead_letter' => null,
-        ],
+        'driver' => 'rabbit-rs',
+        'queue' => $queueName,
+        'hosts' => '127.0.0.1:5672',
+        'vhost' => '/orders-eu',
+        'username' => 'rabbit_rs',
+        'password' => 'rabbit_rs_lab',
+        'exchange' => '',
+        'routing_key' => '{queue}',
     ];
 }
 
@@ -124,10 +85,10 @@ function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
 
 /**
  * Builds the pool/queue pair integration tests drive, from the live lab
- * config run through the normalizer. Returns [$pool, $queue]; the caller owns
- * pool cleanup (closePoolQuietly() for post-chaos teardown).
+ * connection config run through the compiler. Returns [$pool, $queue]; the
+ * caller owns pool cleanup (closePoolQuietly() for post-chaos teardown).
  *
- * $configOverrides patches the live config (e.g. publisher confirms) and
+ * $configOverrides patches the connection config (e.g. safety), and
  * $connectOverrides extends the connector options (e.g. block_for).
  * $brokerHosts replaces the default broker host list (e.g. routing the
  * connection through a per-test Toxiproxy proxy).
@@ -142,17 +103,18 @@ function integrationPoolAndQueue(
 ): array {
     $config = array_merge(liveConfig($queueName), $configOverrides);
     if ($brokerHosts !== null) {
-        $config['brokers']['default']['hosts'] = $brokerHosts;
+        $config['hosts'] = $brokerHosts;
     }
-    $normalized = ConfigNormalizer::normalize($config);
 
-    $pool = new Pool($normalized['native']);
+    $compiled = ConnectionCompiler::compile($connectionName, $config);
+    $pool = new Pool($compiled['native']);
     $factory = new NativePoolFactory(createPool: fn (): Pool => $pool);
-    $queue = (new RabbitMqConnector($factory, $normalized))->connect(
-        array_merge(['queue' => $queueName], $connectOverrides),
+    $queue = (new RabbitMqConnector($factory))->connect(
+        array_merge($config, $connectOverrides),
     );
     $queue->setContainer($container);
     $queue->setConnectionName($connectionName);
 
     return [$pool, $queue];
 }
+

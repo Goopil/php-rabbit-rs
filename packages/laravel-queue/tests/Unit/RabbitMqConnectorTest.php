@@ -2,12 +2,10 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
-use Illuminate\Http\Request;
 
 function connectorProperty(object $object, string $name): mixed
 {
@@ -40,29 +38,50 @@ it('resolves the RabbitMQ driver through the queue manager', function (): void {
         ->and($queue->getConnectionName())->toBe('rabbit-rs-primary');
 });
 
-it('shares the pool between equivalent queue connections without sharing their profile', function (): void {
-    $primary = $this->app['queue']->connection('rabbit-rs-primary');
-    $secondary = $this->app['queue']->connection('rabbit-rs-secondary');
+it('creates distinct pools for connections with different brokers', function (): void {
+    $this->app['config']->set('queue.connections.rabbit-rs-eu', [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+        'hosts' => 'eu-rabbit:5672',
+    ]);
+    $this->app['config']->set('queue.connections.rabbit-rs-us', [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+        'hosts' => 'us-rabbit:5672',
+    ]);
 
-    expect(connectorProperty($primary, 'pool'))->toBe(connectorProperty($secondary, 'pool'))
-        ->and(connectorProperty($primary, 'defaultQueue'))->toBe('default')
-        ->and(connectorProperty($secondary, 'defaultQueue'))->toBe('secondary');
+    $manager = $this->app['queue'];
+    $euPool = connectorProperty($manager->connection('rabbit-rs-eu'), 'pool');
+    $usPool = connectorProperty($manager->connection('rabbit-rs-us'), 'pool');
+
+    expect($euPool)->not->toBe($usPool)
+        ->and($euPool->config['brokers'][0]['name'])->toBe('rabbit-rs-eu')
+        ->and($usPool->config['brokers'][0]['name'])->toBe('rabbit-rs-us');
 });
 
-it('shares the same pool for equivalent native configurations', function (): void {
-    $factory = new NativePoolFactory();
-    $config = ConfigNormalizer::normalize($this->app['config']->get('rabbit-rs'))['native'];
+it('shares one pool for connections with byte-identical configuration', function (): void {
+    $config = ['driver' => 'rabbit-rs', 'queue' => 'default'];
+    $this->app['config']->set('queue.connections.rabbit-rs-clone-a', $config);
+    $this->app['config']->set('queue.connections.rabbit-rs-clone-b', $config);
 
-    expect($factory->make($config))->toBe($factory->make($config));
+    $manager = $this->app['queue'];
+    $firstPool = connectorProperty($manager->connection('rabbit-rs-clone-a'), 'pool');
+    $secondPool = connectorProperty($manager->connection('rabbit-rs-clone-b'), 'pool');
+
+    expect($firstPool)->toBe($secondPool);
 });
 
-it('creates different pools for different native configurations', function (): void {
-    $factory = new NativePoolFactory();
-    $firstConfig = ConfigNormalizer::normalize($this->app['config']->get('rabbit-rs'))['native'];
-    $secondConfig = $firstConfig;
-    $secondConfig['brokers'][0]['heartbeat'] = 60;
+it('keeps distinct pools for connections that differ only in their queue', function (): void {
+    $manager = $this->app['queue'];
+    $primaryPool = connectorProperty($manager->connection('rabbit-rs-primary'), 'pool');
+    $secondaryPool = connectorProperty($manager->connection('rabbit-rs-secondary'), 'pool');
 
-    expect($factory->make($firstConfig))->not->toBe($factory->make($secondConfig));
+    $primaryQueue = $manager->connection('rabbit-rs-primary');
+    $secondaryQueue = $manager->connection('rabbit-rs-secondary');
+
+    expect($primaryPool)->not->toBe($secondaryPool)
+        ->and(connectorProperty($primaryQueue, 'defaultQueue'))->toBe('default')
+        ->and(connectorProperty($secondaryQueue, 'defaultQueue'))->toBe('secondary');
 });
 
 it('does not reuse inherited pools after a fork', function (): void {
@@ -72,40 +91,24 @@ it('does not reuse inherited pools after a fork', function (): void {
             return $processId;
         },
     );
-    $config = ConfigNormalizer::normalize($this->app['config']->get('rabbit-rs'))['native'];
-    $parentPool = $factory->make($config);
+    $compiled = \Goopil\RabbitRs\Laravel\Config\ConnectionCompiler::compile(
+        'rabbit-rs-primary',
+        ['queue' => 'default'],
+    );
+    $parentPool = $factory->make($compiled['native']);
 
     $processId = 101;
 
-    expect($factory->make($config))->not->toBe($parentPool);
-});
-
-it('does not retain request-scoped values in the connector', function (): void {
-    $request = new Request();
-    $reference = WeakReference::create($request);
-    $connector = new RabbitMqConnector(
-        new NativePoolFactory(),
-        ConfigNormalizer::normalize($this->app['config']->get('rabbit-rs')),
-    );
-
-    $connector->connect([
-        'driver' => 'rabbit-rs',
-        'request' => $request,
-    ]);
-    unset($request);
-    gc_collect_cycles();
-
-    expect($reference->get())->toBeNull();
+    expect($factory->make($compiled['native']))->not->toBe($parentPool);
 });
 
 it('rejects an invalid default queue', function (): void {
     $connector = new RabbitMqConnector(
         new NativePoolFactory(),
-        ConfigNormalizer::normalize($this->app['config']->get('rabbit-rs')),
     );
 
     $this->expectException(InvalidArgumentException::class);
     $this->expectExceptionMessage('queue');
 
-    $connector->connect(['queue' => new Request()]);
+    $connector->connect(['queue' => new stdClass()]);
 });

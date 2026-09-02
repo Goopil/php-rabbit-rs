@@ -22,7 +22,9 @@ final class ConnectionCompiler
 
     /**
      * Top-level connection keys the compiler consumes. `driver` is read by
-     * the queue dispatcher before compilation, not here.
+     * the queue dispatcher before compilation, not here; `after_commit` and
+     * `block_for` are framework keys read by the connector from the raw
+     * connection — listed so they ride through validation.
      */
     private const CONNECTION_KEYS = [
         'driver', 'queue', 'subscriptions', 'management_url',
@@ -34,6 +36,7 @@ final class ConnectionCompiler
         'topology_mode',
         'queue_type', 'queue_durable', 'delivery_limit', 'dead_letter',
         'delay',
+        'after_commit', 'block_for',
     ];
 
     /**

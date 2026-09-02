@@ -9,6 +9,7 @@ describe('ClearableQueue contract', function () {
     beforeEach(function (): void {
         $this->app['config']->set('queue.connections.rabbit-rs', [
             'driver' => 'rabbit-rs',
+            'queue' => 'default',
         ]);
         (new class($this->app) extends RabbitMqServiceProvider {
             protected function nativeExtensionLoaded(): bool
