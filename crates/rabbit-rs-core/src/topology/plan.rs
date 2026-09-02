@@ -1,9 +1,11 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
 use crate::{
-    config::TopologyMode,
+    config::{TopologyMode, ValidatedConfig},
     transport::{BindingSpec, ExchangeKind, ExchangeSpec, Headers, QueueKind, QueueSpec},
 };
+
+use super::delay::{DELAYED_EXCHANGE_NAME, DelayStrategy, delayed_exchange_spec};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueDefinition {
@@ -248,6 +250,83 @@ impl TopologyPlan {
     #[must_use]
     pub fn bindings(&self) -> &[BindingSpec] {
         &self.bindings
+    }
+
+    /// Compiles the topology plan a pool applies for a validated
+    /// configuration.
+    ///
+    /// Declares one queue per subscription plus the dead-letter topology when
+    /// enabled. In declare mode with a plugin-routed delay strategy (plugin
+    /// or auto mode), the `rabbit-rs.delayed` exchange and a queue-name-keyed
+    /// binding for every subscription queue join the plan so delayed delivery
+    /// works without operator-provisioned bindings (issue #97). Custom route
+    /// exchanges publish delayed messages through `{exchange}.delayed`, whose
+    /// bindings stay an infrastructure contract.
+    ///
+    /// A definition that fails compilation falls back to an empty
+    /// external-mode plan; the pool stays connectable and the invalid
+    /// combination surfaces as a configuration error at pool creation.
+    ///
+    /// # Panics
+    ///
+    /// Never panics: the external-mode fallback compiles by construction.
+    #[must_use]
+    pub fn from_config(config: &ValidatedConfig) -> Self {
+        let queue_type = config.queue_type();
+        let queue_durable = config.queue_durable();
+        let subscriptions: Vec<_> = config
+            .worker_profiles()
+            .iter()
+            .flat_map(|worker| &worker.subscriptions)
+            .collect();
+        let queues = subscriptions
+            .iter()
+            .map(|sub| {
+                let mut qd = QueueDefinition::new(&sub.queue)
+                    .kind(queue_type)
+                    .durable(queue_durable);
+                if let Some(limit) = config.delivery_limit() {
+                    qd = qd.delivery_limit(limit);
+                }
+                qd
+            })
+            .collect();
+
+        let mut exchanges = Vec::new();
+        let mut bindings = Vec::new();
+        if matches!(config.topology_mode(), TopologyMode::Declare)
+            && matches!(DelayStrategy::compile(config), DelayStrategy::Plugin)
+        {
+            exchanges.push(delayed_exchange_spec(DELAYED_EXCHANGE_NAME));
+            bindings.extend(subscriptions.iter().map(|sub| BindingSpec {
+                queue: sub.queue.clone(),
+                exchange: DELAYED_EXCHANGE_NAME.to_owned(),
+                routing_key: sub.queue.clone(),
+            }));
+        }
+
+        let mut topology = TopologyDefinition::new(exchanges, queues, bindings);
+        if let Some(dl) = config.dead_letter()
+            && dl.enabled
+        {
+            for sub in subscriptions {
+                let routing_key = dl.routing_key.clone().unwrap_or_else(|| sub.queue.clone());
+                topology = topology.with_dead_letter(DeadLetterDefinition::new(
+                    sub.queue.clone(),
+                    dl.exchange.clone(),
+                    dl.queue.clone(),
+                    routing_key,
+                ));
+            }
+        }
+
+        Self::compile(config.topology_mode(), topology).unwrap_or_else(|_error| {
+            Self::compile(
+                TopologyMode::External,
+                TopologyDefinition::new(vec![], vec![], vec![]),
+            )
+            .expect("external mode always compiles")
+        })
     }
 }
 

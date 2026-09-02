@@ -36,6 +36,10 @@ Mandatory routing is **always on in safe mode** (`publisher.safety = "safe"`). W
 
 The legacy `publisher.mandatory = false` flag is **rejected at validation** with an actionable error: confirms without mandatory routing would let the broker silently drop unroutable messages, which breaks the no-silent-loss contract. The only supported opt-out is `publisher.safety = "unsafe"` or `"blind"`.
 
+### Delayed publishes
+
+Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. Publisher confirms remain enabled — the publish still resolves only after the broker confirm, and the no-silent-loss contract is preserved by the confirmed `rabbit-rs.delayed` binding (see [Topology — Delay routing](topology.md#delay-routing)). Delayed messages published through TTL bucket queues carry no `x-delay` header on the wire and remain mandatory.
+
 ## Connection recovery
 
 Rabbit RS handles connection loss automatically. The connection state machine is:

@@ -145,7 +145,7 @@ Rabbit RS supports delayed message delivery via two strategies, selected by the 
 ],
 ```
 
-In `auto` mode, delayed messages are published through the `x-delayed-message` exchange, same as `plugin` mode. Use `ttl` mode when the `rabbitmq_delayed_message_exchange` plugin is not installed.
+In `auto` mode, delayed messages are published through the `x-delayed-message` exchange, same as `plugin` mode (including its declare-mode topology, see below). Use `ttl` mode when the `rabbitmq_delayed_message_exchange` plugin is not installed.
 
 ### Plugin mode
 
@@ -157,6 +157,10 @@ In `auto` mode, delayed messages are published through the `x-delayed-message` e
 
 Requires the `rabbitmq_delayed_message_exchange` plugin. Rabbit RS declares an `x-delayed-message` exchange with the underlying exchange type (e.g., `direct`) and publishes delayed messages with the `x-delay` header.
 
+In `declare` mode, Rabbit RS also declares the `rabbit-rs.delayed` exchange (durable, `x-delayed-type: direct`) and binds every subscription queue to it with the queue name as the routing key, so delayed publishes reach each queue without extra provisioning. The declare requires `configure` permission on `rabbit-rs.*`.
+
+In `external` and `verify` modes, the exchange and its bindings are an infrastructure contract that must be provisioned externally: one `rabbit-rs.delayed` exchange per vhost (or `{route-exchange}.delayed` for custom route exchanges), plus a binding from each subscription queue using the queue name as the routing key.
+
 Install the plugin:
 
 ```bash
@@ -164,7 +168,7 @@ Install the plugin:
 rabbitmq-plugins enable rabbitmq_delayed_message_exchange
 ```
 
-If the plugin is not installed, the exchange declare fails and that delayed publish fails terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working.
+If the plugin is not installed, the exchange declare fails with a permanent error: in `declare` mode the pool connection fails during topology reconciliation, while in `external` and `verify` modes delayed publishes fail terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working. Use `ttl` mode when the plugin cannot be installed.
 
 ### TTL fallback mode
 
