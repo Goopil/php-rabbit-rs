@@ -11,9 +11,9 @@ use Illuminate\Support\Facades\Log;
 class RabbitMqWorkCommand extends Command
 {
     protected $signature = 'rabbit-rs:work
-        {--connection=rabbit-rs : The queue connection name}
-        {--queue=default : The queue/profile name}
-        {--workers=1 : Number of child workers}
+        {--connection= : Comma-separated queue connections (default: every rabbit-rs connection)}
+        {--queue= : Comma-separated queue names, resolved by definition (default: every defined queue)}
+        {--workers=1 : Child workers per connection}
         {--max-restarts=3 : Maximum restarts per worker}
         {--backoff=1 : Base backoff in seconds}
         {--timeout=60 : The number of seconds a child process can run}
@@ -23,26 +23,34 @@ class RabbitMqWorkCommand extends Command
         {--max-time= : The maximum number of seconds the worker should run}
         {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
-    protected $description = 'Supervise multiple Rabbit RS queue workers with automatic restart';
+    protected $description = 'Supervise Rabbit RS queue workers across connections with automatic restart';
 
     public function handle(): int
     {
         $this->registerWorkCommandExtension();
 
-        $supervisor = $this->createSupervisor();
+        $plan = WorkPlanResolver::resolve($this->option('connection'), $this->option('queue'));
 
-        $this->info("Starting {$supervisor->workers()} worker(s) on {$this->option('connection')}/{$this->option('queue')}");
+        $supervisor = $this->createSupervisor($plan);
+
+        $this->info(sprintf(
+            'Starting %d worker(s): %s',
+            count($plan) * (int) $this->option('workers'),
+            $this->describePlan($plan),
+        ));
 
         return $supervisor->run();
     }
 
     /**
-     * Create the supervisor instance from the command options.
+     * Create the supervisor instance from the resolved work plan.
      *
      * Extracted as a protected method so tests can substitute a supervisor
      * that does not spawn real child processes.
+     *
+     * @param list<array{connection: string, queues: list<string>}> $plan
      */
-    protected function createSupervisor(): WorkerSupervisor
+    protected function createSupervisor(array $plan): WorkerSupervisor
     {
         $options = [
             'timeout'  => (int) $this->option('timeout'),
@@ -53,13 +61,27 @@ class RabbitMqWorkCommand extends Command
         ];
 
         return new WorkerSupervisor(
-            connection: $this->option('connection'),
-            queue: $this->option('queue'),
+            plan: $plan,
             workers: (int) $this->option('workers'),
             maxRestarts: (int) $this->option('max-restarts'),
             baseBackoffSeconds: (int) $this->option('backoff'),
             options: $options,
         );
+    }
+
+    /**
+     * One-line plan description, e.g. "eu[orders, billing], us[orders]".
+     *
+     * @param list<array{connection: string, queues: list<string>}> $plan
+     */
+    private function describePlan(array $plan): string
+    {
+        $parts = [];
+        foreach ($plan as ['connection' => $connection, 'queues' => $queues]) {
+            $parts[] = $connection.'['.implode(', ', $queues).']';
+        }
+
+        return implode(', ', $parts);
     }
 
     /**
