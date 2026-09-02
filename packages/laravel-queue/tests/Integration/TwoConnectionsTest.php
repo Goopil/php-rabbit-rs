@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Pool;
 
+/** Second lab vhost the two-connection tests operate on. */
+const BILLING_VHOST = '/billing';
+
 /**
  * Closes a pool best-effort. A pool that hit chaos-free errors (e.g. closed
  * while a consumer is mid-pop) can still throw from close(); cleanup must
@@ -32,7 +35,7 @@ beforeEach(function () {
     // Declare-mode pools provision rabbit-rs.* internal exchanges; the lab's
     // stored configure permission only allows amq.* and rabbit-rs-it-* names.
     grantRabbitRsConfigure();
-    grantRabbitRsConfigure('/billing');
+    grantRabbitRsConfigure(BILLING_VHOST);
 });
 
 afterEach(function () {
@@ -42,7 +45,7 @@ afterEach(function () {
         deleteQueue($this->queueA);
     }
     if (isset($this->queueB)) {
-        deleteQueue($this->queueB, '/billing');
+        deleteQueue($this->queueB, BILLING_VHOST);
     }
 });
 
@@ -57,7 +60,7 @@ it('keeps two connections isolated across brokers and vhosts', function () {
     $this->queueA = uniqueQueue('rabbit-rs-it-two-a');
     $this->queueB = uniqueQueue('rabbit-rs-it-two-b');
     declareQueue($this->queueA);
-    declareQueue($this->queueB, '/billing');
+    declareQueue($this->queueB, BILLING_VHOST);
 
     [$this->poolA, $queueA] = integrationPoolAndQueue(
         $this->app,
@@ -68,7 +71,7 @@ it('keeps two connections isolated across brokers and vhosts', function () {
     [$this->poolB, $queueB] = integrationPoolAndQueue(
         $this->app,
         $this->queueB,
-        configOverrides: ['hosts' => '127.0.0.1:5673', 'vhost' => '/billing'],
+        configOverrides: ['hosts' => '127.0.0.1:5673', 'vhost' => BILLING_VHOST],
         connectOverrides: ['block_for' => 3],
         connectionName: 'rabbit-rs-two-b',
     );

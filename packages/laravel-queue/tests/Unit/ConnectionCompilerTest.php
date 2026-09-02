@@ -225,7 +225,7 @@ describe('management url', function (): void {
         $withoutKey = ConnectionCompiler::compile('orders', ['queue' => 'default']);
 
         expect($withKey)->toBe($withoutKey);
-    })->with([null, '', '   ', 'http://mq.local:15672']);
+    })->with([null, '', '   ', 'https://mq.local:15672']);
 
     it('rejects a non-string management_url with the exact path', function (): void {
         expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'management_url' => 15672]))

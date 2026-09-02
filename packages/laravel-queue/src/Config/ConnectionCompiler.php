@@ -19,6 +19,8 @@ final class ConnectionCompiler
     private const DEFAULT_MAX_ATTEMPTS = 20;
     private const MSG_MUST_BE_ARRAY = 'must be an array';
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
+    private const PATH_QUEUE = '.queue';
+    private const PATH_NO_ACK = '.no_ack';
 
     /**
      * Top-level connection keys the compiler consumes. `driver` is read by
@@ -64,7 +66,7 @@ final class ConnectionCompiler
         $config = self::mergeDefaults($config, $defaults);
         self::rejectUnknownKeys($config, array_merge(self::CONNECTION_KEYS, array_keys($defaults)), $path);
 
-        $queue = self::string($config['queue'] ?? null, $path.'.queue');
+        $queue = self::string($config['queue'] ?? null, $path.self::PATH_QUEUE);
         $broker = self::broker($name, $config, $path);
         $bestEffort = self::boolean($config['best_effort'] ?? false, $path.'.best_effort');
         $worker = self::worker($name, $queue, $config, $bestEffort, $path);
@@ -300,9 +302,9 @@ final class ConnectionCompiler
                 self::invalid($subscriptionPath, self::MSG_MUST_BE_ARRAY);
             }
 
-            $queueName = self::string($entry['queue'] ?? null, $subscriptionPath.'.queue');
+            $queueName = self::string($entry['queue'] ?? null, $subscriptionPath.self::PATH_QUEUE);
             if (isset($seenQueues[$queueName])) {
-                self::invalid($subscriptionPath.'.queue', "duplicates the queue of subscription '{$seenQueues[$queueName]}'");
+                self::invalid($subscriptionPath.self::PATH_QUEUE, "duplicates the queue of subscription '{$seenQueues[$queueName]}'");
             }
             $seenQueues[$queueName] = $alias;
 
@@ -337,18 +339,18 @@ final class ConnectionCompiler
             self::invalid($path.'.early_ack', 'early_ack is not allowed in reliable mode — set best_effort=true to opt in');
         }
 
-        $noAck = self::boolean($subscription['no_ack'] ?? false, $path.'.no_ack');
+        $noAck = self::boolean($subscription['no_ack'] ?? false, $path.self::PATH_NO_ACK);
         if ($noAck && ! $earlyAck) {
-            self::invalid($path.'.no_ack', "no_ack=true requires early_ack=true for subscription '{$alias}'");
+            self::invalid($path.self::PATH_NO_ACK, "no_ack=true requires early_ack=true for subscription '{$alias}'");
         }
         if ($noAck && ! $bestEffort) {
-            self::invalid($path.'.no_ack', "no_ack=true requires best_effort=true for subscription '{$alias}'");
+            self::invalid($path.self::PATH_NO_ACK, "no_ack=true requires best_effort=true for subscription '{$alias}'");
         }
 
         return [
             'name' => $alias,
             'broker' => $name,
-            'queue' => self::string($subscription['queue'] ?? null, $path.'.queue'),
+            'queue' => self::string($subscription['queue'] ?? null, $path.self::PATH_QUEUE),
             'weight' => self::positiveInt($subscription['weight'] ?? 1, $path.'.weight', 65535),
             'priority_class' => self::boundedI16($subscription['priority_class'] ?? 0, $path.'.priority_class'),
             'prefetch' => self::positiveInt(
@@ -522,7 +524,7 @@ final class ConnectionCompiler
         return [
             'enabled' => true,
             'exchange' => self::string($deadLetter['exchange'] ?? null, $path.'.exchange'),
-            'queue' => self::string($deadLetter['queue'] ?? null, $path.'.queue'),
+            'queue' => self::string($deadLetter['queue'] ?? null, $path.self::PATH_QUEUE),
             'routing_key' => $routingKey,
         ];
     }

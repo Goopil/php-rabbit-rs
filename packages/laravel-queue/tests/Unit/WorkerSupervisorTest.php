@@ -5,6 +5,10 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
 
+/** queue:work connection flags the supervisor's child commands carry. */
+const CONNECTION_ARG_EU = '--connection=eu';
+const CONNECTION_ARG_US = '--connection=us';
+
 /**
  * Single-entry plan shaped like WorkPlanResolver output.
  *
@@ -34,7 +38,7 @@ describe('buildChildCommands', function (): void {
                 PHP_BINARY,
                 'artisan',
                 'queue:work',
-                '--connection=eu',
+                CONNECTION_ARG_EU,
                 '--queue=orders,billing.events',
                 '--name=worker-0',
             ])
@@ -42,7 +46,7 @@ describe('buildChildCommands', function (): void {
                 PHP_BINARY,
                 'artisan',
                 'queue:work',
-                '--connection=us',
+                CONNECTION_ARG_US,
                 '--queue=orders',
                 '--name=worker-1',
             ]);
@@ -62,10 +66,10 @@ describe('buildChildCommands', function (): void {
         $commands = $supervisor->buildChildCommands();
 
         expect($commands)->toHaveCount(4)
-            ->and($commands[0])->toContain('--connection=eu')
-            ->and($commands[1])->toContain('--connection=eu')
-            ->and($commands[2])->toContain('--connection=us')
-            ->and($commands[3])->toContain('--connection=us')
+            ->and($commands[0])->toContain(CONNECTION_ARG_EU)
+            ->and($commands[1])->toContain(CONNECTION_ARG_EU)
+            ->and($commands[2])->toContain(CONNECTION_ARG_US)
+            ->and($commands[3])->toContain(CONNECTION_ARG_US)
             ->and($commands[0])->toContain('--name=worker-0')
             ->and($commands[1])->toContain('--name=worker-1')
             ->and($commands[2])->toContain('--name=worker-2')

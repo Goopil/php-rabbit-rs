@@ -17,6 +17,9 @@ class TestException extends \Exception {}
 /** Default test connection name: brokers and worker profiles compile under it. */
 const INTEGRATION_CONNECTION = 'rabbit-rs-integration';
 
+/** Default lab vhost the shared helpers operate on. */
+const ORDERS_VHOST = '/orders-eu';
+
 /**
  * Raw connection-shaped config (queue.connections.* entry) for the lab.
  */
@@ -26,7 +29,7 @@ function liveConfig(string $queueName): array
         'driver' => 'rabbit-rs',
         'queue' => $queueName,
         'hosts' => '127.0.0.1:5672',
-        'vhost' => '/orders-eu',
+        'vhost' => ORDERS_VHOST,
         'username' => 'rabbit_rs',
         'password' => 'rabbit_rs_lab',
         'exchange' => '',
@@ -60,7 +63,7 @@ function managementRequest(string $method, string $url, ?string $payload = null)
     return $body === false ? '' : $body;
 }
 
-function declareQueue(string $queueName, string $vhost = '/orders-eu'): void
+function declareQueue(string $queueName, string $vhost = ORDERS_VHOST): void
 {
     managementRequest('PUT', 'http://localhost:15672/api/queues/'.rawurlencode($vhost).'/'.urlencode($queueName), json_encode([
         'durable' => true,
@@ -68,7 +71,7 @@ function declareQueue(string $queueName, string $vhost = '/orders-eu'): void
     ]));
 }
 
-function deleteQueue(string $queueName, string $vhost = '/orders-eu'): void
+function deleteQueue(string $queueName, string $vhost = ORDERS_VHOST): void
 {
     managementRequest('DELETE', 'http://localhost:15672/api/queues/'.rawurlencode($vhost).'/'.urlencode($queueName));
 }
@@ -77,7 +80,7 @@ function deleteQueue(string $queueName, string $vhost = '/orders-eu'): void
  * Extends the rabbit_rs user's configure permission so the native publisher
  * can lazily declare its internal exchanges (e.g. rabbit-rs.delayed).
  */
-function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
+function grantRabbitRsConfigure(string $vhost = ORDERS_VHOST): void
 {
     managementRequest('PUT', 'http://localhost:15672/api/permissions/'.rawurlencode($vhost).'/rabbit_rs', json_encode([
         'configure' => '^(amq\\.|rabbit-rs-it-|rabbit-rs\\.)',

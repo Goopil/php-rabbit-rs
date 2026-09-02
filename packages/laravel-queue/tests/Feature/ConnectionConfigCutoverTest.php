@@ -99,7 +99,7 @@ describe('connection-first config cutover', function () {
         config()->set('queue.connections.statusy', [
             'driver' => 'rabbit-rs',
             'queue' => 'default',
-            'management_url' => 'http://mq.local:15672',
+            'management_url' => 'https://mq.local:15672',
         ]);
         Http::fake(['*' => Http::response([
             'messages_delivered' => 3,
@@ -112,7 +112,7 @@ describe('connection-first config cutover', function () {
             ->expectsOutputToContain('"messages_delivered": 3');
 
         Http::assertSent(
-            fn ($request) => str_starts_with($request->url(), 'http://mq.local:15672/api/queues/'),
+            fn ($request) => str_starts_with($request->url(), 'https://mq.local:15672/api/queues/'),
         );
     });
 });
