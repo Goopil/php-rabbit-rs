@@ -32,6 +32,16 @@ with the feature, never in a later docs pass.
   production-readiness issues closed on 2026-08-31 (Round 2 fixes, publish
   buffer bound, consumer deadline, Horizon after-commit, ClearableQueue,
   lazy establishment, events bridge, TLS loud failures).
+- **Release v0.0.9 (2026-09-02)** — ships all of Round G waves 1–6 (transport
+  liveness P0, poison terminal settlement, DLQ bindings, delay validation,
+  delay-queue identity + GC, config surface, extension boundary correctness,
+  log facade, duplicates metric, size/clear truthfulness, blind byte budget,
+  batch error contract, declare-before-consume) plus promoted P1s #56/#52 and
+  follow-ups #95/#96/#50. Pipeline lesson: `verify-release` needed
+  `contents:write` — draft releases are invisible to read-only tokens, so the
+  first v0.0.9 run failed with "release not found"; tag re-pointed and the
+  full pipeline (10 builds, verify, publish, PIE install, Laravel split,
+  Homebrew) then went green.
 - **Technical audit (2026-08-31)** — `docs/audits/2026-08-31-technical-audit.md`:
   7 passes (architecture, 5 parallel adversarial passes, red team, per-finding
   verification), 40 consolidated findings, every cited location re-verified at
@@ -125,6 +135,35 @@ with the feature, never in a later docs pass.
   - Sonar note: the duplication gate (≤3% new code) bit the chaos PR at
     5.0% — resolved with a `managementRequest()` helper and pattern reuse;
     the wave-1 rule "keep test code deduplicated" stands.
+- **Round G wave 6 (2026-09-01)** — merged via PRs #118–#123, six parallel
+  file-disjoint tracks:
+  - #87 (P1, red-team AUDIT-031): `Pool::size()`/`clear()` flush the publish
+    buffer first — the first ≤63 publications of a fresh pool no longer sit
+    in process memory (`size()` returned 0; `clear()` purged then the
+    buffered publications repopulated the queue).
+  - #96 (P3): the publish buffer arms its flush deadline on the first
+    publication of a batch, so small batches are time-flushed by age instead
+    of waiting for the size threshold. The chaos suite had to pin wire state
+    explicitly (`flush()` before disruptions): a buffered publication left
+    the proxied connection idle (reset_peer never fired) or was dropped by
+    the `recreatePool` teardown.
+  - #52 (P1, red-team AUDIT-023): blind publishes reserve payload bytes
+    against the shared byte budget (RAII guard released when the job leaves
+    the pump); over-budget streams reject with `Backpressure` instead of
+    growing memory. Fire-and-forget A/B benchmark: 228.5k → 232.7k pub/s.
+  - #83 (P2, audit F-15): `publish_batch` resolves publications already
+    accepted by an actor before returning the first terminal failure
+    (documented contract; blind mode keeps immediate failure).
+  - #95 (P2): the topology reconciler is shared between recovery and
+    on-demand consumer establishment — declare-before-subscribe is enforced,
+    a fresh quorum queue can no longer 404 the `basic.consume` and burn a
+    recovery generation (lab: 25 fresh-queue acquisitions, 0 reconnects).
+  - #50 (P2): duplicates are measurable — redelivered-flagged deliveries
+    count into `duplicates_total` (`MetricsSnapshot` + `Pool::stats()`).
+- **Release v0.0.9 (2026-09-02)** — tagged `898764e` after the
+  verify-release draft-visibility fix; full pipeline green (10 builds,
+  attestation verify, publish, PIE install end-to-end, Laravel split,
+  Homebrew formula).
 
 ## Next — Round 2: consumer stall and reliability
 
@@ -279,11 +318,12 @@ parallel tracks** — maximum concurrency, minimal interference; sequence only w
 track. Strategy decision (2026-08-31): **stabilize before features** — Round G contains
 no features; post-1.0 feature ideas are parked below.
 
-Status (2026-09-01): Tasks 21–25 (#66–#70), 26 (#71), 27 (#72), 28 (#73),
+Status (2026-09-02): Tasks 21–25 (#66–#70), 26 (#71), 27 (#72), 28 (#73),
 29 (#74), 30 (#75), 31 (#76), 32 (#77), 33 (#78), 34 (#79), 35 (#80),
-40 (#88), 41 (#89), 42 (#90) and Round C (#40) landed (see Landed), plus
-promoted P1 #56. Still queued: Task 36 (#81), 37 (#82), 38 (#83), 39 (#87),
-plus review follow-ups #95/#96/#97 and promoted P1 #52.
+38 (#83), 40 (#88), 41 (#89), 42 (#90) and Round C (#40) landed (see Landed),
+plus promoted P1s #56/#52 and follow-ups #95/#96/#50. Red-team tasks 39–42
+(#87–#90) are all delivered. Shipped in release v0.0.9. Still queued:
+Task 36 (#81, unblocked by #50), 37 (#82), follow-up #97.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
