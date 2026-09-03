@@ -32,13 +32,25 @@ return [
 
         // ------------------------------------------------------------------
         // goopil/rabbit-rs-laravel — native ext-rabbit_rs (Rust) driver
-        // Broker/topology/publisher settings live in config/rabbit-rs.php:
-        // vhost "/", user rabbit_rs, default exchange (''), classic durable
-        // queue declared by the driver (topology_mode=declare).
+        // Connection-first surface (v0.1.0): broker credentials live on the
+        // connection entry; cross-cutting defaults (safety, prefetch,
+        // topology) come from the package's config/rabbit-rs.php merged
+        // underneath. Empty exchange = AMQP default exchange (direct-to-queue,
+        // Phase A parity); classic durable queue declared by the driver
+        // (topology_mode=declare, bench config/rabbit-rs.php override).
         // ------------------------------------------------------------------
         'rabbit-rs' => [
             'driver' => 'rabbit-rs',
             'queue' => env('RABBIT_RS_QUEUE', 'bench.goopil.driver-bench'),
+            'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+            'vhost' => env('RABBIT_RS_VHOST', '/'),
+            'username' => env('RABBIT_RS_USERNAME', 'rabbit_rs'),
+            'password' => env('RABBIT_RS_PASSWORD', ''),
+            'exchange' => env('RABBIT_RS_EXCHANGE', ''),
+            'routing_key' => '{queue}',
+            'prefetch' => (int) env('RABBIT_RS_PREFETCH', 64),
+            'safety' => env('RABBIT_RS_SAFETY', 'safe'),
+            'auto_subscribe' => true,
             'after_commit' => false,
             // Pop blocking window in seconds (worker-style): lets the pull
             // consumer wait for prefetch-window refills instead of
