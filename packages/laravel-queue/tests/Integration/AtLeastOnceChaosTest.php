@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\ConnectionException;
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
@@ -252,11 +252,37 @@ function startNode(string $node): void
         usleep(2000000); // 2 seconds
     }
 
-    // The lab re-imports definitions.json on every node boot, which resets
-    // the rabbit_rs configure permission to the stored narrow pattern; the
-    // driver's recovery re-declares rabbit-rs.delayed (issue #97), so the
-    // widened permission must be restored after every node restart.
-    grantRabbitRsConfigure();
+    restoreConfigurePermission();
+}
+
+/**
+ * Re-grants the rabbit-rs configure permission, polling until the widened
+ * pattern verifiably landed on the management API. The lab re-imports
+ * definitions.json on every node boot, which resets the permission to the
+ * stored narrow pattern, and the driver's recovery re-declares
+ * rabbit-rs.delayed (issue #97) — so every recovery generation after the
+ * restart fails topology reconciliation until the grant is restored. A bare
+ * PUT right after the rabbitmq-diagnostics ping silently no-ops while the
+ * management listener is still down.
+ */
+function restoreConfigurePermission(): void
+{
+    $deadline = microtime(true) + 90;
+    do {
+        grantRabbitRsConfigure();
+        $stored = json_decode(
+            managementRequest('GET', 'http://localhost:15672/api/permissions/'.rawurlencode('/orders-eu').'/rabbit_rs'),
+            true,
+        );
+        if (($stored['configure'] ?? null) === '^(amq\\.|rabbit-rs-it-|rabbit-rs\\.)') {
+            return;
+        }
+        usleep(1000000);
+    } while (microtime(true) < $deadline);
+
+    \PHPUnit\Framework\Assert::fail(
+        'the lab management API never restored the rabbit-rs configure permission after the node restart',
+    );
 }
 
 function nodeToContainer(string $node): string
@@ -373,6 +399,36 @@ function pushAllowingFailure($queue, string $msg): bool
     } catch (\Throwable) {
         return false; // publish may fail during the outage
     }
+}
+
+/**
+ * Makes sure a message is confirmed on the wire after a disruption: the
+ * publish may have failed with the dead connection, and a publication that
+ * stayed in the process publish buffer only leaves on the next publish's
+ * flush trigger or an explicit flush — a drain would never see it. Retries
+ * with a fresh pool while the connection is still re-establishing. A
+ * duplicate is acceptable; the delivery contract is at-least-once.
+ */
+function putOnWire($test, $app, string $msg): void
+{
+    $onWire = false;
+    $deadline = microtime(true) + 30;
+    while (microtime(true) < $deadline && ! $onWire) {
+        $onWire = pushAllowingFailure($test->queue, $msg);
+        if ($onWire) {
+            try {
+                $test->pool->flush();
+            } catch (\Throwable) {
+                $onWire = false; // pool still recovering
+            }
+        }
+        if (! $onWire) {
+            recreatePool($test, $app);
+            usleep(500000);
+        }
+    }
+
+    $test->assertTrue($onWire, $msg.' never reached the broker after the disruption');
 }
 
 /**
@@ -554,17 +610,17 @@ it('survives quorum leader shutdown', function () {
     usleep(5000000); // 5 seconds
 
     // Publish after the leader shutdown.
-    $published = pushAllowingFailure($this->queue, 'chaos-leader-2');
+    pushAllowingFailure($this->queue, 'chaos-leader-2');
 
     // Restart the stopped node.
     startNode($leader);
     usleep(5000000); // 5 seconds
 
-    // Retry if needed.
-    if (! $published) {
-        recreatePool($this, $this->app);
-        $this->queue->push('stdClass', ['msg' => 'chaos-leader-2']);
-    }
+    // The outage push may have failed or still sit in the process publish
+    // buffer (a buffered publication only leaves on the next publish's
+    // flush trigger or an explicit flush). Make sure chaos-leader-2 is on
+    // the wire before draining: duplicates are fine — at-least-once.
+    putOnWire($this, $this->app, 'chaos-leader-2');
 
     // Consume both messages.
     assertAllDelivered($this, ['chaos-leader-1', 'chaos-leader-2'], 'quorum-leader-shutdown');
@@ -590,13 +646,10 @@ it('survives node restart', function () {
     startNode(PRIMARY_NODE);
     usleep(5000000); // 5 seconds
 
-    // Publish after restart.
-    $published = pushAllowingFailure($this->queue, 'chaos-restart-2');
-
-    if (! $published) {
-        recreatePool($this, $this->app);
-        $this->queue->push('stdClass', ['msg' => 'chaos-restart-2']);
-    }
+    // Publish after restart: the pool may still be re-establishing, and a
+    // buffered publication only leaves on the next publish's flush trigger
+    // or an explicit flush. Make sure chaos-restart-2 is on the wire.
+    putOnWire($this, $this->app, 'chaos-restart-2');
 
     // Consume both.
     assertAllDelivered($this, ['chaos-restart-1', 'chaos-restart-2'], 'node-restart');
@@ -682,24 +735,22 @@ it('works with delay plugin unavailable', function () {
 it('rejects bad credentials and delivers with good credentials', function () {
     $this->queue->clear($this->queueName);
 
-    // Build a config with bad credentials.
+    // Build a connection config with bad credentials, compiled to its own
+    // pool under a dedicated connection name.
     $config = liveConfig($this->queueName);
-    $config['brokers']['default']['credentials'] = [
-        'username' => 'rabbit_rs',
-        'password' => 'wrong_password',
-    ];
-    $normalized = ConfigNormalizer::normalize($config);
+    $config['password'] = 'wrong_password';
+    $compiled = ConnectionCompiler::compile('rabbit-rs-bad-creds', $config);
 
-    $badPool = new Pool($normalized['native']);
+    $badPool = new Pool($compiled['native']);
     $badFactory = new NativePoolFactory(createPool: fn (): Pool => $badPool);
-    $badConnector = new RabbitMqConnector($badFactory, $normalized);
+    $badConnector = new RabbitMqConnector($badFactory, $config);
+
+    $connectConfig = ['queue' => $this->queueName, 'block_for' => 3];
+    $this->app['config']->set('queue.connections.rabbit-rs-bad-creds', $connectConfig);
 
     $threw = false;
     try {
-        $badQueue = $badConnector->connect([
-            'queue' => $this->queueName,
-            'block_for' => 3,
-        ]);
+        $badQueue = $badConnector->connect($connectConfig);
         $badQueue->push('stdClass', ['msg' => 'should-fail']);
     } catch (\Throwable $e) {
         $threw = true;

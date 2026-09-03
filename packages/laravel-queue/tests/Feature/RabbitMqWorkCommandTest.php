@@ -66,14 +66,14 @@ describe('rabbit-rs:work command', function () {
         expect($workersOption->getDefault())->toBe('1');
     });
 
-    it('default connection is rabbit-rs', function () {
+    it('connection and queue default to null for fan-out', function () {
         $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
 
         $definition = $command->getDefinition();
-        $connectionOption = $definition->getOption('connection');
 
-        expect($connectionOption->getDefault())->toBe('rabbit-rs');
+        expect($definition->getOption('connection')->getDefault())->toBeNull()
+            ->and($definition->getOption('queue')->getDefault())->toBeNull();
     });
 });
 
@@ -154,6 +154,16 @@ describe('rabbit-rs worker extension', function () {
 });
 
 describe('rabbit-rs:work command handle wiring', function () {
+    beforeEach(function (): void {
+        // handle() resolves the work plan from config before creating the
+        // supervisor: seed one rabbit-rs connection so the plan is non-empty.
+        config()->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+            'hosts' => 'localhost:5672',
+        ]);
+    });
+
     /**
      * Verifies that the --rabbit-rs-worker CLI option is wired into the
      * command's handle() method: when the option is provided, the extension
@@ -234,13 +244,55 @@ describe('rabbit-rs:work command handle wiring', function () {
     });
 });
 
+describe('rabbit-rs:work plan fan-out wiring', function () {
+    beforeEach(function (): void {
+        config()->set('queue.connections', [
+            'eu' => [
+                'driver' => 'rabbit-rs',
+                'queue' => 'orders',
+                'hosts' => 'eu-rabbit:5672',
+            ],
+            'us' => [
+                'driver' => 'rabbit-rs',
+                'queue' => 'orders',
+                'hosts' => 'us-rabbit:5672',
+            ],
+        ]);
+    });
+
+    it('resolves a fan-out plan from the defaults and lists it', function () {
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command')
+            ->assertSuccessful()
+            ->expectsOutputToContain('Starting 2 worker(s): eu[orders], us[orders]');
+
+        expect($command->capturedPlan)->toBe([
+            ['connection' => 'eu', 'queues' => ['orders']],
+            ['connection' => 'us', 'queues' => ['orders']],
+        ]);
+    });
+
+    it('passes --connection/--queue filters into the plan', function () {
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command', ['--connection' => 'us', '--queue' => 'orders'])
+            ->assertSuccessful();
+
+        expect($command->capturedPlan)->toBe([
+            ['connection' => 'us', 'queues' => ['orders']],
+        ]);
+    });
+});
+
 /**
  * Register a test command that subclasses RabbitMqWorkCommand and stubs
  * out the supervisor so run() does not spawn real child processes.
+ * Returns the registered command so tests can inspect the resolved plan.
  */
-function registerTestWorkCommand($app): void
+function registerTestWorkCommand($app): \Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand
 {
-    $stubSupervisor = new class('rabbit-rs', 'default', 1, 3, 1, null, []) extends WorkerSupervisor {
+    $stubSupervisor = new class([['connection' => 'rabbit-rs', 'queues' => ['default']]], 1, 3, 1, null, []) extends WorkerSupervisor {
         public function run(): int
         {
             return WorkerSupervisor::EXIT_CLEAN;
@@ -248,9 +300,11 @@ function registerTestWorkCommand($app): void
     };
 
     $command = new class($stubSupervisor) extends RabbitMqWorkCommand {
+        public ?array $capturedPlan = null;
+
         protected $signature = 'test:work-command
-            {--connection=rabbit-rs : The queue connection name}
-            {--queue=default : The queue/profile name}
+            {--connection= : Comma-separated queue connections}
+            {--queue= : Comma-separated queue names}
             {--workers=1 : Number of child workers}
             {--max-restarts=3 : Maximum restarts per worker}
             {--backoff=1 : Base backoff in seconds}
@@ -269,13 +323,17 @@ function registerTestWorkCommand($app): void
             parent::__construct();
         }
 
-        protected function createSupervisor(): WorkerSupervisor
+        protected function createSupervisor(array $plan): WorkerSupervisor
         {
+            $this->capturedPlan = $plan;
+
             return $this->supervisor;
         }
     };
 
     $app->make(CONSOLE_KERNEL)->registerCommand($command);
+
+    return $command;
 }
 
 /**

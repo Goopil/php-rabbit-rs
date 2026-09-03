@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel;
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
@@ -12,6 +11,7 @@ use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Exceptions\MissingExtensionException;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 
@@ -20,11 +20,7 @@ class RabbitMqServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(self::configPath(), 'rabbit-rs');
-        $this->normalizeBrokerHosts();
         $this->app->singleton(NativePoolFactory::class);
-        $this->app->singleton('rabbit-rs.config', fn (): array => ConfigNormalizer::normalize(
-            is_array($this->app->make('config')->get('rabbit-rs')) ? $this->app->make('config')->get('rabbit-rs') : [],
-        ));
     }
 
     public function boot(): void
@@ -64,15 +60,15 @@ class RabbitMqServiceProvider extends ServiceProvider
                     self::throwMissingNativeExtension();
                 }
 
-                // Normalization is deferred to connection resolution so a
-                // config typo cannot crash the whole app at boot, and the
-                // re-bindable 'rabbit-rs.config' singleton lets Octane
-                // reloads pick up rotated brokers/credentials.
+                // Compilation is deferred to connection resolution: each
+                // queue connection is compiled lazily from current config,
+                // with this package config merged under it as defaults.
                 $config = $app->make('config')->get('rabbit-rs');
+                $defaults = Arr::except(is_array($config) ? $config : [], ['brokers', 'routes', 'workers']);
 
                 return new RabbitMqConnector(
                     $pools,
-                    $app->make('rabbit-rs.config'),
+                    $defaults,
                     inProductionEnvironment: static fn (): bool => $app->environment('production'),
                     productionWarningEnabled: (bool) (is_array($config) ? ($config['production_warning'] ?? true) : true),
                 );
@@ -95,36 +91,6 @@ class RabbitMqServiceProvider extends ServiceProvider
         $extension->register($events, static function (string $level, array $context): void {
             Log::channel()->{$level}('rabbit-rs worker', $context);
         });
-    }
-
-    private function normalizeBrokerHosts(): void
-    {
-        $config = $this->app->make('config');
-        $brokers = $config->get('rabbit-rs.brokers');
-
-        if (! is_array($brokers)) {
-            return;
-        }
-
-        foreach ($brokers as &$broker) {
-            if (is_array($broker) && isset($broker['hosts']) && is_string($broker['hosts'])) {
-                $broker['hosts'] = self::parseHosts($broker['hosts']);
-            }
-        }
-        unset($broker);
-
-        $config->set('rabbit-rs.brokers', $brokers);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function parseHosts(string $hosts): array
-    {
-        return array_values(array_filter(
-            array_map('trim', explode(',', $hosts)),
-            static fn (string $host): bool => $host !== '',
-        ));
     }
 
     private static function throwMissingNativeExtension(): never

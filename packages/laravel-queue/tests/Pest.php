@@ -2,8 +2,9 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Goopil\RabbitRs\Pool;
@@ -14,59 +15,41 @@ uses(TestCase::class)->in(__DIR__);
 
 class TestException extends \Exception {}
 
+/** Default test connection name: brokers and worker profiles compile under it. */
+const INTEGRATION_CONNECTION = 'rabbit-rs-integration';
+
+/** Default lab vhost the shared helpers operate on. */
+const ORDERS_VHOST = '/orders-eu';
+
+/**
+ * Boots a service provider instance whose extension check succeeds, so queue
+ * connections resolve end-to-end with the fake Pool classes from the test
+ * bootstrap (Unit/Feature tests run without the compiled extension).
+ */
+function bootFakeNativeExtension(mixed $app): void
+{
+    (new class($app) extends RabbitMqServiceProvider {
+        protected function nativeExtensionLoaded(): bool
+        {
+            return true;
+        }
+    })->boot();
+}
+
+/**
+ * Raw connection-shaped config (queue.connections.* entry) for the lab.
+ */
 function liveConfig(string $queueName): array
 {
     return [
-        'topology_mode' => 'declare',
-        'brokers' => [
-            'default' => [
-                'hosts' => ['127.0.0.1:5672'],
-                'vhost' => '/orders-eu',
-                'credentials' => [
-                    'username' => 'rabbit_rs',
-                    'password' => 'rabbit_rs_lab',
-                ],
-                'tls' => ['enabled' => false],
-                'heartbeat' => 30,
-            ],
-        ],
-        'routes' => [
-            'default' => [
-                'broker' => 'default',
-                'exchange' => '',
-                'routing_key' => '{queue}',
-            ],
-        ],
-        'workers' => [
-            'default' => [
-                'scheduler' => [
-                    'strategy' => 'weighted_fair',
-                ],
-                'subscriptions' => [
-                    'default' => [
-                        'enabled' => true,
-                        'broker' => 'default',
-                        'queue' => $queueName,
-                        'weight' => 1,
-                        'priority_class' => 0,
-                        'prefetch' => ['mode' => 'fixed', 'value' => 16],
-                        'starvation_after' => 30,
-                    ],
-                ],
-            ],
-        ],
-        'publisher' => [
-            'confirms' => true,
-            'mandatory' => true,
-        ],
-        'topology' => [
-            'queue' => [
-                'type' => 'quorum',
-                'durable' => true,
-                'delivery_limit' => null,
-            ],
-            'dead_letter' => null,
-        ],
+        'driver' => 'rabbit-rs',
+        'queue' => $queueName,
+        'hosts' => '127.0.0.1:5672',
+        'vhost' => ORDERS_VHOST,
+        'username' => 'rabbit_rs',
+        'password' => 'rabbit_rs_lab',
+        'exchange' => '',
+        'routing_key' => '{queue}',
     ];
 }
 
@@ -96,24 +79,24 @@ function managementRequest(string $method, string $url, ?string $payload = null)
     return $body === false ? '' : $body;
 }
 
-function declareQueue(string $queueName): void
+function declareQueue(string $queueName, string $vhost = ORDERS_VHOST): void
 {
-    managementRequest('PUT', 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName), json_encode([
+    managementRequest('PUT', 'http://localhost:15672/api/queues/'.rawurlencode($vhost).'/'.urlencode($queueName), json_encode([
         'durable' => true,
         'arguments' => ['x-queue-type' => 'quorum'],
     ]));
 }
 
-function deleteQueue(string $queueName): void
+function deleteQueue(string $queueName, string $vhost = ORDERS_VHOST): void
 {
-    managementRequest('DELETE', 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName));
+    managementRequest('DELETE', 'http://localhost:15672/api/queues/'.rawurlencode($vhost).'/'.urlencode($queueName));
 }
 
 /**
  * Extends the rabbit_rs user's configure permission so the native publisher
  * can lazily declare its internal exchanges (e.g. rabbit-rs.delayed).
  */
-function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
+function grantRabbitRsConfigure(string $vhost = ORDERS_VHOST): void
 {
     managementRequest('PUT', 'http://localhost:15672/api/permissions/'.rawurlencode($vhost).'/rabbit_rs', json_encode([
         'configure' => '^(amq\\.|rabbit-rs-it-|rabbit-rs\\.)',
@@ -124,10 +107,10 @@ function grantRabbitRsConfigure(string $vhost = '/orders-eu'): void
 
 /**
  * Builds the pool/queue pair integration tests drive, from the live lab
- * config run through the normalizer. Returns [$pool, $queue]; the caller owns
- * pool cleanup (closePoolQuietly() for post-chaos teardown).
+ * connection config run through the compiler. Returns [$pool, $queue]; the
+ * caller owns pool cleanup (closePoolQuietly() for post-chaos teardown).
  *
- * $configOverrides patches the live config (e.g. publisher confirms) and
+ * $configOverrides patches the connection config (e.g. safety), and
  * $connectOverrides extends the connector options (e.g. block_for).
  * $brokerHosts replaces the default broker host list (e.g. routing the
  * connection through a per-test Toxiproxy proxy).
@@ -137,22 +120,28 @@ function integrationPoolAndQueue(
     string $queueName,
     array $configOverrides = [],
     array $connectOverrides = [],
-    string $connectionName = 'rabbit-rs-integration',
+    string $connectionName = INTEGRATION_CONNECTION,
     ?array $brokerHosts = null,
 ): array {
     $config = array_merge(liveConfig($queueName), $configOverrides);
     if ($brokerHosts !== null) {
-        $config['brokers']['default']['hosts'] = $brokerHosts;
+        $config['hosts'] = $brokerHosts;
     }
-    $normalized = ConfigNormalizer::normalize($config);
+    $connectConfig = array_merge($config, $connectOverrides);
 
-    $pool = new Pool($normalized['native']);
+    // The connector resolves its compile-time name by reverse lookup in
+    // queue.connections; register the exact connect config so the queue's
+    // routes and worker profiles are named after this connection and match
+    // the pool compiled below.
+    $container['config']->set('queue.connections.'.$connectionName, $connectConfig);
+
+    $compiled = ConnectionCompiler::compile($connectionName, $config);
+    $pool = new Pool($compiled['native']);
     $factory = new NativePoolFactory(createPool: fn (): Pool => $pool);
-    $queue = (new RabbitMqConnector($factory, $normalized))->connect(
-        array_merge(['queue' => $queueName], $connectOverrides),
-    );
+    $queue = (new RabbitMqConnector($factory))->connect($connectConfig);
     $queue->setContainer($container);
     $queue->setConnectionName($connectionName);
 
     return [$pool, $queue];
 }
+

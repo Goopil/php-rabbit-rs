@@ -55,19 +55,19 @@ Queue::connection('rabbit-rs')->pushRaw($jsonPayload, 'orders.high');
 php artisan queue:work --connection=rabbit-rs
 ```
 
-This uses Laravel's built-in `queue:work` command. The `--queue` option references a worker profile name (default: `default`):
+This uses Laravel's built-in `queue:work` command. Without `--queue`, the worker consumes the connection's default queue (its `queue` key). The `--queue` option resolves a queue or profile on that connection:
 
 ```bash
-# Consume from the "main" worker profile
-php artisan queue:work --connection=rabbit-rs --queue=main
+# Consume the "orders.high" queue defined on the connection
+php artisan queue:work --connection=rabbit-rs --queue=orders.high
 ```
 
-The worker profile resolves to all configured subscriptions. A single `pop()` call selects the next delivery from any ready subscription using the weighted-fair scheduler.
+The connection compiles to a single worker profile (named after the connection) spanning all its queues — the `queue` key plus every `subscriptions` entry. A single `pop()` call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
 The `--queue` value is resolved in this order:
 
-1. A queue subscribed by a worker profile (`workers.*.subscriptions.*.queue`) — that profile is used.
-2. A worker profile name — that profile is used.
+1. A queue consumed by the connection (its `queue` key or a `subscriptions` entry's `queue`) — the connection's profile is used.
+2. The connection name (the profile name) — the connection's whole profile, all subscriptions included, is used.
 3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled an implicit profile is built on the fly (opt-in, see below); without it `pop()` fails with an actionable error.
 
 ### Multi-process supervisor
@@ -76,17 +76,19 @@ The `--queue` value is resolved in this order:
 php artisan rabbit-rs:work --workers=4
 ```
 
-The `rabbit-rs:work` command supervises multiple `queue:work` child processes with automatic restart on crash.
+The `rabbit-rs:work` command supervises `queue:work` child processes with automatic restart on crash. With no flags it fans out: **one child per rabbit-rs connection**, each consuming every queue defined on its connection (`queue` key first, then `subscriptions` queues); `--workers` spawns children per connection.
 
 Options:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--connection` | Queue connection name | `rabbit-rs` |
-| `--queue` | Queue/profile name | `default` |
-| `--workers` | Number of child workers | `1` |
+| `--connection` | Comma-separated connection names | Every rabbit-rs connection |
+| `--queue` | Comma-separated queue names, resolved by definition (connection `queue` key or `subscriptions` alias) | Every defined queue |
+| `--workers` | Children spawned per connection | `1` |
 | `--max-restarts` | Max restarts per worker | `3` |
 | `--backoff` | Base backoff in seconds | `1` |
+
+Unknown connection or queue names fail with a typed error listing what is available. A queue defined on two targeted connections is consumed on both — see [Worker fan-out](configuration.md#worker-fan-out) for the full semantics.
 
 Each child runs `queue:work` with a unique worker name. On crash, the supervisor restarts the child with exponential backoff (capped at 60 seconds). On `SIGTERM`/`SIGINT`, the supervisor gracefully stops all children.
 
@@ -151,13 +153,13 @@ Bulk publishing uses a single native call (`publishBatch`) for all immediate job
 ### pop
 
 ```php
-$job = Queue::connection('rabbit-rs')->pop('main');
+$job = Queue::connection('rabbit-rs')->pop('orders.high');
 if ($job !== null) {
     $job->fire();
 }
 ```
 
-`pop()` delegates to the native consumer set. The queue argument is resolved to a worker profile (see the resolution order above): a subscribed queue name, a worker profile name, or — when `auto_subscribe` is enabled — an implicit profile dedicated to the requested queue. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
+`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`), the connection name (its whole profile), or — when `auto_subscribe` is enabled — an implicit profile dedicated to the requested queue. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
 ### size
 
@@ -253,7 +255,7 @@ The delivery handle is released after a terminal transition (ack, reject, or rel
 
 ## Laravel queue configuration
 
-Add the connection to `config/queue.php`:
+Add the connection to `config/queue.php` — one connection = one broker/vhost = one native pool:
 
 ```php
 'connections' => [
@@ -261,11 +263,16 @@ Add the connection to `config/queue.php`:
     'rabbit-rs' => [
         'driver' => 'rabbit-rs',
         'queue' => env('RABBIT_RS_QUEUE', 'default'),
+        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+        'username' => env('RABBIT_RS_USERNAME', 'guest'),
+        'password' => env('RABBIT_RS_PASSWORD', 'guest'),
         'after_commit' => false,
         'auto_subscribe' => (bool) env('RABBIT_RS_AUTO_SUBSCRIBE', false),
     ],
 ],
 ```
+
+Every other key falls back to the package defaults in `config/rabbit-rs.php` — see [Configuration](configuration.md) for the full connection reference.
 
 Set the default connection:
 
@@ -275,14 +282,14 @@ QUEUE_CONNECTION=rabbit-rs
 
 ### Auto subscribe
 
-`auto_subscribe` (opt-in, default `false`) controls how `pop()` resolves plain queue names that no worker profile subscribes to — for example `queue:work --queue=emails` when no `workers.*.subscriptions.*.queue` entry references the `emails` queue.
+`auto_subscribe` (opt-in, default `false`) controls how `pop()` resolves plain queue names the connection does not consume — for example `queue:work --queue=emails` when neither the connection's `queue` key nor its `subscriptions` escape hatch references the `emails` queue.
 
-- `false` (default): `pop()` fails with an actionable error telling you to declare the queue in `workers.*.subscriptions.*.queue` or enable `auto_subscribe`.
-- `true`: `pop()` builds an implicit worker profile on the fly — a single subscription using the default broker, weight 1, and the default prefetch. The profile is cached per queue name in process memory and reused on subsequent pops of the same queue; it is requested from the native pool by name (`__auto__.<queue>`).
+- `false` (default): `pop()` fails with an actionable error telling you to declare the queue on the connection (`queue` key or `subscriptions`) or enable `auto_subscribe`.
+- `true`: `pop()` builds an implicit worker profile on the fly — a single subscription on this connection, weight 1, and the default prefetch. The profile is cached per queue name in process memory and reused on subsequent pops of the same queue; it is requested from the native pool by name (`__auto__.<queue>`).
 
-The native pool resolves worker profiles from its own configuration, so auto-subscribed consumption additionally requires the native side to accept runtime-registered profiles; until then, declare the queue in `workers.*.subscriptions.*.queue` for reliable consumption.
+The native pool resolves worker profiles from its own configuration, so auto-subscribed consumption additionally requires the native side to accept runtime-registered profiles; until then, declare the queue in the connection's `subscriptions` (or its `queue` key) for reliable consumption.
 
-Prefer declared worker profiles in production: they control per-queue weights, prefetch, and priority classes, and they are visible to `rabbit-rs:status`. Use `auto_subscribe` for development convenience or dynamic low-traffic queues.
+Prefer declared subscriptions in production: they control per-queue weights, prefetch, and priority classes, and they are visible to `rabbit-rs:status`. Use `auto_subscribe` for development convenience or dynamic low-traffic queues.
 
 The value can be set per connection (`auto_subscribe` in `config/queue.php`, as above — takes precedence) or package-wide in `config/rabbit-rs.php`.
 

@@ -5,85 +5,144 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
 
-describe('buildChildCommand', function (): void {
-    it('constructs the child command with a single worker', function (): void {
+/** queue:work connection flags the supervisor's child commands carry. */
+const CONNECTION_ARG_EU = '--connection=eu';
+const CONNECTION_ARG_US = '--connection=us';
+
+/**
+ * Single-entry plan shaped like WorkPlanResolver output.
+ *
+ * @return list<array{connection: string, queues: list<string>}>
+ */
+function singlePlan(string $connection = 'rabbit-rs', string $queue = 'default'): array
+{
+    return [['connection' => $connection, 'queues' => [$queue]]];
+}
+
+/**
+ * Asserts the given worker option reaches the child command verbatim.
+ */
+function expectOptionPropagation(string $option, int $value): void
+{
+    $supervisor = new WorkerSupervisor(
+        plan: singlePlan(),
+        workers: 1,
+        maxRestarts: 1,
+        baseBackoffSeconds: 0,
+        options: [$option => $value],
+    );
+
+    expect($supervisor->buildChildCommands()[0])->toContain("--{$option}={$value}");
+}
+
+/**
+ * Runs a fork-less supervisor and asserts the ext-pcntl SupervisorException.
+ *
+ * @param list<array{connection: string, queues: list<string>}> $plan
+ */
+function expectPcntlMissingException(array $plan, int $workers): void
+{
+    $supervisor = new class(
+        plan: $plan,
+        workers: $workers,
+        maxRestarts: 1,
+        baseBackoffSeconds: 0,
+    ) extends WorkerSupervisor {
+        protected function canFork(): bool
+        {
+            return false;
+        }
+    };
+
+    try {
+        $supervisor->run();
+        expect(false)->toBeTrue('run() should have thrown');
+    } catch (SupervisorException $e) {
+        expect(str_contains($e->getMessage(), 'ext-pcntl is required'))->toBeTrue();
+    }
+}
+
+describe('buildChildCommands', function (): void {
+    it('builds one command per plan entry with workers=1', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [
+                ['connection' => 'eu', 'queues' => ['orders', 'billing.events']],
+                ['connection' => 'us', 'queues' => ['orders']],
+            ],
             workers: 1,
             maxRestarts: 3,
             baseBackoffSeconds: 0,
         );
 
-        $command = $supervisor->buildChildCommand();
+        $commands = $supervisor->buildChildCommands();
 
-        expect($command)->toContain('queue:work')
-            ->and($command)->toContain('--connection=rabbit-rs')
-            ->and($command)->toContain('--queue=default');
+        expect($commands)->toHaveCount(2)
+            ->and($commands[0])->toBe([
+                PHP_BINARY,
+                'artisan',
+                'queue:work',
+                CONNECTION_ARG_EU,
+                '--queue=orders,billing.events',
+                '--name=worker-0',
+            ])
+            ->and($commands[1])->toBe([
+                PHP_BINARY,
+                'artisan',
+                'queue:work',
+                CONNECTION_ARG_US,
+                '--queue=orders',
+                '--name=worker-1',
+            ]);
     });
 
-    it('constructs the child command with multiple workers', function (): void {
+    it('builds --workers children per plan entry with continuous worker indexes', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'orders',
-            workers: 3,
-            maxRestarts: 5,
-            baseBackoffSeconds: 0,
-        );
-
-        $command = $supervisor->buildChildCommand();
-
-        expect($command)->toContain('queue:work')
-            ->and($command)->toContain('--connection=rabbit-rs')
-            ->and($command)->toContain('--queue=orders');
-    });
-
-    it('includes the worker index in the name option', function (): void {
-        $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [
+                ['connection' => 'eu', 'queues' => ['orders']],
+                ['connection' => 'us', 'queues' => ['orders']],
+            ],
             workers: 2,
-            maxRestarts: 1,
+            maxRestarts: 3,
             baseBackoffSeconds: 0,
         );
 
-        $cmd0 = $supervisor->buildChildCommand(workerIndex: 0);
-        $cmd1 = $supervisor->buildChildCommand(workerIndex: 1);
+        $commands = $supervisor->buildChildCommands();
 
-        expect($cmd0)->toContain('--name=worker-0')
-            ->and($cmd1)->toContain('--name=worker-1');
+        expect($commands)->toHaveCount(4)
+            ->and($commands[0])->toContain(CONNECTION_ARG_EU)
+            ->and($commands[1])->toContain(CONNECTION_ARG_EU)
+            ->and($commands[2])->toContain(CONNECTION_ARG_US)
+            ->and($commands[3])->toContain(CONNECTION_ARG_US)
+            ->and($commands[0])->toContain('--name=worker-0')
+            ->and($commands[1])->toContain('--name=worker-1')
+            ->and($commands[2])->toContain('--name=worker-2')
+            ->and($commands[3])->toContain('--name=worker-3');
     });
 
     it('does not pass an unknown rabbit-rs-worker option', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
         );
 
-        $cmd = $supervisor->buildChildCommand();
-
-        foreach ($cmd as $arg) {
+        foreach ($supervisor->buildChildCommands()[0] as $arg) {
             expect($arg)->not->toContain('--rabbit-rs-worker');
         }
     });
 });
 
-describe('buildChildCommand option propagation', function (): void {
+describe('buildChildCommands option propagation', function (): void {
     it('omits worker options when none are provided', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
         );
 
-        $cmd = $supervisor->buildChildCommand();
-
-        foreach ($cmd as $arg) {
+        foreach ($supervisor->buildChildCommands()[0] as $arg) {
             expect($arg)->not->toContain('--timeout')
                 ->and($arg)->not->toContain('--tries')
                 ->and($arg)->not->toContain('--memory')
@@ -93,74 +152,28 @@ describe('buildChildCommand option propagation', function (): void {
     });
 
     it('propagates timeout option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['timeout' => 30],
-        );
-
-        expect($supervisor->buildChildCommand())->toContain('--timeout=30');
+        expectOptionPropagation('timeout', 30);
     });
 
     it('propagates tries option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['tries' => 5],
-        );
-
-        expect($supervisor->buildChildCommand())->toContain('--tries=5');
+        expectOptionPropagation('tries', 5);
     });
 
     it('propagates memory option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['memory' => 256],
-        );
-
-        expect($supervisor->buildChildCommand())->toContain('--memory=256');
+        expectOptionPropagation('memory', 256);
     });
 
     it('propagates max-jobs option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['max-jobs' => 100],
-        );
-
-        expect($supervisor->buildChildCommand())->toContain('--max-jobs=100');
+        expectOptionPropagation('max-jobs', 100);
     });
 
     it('propagates max-time option to child command', function (): void {
-        $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            options: ['max-time' => 3600],
-        );
-
-        expect($supervisor->buildChildCommand())->toContain('--max-time=3600');
+        expectOptionPropagation('max-time', 3600);
     });
 
     it('propagates all worker options together', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -173,7 +186,7 @@ describe('buildChildCommand option propagation', function (): void {
             ],
         );
 
-        $cmd = $supervisor->buildChildCommand();
+        $cmd = $supervisor->buildChildCommands()[0];
 
         expect($cmd)->toContain('--timeout=60')
             ->and($cmd)->toContain('--tries=3')
@@ -184,8 +197,7 @@ describe('buildChildCommand option propagation', function (): void {
 
     it('omits null-valued options', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -198,7 +210,7 @@ describe('buildChildCommand option propagation', function (): void {
             ],
         );
 
-        $cmd = $supervisor->buildChildCommand();
+        $cmd = $supervisor->buildChildCommands()[0];
 
         expect($cmd)->toContain('--timeout=30')
             ->and($cmd)->toContain('--memory=128');
@@ -213,8 +225,7 @@ describe('buildChildCommand option propagation', function (): void {
 describe('workerEnvironment', function (): void {
     it('passes the worker index via the environment variable', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 2,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -231,8 +242,7 @@ describe('workerEnvironment', function (): void {
 describe('shouldRestart', function (): void {
     it('respects the max restarts limit', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 1,
             maxRestarts: 2,
             baseBackoffSeconds: 0,
@@ -261,8 +271,7 @@ describe('exit codes', function (): void {
 describe('backoff', function (): void {
     it('increases exponentially and caps at 60 seconds', function (): void {
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: singlePlan(),
             workers: 1,
             maxRestarts: 10,
             baseBackoffSeconds: 1,
@@ -282,25 +291,14 @@ describe('backoff', function (): void {
 });
 
 describe('pcntl availability', function (): void {
-    it('throws SupervisorException when ext-pcntl is missing and workers > 1', function (): void {
-        $supervisor = new class(
-            connection: 'rabbit-rs',
-            queue: 'default',
-            workers: 2,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-        ) extends WorkerSupervisor {
-            protected function canFork(): bool
-            {
-                return false;
-            }
-        };
+    it('throws SupervisorException when ext-pcntl is missing and more than one child is configured', function (): void {
+        expectPcntlMissingException(singlePlan(), 2);
+    });
 
-        try {
-            $supervisor->run();
-            expect(false)->toBeTrue('run() should have thrown');
-        } catch (SupervisorException $e) {
-            expect(str_contains($e->getMessage(), 'ext-pcntl is required for --workers>1'))->toBeTrue();
-        }
+    it('throws SupervisorException when ext-pcntl is missing and the plan spawns multiple children', function (): void {
+        expectPcntlMissingException([
+            ['connection' => 'eu', 'queues' => ['orders']],
+            ['connection' => 'us', 'queues' => ['orders']],
+        ], 1);
     });
 });

@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 const STATUS_JSON_COMMAND = 'rabbit-rs:status --format=json';
 
+beforeEach(function () {
+    config()->set('queue.connections.rabbit-rs', [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+    ]);
+});
+
 describe('status command', function () {
     it('human output shows pool stats without secrets', function () {
         $this->artisan('rabbit-rs:status')

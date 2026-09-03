@@ -4,13 +4,11 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
-use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
-use Illuminate\Contracts\Foundation\CachesConfiguration;
 
 /**
  * Boots an additional provider instance with the native extension reported as
- * loaded (fakes are used in place of the extension) so config normalization
+ * loaded (fakes are used in place of the extension) so connection compilation
  * can be observed at connection resolution.
  */
 function bootedProviderWithFakeExtension(Container $app): RabbitMqServiceProvider
@@ -37,10 +35,11 @@ describe('RabbitMqServiceProvider', function () {
             ->toThrow(RuntimeException::class, 'ext-rabbit_rs');
     });
 
-    it('boots with env-string boolean config and normalizes at connection resolution', function () {
+    it('boots with env-string boolean config and compiles at connection resolution', function () {
         $this->app['config']->set('rabbit-rs.best_effort', '1');
         $this->app['config']->set('queue.connections.rabbit-rs', [
             'driver' => 'rabbit-rs',
+            'queue' => 'default',
         ]);
 
         bootedProviderWithFakeExtension($this->app);
@@ -53,6 +52,7 @@ describe('RabbitMqServiceProvider', function () {
         $this->app['config']->set('rabbit-rs.best_effort', 'maybe');
         $this->app['config']->set('queue.connections.rabbit-rs', [
             'driver' => 'rabbit-rs',
+            'queue' => 'default',
         ]);
 
         bootedProviderWithFakeExtension($this->app);
@@ -61,68 +61,37 @@ describe('RabbitMqServiceProvider', function () {
             ->toThrow(InvalidArgumentException::class, 'best_effort');
     });
 
-    it('normalizes comma-separated hosts after configuration is loaded', function () {
-        $this->app['config']->set(
-            'rabbit-rs.brokers.default.hosts',
-            ' rabbit-a:5672, , rabbit-b:5673 ',
-        );
+    it('compiles comma-separated hosts from the connection at resolution', function () {
+        bootedProviderWithFakeExtension($this->app);
+        $this->app['config']->set('queue.connections.rabbit-rs-hosts', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+            'hosts' => ' rabbit-a:5672, rabbit-b:5673 ',
+        ]);
 
-        (new RabbitMqServiceProvider($this->app))->register();
+        $queue = $this->app['queue']->connection('rabbit-rs-hosts');
+        // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
+        $pool = (new ReflectionProperty($queue, 'pool'))->getValue($queue);
 
-        expect($this->app['config']->get('rabbit-rs.brokers.default.hosts'))
-            ->toBe(['rabbit-a:5672', 'rabbit-b:5673']);
+        expect($pool->config['brokers'][0]['hosts'])
+            ->toBe([
+                ['host' => 'rabbit-a', 'port' => 5672],
+                ['host' => 'rabbit-b', 'port' => 5673],
+            ]);
     });
 
-    it('normalizes comma-separated hosts when configuration is cached', function () {
-        $app = new class extends Container implements CachesConfiguration {
-            public function configurationIsCached(): bool
-            {
-                return true;
-            }
+    it('merges package defaults under the connection at resolution', function () {
+        $this->app['config']->set('rabbit-rs.prefetch', '128');
+        bootedProviderWithFakeExtension($this->app);
+        $this->app['config']->set('queue.connections.rabbit-rs-defaults', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+        ]);
 
-            public function getCachedConfigPath(): string
-            {
-                return '';
-            }
+        $queue = $this->app['queue']->connection('rabbit-rs-defaults');
+        // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
+        $pool = (new ReflectionProperty($queue, 'pool'))->getValue($queue);
 
-            public function getCachedServicesPath(): string
-            {
-                // Interface stub — only configurationIsCached() is consulted by the provider.
-                return $this->getCachedConfigPath();
-            }
-        };
-        $app->instance('config', new Repository([
-            'rabbit-rs' => [
-                'brokers' => [
-                    'default' => [
-                        'hosts' => 'rabbit-a:5672,rabbit-b:5673',
-                    ],
-                ],
-            ],
-        ]));
-
-        (new RabbitMqServiceProvider($app))->register();
-
-        expect($app->make('config')->get('rabbit-rs.brokers.default.hosts'))
-            ->toBe(['rabbit-a:5672', 'rabbit-b:5673']);
-    });
-
-    it('preserves hosts already configured as an array', function () {
-        $hosts = ['rabbit-a:5672', 'rabbit-b:5673'];
-        $this->app['config']->set('rabbit-rs.brokers.default.hosts', $hosts);
-
-        (new RabbitMqServiceProvider($this->app))->register();
-
-        expect($this->app['config']->get('rabbit-rs.brokers.default.hosts'))
-            ->toBe($hosts);
-    });
-
-    it('normalizes an empty hosts string to an empty list', function () {
-        $this->app['config']->set('rabbit-rs.brokers.default.hosts', ' , ');
-
-        (new RabbitMqServiceProvider($this->app))->register();
-
-        expect($this->app['config']->get('rabbit-rs.brokers.default.hosts'))
-            ->toBe([]);
+        expect($pool->config['workers'][0]['subscriptions'][0]['prefetch'])->toBe(128);
     });
 });

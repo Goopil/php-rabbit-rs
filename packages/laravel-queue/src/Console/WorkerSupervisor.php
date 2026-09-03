@@ -9,6 +9,7 @@ use Symfony\Component\Process\Process;
 
 /**
  * @phpstan-type ProcessFactory \Closure(int): Process
+ * @phpstan-type WorkPlanEntry array{connection: string, queues: list<string>}
  * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null}
  */
 class WorkerSupervisor
@@ -26,14 +27,17 @@ class WorkerSupervisor
     private const PROPAGATED_OPTIONS = ['timeout', 'tries', 'memory', 'max-jobs', 'max-time'];
 
     /**
+     * @param list<WorkPlanEntry> $plan One entry per targeted connection; each
+     *         child consumes one entry's queues via
+     *         `queue:work --connection=<c> --queue=<q1,q2>`.
+     * @param int $workers Children spawned per plan entry.
      * @param ?ProcessFactory $processFactory Optional override used by tests
      *         to spawn a stub process instead of `queue:work`.
      * @param WorkerOptions $options Worker options to propagate to child processes.
      *         Keys: timeout, tries, memory, max-jobs, max-time. Null values are omitted.
      */
     public function __construct(
-        private readonly string $connection,
-        private readonly string $queue,
+        private readonly array $plan,
         private readonly int $workers,
         private readonly int $maxRestarts,
         private readonly int $baseBackoffSeconds,
@@ -42,10 +46,11 @@ class WorkerSupervisor
     ) {}
 
     /**
-     * Build the child command for the given worker index.
+     * Build one child command per plan entry × worker, with worker indexes
+     * numbered across the full child list.
      *
      * The worker index is passed via the RABBIT_RS_WORKER environment variable
-     * (see {@see workerEnv()}) rather than as a CLI option, because
+     * (see {@see workerEnvironment()}) rather than as a CLI option, because
      * `queue:work` is Laravel's built-in command and Symfony Console rejects
      * unknown options. The `--name` option (recognised by `queue:work`) is
      * set to a unique value so the worker name appears in logs and metrics.
@@ -53,16 +58,34 @@ class WorkerSupervisor
      * Worker options (timeout, tries, memory, max-jobs, max-time) are
      * propagated when set; null-valued options are omitted.
      *
+     * @return list<list<string>>
+     */
+    public function buildChildCommands(): array
+    {
+        $commands = [];
+        $index = 0;
+        foreach ($this->plan as $entry) {
+            for ($worker = 0; $worker < $this->workers; $worker++) {
+                $commands[] = $this->childCommand($index, $entry);
+                $index++;
+            }
+        }
+
+        return $commands;
+    }
+
+    /**
+     * @param WorkPlanEntry $entry
      * @return list<string>
      */
-    public function buildChildCommand(int $workerIndex = 0): array
+    private function childCommand(int $workerIndex, array $entry): array
     {
         $cmd = [
             PHP_BINARY,
             'artisan',
             'queue:work',
-            "--connection={$this->connection}",
-            "--queue={$this->queue}",
+            "--connection={$entry['connection']}",
+            '--queue='.implode(',', $entry['queues']),
             '--name=worker-'.$workerIndex,
         ];
 
@@ -106,37 +129,34 @@ class WorkerSupervisor
         return min($seconds, 60);
     }
 
-    public function workers(): int
-    {
-        return $this->workers;
-    }
-
     /**
-     * Starts the supervisor loop. Each child runs queue:work with the configured
-     * connection and queue. On signal SIGTERM/SIGINT, children are stopped
-     * gracefully. A clean child exit (exit code 0, e.g. --max-jobs recycling)
-     * restarts the child immediately and resets its crash budget; a non-zero
-     * exit is a crash: the child is restarted with backoff until maxRestarts
-     * is reached.
+     * Starts the supervisor loop. Each child runs queue:work with its plan
+     * entry's connection and queues. On signal SIGTERM/SIGINT, children are
+     * stopped gracefully. A clean child exit (exit code 0, e.g. --max-jobs
+     * recycling) restarts the child immediately and resets its crash budget;
+     * a non-zero exit is a crash: the child is restarted with backoff until
+     * maxRestarts is reached.
      *
-     * When ext-pcntl is not available and a single worker is configured, the
+     * When ext-pcntl is not available and a single child is configured, the
      * child runs in the foreground without forking ({@see runInline()}); no
      * pcntl function is needed on that path.
      *
      * @throws SupervisorException when ext-pcntl is not available and more
-     *         than one worker is configured
+     *         than one child is configured
      */
     public function run(): int
     {
+        $children = $this->buildChildCommands();
+
         if (! $this->canFork()) {
-            if ($this->workers === 1) {
-                return $this->runInline();
+            if (count($children) === 1) {
+                return $this->runInline($children);
             }
 
-            throw new SupervisorException('ext-pcntl is required for --workers>1. Install ext-pcntl or run with --workers=1.');
+            throw new SupervisorException('ext-pcntl is required to supervise multiple workers. Install ext-pcntl or target a single connection.');
         }
 
-        return $this->runInternal();
+        return $this->runInternal($children);
     }
 
     /**
@@ -150,7 +170,7 @@ class WorkerSupervisor
     }
 
     /**
-     * Run a single worker in the foreground without forking.
+     * Run a single child in the foreground without forking.
      *
      * Fallback for PHP builds without ext-pcntl (e.g. Windows): the child
      * process runs inline and the supervisor blocks until it exits, keeping
@@ -158,11 +178,13 @@ class WorkerSupervisor
      * Without pcntl there is no graceful signal handling: the default signal
      * disposition terminates the supervisor, leaving the child to stop on
      * its own.
+     *
+     * @param list<list<string>> $children Exactly one child command.
      */
-    private function runInline(): int
+    private function runInline(array $children): int
     {
         $restarts = 0;
-        $process = $this->startProcess(0);
+        $process = $this->startProcess(0, $children[0]);
 
         while (true) {
             $process->wait();
@@ -171,7 +193,7 @@ class WorkerSupervisor
                 // Planned recycling (e.g. --max-jobs reached): reset the
                 // crash budget and restart immediately, without backoff.
                 $restarts = 0;
-                $process = $this->startProcess(0);
+                $process = $this->startProcess(0, $children[0]);
 
                 continue;
             }
@@ -182,7 +204,7 @@ class WorkerSupervisor
 
             sleep($this->backoffSeconds($restarts));
             $restarts++;
-            $process = $this->startProcess(0);
+            $process = $this->startProcess(0, $children[0]);
         }
     }
 
@@ -197,16 +219,20 @@ class WorkerSupervisor
         return $process->getExitCode() === self::EXIT_CLEAN;
     }
 
-    private function runInternal(): int
+    /**
+     * @param list<list<string>> $children One command per child process,
+     *         indexed by worker index.
+     */
+    private function runInternal(array $children): int
     {
         $processes = [];
-        $restartCounts = array_fill(0, $this->workers, 0);
+        $restartCounts = array_fill(0, count($children), 0);
         // Next allowed restart time per worker (unix timestamp seconds).
         // 0.0 means no restart is pending: the value is set once when a dead
         // worker is detected, and consumed once the backoff window elapsed.
         // While a worker waits out its backoff, the loop keeps polling the
         // other children (non-blocking backoff).
-        $restartAt = array_fill(0, $this->workers, 0.0);
+        $restartAt = array_fill(0, count($children), 0.0);
 
         $shutdown = false;
         $signalHandler = static function () use (&$shutdown): void {
@@ -217,8 +243,8 @@ class WorkerSupervisor
         pcntl_signal(SIGTERM, $signalHandler);
         pcntl_signal(SIGINT, $signalHandler);
 
-        for ($i = 0; $i < $this->workers; $i++) {
-            $processes[$i] = $this->startProcess($i);
+        foreach ($children as $index => $command) {
+            $processes[$index] = $this->startProcess($index, $command);
         }
 
         while (! $shutdown) {
@@ -232,7 +258,7 @@ class WorkerSupervisor
                     // Planned recycling (e.g. --max-jobs reached): reset the
                     // crash budget and restart immediately, without backoff.
                     $restartCounts[$index] = 0;
-                    $processes[$index] = $this->startProcess($index);
+                    $processes[$index] = $this->startProcess($index, $children[$index]);
 
                     continue;
                 }
@@ -243,7 +269,7 @@ class WorkerSupervisor
                     // children keep being supervised in the meantime.
                     if ($now >= $restartAt[$index]) {
                         $restartAt[$index] = 0.0;
-                        $processes[$index] = $this->startProcess($index);
+                        $processes[$index] = $this->startProcess($index, $children[$index]);
                     }
                     continue;
                 }
@@ -281,13 +307,16 @@ class WorkerSupervisor
         }
     }
 
-    private function startProcess(int $workerIndex): Process
+    /**
+     * @param list<string> $command The child command for this worker index.
+     */
+    private function startProcess(int $workerIndex, array $command): Process
     {
         if ($this->processFactory !== null) {
             $process = ($this->processFactory)($workerIndex);
         } else {
             $process = new Process(
-                $this->buildChildCommand($workerIndex),
+                $command,
                 null,
                 $this->workerEnvironment($workerIndex),
             );

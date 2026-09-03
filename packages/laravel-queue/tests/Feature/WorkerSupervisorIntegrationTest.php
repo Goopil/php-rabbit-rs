@@ -98,8 +98,7 @@ describe('WorkerSupervisor integration', function () {
         };
 
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
             workers: 1,
             maxRestarts: 3,
             baseBackoffSeconds: 0,
@@ -163,8 +162,7 @@ describe('WorkerSupervisor integration', function () {
 
         // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
         $supervisor = new class(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -207,8 +205,7 @@ describe('WorkerSupervisor integration', function () {
         };
 
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
             workers: 2,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -245,8 +242,7 @@ describe('WorkerSupervisor integration', function () {
         };
 
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
             workers: 2,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -290,8 +286,7 @@ describe('WorkerSupervisor integration', function () {
 
         // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
         $supervisor = new class(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
             workers: 1,
             maxRestarts: 1,
             baseBackoffSeconds: 0,
@@ -341,8 +336,7 @@ describe('WorkerSupervisor integration', function () {
         };
 
         $supervisor = new WorkerSupervisor(
-            connection: 'rabbit-rs',
-            queue: 'default',
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
             workers: 2,
             maxRestarts: 2,
             baseBackoffSeconds: 3,
@@ -420,8 +414,7 @@ function makeSupervisor(
     };
 
     return new WorkerSupervisor(
-        connection: 'rabbit-rs',
-        queue: 'default',
+        plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
         workers: $workers,
         maxRestarts: $maxRestarts,
         baseBackoffSeconds: $baseBackoffSeconds,
@@ -501,7 +494,7 @@ function writeSupervisorScript(
     $code .= "    return new \\Symfony\\Component\\Process\\Process([PHP_BINARY, \$stubPath], null, \$env);\n";
     $code .= "};\n";
     $code .= "\$supervisor = new \\Goopil\\RabbitRs\\Laravel\\Console\\WorkerSupervisor(\n";
-    $code .= "    connection: 'rabbit-rs', queue: 'default', workers: 1, maxRestarts: {$maxRestarts}, baseBackoffSeconds: {$baseBackoffSeconds},\n";
+    $code .= "    plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: {$maxRestarts}, baseBackoffSeconds: {$baseBackoffSeconds},\n";
     $code .= "    processFactory: \$factory,\n";
     $code .= ");\n";
     $code .= "exit(\$supervisor->run());\n";

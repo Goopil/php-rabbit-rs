@@ -2,20 +2,15 @@
 
 declare(strict_types=1);
 
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Illuminate\Contracts\Queue\ClearableQueue;
 
 describe('ClearableQueue contract', function () {
     beforeEach(function (): void {
         $this->app['config']->set('queue.connections.rabbit-rs', [
             'driver' => 'rabbit-rs',
+            'queue' => 'default',
         ]);
-        (new class($this->app) extends RabbitMqServiceProvider {
-            protected function nativeExtensionLoaded(): bool
-            {
-                return true;
-            }
-        })->boot();
+        bootFakeNativeExtension($this->app);
     });
 
     it('implements ClearableQueue so queue:clear works', function (): void {

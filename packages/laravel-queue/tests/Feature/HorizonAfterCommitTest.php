@@ -5,7 +5,6 @@ declare(strict_types=1);
 use Fixtures\BulkJob;
 use Fixtures\CommitJob;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue;
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Support\Facades\DB;
@@ -22,12 +21,7 @@ beforeEach(function (): void {
         createPool: fn (): Pool => $this->pool,
     ));
 
-    (new class($this->app) extends RabbitMqServiceProvider {
-        protected function nativeExtensionLoaded(): bool
-        {
-            return true;
-        }
-    })->boot();
+    bootFakeNativeExtension($this->app);
 
     $this->app['config']->set('queue.connections.rabbit-rs-horizon', [
         'driver' => 'rabbit-rs',

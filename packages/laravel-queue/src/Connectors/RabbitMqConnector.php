@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Connectors;
 
 use Closure;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
@@ -18,33 +19,30 @@ final class RabbitMqConnector implements ConnectorInterface
     /** Whether the poison-friendly defaults warning was already emitted in this process. */
     private static bool $unboundedRedeliveryWarningEmitted = false;
 
-    private readonly WorkerProfileResolver $workerProfiles;
     /**
-     * @param array{
-     *     native: array<string, mixed>,
-     *     routes: array<string, array<string, mixed>>,
-     *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int},
-     *     topology: array<string, mixed>
-     * } $normalizedConfig
+     * @param array<string, mixed> $defaults package defaults (config('rabbit-rs')) merged under every connection config
      * @param (Closure(): bool)|null $inProductionEnvironment
      */
     public function __construct(
         private readonly NativePoolFactory $pools,
-        private readonly array $normalizedConfig,
+        private readonly array $defaults = [],
         private readonly ?Closure $inProductionEnvironment = null,
         private readonly bool $productionWarningEnabled = true,
-    ) {
-        $this->workerProfiles = new WorkerProfileResolver(
-            $this->normalizedConfig['native']['workers'] ?? [],
-        );
-    }
+    ) {}
 
     /**
+     * Compiles the queue connection lazily: one connection = one broker = one
+     * native pool. Framework keys (queue, after_commit, block_for, worker,
+     * production_warning) stay read from the raw connection config.
+     *
      * @param array<string, mixed> $config
      */
     public function connect(array $config): RabbitMqQueue
     {
-        $this->warnOnUnboundedRedeliveryDefaults($config);
+        $name = $this->connectionName($config);
+        $compiled = ConnectionCompiler::compile($name, $config, $this->defaults);
+
+        $this->warnOnUnboundedRedeliveryDefaults($config, $compiled);
 
         $defaultQueue = $config['queue'] ?? 'default';
         if (! is_string($defaultQueue) || $defaultQueue === '') {
@@ -62,28 +60,40 @@ final class RabbitMqConnector implements ConnectorInterface
             throw new InvalidArgumentException('block_for exceeds the supported millisecond range');
         }
 
-        $autoSubscribe = $config['auto_subscribe']
-            ?? ($this->normalizedConfig['auto_subscribe'] ?? false);
-        if (! is_bool($autoSubscribe)) {
-            throw new InvalidArgumentException('auto_subscribe must be a boolean');
-        }
-
         $worker = $config['worker'] ?? 'default';
         $class = $worker === 'horizon'
             ? HorizonRabbitMqQueue::class
             : RabbitMqQueue::class;
 
         return new $class(
-            $this->pools->make($this->normalizedConfig['native']),
-            $this->normalizedConfig['routes'],
+            $this->pools->make($compiled['native']),
+            $compiled['routes'],
             $defaultQueue,
             $dispatchAfterCommit,
-            workerProfiles: $this->workerProfiles,
+            workerProfiles: new WorkerProfileResolver($compiled['native']['workers']),
             blockForMilliseconds: ($blockFor ?? 0) * 1000,
-            publisherConfig: $this->normalizedConfig['publisher'],
-            autoSubscribe: $autoSubscribe,
-            hasDeadLetter: ($this->normalizedConfig['topology']['dead_letter'] ?? null) !== null,
+            publisherConfig: $compiled['publisher'],
+            autoSubscribe: $compiled['auto_subscribe'],
+            hasDeadLetter: $compiled['topology']['dead_letter'] !== null,
         );
+    }
+
+    /**
+     * Resolves the connection name by reverse lookup in queue.connections so
+     * compiled brokers and worker profiles are named after the connection.
+     * When two connections hold identical arrays, the first-found name wins —
+     * identical configs compile identically, so the ambiguity is harmless.
+     * Falls back to 'default' when the config is not registered (direct
+     * connector use).
+     *
+     * @param array<string, mixed> $config
+     */
+    private function connectionName(array $config): string
+    {
+        $connections = config('queue.connections');
+        $found = is_array($connections) ? array_search($config, $connections, true) : false;
+
+        return is_string($found) && $found !== '' ? $found : 'default';
     }
 
     /**
@@ -94,8 +104,9 @@ final class RabbitMqConnector implements ConnectorInterface
      * package config.
      *
      * @param array<string, mixed> $config
+     * @param array<string, mixed> $compiled
      */
-    private function warnOnUnboundedRedeliveryDefaults(array $config): void
+    private function warnOnUnboundedRedeliveryDefaults(array $config, array $compiled): void
     {
         if (self::$unboundedRedeliveryWarningEmitted) {
             return;
@@ -105,11 +116,11 @@ final class RabbitMqConnector implements ConnectorInterface
             return;
         }
 
-        if (($this->normalizedConfig['topology']['queue']['delivery_limit'] ?? null) !== null) {
+        if (($compiled['topology']['queue']['delivery_limit'] ?? null) !== null) {
             return;
         }
 
-        if (($this->normalizedConfig['topology']['dead_letter'] ?? null) !== null) {
+        if (($compiled['topology']['dead_letter'] ?? null) !== null) {
             return;
         }
 
@@ -122,7 +133,7 @@ final class RabbitMqConnector implements ConnectorInterface
         Log::warning(
             'rabbit-rs: delivery_limit and dead_letter are both unset for this connection. '
             .'A poison message (worker crash before settlement) will be redelivered forever. '
-            .'Set topology.queue.delivery_limit with topology.dead_letter, or silence this '
+            .'Set delivery_limit with dead_letter on the queue connection, or silence this '
             .'with production_warning => false.'
         );
     }

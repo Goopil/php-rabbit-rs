@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\BackpressureException;
 use Goopil\RabbitRs\Exception as NativeException;
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
@@ -245,7 +244,7 @@ it('keeps after-commit publishing managed by the Laravel queue', function (): vo
     );
     $connector = new RabbitMqConnector(
         $factory,
-        ConfigNormalizer::normalize($this->app['config']->get('rabbit-rs')),
+        $this->app['config']->get('rabbit-rs'),
     );
     $queue = $connector->connect([
         'queue' => 'default',

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Consumer;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
-use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
@@ -12,15 +11,16 @@ use Goopil\RabbitRs\Pool;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Event;
 
-if (! function_exists('lifecycleNormalizedNativeConfig')) {
-    function lifecycleNormalizedNativeConfig($app): array
+if (! function_exists('lifecycleCompiledNativeConfig')) {
+    function lifecycleCompiledNativeConfig($app): array
     {
-        $config = $app['config']->get('rabbit-rs');
-        $normalized = \Goopil\RabbitRs\Laravel\Config\ConfigNormalizer::normalize(
-            is_array($config) ? $config : [],
+        $compiled = \Goopil\RabbitRs\Laravel\Config\ConnectionCompiler::compile(
+            'rabbit-rs',
+            ['queue' => 'default'],
+            is_array($app['config']->get('rabbit-rs')) ? $app['config']->get('rabbit-rs') : [],
         );
 
-        return $normalized['native'];
+        return $compiled['native'];
     }
 }
 
@@ -75,7 +75,7 @@ function resolveQueueWithConsumer($app): array
 describe('pool reuse', function () {
     it('two requests reuse the same pool in one worker', function () {
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = lifecycleNormalizedNativeConfig($this->app);
+        $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool1 = $factory->make($config);
         $pool2 = $factory->make($config);
@@ -85,7 +85,7 @@ describe('pool reuse', function () {
 
     it('no request state is retained in pool', function () {
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = lifecycleNormalizedNativeConfig($this->app);
+        $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool = $factory->make($config);
         $reflection = new \ReflectionClass($pool);
@@ -98,7 +98,7 @@ describe('pool reuse', function () {
     it('pool is independent per worker', function () {
         $factory1 = new NativePoolFactory();
         $factory2 = new NativePoolFactory();
-        $config = lifecycleNormalizedNativeConfig($this->app);
+        $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool1 = $factory1->make($config);
         $pool2 = $factory2->make($config);
@@ -116,7 +116,7 @@ describe('lifecycle operations', function () {
 
     it('flush does not recreate the pool', function () {
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = lifecycleNormalizedNativeConfig($this->app);
+        $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool = $factory->make($config);
         expect($factory->make($config))->toBe($pool);
@@ -130,7 +130,7 @@ describe('lifecycle operations', function () {
 
     it('reload closes all pools', function () {
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = lifecycleNormalizedNativeConfig($this->app);
+        $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool = $factory->make($config);
         expect($factory->make($config))->toBe($pool);
@@ -143,17 +143,11 @@ describe('lifecycle operations', function () {
     });
 
     it('reload calls close on the cached pool', function () {
-        $pool = new Pool();
-        $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pool,
-        );
-        $this->app->instance(NativePoolFactory::class, $factory);
+        [$pool, $factory] = trackedPoolFactory($this->app);
 
-        $config = lifecycleNormalizedNativeConfig($this->app);
-        $factory->make($config);
+        $factory->make(lifecycleCompiledNativeConfig($this->app));
 
-        $lifecycle = new OctaneLifecycle($this->app);
-        $lifecycle->reload();
+        (new OctaneLifecycle($this->app))->reload();
 
         expect($pool->closeCalls)->toBe(1);
     });
@@ -162,7 +156,7 @@ describe('lifecycle operations', function () {
         $lifecycle = new OctaneLifecycle($this->app);
 
         $factory = $this->app->make(NativePoolFactory::class);
-        $config = lifecycleNormalizedNativeConfig($this->app);
+        $config = lifecycleCompiledNativeConfig($this->app);
         $pool = $factory->make($config);
 
         $lifecycle->stop();
@@ -172,33 +166,21 @@ describe('lifecycle operations', function () {
     });
 
     it('worker stop calls close on the cached pool', function () {
-        $pool = new Pool();
-        $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pool,
-        );
-        $this->app->instance(NativePoolFactory::class, $factory);
+        [$pool, $factory] = trackedPoolFactory($this->app);
 
-        $config = lifecycleNormalizedNativeConfig($this->app);
-        $factory->make($config);
+        $factory->make(lifecycleCompiledNativeConfig($this->app));
 
-        $lifecycle = new OctaneLifecycle($this->app);
-        $lifecycle->stop();
+        (new OctaneLifecycle($this->app))->stop();
 
         expect($pool->closeCalls)->toBe(1);
     });
 
     it('flush does not close pools', function () {
-        $pool = new Pool();
-        $factory = new NativePoolFactory(
-            createPool: static fn (array $config): Pool => $pool,
-        );
-        $this->app->instance(NativePoolFactory::class, $factory);
+        [$pool, $factory] = trackedPoolFactory($this->app);
 
-        $config = lifecycleNormalizedNativeConfig($this->app);
-        $factory->make($config);
+        $factory->make(lifecycleCompiledNativeConfig($this->app));
 
-        $lifecycle = new OctaneLifecycle($this->app);
-        $lifecycle->flush();
+        (new OctaneLifecycle($this->app))->flush();
 
         expect($pool->closeCalls)->toBe(0);
     });
@@ -215,39 +197,33 @@ describe('lifecycle operations', function () {
 });
 
 describe('config refresh on reload', function () {
-    it('reload re-binds rabbit-rs.config so fresh config values are served', function () {
-        $before = $this->app->make('rabbit-rs.config');
-        expect($before['native']['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
+    it('reload drops resolved connections so the same name recompiles from fresh config', function () {
+        $app = $this->app;
+        $app['config']->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+        ]);
 
-        $this->app['config']->set('rabbit-rs.brokers.default.hosts', ['rotated:5672']);
+        [$pool, $poolAfter] = resolveRotateAndReload($app, 'rabbit-rs');
 
-        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
-
-        $after = $this->app->make('rabbit-rs.config');
-        expect($after['native']['brokers'][0]['hosts'][0]['host'])->toBe('rotated');
+        expect($poolAfter->config['brokers'][0]['hosts'][0]['host'])->toBe('rotated')
+            ->and($poolAfter)->not->toBe($pool);
     });
 
     it('reload propagates config changes to newly resolved queue connections', function () {
         $app = $this->app;
         $app['config']->set('queue.connections.rabbit-rs-rotated', [
             'driver' => 'rabbit-rs',
+            'queue' => 'default',
         ]);
 
-        $provider = new class($app) extends RabbitMqServiceProvider {
-            protected function nativeExtensionLoaded(): bool
-            {
-                return true;
-            }
-        };
-        $provider->boot();
+        [$pool] = resolveRotateAndReload($app, 'rabbit-rs-rotated');
 
-        $pool = octaneQueuePool($app['queue']->connection('rabbit-rs-rotated'));
-        expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
-
-        $app['config']->set('rabbit-rs.brokers.default.hosts', ['rotated:5672']);
-        Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
-
-        $app['config']->set('queue.connections.rabbit-rs-fresh', ['driver' => 'rabbit-rs']);
+        $app['config']->set('queue.connections.rabbit-rs-fresh', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+            'hosts' => 'rotated:5672',
+        ]);
         $poolAfter = octaneQueuePool($app['queue']->connection('rabbit-rs-fresh'));
 
         expect($poolAfter->config['brokers'][0]['hosts'][0]['host'])->toBe('rotated')
@@ -262,6 +238,41 @@ function octaneQueuePool(object $queue): Pool
 {
     // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
     return (new ReflectionProperty($queue, 'pool'))->getValue($queue);
+}
+
+/**
+ * Binds a NativePoolFactory whose make() always returns a tracked Pool.
+ *
+ * @return array{0: Pool, 1: NativePoolFactory}
+ */
+function trackedPoolFactory($app): array
+{
+    $pool = new Pool();
+    $factory = new NativePoolFactory(
+        createPool: static fn (array $config): Pool => $pool,
+    );
+    $app->instance(NativePoolFactory::class, $factory);
+
+    return [$pool, $factory];
+}
+
+/**
+ * Boots the fake-extension provider, resolves the given connection, then
+ * rotates its hosts config and dispatches the Octane reload event.
+ *
+ * @return array{0: Pool, 1: Pool} pools resolved before and after the reload
+ */
+function resolveRotateAndReload($app, string $connection): array
+{
+    bootFakeNativeExtension($app);
+
+    $pool = octaneQueuePool($app['queue']->connection($connection));
+    expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
+
+    $app['config']->set("queue.connections.{$connection}.hosts", 'rotated:5672');
+    Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+
+    return [$pool, octaneQueuePool($app['queue']->connection($connection))];
 }
 
 describe('consumer cleanup', function () {

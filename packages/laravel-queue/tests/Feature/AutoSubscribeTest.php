@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\Delivery;
-use Goopil\RabbitRs\Laravel\Config\ConfigNormalizer;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
@@ -81,8 +81,8 @@ function makeAutoSubscribeQueue(bool $autoSubscribe): array
 
 /**
  * Builds a connector whose factory returns the given pool, mirroring the
- * integration test bootstrap without the native extension. The merged package
- * configuration (including test overrides of rabbit-rs.*) feeds the normalizer.
+ * integration test bootstrap without the native extension. The package
+ * configuration (rabbit-rs defaults) feeds the compiler.
  */
 function autoSubscribeConnector(Pool $pool): RabbitMqConnector
 {
@@ -91,7 +91,7 @@ function autoSubscribeConnector(Pool $pool): RabbitMqConnector
 
     return new RabbitMqConnector(
         $factory,
-        ConfigNormalizer::normalize(is_array($config) ? $config : []),
+        is_array($config) ? $config : [],
     );
 }
 
@@ -101,40 +101,7 @@ function autoSubscribeConnector(Pool $pool): RabbitMqConnector
 function validAutoSubscribeConfig(): array
 {
     return [
-        'topology_mode' => 'declare',
-        'brokers' => [
-            'default' => [
-                'hosts' => ['127.0.0.1:5672'],
-                'vhost' => '/',
-                'credentials' => ['username' => 'rabbit_rs', 'password' => 'rabbit_rs_lab'],
-                'tls' => ['enabled' => false],
-                'heartbeat' => 30,
-            ],
-        ],
-        'routes' => [
-            'default' => ['broker' => 'default', 'exchange' => '', 'routing_key' => '{queue}'],
-        ],
-        'workers' => [
-            'default' => [
-                'scheduler' => ['strategy' => 'weighted_fair'],
-                'subscriptions' => [
-                    'orders' => [
-                        'enabled' => true,
-                        'broker' => 'default',
-                        'queue' => 'orders-eu',
-                        'weight' => 1,
-                        'priority_class' => 0,
-                        'prefetch' => ['mode' => 'fixed', 'value' => 16],
-                        'starvation_after' => 30,
-                    ],
-                ],
-            ],
-        ],
-        'publisher' => ['confirms' => true, 'mandatory' => true],
-        'topology' => [
-            'queue' => ['type' => 'quorum', 'durable' => true, 'delivery_limit' => null],
-            'dead_letter' => null,
-        ],
+        'queue' => 'default',
     ];
 }
 
@@ -175,8 +142,8 @@ describe('auto_subscribe pop', function () {
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage(
-            "No worker profile subscribes to queue 'emails'. "
-            .'Configure workers.*.subscriptions.*.queue=emails or enable auto_subscribe.'
+            "No worker profile subscribes to queue 'emails': define it in "
+            .'queue.connections.<name> (queue key or subscriptions) or enable auto_subscribe.'
         );
 
         $queue->pop('emails');
@@ -236,31 +203,29 @@ describe('auto_subscribe connector wiring', function () {
         $pool = new Pool(['workers' => autoSubscribeWorkers()]);
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('auto_subscribe must be a boolean');
+        $this->expectExceptionMessage('auto_subscribe');
 
-        autoSubscribeConnector($pool)->connect(['queue' => 'default', 'auto_subscribe' => 'yes']);
+        autoSubscribeConnector($pool)->connect(['queue' => 'default', 'auto_subscribe' => 'maybe']);
     });
 });
 
-describe('auto_subscribe config normalization', function () {
-    it('normalizes auto_subscribe to false by default', function (): void {
-        expect(ConfigNormalizer::normalize(validAutoSubscribeConfig())['auto_subscribe'])->toBeFalse();
+describe('auto_subscribe compile defaults', function () {
+    it('compiles auto_subscribe to false from package defaults', function (): void {
+        $compiled = ConnectionCompiler::compile('default', validAutoSubscribeConfig(), ['auto_subscribe' => false]);
+
+        expect($compiled['auto_subscribe'])->toBeFalse();
     });
 
-    it('normalizes an enabled auto_subscribe', function (): void {
-        $config = validAutoSubscribeConfig();
-        $config['auto_subscribe'] = true;
+    it('compiles an enabled auto_subscribe from package defaults', function (): void {
+        $compiled = ConnectionCompiler::compile('default', validAutoSubscribeConfig(), ['auto_subscribe' => true]);
 
-        expect(ConfigNormalizer::normalize($config)['auto_subscribe'])->toBeTrue();
+        expect($compiled['auto_subscribe'])->toBeTrue();
     });
 
     it('rejects a junk string auto_subscribe', function (): void {
-        $config = validAutoSubscribeConfig();
-        $config['auto_subscribe'] = 'maybe';
-
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('auto_subscribe');
 
-        ConfigNormalizer::normalize($config);
+        ConnectionCompiler::compile('default', validAutoSubscribeConfig() + ['auto_subscribe' => 'maybe']);
     });
 });

@@ -27,7 +27,14 @@ Called when Octane reloads the worker (e.g., after `php artisan octane:reload`):
 
 - Closes cached consumers on all resolved queues
 - **Flushes the pool factory** — all native pools are closed and recreated on next use
-- The next request creates fresh AMQP connections
+- **Forgets the queue manager's resolved connections** — the next request
+  recompiles every rabbit-rs connection from the current config, so broker and
+  credential rotation via env variables takes effect immediately (no stale
+  brokers serving the boot-time snapshot)
+
+Because connections are compiled lazily at resolution time (see
+[Configuration](configuration.md)), `octane:reload` picks up fresh config
+automatically — no manual normalization step exists or is needed.
 
 ```php
 // Triggered by WorkerReload event
@@ -85,17 +92,24 @@ This is critical for Octane because:
 
 ### queue.php
 
-Add the Rabbit RS connection to `config/queue.php` as usual:
+Add the Rabbit RS connection to `config/queue.php` as usual — one connection
+= one broker/vhost = one native pool:
 
 ```php
 'connections' => [
     'rabbit-rs' => [
         'driver' => 'rabbit-rs',
         'queue' => env('RABBIT_RS_QUEUE', 'default'),
+        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+        'username' => env('RABBIT_RS_USERNAME', 'guest'),
+        'password' => env('RABBIT_RS_PASSWORD', 'guest'),
         'after_commit' => false,
     ],
 ],
 ```
+
+Every other key falls back to the package defaults in
+`config/rabbit-rs.php` — see [Configuration](configuration.md).
 
 ### Octane configuration
 
@@ -140,7 +154,10 @@ If you need to force-close all connections (e.g., before a deployment), use:
 php artisan octane:reload
 ```
 
-This triggers `WorkerReload`, which flushes all pools. New requests create fresh connections.
+This triggers `WorkerReload`, which flushes all pools **and forgets the
+resolved queue connections**. New requests create fresh AMQP connections and
+recompile every connection from the current config — env-based broker or
+credential rotation takes effect without a restart.
 
 ## Fork safety
 
