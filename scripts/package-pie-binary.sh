@@ -86,7 +86,8 @@ if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     fail "version '${VERSION}' is not semver X.Y.Z"
 fi
 
-if [[ "${VERSION,,}" == *"debug"* || "${VERSION,,}" == *"dev"* ]]; then
+version_lower="$(echo "${VERSION}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${version_lower}" == *"debug"* || "${version_lower}" == *"dev"* ]]; then
     fail "debug/dev builds are not distributable: ${VERSION}"
 fi
 
