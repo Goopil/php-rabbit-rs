@@ -184,10 +184,33 @@ with the feature, never in a later docs pass.
   89 compiler unit cases, Laravel 330 Unit+Feature, Integration 24/24 on
   the lab, Rust untouched; Sonar gate lesson: `new_duplicated_lines_density`
   counts 10+-line duplicated blocks, not S1192 literals — test fixtures
-  deduplicated 99 → 11 lines). Spec §5 amended to the delivered mechanism
+  deduplicated   99 → 11 lines). Spec §5 amended to the delivered mechanism
   (one `queue:work` child per connection). Tag v0.1.0 not yet cut.
+- **Round I delivered (2026-09-03)** — PRs #132/#133, tracker #126 complete
+  (6/6). #111 root-caused to a lost wakeup in
+  `RecoveryCoordinator::wait_for_transition` (fresh receiver swallowed a
+  Disconnected→Ready transition landing between the caller's state check and
+  the wait — NOT RuntimeRegistry pollution); fix is
+  `wait_for(observed)` with a regression test. Soak harness
+  `benchmarks/driver-bench/bin/soak.php` (deterministic both-legs kills,
+  loud failure): 10-min evidence 441k messages / 45 kills → 45 automatic
+  reconnects / missing = 0, no stall reappeared. Chaos scenario
+  `recovers when killed mid-consume, rejects stale acks, and redelivers
+  unacked work` added (redelivery proven via broker `attempts >= 2`), every
+  scenario now asserts `missing = 0` (10/10). Benchmark workarounds deleted
+  (silent 400-null stall-rebuild, consumer-ordering dance, settle sleep) —
+  runs fail loudly instead; settlement-error drain fixed for real via
+  native `ConnectionException::throw()` (native exception messages are only
+  settable at throw time; the old userland `new ConnectionException` crashed
+  after any recovery). Node-restart publish budget widened to 90 s with
+  surfaced last error (pre-existing flake, 0-loss assertion unchanged).
+
 
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
+
+**DELIVERED 2026-09-03** (PRs #132/#133, 6/6 items; soak + chaos prove the
+DoD — connect → consume → ack → lose RabbitMQ → reconnect → resume, no
+manual intervention, no silent loss). Scope kept as record:
 
 Motivation: external review (see Landed) — the benchmark suite still works
 around the consumer, and issue #111 (flaky 30 s consumer-ready timeout,
@@ -610,26 +633,23 @@ Success criteria: full quality gate green; deterministic paused-time tests prove
 QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
 (regression tests).
 
-## Order of execution (agreed 2026-08-30, updated 2026-09-02)
+## Order of execution (agreed 2026-08-30, updated 2026-09-03)
 
 ~~Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
 Round F1 → Round C → Round F2 → Round E → Round D~~ — Round 2 and Round F are
 landed (v0.0.8).
 
-Current queue (updated 2026-09-02 after the external review — **stop
-features → fix consumer → optimize confirms → prove results → ship 1.0**):
+Current queue (updated 2026-09-03 — **stop features → fix consumer →
+optimize confirms → prove results → ship 1.0**):
 
-1. **Round I (#126, P0)** — consumer correctness under stress: #111 first
-   (it also flakes the ext Pest suite ~1 run in 4), then soak/chaos
-   verification of the Round 2 stall fix, reconnect + generation-aware ACK
-   proof, benchmark workaround removal.
+1. ~~Round I (#126, P0)~~ — **delivered 2026-09-03** (PRs #132/#133).
 2. **Round D (#41, P0, promoted)** — confirmed-publish
    batching/pipelining; profile before optimizing.
 3. **Round J (#127–#129, P1)** — benchmark proof, installation matrix,
    README repositioning (file-disjoint tracks; #128 has external CI
    latency and can start in parallel).
-4. **Round G exit**: only #82 remains (P3/P4 ops sweep, last — it also
-    sweeps wave debris). F2/F3 leftovers (#53, #58, #60) fill capacity.
+4. ~~Round G exit~~ — **complete 2026-09-03** (#82 ops sweep landed as PR
+   #131, 12 commits; F2/F3 leftovers #53, #58, #60 fill capacity).
 5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130, on main; tag
    v0.1.0 to cut with the next release).
 
