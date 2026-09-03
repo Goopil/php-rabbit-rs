@@ -171,6 +171,21 @@ with the feature, never in a later docs pass.
   optimize confirms → prove results → ship 1.0.** Triaged into Round I
   (#126, P0), Round D promoted to P0 pre-1.0 (#41), Round J (#127–#129,
   P1); feature freeze until the P0s land.
+- **Round G exit + Round H config redesign (2026-09-02)** — PRs #124/#125
+  (#97: delayed-exchange bindings declared in declare topology mode,
+  delayed publishes never mandatory at wire level — safe mode keeps
+  confirms; #81: `rabbit-rs:status` queue stats from the management API
+  behind per-connection `management_url`, native metrics honestly labeled
+  same-process only) and **v0.1.0 config redesign on main via PR #130**
+  (connection-first `queue.connections.*`, `ConnectionCompiler` replaces
+  `ConfigNormalizer`, lazy per-connection compile — F-27/F-28 closed by
+  construction, work-command fan-out with by-definition `--queue`
+  resolution, subscriptions escape hatch, CHANGELOG v0.1.0 migration table;
+  89 compiler unit cases, Laravel 330 Unit+Feature, Integration 24/24 on
+  the lab, Rust untouched; Sonar gate lesson: `new_duplicated_lines_density`
+  counts 10+-line duplicated blocks, not S1192 literals — test fixtures
+  deduplicated 99 → 11 lines). Spec §5 amended to the delivered mechanism
+  (one `queue:work` child per connection). Tag v0.1.0 not yet cut.
 
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
 
@@ -411,8 +426,9 @@ Status (2026-09-02): Tasks 21–25 (#66–#70), 26 (#71), 27 (#72), 28 (#73),
 29 (#74), 30 (#75), 31 (#76), 32 (#77), 33 (#78), 34 (#79), 35 (#80),
 38 (#83), 40 (#88), 41 (#89), 42 (#90) and Round C (#40) landed (see Landed),
 plus promoted P1s #56/#52 and follow-ups #95/#96/#50. Red-team tasks 39–42
-(#87–#90) are all delivered. Shipped in release v0.0.9. Still queued:
-Task 36 (#81, unblocked by #50), 37 (#82), follow-up #97.
+(#87–#90) are all delivered. Shipped in release v0.0.9. Round G exit landed
+2026-09-02: #97 (PR #124) and #81 (PR #125). Still queued: Task 37 (#82),
+the last Round G item.
 
 ### G0 — P0/P1 (delivery contract & availability)
 
@@ -474,6 +490,15 @@ criterion is the audit's P0/P1 list at zero, with the CI truth issue (#69)
 proving fixes against a real broker.
 
 ## Round H — connection-first Laravel config (DX, spec 2026-08-31)
+
+**DELIVERED 2026-09-02** (PR #130, v0.1.0 on main, tag not yet cut) — the
+config redesign portion of this section is done: connection-first
+`queue.connections.*`, `ConnectionCompiler` (lazy compile at `connect()`),
+`config/rabbit-rs.php` rewritten to flat defaults, work-command fan-out
+(spec §5 amended to the delivered one-child-per-connection mechanism),
+subscriptions escape hatch, docs + CHANGELOG v0.1.0 migration table.
+Companions #84 (topology preflight) and #85 (Kubernetes probes) remain
+PARKED per the external review's feature freeze.
 
 Motivation: two config homes (`queue.php` thin vs a 429-line `rabbit-rs.php`
 with three hand-linked namespaces), boot-time normalization blast radius
@@ -601,12 +626,10 @@ features → fix consumer → optimize confirms → prove results → ship 1.0**
 3. **Round J (#127–#129, P1)** — benchmark proof, installation matrix,
    README repositioning (file-disjoint tracks; #128 has external CI
    latency and can start in parallel).
-4. **Round G exit, parallel**: #97 (review follow-up: delayed bindings +
-   mandatory/safe-mode), #81 (duplicates monitoring — unblocked by #50),
-   #82 (P3/P4 ops sweep, last). F2/F3 leftovers (#53, #58, #60) fill
-   capacity.
-5. **Round H (v0.1.0)** — connection-first config, last breaking change
-   before the tag.
+4. **Round G exit**: only #82 remains (P3/P4 ops sweep, last — it also
+    sweeps wave debris). F2/F3 leftovers (#53, #58, #60) fill capacity.
+5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130, on main; tag
+   v0.1.0 to cut with the next release).
 
 Feature freeze until the P0s land: Round E (#42) and the other parked ideas
 (Kubernetes probes #85, topology command #84, Prometheus, realtime stack)
