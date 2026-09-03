@@ -15,7 +15,6 @@ use Symfony\Component\Process\Process;
 class WorkerSupervisor
 {
     public const EXIT_CLEAN = 0;
-    public const EXIT_SIGNAL = 130;
     public const EXIT_MAX_RESTARTS = 1;
 
     public const WORKER_ENV = 'RABBIT_RS_WORKER';

@@ -103,7 +103,10 @@ chmod 700 "${ASKPASS_FILE}"
 export GIT_ASKPASS="${ASKPASS_FILE}"
 export GIT_TERMINAL_PROMPT=0
 
-declare -A SHAS
+# Plain scalars instead of an associative array: `declare -A` needs bash >= 4,
+# which stock macOS /bin/bash (3.2) does not have.
+SHA_8_4=""
+SHA_8_5=""
 
 for php_ver in 8.4 8.5; do
     asset_name="php_rabbit_rs-v${VERSION}_php${php_ver}-arm64-darwin-nts.zip"
@@ -115,7 +118,10 @@ for php_ver in 8.4 8.5; do
     curl -fsSL --retry 3 --retry-delay 5 -o "${zip_path}" "${download_url}" || fail "failed to download ${download_url}" # NOSONAR
 
     sha="$(sha256_func "${zip_path}")"
-    SHAS["${php_ver}"]="${sha}"
+    case "${php_ver}" in
+        8.4) SHA_8_4="${sha}" ;;
+        8.5) SHA_8_5="${sha}" ;;
+    esac
     ok "${asset_name} sha256=${sha}"
 
     # Verify the zip contains rabbit_rs.so
@@ -139,8 +145,8 @@ git clone --depth 1 "https://x-access-token@github.com/${TAP_REPO}.git" "${TAP_D
 
 RUBY_SCRIPT=$(cat <<RUBY
 version = "${VERSION}"
-sha84 = "${SHAS["8.4"]}"
-sha85 = "${SHAS["8.5"]}"
+sha84 = "${SHA_8_4}"
+sha85 = "${SHA_8_5}"
 formula_path = "${TAP_DIR}/${FORMULA_PATH}"
 
 content = File.read(formula_path)

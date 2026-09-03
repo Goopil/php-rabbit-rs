@@ -17,6 +17,12 @@ use Illuminate\Support\ServiceProvider;
 
 class RabbitMqServiceProvider extends ServiceProvider
 {
+    /**
+     * Version constraint of the required ext-rabbit_rs extension. Must stay in
+     * sync with the `ext-rabbit_rs` requirement in composer.json.
+     */
+    public const EXTENSION_CONSTRAINT = '^0.0';
+
     public function register(): void
     {
         $this->mergeConfigFrom(self::configPath(), 'rabbit-rs');
@@ -96,7 +102,10 @@ class RabbitMqServiceProvider extends ServiceProvider
     private static function throwMissingNativeExtension(): never
     {
         throw new MissingExtensionException(
-            'The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.0 to be loaded.',
+            sprintf(
+                'The Rabbit RS Laravel driver requires ext-rabbit_rs %s to be loaded.',
+                self::EXTENSION_CONSTRAINT,
+            ),
         );
     }
 

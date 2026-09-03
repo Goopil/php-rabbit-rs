@@ -262,10 +262,6 @@ describe('exit codes', function (): void {
     it('exposes the exit code for a clean shutdown', function (): void {
         expect(0)->toBe(WorkerSupervisor::EXIT_CLEAN);
     });
-
-    it('exposes the exit code for a signal received', function (): void {
-        expect(130)->toBe(WorkerSupervisor::EXIT_SIGNAL);
-    });
 });
 
 describe('backoff', function (): void {

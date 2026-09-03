@@ -10,16 +10,6 @@ updates:
       - dependencies
       - rust
 
-  - package-ecosystem: composer
-    directory: /packages/laravel-queue
-    schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - php
-
   - package-ecosystem: github-actions
     directory: /
     schedule:

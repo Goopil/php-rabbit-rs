@@ -46,14 +46,25 @@ echo "Running Pest tests with coverage instrumentation..."
         --log-junit="${COVERAGE_DIR}/php-ext-junit.xml"
 )
 
+echo "Resolving llvm-profdata/llvm-cov from the rustup toolchain..."
+# The profraw/profdata format must match the toolchain that built the
+# instrumented artifact (Rust 1.96), so system LLVM must not be used
+# (see AGENTS.md). Same resolution as .github/workflows/coverage.yml.
+LLVM_BIN_DIR="$(dirname "$(find "${HOME}/.rustup" -name llvm-profdata -type f 2>/dev/null | head -1)")"
+if [[ -z "${LLVM_BIN_DIR}" || ! -x "${LLVM_BIN_DIR}/llvm-profdata" ]]; then
+    echo "ERROR: llvm-profdata not found under ~/.rustup." >&2
+    echo "       Install it with: rustup component add llvm-tools-preview" >&2
+    exit 1
+fi
+
 echo "Merging profraw files..."
-llvm-profdata merge \
+"${LLVM_BIN_DIR}/llvm-profdata" merge \
     -sparse \
     "${ROOT}"/target/debug/rabbit-rs-php-*.profraw \
     -o "${COVERAGE_DIR}/php-ext.profdata"
 
 echo "Exporting LCOV (excluding rabbit-rs-core)..."
-llvm-cov export \
+"${LLVM_BIN_DIR}/llvm-cov" export \
     "${ARTIFACT}" \
     -instr-profile="${COVERAGE_DIR}/php-ext.profdata" \
     --format lcov \

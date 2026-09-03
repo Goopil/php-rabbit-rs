@@ -10,3 +10,9 @@ else
     cargo test --workspace --all-targets
 fi
 composer validate --strict
+
+if command -v cargo-deny >/dev/null 2>&1; then
+    cargo deny check
+else
+    echo "::warning::cargo-deny not found, skipping supply-chain check" >&2
+fi

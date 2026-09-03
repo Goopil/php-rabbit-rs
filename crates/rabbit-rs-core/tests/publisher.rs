@@ -1619,10 +1619,10 @@ async fn wait_all_returns_results_in_original_order() {
     wait_for_publish_count(&transport, 3).await;
 
     let results = PublishWaiter::wait_all(waiters).await;
-    assert_eq!(results.len(), 3);
-    for (i, result) in &results {
-        assert_eq!(*i, *i); // index preserved
-        assert!(result.is_ok(), "result {i} should be confirmed");
+    let indices: Vec<usize> = results.iter().map(|(i, _)| *i).collect();
+    assert_eq!(indices, vec![0, 1, 2], "results must be in original order");
+    for (_, result) in &results {
+        assert!(result.is_ok(), "result should be confirmed");
     }
 }
 

@@ -1,5 +1,5 @@
 [profile.default]
-retries = 1
+retries = 0
 fail-fast = false
 
 [profile.ci.junit]
