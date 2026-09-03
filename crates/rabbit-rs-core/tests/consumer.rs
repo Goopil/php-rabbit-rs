@@ -465,7 +465,7 @@ async fn partial_consumer_spawn_closes_all_open_channels() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_errors_are_bounded_so_a_delivery_cannot_be_starved() {
     let transport = MockTransport::default();
     for index in 0..100 {
@@ -1516,18 +1516,6 @@ async fn early_ack_preserves_delivery_metadata() {
     assert_eq!(d.delivery_tag(), 7);
 
     consumer.close().await.expect("close");
-}
-
-// ---------------------------------------------------------------------------
-// OOM protection — hard gate tests
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn arc_headers_no_deep_clone() {
-    use std::sync::Arc;
-    let transport_delivery = helper::delivery(1, b"payload");
-    let headers_arc = Arc::clone(&transport_delivery.headers);
-    let _cloned = Arc::clone(&headers_arc);
 }
 
 // ---------------------------------------------------------------------------
