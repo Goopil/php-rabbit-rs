@@ -14,6 +14,17 @@ final class BackpressureException extends Exception
 
 final class ConnectionException extends Exception
 {
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     *
+     * A native exception's message can only be set when the exception is
+     * thrown, so userland that must surface a connection-level failure itself
+     * (e.g. draining async settlement errors) calls this factory: it always
+     * throws a ConnectionException carrying $message and never returns.
+     */
+    public static function throw(string $message): never
+    {
+    }
 }
 
 final class Pool

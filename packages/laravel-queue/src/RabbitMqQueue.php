@@ -351,7 +351,10 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
             foreach ($errors as $error) {
                 $kind = $error['error_kind'] ?? '';
                 if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
-                    throw new ConnectionException($error['message'] ?? 'settlement error: ' . $kind);
+                    // Native exception messages are set only at throw time:
+                    // the extension's static factory throws a typed
+                    // ConnectionException carrying the drained message.
+                    ConnectionException::throw($error['message'] ?? 'settlement error: '.$kind);
                 }
                 if (! isset($this->container)) {
                     continue;

@@ -118,7 +118,14 @@ namespace Goopil\RabbitRs {
 
         final class BackpressureException extends Exception {}
 
-        final class ConnectionException extends Exception {}
+        final class ConnectionException extends Exception
+        {
+            /** Mirrors the native factory: native messages are set only at throw time. */
+            public static function throw(string $message): never
+            {
+                throw new self($message);
+            }
+        }
 
         final class Delivery
         {
