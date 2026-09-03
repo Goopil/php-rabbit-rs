@@ -32,7 +32,7 @@ use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 
-require __DIR__.'/../vendor/autoload.php';
+require_once __DIR__.'/../vendor/autoload.php';
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -77,21 +77,25 @@ function toxiproxyApi(): string
 }
 
 /**
+ * Toxiproxy REST call over the plain HTTP stream wrapper (the test suite's
+ * helper uses curl; this harness keeps its own smaller dependency-free
+ * implementation).
+ *
  * @return array{int, string} [HTTP status, response body]
  */
 function toxiproxyRequest(string $method, string $path, ?string $payload = null): array
 {
-    $ch = curl_init(toxiproxyApi().$path);
-    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    if ($payload !== null) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-    }
-    $body = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
+    $context = stream_context_create(['http' => [
+        'method' => $method,
+        'timeout' => 5,
+        'ignore_errors' => true,
+        'header' => $payload !== null ? "Content-Type: application/json\r\n" : '',
+        'content' => $payload,
+    ]]);
+    $body = @file_get_contents(toxiproxyApi().$path, false, $context);
+    $status = isset($http_response_header[0]) && preg_match('#HTTP/\S+\s+(\d+)#', $http_response_header[0], $m)
+        ? (int) $m[1]
+        : 0;
 
     return [$status, $body === false ? '' : $body];
 }
@@ -167,7 +171,7 @@ function fireConnectionKill(string $proxy, int $timeoutMs): void
 // Bootstrap the app (loads .env, config, registers + boots providers)
 // ---------------------------------------------------------------------------
 
-$app = require __DIR__.'/../bootstrap/app.php';
+$app = require_once __DIR__.'/../bootstrap/app.php';
 $consoleKernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 $consoleKernel->bootstrap();
 
