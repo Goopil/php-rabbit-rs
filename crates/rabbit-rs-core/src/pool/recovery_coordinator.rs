@@ -245,20 +245,25 @@ impl RecoveryCoordinatorHandle {
         }
     }
 
-    /// Waits for the next connection state transition and returns it.
+    /// Waits until the connection state leaves `observed` and returns the
+    /// state it landed on.
+    ///
+    /// `observed` is the state the caller saw immediately before deciding to
+    /// wait, so a transition that lands between that observation and this
+    /// call wakes the caller instead of being lost.
     ///
     /// Returns `None` when the coordinator task has stopped, so callers can
     /// surface a clean closed-pool error instead of blocking forever. Unlike
     /// [`Self::wait_for_state`], this always awaits an actual state change,
     /// which keeps bounded waits (deadlines) enforceable.
-    pub async fn wait_for_transition(&self) -> Option<ConnectionState> {
+    pub async fn wait_for_transition(&self, observed: &ConnectionState) -> Option<ConnectionState> {
+        // `wait_for` checks the current value first: a transition that
+        // already left `observed` resolves immediately instead of being
+        // swallowed by a fresh receiver's mark, which would sleep past the
+        // very transition being waited for (issue #111).
         let mut receiver = self.state.clone();
-        // Mark the current value as seen on this fresh receiver first: clones
-        // can inherit a stale mark, which would make `changed()` return
-        // immediately and turn the wait into a hot spin.
-        drop(receiver.borrow_and_update());
-        receiver.changed().await.ok()?;
-        Some(receiver.borrow_and_update().clone())
+        let next = receiver.wait_for(|state| state != observed).await.ok()?;
+        Some(next.clone())
     }
 
     /// Returns the publisher handle once the initial connection is ready.

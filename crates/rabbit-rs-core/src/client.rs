@@ -395,10 +395,11 @@ impl ClientPool {
                         }
                         // Connecting, Recovering, and Disconnected can only
                         // produce a consumer through a state transition: wait
-                        // for the next one instead of spinning hot, so the
-                        // deadline — and other tasks — can make progress.
-                        _ => {
-                            coordinator.wait_for_transition().await;
+                        // for the state to leave what was just observed,
+                        // so the deadline — and other tasks — can make
+                        // progress.
+                        observed => {
+                            coordinator.wait_for_transition(&observed).await;
                         }
                     }
                 };
@@ -536,10 +537,11 @@ impl ClientPool {
                     }
                     // The channel only becomes servable through a state
                     // transition (recovery restoring the connection); wait
-                    // for the next one instead of spinning hot so the
-                    // deadline — and other tasks — can make progress.
-                    _ => {
-                        if coordinator.wait_for_transition().await.is_none() {
+                    // for the state to leave what was just observed instead
+                    // of spinning hot so the deadline — and other tasks —
+                    // can make progress.
+                    observed => {
+                        if coordinator.wait_for_transition(&observed).await.is_none() {
                             return Err(ClientError::closed());
                         }
                     }
