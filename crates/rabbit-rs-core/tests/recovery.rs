@@ -531,6 +531,50 @@ async fn recovery_failure_rolls_back_and_retries() {
     coordinator.close().await.expect("close");
 }
 
+/// A transition that lands between the caller's state observation and the
+/// `wait_for_transition` call must wake the caller.
+///
+/// The watch keeps only the latest value, so a fresh receiver that marks the
+/// current value as seen before awaiting `changed()` sleeps past the very
+/// transition being waited for — the lost wakeup behind issue #111's
+/// 30-second readiness timeouts.
+#[tokio::test(start_paused = true)]
+async fn wait_for_transition_returns_when_the_transition_already_landed() {
+    let transport = Arc::new(MockTransport::default());
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    // Observe a transitional state, the way `ClientPool::consumer`'s
+    // acquisition loop does just before it decides to wait.
+    let observed = wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Connecting { .. })
+    })
+    .await;
+
+    // The transition to Ready lands BEFORE the caller manages to wait.
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    // The wait must resolve immediately: the state already left what the
+    // caller observed. The paused-time bound fails the test if the wakeup
+    // was lost.
+    let next = tokio::time::timeout(
+        Duration::from_secs(1),
+        coordinator.wait_for_transition(&observed),
+    )
+    .await
+    .expect("a transition that already landed must not be lost");
+    assert_eq!(next, Some(ConnectionState::Ready { generation: 1 }));
+
+    coordinator.close().await.expect("close");
+}
+
 // ---------------------------------------------------------------------------
 // Publisher wake-up (audit F-03): a failed publisher Ready event must roll
 // the generation back so recovery re-runs instead of leaving the publisher
