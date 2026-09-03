@@ -43,4 +43,16 @@ describe('exception hierarchy', function () {
         expect((new \ReflectionClass(\Goopil\RabbitRs\ConnectionException::class))->isFinal())
             ->toBeTrue();
     });
+
+    it('has ConnectionException::throw throwing with the given message', function () {
+        $threw = null;
+        try {
+            \Goopil\RabbitRs\ConnectionException::throw('stale generation on ack');
+        } catch (\Throwable $e) {
+            $threw = $e;
+        }
+
+        expect($threw)->toBeInstanceOf(\Goopil\RabbitRs\ConnectionException::class)
+            ->and($threw->getMessage())->toBe('stale generation on ack');
+    });
 });

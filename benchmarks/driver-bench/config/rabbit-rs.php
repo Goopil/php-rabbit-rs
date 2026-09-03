@@ -24,4 +24,11 @@ return [
         ],
         'dead_letter' => null,
     ],
+    // The bench never publishes delayed messages. The default `auto` strategy
+    // probes the delay plugin by provisioning the rabbit-rs.delayed exchange,
+    // which the lab's vhost "/" configure grant (amq.*|bench.*|benchmark_*)
+    // refuses — pin ttl so no delayed exchange is ever declared here.
+    'delay' => [
+        'mode' => 'ttl',
+    ],
 ];
