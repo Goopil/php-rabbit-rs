@@ -196,8 +196,8 @@ impl PublishBuffer {
                 // Every outcome is inspected before anything is raised so a
                 // failure never short-circuits the buffer decisions. With the
                 // current `publish_batch` contract this arm only ever sees
-                // `Confirmed`, `Ambiguous`, and `Returned` outcomes: per-message
-                // failures such as backpressure or timeout are folded into the
+                // `Confirmed` and `Returned` outcomes: per-message failures
+                // such as backpressure or timeout are folded into the
                 // batch-level `Err` below, which re-buffers every request.
                 let mut first_error = None;
                 for outcome in outcomes {
@@ -291,10 +291,6 @@ impl PublishBuffer {
     }
 }
 
-#[allow(
-    clippy::match_same_arms,
-    reason = "Confirmed and Ambiguous are semantically distinct outcomes that both return the message_id"
-)]
 pub(crate) fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
     match outcome {
         PublishOutcome::Confirmed { message_id } => Ok(message_id.as_ref().to_owned()),
@@ -302,6 +298,5 @@ pub(crate) fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
             "message {message_id} was returned as unroutable (AMQP {})",
             reply.code
         )),
-        PublishOutcome::Ambiguous { message_id } => Ok(message_id.as_ref().to_owned()),
     }
 }

@@ -234,9 +234,6 @@ pub enum PublishOutcome {
         message_id: Arc<str>,
         reply: ReturnInfo,
     },
-    Ambiguous {
-        message_id: Arc<str>,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
