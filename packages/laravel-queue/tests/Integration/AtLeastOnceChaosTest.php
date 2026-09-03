@@ -409,13 +409,15 @@ function drainUntilAllReceived($test, array $expected, int $quietMs = 3000): arr
  * Publishes tolerating the connection failures an active toxic produces.
  * Returns whether the publish went through; callers retry after recovery.
  */
-function pushAllowingFailure($queue, string $msg): bool
+function pushAllowingFailure($queue, string $msg, ?string &$lastError = null): bool
 {
     try {
         $queue->push('stdClass', ['msg' => $msg]);
 
         return true;
-    } catch (\Throwable) {
+    } catch (\Throwable $e) {
+        $lastError = $e->getMessage();
+
         return false; // publish may fail during the outage
     }
 }
@@ -431,13 +433,20 @@ function pushAllowingFailure($queue, string $msg): bool
 function putOnWire($test, $app, string $msg): void
 {
     $onWire = false;
-    $deadline = microtime(true) + 30;
+    $lastError = '';
+    // 90 s: a lab node that reboots right after a heavy run (long soak,
+    // benchmark) can take tens of seconds past the ping to serve AMQP
+    // again; the other boot budgets here (ping wait, permission restore)
+    // already tolerate this, and the deadline only bounds how long the
+    // message may take to LAND — the 0-loss assertion below stays strict.
+    $deadline = microtime(true) + 90;
     while (microtime(true) < $deadline && ! $onWire) {
-        $onWire = pushAllowingFailure($test->queue, $msg);
+        $onWire = pushAllowingFailure($test->queue, $msg, $lastError);
         if ($onWire) {
             try {
                 $test->pool->flush();
-            } catch (\Throwable) {
+            } catch (\Throwable $e) {
+                $lastError = 'flush: '.$e->getMessage();
                 $onWire = false; // pool still recovering
             }
         }
@@ -447,7 +456,10 @@ function putOnWire($test, $app, string $msg): void
         }
     }
 
-    $test->assertTrue($onWire, $msg.' never reached the broker after the disruption');
+    $test->assertTrue(
+        $onWire,
+        $msg.' never reached the broker after the disruption'.($lastError === '' ? '' : '; last error: '.$lastError),
+    );
 }
 
 /**
