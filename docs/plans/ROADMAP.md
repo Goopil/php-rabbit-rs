@@ -427,8 +427,10 @@ Status (2026-09-02): Tasks 21–25 (#66–#70), 26 (#71), 27 (#72), 28 (#73),
 38 (#83), 40 (#88), 41 (#89), 42 (#90) and Round C (#40) landed (see Landed),
 plus promoted P1s #56/#52 and follow-ups #95/#96/#50. Red-team tasks 39–42
 (#87–#90) are all delivered. Shipped in release v0.0.9. Round G exit landed
-2026-09-02: #97 (PR #124) and #81 (PR #125). Still queued: Task 37 (#82),
-the last Round G item.
+2026-09-02: #97 (PR #124), #81 (PR #125) and #82 (PR #131 — hygiene sweep,
+one commit per item; cargo deny joined the gate, nextest retries=0,
+coverage-laravel integration pass boots the lab itself). **Round G is
+complete.**
 
 ### G0 — P0/P1 (delivery contract & availability)
 
