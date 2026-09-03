@@ -80,7 +80,7 @@ describe('connection-first config cutover', function () {
             ->and($pool->config['workers'][0]['subscriptions'][0]['prefetch'])->toBe(32)
             ->and($pool->config['publisher']['safety'])->toBe('unsafe')
             ->and($pool->config['publisher']['confirms'])->toBeTrue()
-            ->and($pool->config['publisher']['mandatory'])->toBeFalse()
+            ->and($pool->config['publisher']['mandatory'])->toBeTrue()
             ->and($pool->config['publisher']['confirm_timeout'])->toBe(5000);
     });
 
