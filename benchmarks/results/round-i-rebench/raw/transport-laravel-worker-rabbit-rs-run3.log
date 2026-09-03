@@ -1,0 +1,31 @@
+PHP Deprecated:  Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/react/promise/src/functions.php on line 369
+PHP Stack trace:
+PHP   1. {main}() /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/src/run-benchmarks.php:0
+PHP   2. require_once() /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/src/run-benchmarks.php:8
+PHP   3. ComposerAutoloaderInit2a84038d16076b8c7ec203cc876565ac::getLoader() /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/autoload.php:22
+PHP   4. {closure:/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/autoload_real.php:37-43}($fileIdentifier = 'ad155f8f1cf0d418fe49e248db8c661b', $file = '/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/../react/promise/src/functions_include.php') /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/autoload_real.php:45
+PHP   5. require() /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/autoload_real.php:41
+
+Deprecated: Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+Call Stack:
+    0.0003     519760   1. {main}() /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/src/run-benchmarks.php:0
+    0.0007     523176   2. require_once('/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/autoload.php') /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/src/run-benchmarks.php:8
+    0.0009     530280   3. ComposerAutoloaderInit2a84038d16076b8c7ec203cc876565ac::getLoader() /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/autoload.php:22
+    0.0095     883976   4. {closure:/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/autoload_real.php:37-43}($fileIdentifier = 'ad155f8f1cf0d418fe49e248db8c661b', $file = '/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/../react/promise/src/functions_include.php') /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/autoload_real.php:45
+    0.0098     885112   5. require('/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/react/promise/src/functions_include.php') /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/composer/autoload_real.php:41
+
+
+=== laravel-worker / rabbit-rs ===
+  Publish: avg 191913 msg/s (min 154390, max 207383)
+  Consume: avg 11784 msg/s (min 6840, max 14484)
+  Latency p50: 544.05 ms, p95: 859.91 ms, p99: 883.20 ms
+Budget Check: ALL PASS
+
+=== Summary ===
+Scenario/Driver                | Publish msg/s   | Consume msg/s   | p99 (ms)   | Losses     | Duplicates
+---------------------------------------------------------------------------------------------------------
+laravel-worker/rabbit-rs       | 191913          | 11784           | 883.20     | 0          | 0         
+
+
+Results written to /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/src/../results/benchmark-results.json
