@@ -15,6 +15,15 @@ COUNT=1000
 ROUNDS=10
 PASSES=3
 
+report_cell() {
+    local cell="$1" pass="$2"
+    local ok losses late
+    ok="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["ok"];' "${ARCHIVE}/${cell}-run${pass}.json")"
+    losses="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["losses"];' "${ARCHIVE}/${cell}-run${pass}.json")"
+    late="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["late_arrivals_after_drain"];' "${ARCHIVE}/${cell}-run${pass}.json")"
+    echo "done ${cell} run${pass}: ok=${ok} losses=${losses} late=${late}"
+}
+
 run_goopil() {
     local cell="$1" mode="$2" pass="$3" safety="$4"
     (
@@ -29,11 +38,7 @@ run_goopil() {
                 --output="${ARCHIVE}/${cell}-run${pass}.json"
         fi
     ) >/dev/null 2>&1
-    local ok losses late
-    ok="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["ok"];' "${ARCHIVE}/${cell}-run${pass}.json")"
-    losses="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["losses"];' "${ARCHIVE}/${cell}-run${pass}.json")"
-    late="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["late_arrivals_after_drain"];' "${ARCHIVE}/${cell}-run${pass}.json")"
-    echo "done ${cell} run${pass}: ok=${ok} losses=${losses} late=${late}"
+    report_cell "${cell}" "${pass}"
 }
 
 run_vladimir() {
@@ -44,11 +49,7 @@ run_vladimir() {
             --connection=rabbitmq-amqplib --mode="${mode}" --count="${COUNT}" --rounds="${ROUNDS}" \
             --output="${ARCHIVE}/${cell}-run${pass}.json"
     ) >/dev/null 2>&1
-    local ok losses late
-    ok="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["ok"];' "${ARCHIVE}/${cell}-run${pass}.json")"
-    losses="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["losses"];' "${ARCHIVE}/${cell}-run${pass}.json")"
-    late="$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo (int)$d["late_arrivals_after_drain"];' "${ARCHIVE}/${cell}-run${pass}.json")"
-    echo "done ${cell} run${pass}: ok=${ok} losses=${losses} late=${late}"
+    report_cell "${cell}" "${pass}"
 }
 
 for pass in $(seq 1 "${PASSES}"); do
