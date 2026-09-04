@@ -15,7 +15,7 @@ declare(strict_types=1);
 $benchRoot = dirname(__DIR__, 1).'/bench-driver-bench';
 $benchRoot = '/Users/zacharyvolpi/dev/perso/rabbit-rs/.worktrees/task/41-round-d/benchmarks/driver-bench';
 
-require $benchRoot.'/vendor/autoload.php';
+require_once $benchRoot.'/vendor/autoload.php';
 
 $safety = $argv[1] ?? 'safe';
 $count = max(1, (int) ($argv[2] ?? 1000));
@@ -23,7 +23,7 @@ $headerCount = max(0, (int) ($argv[3] ?? 0));
 $mode = strtolower((string) ($argv[3] ?? 'dispatch'));
 
 $_SERVER['argv'] = ['bench.php'];
-$app = require $benchRoot.'/bootstrap/app.php';
+$app = require_once $benchRoot.'/bootstrap/app.php';
 $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
 $kernel->bootstrap();
 
