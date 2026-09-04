@@ -114,19 +114,11 @@ impl Pool {
         let payload_bytes = publish.request.payload.len();
 
         if self.publish_buffer.would_overflow(payload_bytes) {
-            eprintln!(
-                "DBG overflow-check entered buffered_len={}",
-                self.publish_buffer.buffered_len()
-            );
             // Best-effort flush to make room. A failed flush re-buffers every
             // already-accepted message (they are never dropped); the re-check
             // below then surfaces explicit backpressure instead of leaking a
             // transport error the caller did not cause.
             let _ = self.flush();
-            eprintln!(
-                "DBG overflow recheck buffered_len={}",
-                self.publish_buffer.buffered_len()
-            );
             if self.publish_buffer.would_overflow(payload_bytes) {
                 return backpressure_exception(&format!(
                     "publish buffer is full ({} messages, {} buffered bytes); retry after flush",
@@ -237,15 +229,6 @@ impl Pool {
         stats.insert("closed", self.handle.is_closed())?;
         stats.insert("pid", i64::from(self.pid))?;
         stats.insert("handle", self.handle.identifier())?;
-        // TEMPORARY DEBUG (CI diagnosis): buffer/pipeline visibility.
-        stats.insert(
-            "debug_buffered_len",
-            i64::try_from(self.publish_buffer.buffered_len()).unwrap_or(i64::MAX),
-        )?;
-        stats.insert(
-            "debug_drain_handles",
-            i64::try_from(self.publish_buffer.drain_handle_count()).unwrap_or(i64::MAX),
-        )?;
         let metrics = self.client.metrics_snapshot();
         for (key, value) in [
             ("publishes_total", metrics.publishes_total),

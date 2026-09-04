@@ -68,12 +68,25 @@ pub(crate) struct PendingPublishError {
     pub(crate) message: String,
 }
 
+/// Buffered publications and their cumulative payload bytes.
+///
+/// One mutex guards both so a concurrent `take` can never observe the Vec
+/// without its byte accounting (or vice versa): `rebuffer` runs on drain
+/// threads while `enqueue`/`take` run on the PHP thread, and split updates
+/// left a window where `take` subtracted payload bytes the counter had not
+/// credited yet — `attempt to subtract with overflow` under debug builds,
+/// poisoned mutexes, and a process abort in the Coverage CI job.
+#[derive(Default)]
+struct Buffered {
+    publishes: Vec<NativePublish>,
+    bytes: usize,
+}
+
 /// Shared publish buffer with batched flush semantics.
 pub(crate) struct PublishBuffer {
     client: Arc<ClientPool>,
     handle: Arc<ConnectionHandle>,
-    buffer: std::sync::Mutex<Vec<NativePublish>>,
-    buffered_bytes: std::sync::Mutex<usize>,
+    buffer: std::sync::Mutex<Buffered>,
     last_flush: std::sync::Mutex<Option<Instant>>,
     /// Publications discarded without confirmed delivery: deadline-expired
     /// drops in `rebuffer`, unattempted batches on a closing client, and
@@ -101,8 +114,7 @@ impl PublishBuffer {
         Self {
             client,
             handle,
-            buffer: std::sync::Mutex::new(Vec::with_capacity(BUFFER_THRESHOLD)),
-            buffered_bytes: std::sync::Mutex::new(0),
+            buffer: std::sync::Mutex::new(Buffered::default()),
             last_flush: std::sync::Mutex::new(None),
             dropped_publications: AtomicU64::new(0),
             pending_errors: std::sync::Mutex::new(VecDeque::new()),
@@ -123,14 +135,6 @@ impl PublishBuffer {
     /// observe them.
     pub(crate) fn dropped_error_records(&self) -> u64 {
         self.dropped_error_records.load(Ordering::Relaxed)
-    }
-
-    /// TEMPORARY DEBUG (CI diagnosis): number of spawned drains not yet joined.
-    pub(crate) fn drain_handle_count(&self) -> usize {
-        self.drain_handles
-            .lock()
-            .expect("drain handles mutex poisoned")
-            .len()
     }
 
     /// Records a non-confirmed publish outcome for PHP surfacing.
@@ -161,8 +165,9 @@ impl PublishBuffer {
 
     /// Returns whether the buffer cannot accept `payload_bytes` more bytes.
     pub(crate) fn would_overflow(&self, payload_bytes: usize) -> bool {
-        self.buffered_len() >= PUBLISH_BUFFER_MAX_MESSAGES
-            || self.buffered_bytes() + payload_bytes > PUBLISH_BUFFER_MAX_BYTES
+        let buffered = self.buffer.lock().expect("publish buffer mutex poisoned");
+        buffered.publishes.len() >= PUBLISH_BUFFER_MAX_MESSAGES
+            || buffered.bytes + payload_bytes > PUBLISH_BUFFER_MAX_BYTES
     }
 
     /// Buffers one accepted publication.
@@ -173,16 +178,16 @@ impl PublishBuffer {
     /// buffer until the threshold, a drain, or an explicit flush.
     pub(crate) fn enqueue(&self, publish: NativePublish) {
         let payload_bytes = publish.request.payload.len();
-        if self.buffered_len() == 0 {
+        let was_empty;
+        {
+            let mut buffered = self.buffer.lock().expect("publish buffer mutex poisoned");
+            was_empty = buffered.publishes.is_empty();
+            buffered.publishes.push(publish);
+            buffered.bytes += payload_bytes;
+        }
+        if was_empty {
             *self.last_flush.lock().expect("last_flush mutex poisoned") = Some(Instant::now());
         }
-        let mut buffer = self.buffer.lock().expect("publish buffer mutex poisoned");
-        buffer.push(publish);
-        drop(buffer);
-        *self
-            .buffered_bytes
-            .lock()
-            .expect("publish buffer bytes mutex poisoned") += payload_bytes;
     }
 
     /// Returns whether the buffer reached a flush trigger.
@@ -206,15 +211,16 @@ impl PublishBuffer {
         self.buffer
             .lock()
             .expect("publish buffer mutex poisoned")
+            .publishes
             .len()
     }
 
     /// Returns the cumulative buffered payload bytes.
     pub(crate) fn buffered_bytes(&self) -> usize {
-        *self
-            .buffered_bytes
+        self.buffer
             .lock()
-            .expect("publish buffer bytes mutex poisoned")
+            .expect("publish buffer mutex poisoned")
+            .bytes
     }
 
     /// Returns whether the buffer holds at least one publication.
@@ -224,15 +230,9 @@ impl PublishBuffer {
 
     /// Drains the buffer, keeping the byte counter in sync.
     fn take(&self) -> Vec<NativePublish> {
-        let mut buffer = self.buffer.lock().expect("publish buffer mutex poisoned");
-        let publishes = std::mem::take(&mut *buffer);
-        drop(buffer);
-        eprintln!("DBG take len={}", publishes.len());
-        *self
-            .buffered_bytes
-            .lock()
-            .expect("publish buffer bytes mutex poisoned") -= Self::payload_bytes(&publishes);
-        publishes
+        let mut buffered = self.buffer.lock().expect("publish buffer mutex poisoned");
+        buffered.bytes = 0;
+        std::mem::take(&mut buffered.publishes)
     }
 
     /// Re-buffers publications whose flush failed, keeping the byte counter
@@ -250,10 +250,6 @@ impl PublishBuffer {
             .filter(|publish| publish.request.deadline > now)
             .collect();
         let expired = total - retriable.len();
-        eprintln!(
-            "DBG rebuffer total={} expired={} buffered_len_after_recheck_start",
-            total, expired
-        );
         if expired > 0 {
             self.dropped_publications.fetch_add(
                 u64::try_from(expired).unwrap_or(u64::MAX),
@@ -261,13 +257,9 @@ impl PublishBuffer {
             );
         }
         let bytes = Self::payload_bytes(&retriable);
-        let mut buffer = self.buffer.lock().expect("publish buffer mutex poisoned");
-        buffer.extend(retriable);
-        drop(buffer);
-        *self
-            .buffered_bytes
-            .lock()
-            .expect("publish buffer bytes mutex poisoned") += bytes;
+        let mut buffered = self.buffer.lock().expect("publish buffer mutex poisoned");
+        buffered.publishes.extend(retriable);
+        buffered.bytes += bytes;
     }
 
     /// Disposes of a failed flush's publications: re-buffered while the pool
@@ -451,11 +443,6 @@ impl PublishBuffer {
             .unwrap_or_default();
         match self.client.publish_batch(requests).await {
             Ok(outcomes) => {
-                eprintln!(
-                    "DBG drain Ok outcomes={} buffered_now={}",
-                    outcomes.len(),
-                    self.buffered_len()
-                );
                 for outcome in outcomes {
                     if let PublishOutcome::Returned { message_id, reply } = outcome {
                         self.record_error(PendingPublishError {
@@ -470,11 +457,6 @@ impl PublishBuffer {
                 }
             }
             Err(error) => {
-                eprintln!(
-                    "DBG drain Err kind={:?} buffered_now={}",
-                    error.kind(),
-                    self.buffered_len()
-                );
                 if matches!(error.kind(), ClientErrorKind::Closed) {
                     self.dropped_publications.fetch_add(
                         u64::try_from(publishes.len()).unwrap_or(u64::MAX),
