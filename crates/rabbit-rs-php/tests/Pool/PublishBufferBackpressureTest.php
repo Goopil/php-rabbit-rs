@@ -25,6 +25,7 @@ describe('publish buffer backpressure', function () {
         $message = pubMessage('backpressure', str_repeat('x', 64), [], 30000);
 
         $refused = null;
+        $sightings = [];
         for ($i = 0; $i < 16384; $i++) {
             try {
                 $pool->publish($message);
@@ -35,10 +36,31 @@ describe('publish buffer backpressure', function () {
                 }
                 // Surfaced drain backpressure: the batch could not be
                 // attempted and was re-buffered.
-            } catch (\Goopil\RabbitRs\Exception) {
+                $key = 'bp:'.substr($exception->getMessage(), 0, 48);
+                $sightings[$key] = ($sightings[$key] ?? 0) + 1;
+            } catch (\Goopil\RabbitRs\Exception $exception) {
                 // A surfaced terminal outcome or drain failure: the
                 // publication was re-buffered with its message_id.
+                $key = $exception::class.':'.substr($exception->getMessage(), 0, 48);
+                $sightings[$key] = ($sightings[$key] ?? 0) + 1;
             }
+        }
+
+        if ($refused === null) {
+            // CI-only diagnosis of the intermittent null-refusal mode.
+            $stats = 'stats-threw';
+            try {
+                $stats = json_encode($pool->stats());
+            } catch (\Throwable $statsException) {
+                $stats = 'stats threw: '.$statsException->getMessage();
+            }
+            fwrite(STDERR, sprintf(
+                'DIAG PublishBufferBackpressureTest iterations=%d sightings=%s stats=%s%s',
+                $i,
+                json_encode($sightings),
+                is_string($stats) ? $stats : 'non-string',
+                PHP_EOL,
+            ));
         }
 
         expect($refused)->not->toBeNull('full publish buffer must raise backpressure');
