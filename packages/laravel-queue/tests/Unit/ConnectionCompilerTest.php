@@ -119,7 +119,7 @@ describe('env integers', function (): void {
 });
 
 describe('publisher safety', function (): void {
-    it('derives confirms and mandatory from the safety mode', function (string $safety, bool $confirms, bool $mandatory): void {
+    it('derives safety and confirms; keeps the deprecated mandatory field true', function (string $safety, bool $confirms, bool $mandatory): void {
         $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'safety' => $safety]);
 
         expect($compiled['publisher'])->toBe(array_merge(
@@ -127,9 +127,12 @@ describe('publisher safety', function (): void {
             ['safety' => $safety, 'confirms' => $confirms, 'mandatory' => $mandatory],
         ))->and($compiled['native']['publisher'])->toBe($compiled['publisher']);
     })->with([
+        // mandatory must always compile to true: the core config (Round G #78)
+        // rejects mandatory=false — publisher.safety is the only wire-level
+        // opt-out (safe confirms+mandatory, unsafe confirms-only, blind neither).
         'safe' => ['safe', true, true],
-        'unsafe' => ['unsafe', true, false],
-        'blind' => ['blind', false, false],
+        'unsafe' => ['unsafe', true, true],
+        'blind' => ['blind', false, true],
     ]);
 
     it('rejects an unknown safety mode with the exact path', function (): void {

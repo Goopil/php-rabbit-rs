@@ -60,6 +60,13 @@ class RabbitRsDriver extends AbstractBenchmark
                 ],
             ]],
             'topology_mode' => 'declare',
+            // The lab's vhost "/" configure grant refuses the rabbit-rs.delayed
+            // probe exchange; the harness never publishes delayed messages, so
+            // pin ttl instead of the auto default (same as the driver-bench
+            // config/rabbit-rs.php override).
+            'delay' => [
+                'mode' => 'ttl',
+            ],
             'publisher' => [
                 'confirms' => match ($this->scenarioMode) {
                     ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,

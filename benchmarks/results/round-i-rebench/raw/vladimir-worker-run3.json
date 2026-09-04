@@ -1,0 +1,120 @@
+{
+    "benchmark": "driver-bench",
+    "phase": "E",
+    "ok": true,
+    "connection": "rabbitmq-amqplib",
+    "driver_package": "vladimir-yuldashev/laravel-queue-rabbitmq",
+    "driver_package_version": "v15.0.1",
+    "mode": "worker",
+    "queue": "bench.vladimir.driver-bench",
+    "count": 1000,
+    "rounds": 10,
+    "payload_body_bytes": 1024,
+    "payload_target_bytes": 1024,
+    "ops_total": 10000,
+    "time_total_s": 5.097375,
+    "avg_rate_ops_s": 1961.79,
+    "min_rate_ops_s": 1541.01,
+    "max_rate_ops_s": 2094.59,
+    "losses": 0,
+    "late_arrivals_after_drain": 0,
+    "rounds_detail": [
+        {
+            "round": 0,
+            "ops": 1000,
+            "time_s": 0.515192,
+            "rate_ops_s": 1941.02,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 1,
+            "ops": 1000,
+            "time_s": 0.648925,
+            "rate_ops_s": 1541.01,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 2,
+            "ops": 1000,
+            "time_s": 0.498621,
+            "rate_ops_s": 2005.53,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 3,
+            "ops": 1000,
+            "time_s": 0.486981,
+            "rate_ops_s": 2053.47,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 4,
+            "ops": 1000,
+            "time_s": 0.48893,
+            "rate_ops_s": 2045.28,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 5,
+            "ops": 1000,
+            "time_s": 0.48803,
+            "rate_ops_s": 2049.05,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 6,
+            "ops": 1000,
+            "time_s": 0.47742,
+            "rate_ops_s": 2094.59,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 7,
+            "ops": 1000,
+            "time_s": 0.481794,
+            "rate_ops_s": 2075.58,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 8,
+            "ops": 1000,
+            "time_s": 0.485593,
+            "rate_ops_s": 2059.34,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 9,
+            "ops": 1000,
+            "time_s": 0.525889,
+            "rate_ops_s": 1901.54,
+            "stall_recoveries": 0
+        }
+    ],
+    "config": {
+        "driver": "rabbitmq-amqplib",
+        "queue": "bench.vladimir.driver-bench",
+        "connection": "rabbitmq-amqplib",
+        "hosts": [
+            {
+                "host": "127.0.0.1",
+                "port": 5672,
+                "user": "***",
+                "password": "***",
+                "vhost": "/orders-eu"
+            }
+        ],
+        "options": [],
+        "worker": "default",
+        "mode": "worker"
+    },
+    "meta": {
+        "php": "8.5.6",
+        "sapi": "cli",
+        "extensions": {
+            "rabbit_rs": false,
+            "amqp": false
+        },
+        "laravel": "v13.29.0",
+        "os": "Darwin 25.6.0"
+    }
+}

@@ -1,0 +1,161 @@
+{
+  "generated": "2026-09-03",
+  "session": "fresh lab (lab-down -v + lab-up with-plugin), release cdylib rabbit_rs 0.0.9, PHP 8.5.6, Laravel 13.29, macOS Apple Silicon",
+  "protocol": "3 interleaved passes; driver-bench 1000 ops x 10 rounds per run; transport 10k msgs x 10 rounds per run",
+  "driver_bench": {
+    "goopil-dispatch-blind": {
+      "median_ops_s": 21992.07,
+      "min_run_median_ops_s": 21720.2,
+      "max_run_median_ops_s": 21993.0,
+      "stall_recoveries_total": 0,
+      "losses_total": 0,
+      "all_runs_ok": true
+    },
+    "goopil-dispatch-safe": {
+      "median_ops_s": 6533.86,
+      "min_run_median_ops_s": 3836.93,
+      "max_run_median_ops_s": 7043.35,
+      "stall_recoveries_total": 0,
+      "losses_total": 0,
+      "all_runs_ok": true
+    },
+    "goopil-worker": {
+      "median_ops_s": 16234.14,
+      "min_run_median_ops_s": 15397.18,
+      "max_run_median_ops_s": 16673.21,
+      "stall_recoveries_total": 0,
+      "losses_total": 0,
+      "all_runs_ok": true
+    },
+    "vladimir-dispatch": {
+      "median_ops_s": 9685.26,
+      "min_run_median_ops_s": 9565.66,
+      "max_run_median_ops_s": 9700.35,
+      "stall_recoveries_total": 0,
+      "losses_total": 0,
+      "all_runs_ok": true
+    },
+    "vladimir-worker": {
+      "median_ops_s": 2029.49,
+      "min_run_median_ops_s": 1863.82,
+      "max_run_median_ops_s": 2047.16,
+      "stall_recoveries_total": 0,
+      "losses_total": 0,
+      "all_runs_ok": true
+    }
+  },
+  "transport": {
+    "batch-confirm/amqplib": {
+      "publish_median_rate": 30968.44,
+      "publish_min_max": [
+        29086.78,
+        31427.15
+      ],
+      "consume_median_rate": 9488.54,
+      "consume_min_max": [
+        9315.0,
+        9634.9
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "batch-confirm/rabbit-rs": {
+      "publish_median_rate": 31813.12,
+      "publish_min_max": [
+        31292.34,
+        32249.35
+      ],
+      "consume_median_rate": 40767.75,
+      "consume_min_max": [
+        38774.91,
+        41155.64
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "fire-and-forget/amqplib": {
+      "publish_median_rate": 40773.09,
+      "publish_min_max": [
+        40098.45,
+        40795.15
+      ],
+      "consume_median_rate": 13219.55,
+      "consume_min_max": [
+        13184.4,
+        13580.29
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "fire-and-forget/rabbit-rs": {
+      "publish_median_rate": 219713.32,
+      "publish_min_max": [
+        194908.51,
+        220921.63
+      ],
+      "consume_median_rate": 15703.47,
+      "consume_min_max": [
+        14187.77,
+        15785.32
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "laravel-dispatch/amqplib": {
+      "publish_median_rate": 20258.41,
+      "publish_min_max": [
+        19850.99,
+        20515.13
+      ],
+      "consume_median_rate": 9693.57,
+      "consume_min_max": [
+        9571.75,
+        9715.47
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "laravel-dispatch/rabbit-rs": {
+      "publish_median_rate": 15254.79,
+      "publish_min_max": [
+        14683.07,
+        15273.97
+      ],
+      "consume_median_rate": 38370.06,
+      "consume_min_max": [
+        35509.59,
+        39218.99
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "laravel-worker/amqplib": {
+      "publish_median_rate": 39120.93,
+      "publish_min_max": [
+        38297.24,
+        39302.51
+      ],
+      "consume_median_rate": 1896.35,
+      "consume_min_max": [
+        1784.95,
+        1996.76
+      ],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "laravel-worker/rabbit-rs": {
+      "publish_median_rate": 191913.27,
+      "publish_min_max": [
+        187277.31,
+        193806.49
+      ],
+      "consume_median_rate": 12131.28,
+      "consume_min_max": [
+        11784.4,
+        12337.54
+      ],
+      "losses": 0,
+      "duplicates": 0
+    }
+  }
+}

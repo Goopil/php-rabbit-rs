@@ -375,9 +375,11 @@ final class ConnectionCompiler
     }
 
     /**
-     * confirms and mandatory are derived from the safety mode, never set
-     * independently: safe confirms and marks mandatory, unsafe confirms
-     * without mandatory, blind does neither.
+     * safety is the only wire-level opt-out (safe confirms+mandatory, unsafe
+     * confirms-only, blind neither). mandatory always compiles to true: the
+     * core config rejects mandatory=false (Round G #78 — the field is
+     * deprecated) and the publisher actor branches on the safety mode, never
+     * on this flag.
      *
      * @param array<string, mixed> $config
      * @return array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int}
@@ -389,7 +391,7 @@ final class ConnectionCompiler
         return [
             'safety' => $safety,
             'confirms' => $safety !== 'blind',
-            'mandatory' => $safety === 'safe',
+            'mandatory' => true,
             'confirm_timeout' => self::confirmTimeout($config['confirm_timeout'] ?? 30_000, $path.'.confirm_timeout'),
         ];
     }
