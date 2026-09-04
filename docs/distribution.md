@@ -56,11 +56,16 @@ Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1)
 
 `scripts/validate-distribution.sh` fails if any of them drifts from the pattern expected by PIE.
 
-macOS artifacts (`arm64-darwin-nts`) are outside the PIE matrix — `composer.json` declares `os-families: ["linux"]` — and are consumed by the Homebrew formula.
+macOS artifacts (`arm64-darwin-nts`) are outside the PIE matrix — `composer.json` declares `os-families: ["linux"]` — and are consumed by the Homebrew formula. macOS installs are therefore validated best-effort: the release pipeline compiles and smoke-loads both `arm64-darwin-nts` builds, and the Homebrew formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
 
 ### End-to-end PIE validation
 
-Once the release is published, the release pipeline runs a blocking `verify-pie-install` job that installs the release with a real `pie install` (PHP 8.4, x86_64, glibc, NTS) by resolving the package through the GitHub API against the published release. The Homebrew formula update and the Laravel package split run only after this verification succeeds, so a release that PIE cannot install never reaches those channels.
+Once the release is published, the release pipeline blocks on two verification stages against the published release:
+
+- **`verify-pie-install`** runs a real `pie install` on every supported platform/libc combination: Linux glibc x86_64 (PHP 8.4 and 8.5) on native runners, and Linux glibc arm64, musl x86_64, and musl arm64 (PHP 8.4) inside the same digest-pinned, multi-arch PHP images the build job uses. Each job asserts that `rabbit_rs` loads and that `phpversion('rabbit_rs')` equals the release version.
+- **`verify-pie-upgrade-rollback`** installs the previous published release, upgrades it to the new release, then rolls back to the previous one, asserting the installed extension version at each step. A missing previous release fails the job loudly instead of silently skipping the gate.
+
+The Homebrew formula update and the Laravel package split run only after both stages succeed, so a release that PIE cannot install, upgrade, or roll back never reaches those channels.
 
 Each release archive is accompanied by:
 

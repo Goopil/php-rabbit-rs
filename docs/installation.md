@@ -161,6 +161,32 @@ If you have multiple PHP installations, PIE and `cargo-php` target the PHP found
 PHP_CONFIG=/path/to/php-config ./scripts/install.sh --release
 ```
 
+## Upgrading and rollback
+
+PIE installs are versioned replacements: installing a different version swaps the `rabbit_rs.so` binary and updates the active PHP configuration in place. Upgrades and rollbacks use the same `pie install` command with an explicit release tag.
+
+Upgrade (or reinstall) an exact version:
+
+```bash
+pie install goopil/rabbit-rs-native:v0.1.1
+```
+
+Rollback = install the previous tag:
+
+```bash
+pie install goopil/rabbit-rs-native:v0.1.0
+```
+
+Check which version is active before and after:
+
+```bash
+php --ri rabbit_rs
+```
+
+Keep the Laravel bridge in sync: `goopil/rabbit-rs-laravel` requires a specific `ext-rabbit_rs` major version. When moving across a major boundary — in either direction — upgrade or roll back the extension and the bridge together. Composer fails loudly at `composer update` if the loaded extension does not satisfy the bridge's constraint, so a half-upgraded system (new bridge with old extension, or the reverse) cannot go unnoticed.
+
+Every release exercises these paths in CI before it is finalized: the release pipeline installs the previous published release, upgrades it to the new release, and rolls back again (see [Distribution](distribution.md#end-to-end-pie-validation)).
+
 ## Next steps
 
 - [Configuration reference](configuration.md)
