@@ -125,10 +125,16 @@ in a `dropped_error_records` stat) holding
 | kind (record) | source | PHP exception class |
 |---|---|---|
 | `Returned` | mandatory return (unroutable) | `RabbitRsException` (as today) |
-| `Nack`, `Timeout`, `Unconfirmed`, `InvalidRequest` | per-message terminal outcomes | `RabbitRsException` |
-| `Transport` | connection-level failure | `ConnectionException` |
+| `Transport` | connection-level batch failure | `ConnectionException` |
 | `Backpressure` | actor intake refused | `BackpressureException` |
 | `Closed` | pool/publisher closed | `RabbitRsException` (as `client_exception` maps today) |
+| `Publish` | per-message terminal outcomes folded by the `publish_batch` contract (timeout, nack, unconfirmed, invalid request) | `RabbitRsException` |
+| `Configuration` | pool misconfiguration | `RabbitRsException` |
+
+Per-message terminal details (timeout vs nack vs unconfirmed) are folded into
+the batch-level `Err` by the existing `publish_batch` contract (#83); the
+record message carries the detail, the kind stays at `ClientErrorKind`
+granularity.
 
 Surfacing points — every PHP-visible operation drains the queue and throws
 the first record's exception:
@@ -141,11 +147,12 @@ the first record's exception:
 - new `Pool::drainErrors(): array` — returns and clears the records
   (mirror of `Consumer::drainErrors()`),
 - Laravel: `RabbitMqQueue::drainSettlementErrors()` (top of `pop()`)
-  additionally drains `Pool::drainErrors()`: `Transport`/`Closed` →
-  `ConnectionException::throw` (the Round I mechanism); every other kind →
-  `QueueException`. A failed publish is therefore **observable at the next
-  pop/flush/stats operation at the latest**, mirroring how settlement errors
-  surface after pop.
+  additionally drains `Pool::drainErrors()`: `Transport` →
+  `ConnectionException::throw` (the Round I mechanism); every other kind —
+  including `Closed`, which `client_exception` maps to the base native
+  exception — → `QueueException`. A failed publish is therefore **observable
+  at the next pop/flush/stats operation at the latest**, mirroring how
+  settlement errors surface after pop.
 
 Contract summary (at-least-once):
 
