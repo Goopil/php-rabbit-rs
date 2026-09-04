@@ -135,3 +135,11 @@ Fresh lab cycle, release build, same 3×10 protocol, `raw/`:
   removed by the implementation), design note `00d84e6`, replay pin
   `30d98dc`, pipelined flush `317856b`, Laravel surfacing `12c933f`,
   design-note alignment `8330f61`, integration pin `5f79851`
+
+## Metric coverage note (Round J, #127)
+
+These archives predate the Round J metric contract (`benchmarks/README.md`):
+the `baseline/` and `raw/` JSONs record no reconnects, per-op latency
+percentiles, or duplicates (all driver-bench cells). The tooling emits these
+from Round J on; this archive is curated evidence and is never backfilled —
+re-run the cells if a reconnect- or latency-scoped question matters.

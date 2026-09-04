@@ -129,6 +129,15 @@ manually: throughput ≥ 2 041 (≥ 1000), worker throughput ≥ 21 747 (≥ 500
 - `summary.json` — medians, min/max, stall recoveries, losses, per-invocation
   transport details (machine-readable).
 
+## Metric coverage note (Round J, #127)
+
+These archives predate the Round J metric contract (`benchmarks/README.md`).
+The `raw/` JSONs record no reconnects; the driver-bench cells additionally
+record no per-op latency percentiles and no duplicates, and the transport
+cells record no safety/config/meta fields. The tooling emits these from
+Round J on; this archive is curated evidence and is never backfilled —
+re-run the cells if a reconnect- or latency-scoped question matters.
+
 ## Reproduce
 
 ```bash
