@@ -185,7 +185,7 @@ with the feature, never in a later docs pass.
   the lab, Rust untouched; Sonar gate lesson: `new_duplicated_lines_density`
   counts 10+-line duplicated blocks, not S1192 literals — test fixtures
   deduplicated   99 → 11 lines). Spec §5 amended to the delivered mechanism
-  (one `queue:work` child per connection). Tag v0.1.0 not yet cut.
+  (one `queue:work` child per connection).
 - **Round I delivered (2026-09-03)** — PRs #132/#133, tracker #126 complete
   (6/6). #111 root-caused to a lost wakeup in
   `RecoveryCoordinator::wait_for_transition` (fresh receiver swallowed a
@@ -204,6 +204,20 @@ with the feature, never in a later docs pass.
   settable at throw time; the old userland `new ConnectionException` crashed
   after any recovery). Node-restart publish budget widened to 90 s with
   surfaced last error (pre-existing flake, 0-loss assertion unchanged).
+- **Round I re-bench + release v0.1.0 (2026-09-03/04)** — PR #134: the
+  official fresh-lab re-bench caught two real defects (blind/unsafe safety
+  modes were unusable through the package — Round H compiler derived
+  `mandatory=false` while the core #78 rejects it, fix: always compile
+  `mandatory=true`, `safety` is the only wire opt-out; transport harness
+  used core-default `delay.mode=auto` whose probe violates the lab vhost
+  "/" grant → `FailedPermanent`, fix: pin `ttl`). Archive
+  `benchmarks/results/round-i-rebench/` (fresh lab `lab-down -v`, release
+  cdylib): driver worker 16 234 ops/s (8.0× vladimir), blind ratio 2.3×
+  unchanged, transport consumer lead 4–6.4×, confirm-bound publish now
+  matches amqplib; 0 losses / 0 duplicates / 0 stalls across 390 measured
+  rounds; vladimir dispatch −70% = session-drift control; Round D must
+  re-baseline worker+confirm cells on a fresh lab. **Tag v0.1.0 cut and
+  shipped 2026-09-04** (pipeline green end to end).
 
 
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
@@ -516,7 +530,7 @@ proving fixes against a real broker.
 
 ## Round H — connection-first Laravel config (DX, spec 2026-08-31)
 
-**DELIVERED 2026-09-02** (PR #130, v0.1.0 on main, tag not yet cut) — the
+**DELIVERED 2026-09-02** (PR #130) — the
 config redesign portion of this section is done: connection-first
 `queue.connections.*`, `ConnectionCompiler` (lazy compile at `connect()`),
 `config/rabbit-rs.php` rewritten to flat defaults, work-command fan-out
@@ -650,8 +664,9 @@ optimize confirms → prove results → ship 1.0**):
    latency and can start in parallel).
 4. ~~Round G exit~~ — **complete 2026-09-03** (#82 ops sweep landed as PR
    #131, 12 commits; F2/F3 leftovers #53, #58, #60 fill capacity).
-5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130, on main; tag
-   v0.1.0 to cut with the next release).
+5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130); **tag v0.1.0 cut
+   and shipped 2026-09-04** (full release pipeline green: 10 builds,
+   verify-PIE install, Laravel split, Homebrew).
 
 Feature freeze until the P0s land: Round E (#42) and the other parked ideas
 (Kubernetes probes #85, topology command #84, Prometheus, realtime stack)
