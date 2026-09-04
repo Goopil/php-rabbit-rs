@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Console;
 
+use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
+
 /**
  * Resolves the `rabbit-rs:work` fan-out plan from the queue connections
  * config.
@@ -36,7 +38,7 @@ final class WorkPlanResolver
      */
     public static function resolve(?string $connections, ?string $queues): array
     {
-        $rabbitRs = self::rabbitRsConnections();
+        $rabbitRs = RabbitRsConnections::all();
 
         if ($rabbitRs === []) {
             throw new \InvalidArgumentException('No rabbit-rs queue connection is configured in queue.connections.');
@@ -49,7 +51,7 @@ final class WorkPlanResolver
         if ($queueNames === []) {
             $plan = [];
             foreach ($targeted as $name => $config) {
-                $plan[] = ['connection' => $name, 'queues' => self::definedQueues($config)];
+                $plan[] = ['connection' => $name, 'queues' => RabbitRsConnections::definedQueues($config)];
             }
 
             return $plan;
@@ -88,28 +90,6 @@ final class WorkPlanResolver
     }
 
     /**
-     * Rabbit-rs queue connections, in config order.
-     *
-     * @return array<string, array<string, mixed>>
-     */
-    private static function rabbitRsConnections(): array
-    {
-        $connections = config('queue.connections');
-        if (! is_array($connections)) {
-            return [];
-        }
-
-        $rabbitRs = [];
-        foreach ($connections as $name => $config) {
-            if (is_array($config) && ($config['driver'] ?? null) === 'rabbit-rs') {
-                $rabbitRs[(string) $name] = $config;
-            }
-        }
-
-        return $rabbitRs;
-    }
-
-    /**
      * Filter the rabbit-rs connections down to the listed names (config
      * order preserved, duplicates collapsed).
      *
@@ -134,32 +114,6 @@ final class WorkPlanResolver
         }
 
         return array_intersect_key($rabbitRs, array_flip($names));
-    }
-
-    /**
-     * Queues a connection consumes: its `queue` key first, then every
-     * `subscriptions.*.queue` not already listed.
-     *
-     * @param array<string, mixed> $config
-     * @return list<string>
-     */
-    private static function definedQueues(array $config): array
-    {
-        $queues = [];
-
-        $queue = $config['queue'] ?? null;
-        if (is_string($queue) && $queue !== '') {
-            $queues[] = $queue;
-        }
-
-        foreach (self::subscriptions($config) as $subscription) {
-            $subQueue = is_array($subscription) ? ($subscription['queue'] ?? null) : null;
-            if (is_string($subQueue) && $subQueue !== '' && ! in_array($subQueue, $queues, true)) {
-                $queues[] = $subQueue;
-            }
-        }
-
-        return $queues;
     }
 
     /**
@@ -200,7 +154,7 @@ final class WorkPlanResolver
     {
         $queues = [];
         foreach ($configs as $config) {
-            foreach (self::definedQueues($config) as $queue) {
+            foreach (RabbitRsConnections::definedQueues($config) as $queue) {
                 if (! in_array($queue, $queues, true)) {
                     $queues[] = $queue;
                 }

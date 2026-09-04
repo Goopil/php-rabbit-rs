@@ -6,6 +6,7 @@ namespace Goopil\RabbitRs\Laravel\Console;
 
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Console\Command;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
@@ -30,8 +31,11 @@ final class RabbitMqStatusCommand extends Command
 
         if ($format === 'json') {
             $stats['queue_stats'] = $queueStats;
-            $json = json_encode($stats, JSON_PRETTY_PRINT);
-            foreach (explode("\n", $json) as $line) {
+
+            // One writeln per line: PendingCommand::expectsOutputToContain
+            // matches per write call, so a single multi-line write would
+            // satisfy only the first expected substring.
+            foreach (explode("\n", json_encode($stats, JSON_PRETTY_PRINT)) as $line) {
                 $this->line($line);
             }
 
@@ -51,7 +55,7 @@ final class RabbitMqStatusCommand extends Command
      */
     private function collectStats(NativePoolFactory $pools): array|false
     {
-        $connections = $this->rabbitRsConnections();
+        $connections = RabbitRsConnections::all();
 
         if ($connections === []) {
             $this->error('Failed to collect stats: no rabbit-rs queue connection is configured');
@@ -86,14 +90,14 @@ final class RabbitMqStatusCommand extends Command
     {
         $pairs = [];
         $hasManagementUrl = false;
-        foreach ($this->rabbitRsConnections() as $name => $config) {
+        foreach (RabbitRsConnections::all() as $name => $config) {
             $url = $config['management_url'] ?? null;
             if (! is_string($url) || trim($url) === '') {
                 continue;
             }
             $hasManagementUrl = true;
 
-            foreach ($this->definedQueues($config) as $queue) {
+            foreach (RabbitRsConnections::definedQueues($config) as $queue) {
                 $pairs[$name.'|'.$queue] = [
                     'connection' => $name,
                     'queue' => $queue,
@@ -114,30 +118,6 @@ final class RabbitMqStatusCommand extends Command
         }
 
         return ['management_url_configured' => true, 'queues' => $queues];
-    }
-
-    /**
-     * Queues a connection consumes: its `queue` key plus every queue of its
-     * `subscriptions` escape hatch.
-     *
-     * @param array<string, mixed> $config
-     * @return list<string>
-     */
-    private function definedQueues(array $config): array
-    {
-        $queues = [];
-
-        if (isset($config['queue']) && is_string($config['queue']) && $config['queue'] !== '') {
-            $queues[] = $config['queue'];
-        }
-
-        foreach ($config['subscriptions'] ?? [] as $subscription) {
-            if (is_array($subscription) && is_string($subscription['queue'] ?? null) && $subscription['queue'] !== '') {
-                $queues[] = $subscription['queue'];
-            }
-        }
-
-        return array_values(array_unique($queues));
     }
 
     /**
@@ -176,26 +156,6 @@ final class RabbitMqStatusCommand extends Command
             'messages_acked' => self::counter($body, 'messages_acked'),
             'messages_redelivered' => self::counter($body, 'messages_redelivered'),
         ];
-    }
-
-    /**
-     * @return array<string, array<string, mixed>>
-     */
-    private function rabbitRsConnections(): array
-    {
-        $connections = $this->laravel->make('config')->get('queue.connections');
-        if (! is_array($connections)) {
-            return [];
-        }
-
-        $rabbitRs = [];
-        foreach ($connections as $name => $connection) {
-            if (is_array($connection) && ($connection['driver'] ?? null) === 'rabbit-rs') {
-                $rabbitRs[(string) $name] = $connection;
-            }
-        }
-
-        return $rabbitRs;
     }
 
     /**

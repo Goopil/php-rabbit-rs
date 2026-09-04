@@ -34,19 +34,6 @@ final class WorkerProfileResolver
         }
     }
 
-    public function resolve(mixed $profile, string $defaultProfile): string
-    {
-        $profile ??= $defaultProfile;
-        if (! is_string($profile) || $profile === '') {
-            throw new InvalidArgumentException('worker profile must be a non-empty string');
-        }
-        if (! isset($this->profiles[$profile])) {
-            throw new InvalidArgumentException("workers.{$profile}: unknown worker profile");
-        }
-
-        return $profile;
-    }
-
     public function profileForQueue(string $queue): ?string
     {
         foreach ($this->profiles as $profile => $subscriptions) {
