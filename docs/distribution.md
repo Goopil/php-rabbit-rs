@@ -48,11 +48,10 @@ php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 
 ### Unified thread-safety suffix
 
-Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.5.x) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in three places that must stay consistent:
+Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.5.x) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in two places that must stay consistent:
 
-- `scripts/package-pie-binary.sh` — packaging script
 - `release/pie-matrix.json` — machine-readable matrix (`ts_suffix` is always `-nts` in V1; ZTS entries are excluded)
-- `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name)
+- `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name) via the `.github/actions/package-release-asset` composite action
 
 `scripts/validate-distribution.sh` fails if any of them drifts from the pattern expected by PIE.
 

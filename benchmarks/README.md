@@ -150,9 +150,6 @@ benchmarks/
 │   │   ├── BunnyDriver.php
 │   │   └── RabbitRsDriver.php
 │   └── (scenarios are declared in run-benchmarks.php)
-└── laravel/
-    ├── LaravelCompareBenchmark.php
-    └── LaravelSmokeBenchmark.php
 ```
 
 ### Rust microbenchmarks
