@@ -336,16 +336,20 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
     }
 
     /**
-     * Drains async settlement errors from all cached consumers and surfaces
-     * connection-level failures as {@see ConnectionException}.
+     * Drains async publish errors recorded by the native pipelined flush,
+     * then async settlement errors from all cached consumers.
      *
-     * Non-connection errors (e.g. AlreadySettled) are logged at warning level
-     * when a container with a logger is available.  This method is called at
-     * the top of {@see pop()} so that fire-and-forget settlement failures are
-     * visible before the next delivery is fetched.
+     * Publish outcomes surface at the next operation (same pattern as
+     * settlement errors after a pop): connection-level failures
+     * (`Transport`, `Closed`) throw {@see ConnectionException}; every other
+     * kind (returned as unroutable, nack, timeout, backpressure) throws
+     * {@see QueueException}, mirroring how a synchronous publish failure
+     * surfaces.
      */
     public function drainSettlementErrors(): void
     {
+        $this->drainPublishErrors();
+
         foreach ($this->consumers as $consumer) {
             $errors = $consumer->drainErrors();
             foreach ($errors as $error) {
@@ -370,6 +374,29 @@ class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
                 }
                 $this->container->make('log')->warning('rabbit-rs settlement error', $error);
             }
+        }
+    }
+
+    /**
+     * Surfaces one drained pipelined publish failure per call: the records
+     * were processed by the native drain, and only the first failure is
+     * raised — the same behavior as a synchronous publish raising its first
+     * flush error. Connection-level failures (`Transport`) throw
+     * {@see ConnectionException}; everything else — including `Closed`,
+     * which `client_exception` maps to the base native exception — throws
+     * {@see QueueException}.
+     */
+    private function drainPublishErrors(): void
+    {
+        foreach ($this->pool->drainErrors() as $error) {
+            $kind = $error['kind'] ?? '';
+            if ($kind === 'Transport') {
+                ConnectionException::throw($error['message'] ?? 'publish error: '.$kind);
+            }
+
+            throw new QueueException(
+                $error['message'] ?? 'publish error: '.$kind,
+            );
         }
     }
 

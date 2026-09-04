@@ -8,7 +8,7 @@ use std::sync::Arc;
 use super::{
     bridge::EventBridge,
     consumer::Consumer,
-    exception::{backpressure_exception, client_exception, rabbit_exception},
+    exception::{backpressure_exception, client_exception, connection_exception, rabbit_exception},
     publish_buffer::{PublishBuffer, publish_message_id},
 };
 use crate::conversion;
@@ -131,14 +131,24 @@ impl Pool {
         self.publish_buffer.enqueue(publish);
 
         if self.publish_buffer.should_flush() {
-            self.publish_buffer.flush_all()?;
+            // Pipelined flush (Round D): the batch is spawned on the runtime
+            // and publish returns before confirmations resolve. Non-confirmed
+            // outcomes surface at the next operation (see below).
+            self.publish_buffer.flush_triggered()?;
         }
 
         self.bridge.drain();
+        self.surface_publish_errors()?;
         Ok(message_id)
     }
 
     /// Flushes the publish buffer, sending all buffered messages to the broker.
+    ///
+    /// Outstanding pipelined drains are quiesced first (bounded by the fixed
+    /// teardown budget) so their re-buffered publications are visible to this
+    /// drain. The flush itself keeps full-deadline semantics: every buffered
+    /// publication is confirmed — or its failure raised — when `flush`
+    /// returns.
     ///
     /// In blind mode this is a barrier: every request enqueued on the publish
     /// pump before this call — including buffered publications flushed just
@@ -155,7 +165,7 @@ impl Pool {
             return client_exception(&error);
         }
         self.bridge.drain();
-        Ok(())
+        self.surface_publish_errors()
     }
 
     /// Publishes multiple messages in one boundary crossing.
@@ -208,8 +218,13 @@ impl Pool {
     }
 
     /// Returns the current native metrics snapshot.
+    ///
+    /// A pending pipelined publish failure surfaces here (thrown) before the
+    /// snapshot is built, so a failed publish is observable at the next
+    /// stats operation at the latest.
     pub fn stats(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::stats")?;
+        self.surface_publish_errors()?;
         let mut stats = ZendHashTable::new();
         stats.insert("closed", self.handle.is_closed())?;
         stats.insert("pid", i64::from(self.pid))?;
@@ -231,6 +246,10 @@ impl Pool {
         stats.insert(
             "dropped_publications_total",
             i64_from_counter(self.publish_buffer.dropped_publications()),
+        )?;
+        stats.insert(
+            "dropped_error_records_total",
+            i64_from_counter(self.publish_buffer.dropped_error_records()),
         )?;
 
         insert_percentile(
@@ -271,11 +290,12 @@ impl Pool {
 
     /// Returns the number of pending messages in a queue on the given broker.
     ///
-    /// Flushes the publish buffer first so publications accepted by this
-    /// pool are counted.
+    /// Flushes the publish buffer first (quiescing outstanding pipelined
+    /// drains) so publications accepted by this pool are counted.
     pub fn size(&self, broker: &str, queue: &str) -> PhpResult<i64> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::size")?;
         self.publish_buffer.flush_all()?;
+        self.surface_publish_errors()?;
         match self
             .handle
             .runtime()
@@ -288,11 +308,13 @@ impl Pool {
 
     /// Purges all messages from a queue on the given broker.
     ///
-    /// Flushes the publish buffer first so buffered publications cannot
-    /// repopulate the queue after the purge.
+    /// Flushes the publish buffer first (quiescing outstanding pipelined
+    /// drains) so buffered publications cannot repopulate the queue after
+    /// the purge.
     pub fn clear(&self, broker: &str, queue: &str) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::clear")?;
         self.publish_buffer.flush_all()?;
+        self.surface_publish_errors()?;
         match self
             .handle
             .runtime()
@@ -301,6 +323,26 @@ impl Pool {
             Ok(()) => Ok(()),
             Err(error) => client_exception(&error),
         }
+    }
+
+    /// Drains non-confirmed publish outcomes recorded by the pipelined
+    /// flush, returning one hash per record with `kind`, `message_id`, and
+    /// `message`. The queue is cleared by this call; the same records would
+    /// otherwise surface as exceptions at the next publish/flush/size/
+    /// clear/stats operation.
+    pub fn drainErrors(&self) -> PhpResult<ZBox<ZendHashTable>> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::drainErrors")?;
+        self.bridge.drain();
+        let errors = self.publish_buffer.take_errors();
+        let mut table = ZendHashTable::new();
+        for (i, error) in errors.iter().enumerate() {
+            let mut entry = ZendHashTable::new();
+            entry.insert("kind", error.kind.as_str())?;
+            entry.insert("message_id", error.message_id.as_str())?;
+            entry.insert("message", error.message.as_str())?;
+            table.insert(i, entry)?;
+        }
+        Ok(table)
     }
 
     /// Closes this pool handle.
@@ -391,5 +433,22 @@ impl Pool {
             return rabbit_exception(format!("{operation} cannot use a closed pool"));
         }
         Ok(())
+    }
+
+    /// Surfaces the oldest pending publish error (recorded by the pipelined
+    /// flush) as the exception its kind maps to, mirroring the sync
+    /// `client_exception` mapping. The whole queue is cleared: every record
+    /// has been processed, and only the first failure is raised — the same
+    /// behavior as the sync flush raising its first error.
+    fn surface_publish_errors(&self) -> PhpResult<()> {
+        let errors = self.publish_buffer.take_errors();
+        let Some(first) = errors.first() else {
+            return Ok(());
+        };
+        match first.kind.as_str() {
+            "Transport" => connection_exception(&first.message),
+            "Backpressure" => backpressure_exception(&first.message),
+            _ => rabbit_exception(&first.message),
+        }
     }
 }

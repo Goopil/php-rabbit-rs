@@ -815,6 +815,74 @@ async fn unconfirmed_publish_is_retained_across_connection_loss() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn mid_batch_connection_loss_replays_unconfirmed_publications_identically() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+    let actor = actor_recovery(&transport, 8).await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let first = actor
+        .try_publish(request_recovery("first", deadline))
+        .expect("publish first");
+    let second = actor
+        .try_publish(request_recovery("second", deadline))
+        .expect("publish second");
+    let third = actor
+        .try_publish(request_recovery("third", deadline))
+        .expect("publish third");
+    wait_for_publish_count(&transport, 3).await;
+
+    assert_eq!(
+        first.wait().await.expect("confirmed before the loss"),
+        PublishOutcome::Confirmed {
+            message_id: "first".into()
+        }
+    );
+
+    // Connection lost while the second and third confirmations are pending.
+    suspend(&actor).await;
+    // The replays park on never-resolving confirmations so the original
+    // deadline can be observed by advancing paused time.
+    transport.push_pending_confirmation();
+    transport.push_pending_confirmation();
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 2,
+            channel: new_channel(&transport).await,
+            topology_restored: true,
+        })
+        .await
+        .expect("publisher resumed");
+    wait_for_publish_count(&transport, 5).await;
+
+    let attempts = publish_operations(&transport);
+    assert_eq!(attempts[3], attempts[1], "second replayed identically");
+    assert_eq!(attempts[4], attempts[2], "third replayed identically");
+    assert_eq!(attempts[3].properties.message_id.as_deref(), Some("second"));
+    assert_eq!(attempts[4].properties.message_id.as_deref(), Some("third"));
+
+    // The replay keeps the ORIGINAL deadline: with no confirmation scripted,
+    // advancing paused time past the original 30 s deadline fails the
+    // waiters with Timeout instead of waiting on a fresh confirm window.
+    tokio::time::advance(Duration::from_secs(31)).await;
+    assert_eq!(
+        second.wait().await.expect_err("original deadline").kind(),
+        PublishErrorKind::Timeout
+    );
+    assert_eq!(
+        third.wait().await.expect_err("original deadline").kind(),
+        PublishErrorKind::Timeout
+    );
+    assert_eq!(
+        publish_operations(&transport).len(),
+        5,
+        "deadline expiry must not trigger further republication"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn late_confirm_from_old_generation_cannot_resolve_the_waiter() {
     let transport = MockTransport::default();
     let old_confirm = transport.push_controlled_confirmation();

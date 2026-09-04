@@ -57,6 +57,12 @@ pub(crate) fn backpressure_exception<T>(message: &str) -> PhpResult<T> {
     ))
 }
 
+pub(crate) fn connection_exception<T>(message: &str) -> PhpResult<T> {
+    Err(PhpException::from_class::<ConnectionException>(
+        message.to_owned(),
+    ))
+}
+
 pub(crate) fn client_exception<T>(error: &ClientError) -> PhpResult<T> {
     let message = error.to_string();
     match error.kind() {

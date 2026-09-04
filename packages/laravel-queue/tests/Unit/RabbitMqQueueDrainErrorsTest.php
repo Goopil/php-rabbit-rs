@@ -163,3 +163,56 @@ it('pop calls drainSettlementErrors before getting deliveries', function (): voi
     expect(fn () => $queue->pop('orders-eu'))
         ->toThrow(ConnectionException::class);
 });
+
+it('drainSettlementErrors throws ConnectionException for a pipelined publish transport failure', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError([
+        'kind' => 'Transport',
+        'message_id' => 'msg-1',
+        'message' => 'transport failed during confirmation',
+    ]);
+
+    expect(fn () => $queue->drainSettlementErrors())
+        ->toThrow(ConnectionException::class);
+});
+
+it('drainSettlementErrors throws QueueException for a returned publish', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError([
+        'kind' => 'Returned',
+        'message_id' => 'msg-2',
+        'message' => 'message msg-2 was returned as unroutable (AMQP 312)',
+    ]);
+
+    expect(fn () => $queue->drainSettlementErrors())
+        ->toThrow(\Goopil\RabbitRs\Laravel\Exceptions\QueueException::class);
+});
+
+it('drainSettlementErrors clears pipelined publish errors after draining', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError([
+        'kind' => 'Returned',
+        'message_id' => 'msg-3',
+        'message' => 'message msg-3 was returned as unroutable (AMQP 312)',
+    ]);
+
+    try {
+        $queue->drainSettlementErrors();
+    } catch (\Throwable) {
+        // Expected: the returned publish surfaces as an exception.
+    }
+
+    expect($pool->drainErrors())->toBe([]);
+});
+
+it('pop surfaces a pipelined publish failure before fetching deliveries', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError([
+        'kind' => 'Closed',
+        'message_id' => 'msg-4',
+        'message' => 'native client pool is closed',
+    ]);
+
+    expect(fn () => $queue->pop('orders-eu'))
+        ->toThrow(\Goopil\RabbitRs\Laravel\Exceptions\QueueException::class);
+});

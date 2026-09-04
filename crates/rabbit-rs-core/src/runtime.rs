@@ -46,6 +46,8 @@ impl Default for TokioRuntimeFactory {
     fn default() -> Self {
         // I/O-bound workload: a single worker thread reduces scheduling
         // overhead while still allowing multiple concurrent tasks via async.
+        // (Round D Phase 1 measured worker scaling as a dead end: the safe
+        // path is latency-bound, threads idle.)
         Self { worker_threads: 1 }
     }
 }

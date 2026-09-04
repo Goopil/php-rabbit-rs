@@ -335,6 +335,9 @@ namespace Goopil\RabbitRs {
             /** @var list<\Closure(string, int, int): void> */
             public array $backpressureCallbacks = [];
 
+            /** @var list<array{kind: string, message_id: string, message: string}> */
+            private array $publishErrors = [];
+
             /**
              * @param array<string, mixed> $config
              */
@@ -358,6 +361,28 @@ namespace Goopil\RabbitRs {
             public function throwOnNextClose(\Throwable $exception): void
             {
                 $this->nextCloseException = $exception;
+            }
+
+            /**
+             * Simulates an async publish outcome surfaced by the native
+             * pipelined flush (see Pool::drainErrors()).
+             *
+             * @param array{kind: string, message_id: string, message: string} $error
+             */
+            public function pushPublishError(array $error): void
+            {
+                $this->publishErrors[] = $error;
+            }
+
+            /**
+             * @return list<array{kind: string, message_id: string, message: string}>
+             */
+            public function drainErrors(): array
+            {
+                $errors = $this->publishErrors;
+                $this->publishErrors = [];
+
+                return $errors;
             }
 
             /**

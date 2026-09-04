@@ -14,8 +14,15 @@ describe('time-based publish buffer flush', function () {
         usleep(5_000); // BUFFER_FLUSH_INTERVAL is 1 ms of wall time.
 
         // The next publish evaluates the armed interval and flushes the
-        // whole batch, including the publication that waited.
+        // whole batch, including the publication that waited. The pipelined
+        // flush spawns on the runtime, so actor acceptance is observed
+        // shortly after the trigger instead of synchronously.
         $pool->publish(pubMessage('second-triggers-flush', timeoutMs: 30000));
+        $deadline = microtime(true) + 2;
+        while (microtime(true) < $deadline && $pool->stats()['publishes_total'] < 2) {
+            usleep(1000);
+        }
+
         expect($pool->stats()['publishes_total'])->toBe(2);
 
         $pool->close();
