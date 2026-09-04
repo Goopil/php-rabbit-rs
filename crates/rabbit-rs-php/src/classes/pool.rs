@@ -8,7 +8,10 @@ use std::sync::Arc;
 use super::{
     bridge::EventBridge,
     consumer::Consumer,
-    exception::{backpressure_exception, client_exception, connection_exception, rabbit_exception},
+    exception::{
+        backpressure_exception, client_exception, connection_exception, rabbit_exception,
+        rabbit_exception_message,
+    },
     publish_buffer::{PublishBuffer, publish_message_id},
 };
 use crate::conversion;
@@ -44,19 +47,11 @@ impl Pool {
     /// Creates a native pool from its PHP configuration.
     pub fn __construct(config: &ZendHashTable) -> PhpResult<Self> {
         let config =
-            Arc::new(
-                conversion::validated_config(config).map_err(|message| {
-                    ext_php_rs::prelude::PhpException::from_class::<
-                        super::exception::RabbitRsException,
-                    >(message)
-                })?,
-            );
+            Arc::new(conversion::validated_config(config).map_err(rabbit_exception_message)?);
         let key = ConnectionKey::from_config(&config);
-        let handle = RuntimeRegistry::global().acquire(key).map_err(|error| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                error.to_string(),
-            )
-        })?;
+        let handle = RuntimeRegistry::global()
+            .acquire(key)
+            .map_err(|error| rabbit_exception_message(error.to_string()))?;
         let client = handle.client(config.clone());
         let bridge = EventBridge::shared(&client);
 
@@ -102,13 +97,8 @@ impl Pool {
     /// Publishes one message and returns its stable message identifier.
     pub fn publish(&self, message: &ZendHashTable) -> PhpResult<String> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::publish")?;
-        let publish = conversion::publish(message, "message", &self.delay_strategy).map_err(
-            |message| {
-                ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                    message,
-                )
-            },
-        )?;
+        let publish = conversion::publish(message, "message", &self.delay_strategy)
+            .map_err(rabbit_exception_message)?;
 
         let message_id = publish.request.properties.message_id.as_ref().to_owned();
         let payload_bytes = publish.request.payload.len();
@@ -172,12 +162,8 @@ impl Pool {
     pub fn publish_batch(&self, messages: &ZendHashTable) -> PhpResult<Vec<String>> {
         self.flush()?;
         self.ensure_open("Goopil\\RabbitRs\\Pool::publishBatch")?;
-        let publishes =
-            conversion::publish_batch(messages, &self.delay_strategy).map_err(|message| {
-                ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                    message,
-                )
-            })?;
+        let publishes = conversion::publish_batch(messages, &self.delay_strategy)
+            .map_err(rabbit_exception_message)?;
         let requests = publishes
             .into_iter()
             .map(|publish| (publish.broker, publish.request))
