@@ -10,5 +10,17 @@ composer.lock
 # Per-run benchmark outputs stay untracked; curated round archives are re-included
 # by benchmarks/.gitignore (e.g. results/round-2-rebench/).
 /benchmarks/results/*
+/benchmarks/laravel/results/
+
+# run-tests.php artifacts next to the tracked *.phpt sources
+/crates/rabbit-rs-php/tests/phpt/*.diff
+/crates/rabbit-rs-php/tests/phpt/*.exp
+/crates/rabbit-rs-php/tests/phpt/*.log
+/crates/rabbit-rs-php/tests/phpt/*.out
+/crates/rabbit-rs-php/tests/phpt/*.php
+/crates/rabbit-rs-php/tests/phpt/*.sh
+
+# local SDD scratch (subagent artifacts, never committed)
+/.superpowers/
 
 /packages/laravel-queue/composer.lock
