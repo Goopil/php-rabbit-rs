@@ -24,9 +24,26 @@ use crate::classes::exception::{client_exception, rabbit_exception};
 use crate::conversion::NativePublish;
 
 /// Buffer threshold: flush when this many messages are buffered.
+/// Round D experiment knob: `RS_FLUSH_MAX` overrides the 64-message threshold.
+pub(crate) fn buffer_threshold() -> usize {
+    std::env::var("RS_FLUSH_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(BUFFER_THRESHOLD)
+}
 pub(crate) const BUFFER_THRESHOLD: usize = 64;
 /// Maximum time to wait before flushing the buffer.
-pub(crate) const BUFFER_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
+/// Round D experiment knob: `RS_FLUSH_MS` overrides the 1ms interval (0 = threshold-only).
+pub(crate) fn buffer_flush_interval() -> std::time::Duration {
+    match std::env::var("RS_FLUSH_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(0) => std::time::Duration::from_hours(1),
+        Some(ms) => std::time::Duration::from_millis(ms),
+        None => std::time::Duration::from_millis(1),
+    }
+}
 /// Maximum number of buffered publish requests before flushing is forced.
 pub(crate) const PUBLISH_BUFFER_MAX_MESSAGES: usize = 4096;
 /// Maximum cumulative buffered payload bytes before flushing is forced.
@@ -102,12 +119,12 @@ impl PublishBuffer {
     /// waiting: a batch is flushed once it is older than the interval even
     /// if it never reaches the size threshold.
     pub(crate) fn should_flush(&self) -> bool {
-        self.buffered_len() >= BUFFER_THRESHOLD
+        self.buffered_len() >= buffer_threshold()
             || self
                 .last_flush
                 .lock()
                 .expect("last_flush mutex poisoned")
-                .is_some_and(|instant| instant.elapsed() >= BUFFER_FLUSH_INTERVAL)
+                .is_some_and(|instant| instant.elapsed() >= buffer_flush_interval())
     }
 
     /// Returns the number of buffered publications.
@@ -186,10 +203,37 @@ impl PublishBuffer {
             .map(|publish| (publish.broker.clone(), publish.request.clone()))
             .collect();
 
+        // Round D experiment (b2): RS_ASYNC_FLUSH=1 spawns the batch on the
+        // runtime instead of blocking the PHP thread on every batch's
+        // confirmations. Crude pricing prototype only: outcomes are folded
+        // into dropped_publications (no Returned surfacing), so the
+        // safe-mode exception contract is NOT honored in this mode.
+        if std::env::var_os("RS_ASYNC_FLUSH").is_some() {
+            let client = Arc::clone(&self.client);
+            self.handle.runtime().spawn(async move {
+                // Outcomes deliberately discarded: crude pricing prototype.
+                let _ = client.publish_batch(requests).await;
+            });
+            return Ok(());
+        }
+
+        // Round D profiling instrumentation (experimental, env-gated):
+        // RS_PROF=1 prints one line per flush: batch size, block_on duration.
+        let profiling = std::env::var_os("RS_PROF").is_some();
+        let flush_started = std::time::Instant::now();
+
         let batch = self
             .handle
             .runtime()
             .block_on(self.client.publish_batch(requests));
+
+        if profiling {
+            eprintln!(
+                "RS_PROF flush size={} block_on_us={}",
+                publishes.len(),
+                flush_started.elapsed().as_micros()
+            );
+        }
 
         match batch {
             Ok(outcomes) => {
