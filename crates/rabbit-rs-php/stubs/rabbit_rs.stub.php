@@ -140,6 +140,22 @@ final class Pool
     /**
      * Implemented by the ext-rabbit_rs native extension.
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
+     *
+     * Drains non-confirmed publish outcomes recorded by the pipelined flush,
+     * returning one hash per record with `kind`, `message_id`, and `message`.
+     * The queue is cleared by this call; the same records would otherwise
+     * surface as exceptions at the next publish/flush/size/clear/stats
+     * operation.
+     *
+     * @return list<array{kind: string, message_id: string, message: string}>
+     */
+    public function drainErrors(): array
+    {
+    }
+
+    /**
+     * Implemented by the ext-rabbit_rs native extension.
+     * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      * @noinspection PhpUnusedParameterInspection
      *
      * Registers a PHP callback invoked when a broker connection state changes.

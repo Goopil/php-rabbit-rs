@@ -46,14 +46,9 @@ impl Default for TokioRuntimeFactory {
     fn default() -> Self {
         // I/O-bound workload: a single worker thread reduces scheduling
         // overhead while still allowing multiple concurrent tasks via async.
-        // Round D experiment (a): RS_TOKIO_WORKERS overrides the default.
-        let workers = std::env::var("RS_TOKIO_WORKERS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(1);
-        Self {
-            worker_threads: workers,
-        }
+        // (Round D Phase 1 measured worker scaling as a dead end: the safe
+        // path is latency-bound, threads idle.)
+        Self { worker_threads: 1 }
     }
 }
 
