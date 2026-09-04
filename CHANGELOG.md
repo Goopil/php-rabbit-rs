@@ -8,6 +8,26 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Added
+
+- Native: safe-mode publishes are pipelined — `Pool::publish` no longer blocks
+  on the batch flush barrier; confirmations, mandatory returns, and transport
+  failures are recorded in a bounded pending-error queue and surface at the
+  next pool operation (`publish`, `flush`, `publishBatch`, `stats`,
+  `drainErrors`) or, on a queue, through `drainSettlementErrors()`. Explicit
+  `flush()`/`publishBatch()` keep full-deadline synchronous semantics;
+  process teardown quiesces in-flight drains within a fixed 500 ms budget.
+  Fresh-lab benchmark: safe publish 5 729 → 20 866 ops/s (×3.64), reaching
+  blind-mode parity (0.95×) and 2.19× vladimir dispatch.
+
+### Fixed
+
+- Native: the publish buffer's message list and byte accounting were updated
+  under two separate mutexes; a concurrent `take()` could subtract payload
+  bytes not yet credited, panicking with `attempt to subtract with overflow`
+  and aborting the process (Coverage CI job). Both now mutate under one
+  mutex.
+
 ## [0.1.0] - 2026-09-02
 
 ### Added

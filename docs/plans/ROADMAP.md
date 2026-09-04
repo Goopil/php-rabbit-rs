@@ -218,6 +218,27 @@ with the feature, never in a later docs pass.
   rounds; vladimir dispatch −70% = session-drift control; Round D must
   re-baseline worker+confirm cells on a fresh lab. **Tag v0.1.0 cut and
   shipped 2026-09-04** (pipeline green end to end).
+- **Round D delivered (2026-09-04)** — PR #135, #41 closed. Phase 1
+  profiling (env-gated experiment knobs, since removed) refuted the
+  serial-per-message hypothesis (a 1-RTT serial await would cap ~550 ops/s
+  vs 5 729 measured) and localized the ceiling: the synchronous
+  `block_on(publish_batch)` auto-flush barrier was **74 % of safe-mode wall
+  time** (threads idle, latency-bound, not CPU-bound; batch p50 ≈ 24
+  messages). Phase 2 replaced the auto-flush barrier with a **pipelined
+  flush** (batch spawned on the runtime, bounded pending-error queue
+  surfacing non-confirmed outcomes at the next operation; explicit
+  `flush()`/`publishBatch()` stay synchronous with full-deadline semantics;
+  teardown quiesce bounded at 500 ms; design note
+  `docs/superpowers/specs/2026-09-04-pipelined-safe-flush-design.md`).
+  Proof (fresh lab, release): safe 5 729 → **20 866 ops/s (×3.64)**, blind
+  parity 0.95×, 2.19× vladimir dispatch; worker +13 %; 120 rounds, 0 losses,
+  0 stalls; Laravel publish errors surface via `drainSettlementErrors()`
+  (Transport → `ConnectionException`, otherwise `QueueException`; 2
+  integration pins for AMQP 312). The round also fixed a Coverage-CI
+  process abort: the publish buffer's Vec and byte counter lived behind two
+  mutexes, and a concurrent `take()` could subtract bytes not yet credited
+  (`attempt to subtract with overflow` → poisoned mutexes → exit 134) —
+  both now mutate under one mutex.
 
 
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
@@ -297,9 +318,10 @@ Coordinate with #58 (composer-level install friction) — do not duplicate.
 
 README rewrite around: "Native Rust RabbitMQ transport for high-throughput,
 long-running PHP/Laravel workers." Benchmarks front and center; safety
-ladder shown as a trade-off (blind ~76.8k → unsafe ~62.5k → safe ~9.8k
-msg/s); limitations documented (duplicates, in-memory replay buffer,
-confirmed-publish ceiling pending Round D).
+ladder shown as a trade-off (blind/safe publish near-parity after Round D's
+pipelined flush; see `benchmarks/results/round-i-rebench` and
+`round-d-safe-flush`); limitations documented (duplicates, in-memory replay
+buffer, Laravel driver still 0.75× amqplib on the dispatch publish cell).
 
 Success criteria: archived result sets carry the full metric set;
 comparison docs use workload-scoped claims; install matrix green or
@@ -598,6 +620,10 @@ criteria enforced by the harness.
 
 ## Round D — dispatch gap investigation
 
+**DELIVERED 2026-09-04** (PR #135; safe publish ×3.64 to blind parity —
+pipelined flush; coverage-CI abort fixed as a rider). Original scope kept
+as record:
+
 **Promoted to P0 pre-1.0 by the external review of 2026-09-02** (was
 post-1.0 performance work); sequenced after Round I, before Round J. Scope
 extended with the review's batching/pipelining questions — see the tracker
@@ -647,18 +673,18 @@ Success criteria: full quality gate green; deterministic paused-time tests prove
 QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
 (regression tests).
 
-## Order of execution (agreed 2026-08-30, updated 2026-09-03)
+## Order of execution (agreed 2026-08-30, updated 2026-09-04)
 
 ~~Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
 Round F1 → Round C → Round F2 → Round E → Round D~~ — Round 2 and Round F are
 landed (v0.0.8).
 
-Current queue (updated 2026-09-03 — **stop features → fix consumer →
+Current queue (updated 2026-09-04 — **stop features → fix consumer →
 optimize confirms → prove results → ship 1.0**):
 
 1. ~~Round I (#126, P0)~~ — **delivered 2026-09-03** (PRs #132/#133).
-2. **Round D (#41, P0, promoted)** — confirmed-publish
-   batching/pipelining; profile before optimizing.
+2. ~~Round D (#41, P0, promoted)~~ — **delivered 2026-09-04** (PR #135;
+   pipelined safe flush, ×3.64 to blind parity).
 3. **Round J (#127–#129, P1)** — benchmark proof, installation matrix,
    README repositioning (file-disjoint tracks; #128 has external CI
    latency and can start in parallel).
@@ -691,7 +717,7 @@ Done, on top of that gate:
   validated.
 - **Performance**: benchmarks reproducible; consumer advantage
   demonstrated; publish modes clearly compared; confirm batching studied
-  (Round D); p50/p95/p99 available.
+  (Round D, delivered — pipelined flush); p50/p95/p99 available.
 - **Packaging**: architectures + PHP versions validated (Round J2);
   installation documented; upgrade + rollback tested.
 - **Operations**: long-running workers; RabbitMQ reconnect; graceful
@@ -713,7 +739,8 @@ this starts before the Round G stabilization exit criterion.
 - **Adaptive prefetch** — Round E (#42), design and plan already approved.
 - **Additional routing and failover strategies** (host selection beyond the
   current list rotation).
-- **Alternative AMQP backend** — only if Round D profiles justify it; the
+- **Alternative AMQP backend** — Round D profiles landed (latency-bound
+  flush barrier, fixed by pipelining) and do not justify it; the
   `Transport` abstraction keeps this cheap.
 - **RabbitMQ Streams support** — distinct product if a real need appears
   (design decision, out of the core crate).
@@ -776,8 +803,8 @@ this starts before the Round G stabilization exit criterion.
   (ConfigNormalizer validates safe|unsafe|blind; the core applies one SafetyMode
   per connection/vhost). Several Laravel connections (same broker, distinct
   vhosts) already give per-vhost safety today. A true per-queue safety inside one
-  connection would be a core config-surface extension — arbitrate alongside
-  Round D.
+  connection would be a core config-surface extension — arbitrate post-1.0
+  (Round D profiles did not surface a need).
 - Publish latency excludes the terminal flush (comment if ever reported).
 - Re-fetch acquisition blocks on all brokers when a source retires — semantics match
   mono-broker behavior and are documented; revisit only if an async retire is needed.
@@ -803,7 +830,8 @@ this starts before the Round G stabilization exit criterion.
   superseded by Round E's scheduler rework), O(n) replay-deadline scan while
   suspended, double property clones, `flush_batch` deep clones, `early_ack`
   spawn-per-message, per-publish `EventBridge::drain` without callbacks. Each
-  sub-µs to µs — do only with a profile, after #41.
+  sub-µs to µs — do only with a profile, after #41 (Round D landed
+  2026-09-04; re-profile before touching any).
 
 ## Housekeeping (owner actions)
 
