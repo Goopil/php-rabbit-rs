@@ -101,12 +101,12 @@ impl TransportConnection for LapinConnection {
 
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
         let channel = self.inner.create_channel().await.map_err(map_lapin_error)?;
-        Ok(Box::new(LapinPublisherChannel { inner: channel }))
+        Ok(Box::new(LapinChannel { inner: channel }))
     }
 
     async fn open_consumer(&self) -> TransportResult<Box<dyn ConsumerChannel>> {
         let channel = self.inner.create_channel().await.map_err(map_lapin_error)?;
-        Ok(Box::new(LapinConsumerChannel { inner: channel }))
+        Ok(Box::new(LapinChannel { inner: channel }))
     }
 
     async fn close(&self) -> TransportResult<()> {
@@ -131,12 +131,12 @@ impl TransportConnection for LapinConnection {
     }
 }
 
-struct LapinPublisherChannel {
+struct LapinChannel {
     inner: Channel,
 }
 
 #[async_trait]
-impl TopologyChannel for LapinPublisherChannel {
+impl TopologyChannel for LapinChannel {
     async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
         declare_exchange(&self.inner, spec, false).await
     }
@@ -179,7 +179,7 @@ impl TopologyChannel for LapinPublisherChannel {
 }
 
 #[async_trait]
-impl PublisherChannel for LapinPublisherChannel {
+impl PublisherChannel for LapinChannel {
     async fn enable_confirms(&self) -> TransportResult<()> {
         self.inner
             .confirm_select(ConfirmSelectOptions::default())
@@ -231,55 +231,8 @@ impl PublishReceipt for LapinPublishReceipt {
     }
 }
 
-struct LapinConsumerChannel {
-    inner: Channel,
-}
-
 #[async_trait]
-impl TopologyChannel for LapinConsumerChannel {
-    async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        declare_exchange(&self.inner, spec, false).await
-    }
-
-    async fn verify_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        declare_exchange(&self.inner, spec, true).await
-    }
-
-    async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        declare_queue(&self.inner, spec, false).await
-    }
-
-    async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        declare_queue(&self.inner, spec, true).await
-    }
-
-    async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
-        bind_queue(&self.inner, spec).await
-    }
-
-    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
-        queue_size(&self.inner, queue).await
-    }
-
-    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
-        self.inner
-            .queue_purge(queue.to_owned().into(), QueuePurgeOptions::default())
-            .await
-            .map(|_| ())
-            .map_err(map_lapin_error)
-    }
-
-    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
-        delete_queue(&self.inner, queue).await
-    }
-
-    async fn close(&self) -> TransportResult<()> {
-        close_channel(&self.inner).await
-    }
-}
-
-#[async_trait]
-impl ConsumerChannel for LapinConsumerChannel {
+impl ConsumerChannel for LapinChannel {
     async fn set_qos(&self, prefetch: u16) -> TransportResult<()> {
         self.inner
             .basic_qos(prefetch, BasicQosOptions { global: false })

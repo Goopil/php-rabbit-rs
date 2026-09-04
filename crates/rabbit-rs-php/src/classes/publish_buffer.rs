@@ -312,10 +312,7 @@ impl PublishBuffer {
         }
 
         // Keep the original requests so a failed flush can re-buffer them.
-        let requests: Vec<(String, PublishRequest)> = publishes
-            .iter()
-            .map(|publish| (publish.broker.clone(), publish.request.clone()))
-            .collect();
+        let requests = Self::drain_requests(&publishes);
 
         match self
             .handle
@@ -398,10 +395,7 @@ impl PublishBuffer {
 
         // Keep the original publications so a failed drain can re-buffer a
         // conservative superset (the same contract as the sync flush).
-        let requests: Vec<(String, PublishRequest)> = publishes
-            .iter()
-            .map(|publish| (publish.broker.clone(), publish.request.clone()))
-            .collect();
+        let requests = Self::drain_requests(&publishes);
 
         let buffer = Arc::clone(self);
         let task = self.handle.runtime().spawn(async move {
@@ -489,10 +483,7 @@ impl PublishBuffer {
             return;
         }
         let publishes = self.take();
-        let requests: Vec<(String, PublishRequest)> = publishes
-            .iter()
-            .map(|publish| (publish.broker.clone(), publish.request.clone()))
-            .collect();
+        let requests = Self::drain_requests(&publishes);
         let confirmed = self
             .handle
             .runtime()
@@ -533,6 +524,15 @@ impl PublishBuffer {
             return Ok(());
         }
         self.flush_all()
+    }
+
+    /// Clones the batch into the wire-level request list a failed flush
+    /// re-buffers (shared by the sync, pipelined, and teardown drains).
+    fn drain_requests(publishes: &[NativePublish]) -> Vec<(String, PublishRequest)> {
+        publishes
+            .iter()
+            .map(|publish| (publish.broker.clone(), publish.request.clone()))
+            .collect()
     }
 
     /// Total payload bytes of the given buffered publications.

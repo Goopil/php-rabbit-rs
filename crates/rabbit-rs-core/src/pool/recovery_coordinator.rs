@@ -431,14 +431,7 @@ async fn run_coordinator(
                             ) => r,
                             close = close_rx.recv() => {
                                 if let Some(CloseCommand { completed }) = close {
-                                    if let Some(pub_handle) = publisher.lock().await.take() {
-                                        let _ = pub_handle.close().await;
-                                    }
-                                    let consumers_map = std::mem::take(&mut *consumers.lock().await);
-                                    for consumer in consumers_map.values() {
-                                        let _ = consumer.close().await;
-                                    }
-                                    let _ = completed.send(());
+                                    shutdown_coordinator(&publisher, &consumers, completed).await;
                                 }
                                 return;
                             }
@@ -485,19 +478,29 @@ async fn run_coordinator(
             }
             close = close_rx.recv() => {
                 if let Some(CloseCommand { completed }) = close {
-                    if let Some(pub_handle) = publisher.lock().await.take() {
-                        let _ = pub_handle.close().await;
-                    }
-                    let consumers_map = std::mem::take(&mut *consumers.lock().await);
-                    for consumer in consumers_map.values() {
-                        let _ = consumer.close().await;
-                    }
-                    let _ = completed.send(());
+                    shutdown_coordinator(&publisher, &consumers, completed).await;
                 }
                 return;
             }
         }
     }
+}
+
+/// Closes the publisher and every cached consumer, then acknowledges the
+/// close command (shared by both select arms of the coordinator loop).
+async fn shutdown_coordinator(
+    publisher: &SharedPublisher,
+    consumers: &SharedConsumers,
+    completed: oneshot::Sender<()>,
+) {
+    if let Some(pub_handle) = publisher.lock().await.take() {
+        let _ = pub_handle.close().await;
+    }
+    let consumers_map = std::mem::take(&mut *consumers.lock().await);
+    for consumer in consumers_map.values() {
+        let _ = consumer.close().await;
+    }
+    let _ = completed.send(());
 }
 
 async fn recover_generation(

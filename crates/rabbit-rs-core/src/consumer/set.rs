@@ -315,8 +315,18 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
     }
 }
 
-/// Handle to one consumer set: the subscriptions of a worker profile that
-/// belong to a single broker, multiplexed by one actor.
+/// Maps a command-channel  failure to the settlement error kind
+/// (shared by the set handle and the composite router).
+pub(crate) fn map_try_send_error(
+    error: &mpsc::error::TrySendError<ConsumerCommand>,
+) -> SettlementErrorKind {
+    match error {
+        mpsc::error::TrySendError::Full(_) => SettlementErrorKind::ChannelFull,
+        mpsc::error::TrySendError::Closed(_) => SettlementErrorKind::Closed,
+    }
+}
+
+/// A handle to one per-broker consumer set.
 ///
 /// Deliveries handed out by this handle carry tokens that route settlements
 /// back to this set's actor, so acknowledgements always reach the broker
@@ -394,10 +404,7 @@ impl ConsumerSetHandle {
     ) -> Result<(), SettlementErrorKind> {
         self.commands
             .try_send(ConsumerCommand::SettleThrough { token })
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => SettlementErrorKind::ChannelFull,
-                mpsc::error::TrySendError::Closed(_) => SettlementErrorKind::Closed,
-            })
+            .map_err(|e| map_try_send_error(&e))
     }
 
     /// Tries to receive the next delivery without blocking.

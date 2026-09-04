@@ -15,7 +15,7 @@ use rabbit_rs_core::{
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest, PublisherConfig},
     transport::{
         PublishConfirmation, QueueKind,
-        mock::{MockPublishGate, MockTransport},
+        mock::{MockOperationGate, MockTransport},
     },
 };
 
@@ -100,7 +100,7 @@ fn batch(message_ids: &[&str]) -> Vec<(String, PublishRequest)> {
 #[tokio::test(start_paused = true)]
 async fn blind_batch_returns_while_every_publish_is_still_pending() {
     let transport = Arc::new(MockTransport::default());
-    let gates: Vec<MockPublishGate> = (0..4).map(|_| transport.push_publish_gate()).collect();
+    let gates: Vec<MockOperationGate> = (0..4).map(|_| transport.push_publish_gate()).collect();
     let pool = Arc::new(blind_pool(&transport, 8));
 
     let batch = tokio::spawn({
@@ -163,7 +163,7 @@ async fn blind_batch_returns_while_every_publish_is_still_pending() {
 #[tokio::test(start_paused = true)]
 async fn blind_batch_bypasses_the_publisher_actor() {
     let transport = Arc::new(MockTransport::default());
-    let gates: Vec<MockPublishGate> = (0..2).map(|_| transport.push_publish_gate()).collect();
+    let gates: Vec<MockOperationGate> = (0..2).map(|_| transport.push_publish_gate()).collect();
     let pool = Arc::new(blind_pool(&transport, 8));
 
     pool.publish_batch(batch(&["m0", "m1"]))
@@ -294,7 +294,7 @@ async fn blind_publish_respects_the_byte_budget() {
     let transport = Arc::new(MockTransport::default());
     // 1 MiB budget: one parked 600 KiB publish must reject a second one,
     // exactly like the confirmed path rejects on byte-budget exhaustion.
-    let gates: Vec<MockPublishGate> = (0..2).map(|_| transport.push_publish_gate()).collect();
+    let gates: Vec<MockOperationGate> = (0..2).map(|_| transport.push_publish_gate()).collect();
     let pool = Arc::new(blind_pool_with_byte_budget(&transport, 8, 1024 * 1024));
 
     pool.publish_batch(vec![(
@@ -378,7 +378,7 @@ async fn blind_batch_on_a_closed_pump_fails_immediately_and_leaves_everything_wi
 async fn blind_batch_applies_backpressure_then_completes_without_error() {
     let transport = Arc::new(MockTransport::default());
     // buffer_capacity = 2 → intake queue of 2, in-flight cap 128.
-    let gates: Vec<MockPublishGate> = (0..131).map(|_| transport.push_publish_gate()).collect();
+    let gates: Vec<MockOperationGate> = (0..131).map(|_| transport.push_publish_gate()).collect();
     let pool = Arc::new(blind_pool(&transport, 2));
 
     let batch = tokio::spawn({

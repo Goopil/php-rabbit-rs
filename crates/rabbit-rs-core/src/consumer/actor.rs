@@ -570,25 +570,9 @@ pub(crate) async fn run_actor(
                     token,
                     settlement,
                 }) => {
-                    let Some(channel_key) = state.channel_key_for(&token.subscription) else {
-                        token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        state
-                            .record_settlement_error(settlement_error(
-                                &token,
-                                ConsumerErrorKind::InvalidSubscription,
-                                "delivery references an unknown subscription",
-                            ));
+                    let Some(channel_key) = claim_settlement(&mut state, &token) else {
                         continue;
                     };
-                    if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        state
-                            .record_settlement_error(settlement_error(
-                                &token,
-                                ConsumerErrorKind::AlreadySettling,
-                                "delivery is already being settled",
-                            ));
-                        continue;
-                    }
                     let params = SettleParams { token, settlement };
                     if state.settlement_in_flight.contains(&channel_key) {
                         state.settlement_queues.entry(channel_key).or_default().push_back(params);
@@ -597,25 +581,9 @@ pub(crate) async fn run_actor(
                     }
                 }
                 Some(ConsumerCommand::SettleThrough { token }) => {
-                    let Some(channel_key) = state.channel_key_for(&token.subscription) else {
-                        token.state.store(DeliveryState::Lost as u8, std::sync::atomic::Ordering::Release);
-                        state
-                            .record_settlement_error(settlement_error(
-                                &token,
-                                ConsumerErrorKind::InvalidSubscription,
-                                "delivery references an unknown subscription",
-                            ));
+                    let Some(channel_key) = claim_settlement(&mut state, &token) else {
                         continue;
                     };
-                    if token.settling.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_err() {
-                        state
-                            .record_settlement_error(settlement_error(
-                                &token,
-                                ConsumerErrorKind::AlreadySettling,
-                                "delivery is already being settled",
-                            ));
-                        continue;
-                    }
                     let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
                         token.settling.store(false, std::sync::atomic::Ordering::Release);
                         state
@@ -924,44 +892,130 @@ async fn close_set(state: &mut ActorState) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: SettleParams) {
-    state.settlement_in_flight.insert(channel_key.clone());
-    let Some(runtime) = state.subscriptions.get(&params.token.subscription) else {
-        state.settlement_in_flight.remove(&channel_key);
-        params.token.state.store(
+/// Common settlement prologue: validates the token's subscription and flips
+/// its `settling` flag. On failure the token is marked `Lost` (unknown
+/// subscription) or left untouched (already settling), the error is recorded,
+/// and `None` is returned so the caller proceeds to the next command.
+fn claim_settlement(state: &mut ActorState, token: &Arc<DeliveryTokenInner>) -> Option<ChannelKey> {
+    let Some(channel_key) = state.channel_key_for(&token.subscription) else {
+        token.state.store(
             DeliveryState::Lost as u8,
             std::sync::atomic::Ordering::Release,
         );
         state.record_settlement_error(settlement_error(
-            &params.token,
+            token,
             ConsumerErrorKind::InvalidSubscription,
             "delivery references an unknown subscription",
         ));
+        return None;
+    };
+    if token
+        .settling
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        state.record_settlement_error(settlement_error(
+            token,
+            ConsumerErrorKind::AlreadySettling,
+            "delivery is already being settled",
+        ));
+        return None;
+    }
+    Some(channel_key)
+}
+
+/// Subscription-runtime context cloned out for a launch (the borrow must not
+/// escape while the caller keeps mutating `ActorState`).
+struct SettlementLaunch {
+    channel: Arc<dyn crate::transport::ConsumerChannel>,
+    connection_key: crate::pool::ConnectionKey,
+    generation: u64,
+    channel_id: u16,
+    publisher: Option<crate::publisher::PublisherHandle>,
+    destination: Option<crate::publisher::Destination>,
+    delay_strategy: Option<DelayStrategy>,
+}
+
+/// Launch staging shared by `launch_settlement` and `launch_settle_through`:
+/// marks the channel as having a settlement in flight, then looks up the
+/// subscription runtime — rolling the marker back when the subscription is
+/// already gone (token marked `Lost`, error recorded, `None` returned).
+fn stage_settlement_launch(
+    state: &mut ActorState,
+    channel_key: &ChannelKey,
+    token: &Arc<DeliveryTokenInner>,
+) -> Option<SettlementLaunch> {
+    state.settlement_in_flight.insert(channel_key.clone());
+    let Some(runtime) = state.subscriptions.get(&token.subscription) else {
+        state.settlement_in_flight.remove(channel_key);
+        token.state.store(
+            DeliveryState::Lost as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        state.record_settlement_error(settlement_error(
+            token,
+            ConsumerErrorKind::InvalidSubscription,
+            "delivery references an unknown subscription",
+        ));
+        return None;
+    };
+    Some(SettlementLaunch {
+        channel: runtime.channel.clone(),
+        connection_key: runtime.connection_key,
+        generation: runtime.generation,
+        channel_id: runtime.channel_id,
+        publisher: runtime.publisher.clone(),
+        destination: runtime.destination.clone(),
+        delay_strategy: runtime.delay_strategy.clone(),
+    })
+}
+
+/// Rejects a settlement whose token belongs to a stale connection generation
+/// or channel (acknowledging it would settle the wrong delivery).
+fn ensure_live_generation(
+    connection_key: crate::pool::ConnectionKey,
+    generation: u64,
+    channel_id: u16,
+    token: &DeliveryTokenInner,
+) -> Result<(), ConsumerError> {
+    if connection_key != token.connection_key
+        || generation != token.generation
+        || channel_id != token.channel_id
+    {
+        return Err(ConsumerError::new(
+            ConsumerErrorKind::StaleGeneration,
+            "delivery belongs to a stale connection generation or channel",
+        ));
+    }
+    Ok(())
+}
+
+fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: SettleParams) {
+    let Some(launch) = stage_settlement_launch(state, &channel_key, &params.token) else {
         return;
     };
-    let channel = runtime.channel.clone();
-    let connection_key = runtime.connection_key;
-    let generation = runtime.generation;
-    let channel_id = runtime.channel_id;
-    let publisher = runtime.publisher.clone();
-    let destination = runtime.destination.clone();
-    let delay_strategy = runtime.delay_strategy.clone();
     let delivery_tag = params.token.delivery_tag;
     let settlement = params.settlement;
     let token = params.token.clone();
+    drop(params);
 
     state.pending_settlements.push(Box::pin(async move {
         let result = execute_settlement(
-            &channel,
-            connection_key,
-            generation,
-            channel_id,
+            &launch.channel,
+            launch.connection_key,
+            launch.generation,
+            launch.channel_id,
             delivery_tag,
             settlement,
             &token,
-            publisher.as_ref(),
-            destination.as_ref(),
-            delay_strategy.as_ref(),
+            launch.publisher.as_ref(),
+            launch.destination.as_ref(),
+            launch.delay_strategy.as_ref(),
         )
         .await;
         SettlementResult {
@@ -985,15 +1039,7 @@ async fn execute_settlement(
     destination: Option<&crate::publisher::Destination>,
     delay_strategy: Option<&DelayStrategy>,
 ) -> Result<DeliveryState, ConsumerError> {
-    if connection_key != token.connection_key
-        || generation != token.generation
-        || channel_id != token.channel_id
-    {
-        return Err(ConsumerError::new(
-            ConsumerErrorKind::StaleGeneration,
-            "delivery belongs to a stale connection generation or channel",
-        ));
-    }
+    ensure_live_generation(connection_key, generation, channel_id, token)?;
 
     match settlement {
         Settlement::Ack => {
@@ -1192,34 +1238,19 @@ fn launch_settle_through(
     channel_key: ChannelKey,
     params: SettleThroughParams,
 ) {
-    state.settlement_in_flight.insert(channel_key.clone());
-    let Some(runtime) = state.subscriptions.get(&params.token.subscription) else {
-        state.settlement_in_flight.remove(&channel_key);
-        params.token.state.store(
-            DeliveryState::Lost as u8,
-            std::sync::atomic::Ordering::Release,
-        );
-        state.record_settlement_error(settlement_error(
-            &params.token,
-            ConsumerErrorKind::InvalidSubscription,
-            "delivery references an unknown subscription",
-        ));
+    let Some(launch) = stage_settlement_launch(state, &channel_key, &params.token) else {
         return;
     };
-    let channel = runtime.channel.clone();
-    let connection_key = runtime.connection_key;
-    let generation = runtime.generation;
-    let channel_id = runtime.channel_id;
     let target_tag = params.token.delivery_tag;
     let token = params.token.clone();
     let affected_tokens = params.affected_tokens;
 
     state.pending_settle_throughs.push(Box::pin(async move {
         let result = execute_settle_through(
-            &channel,
-            connection_key,
-            generation,
-            channel_id,
+            &launch.channel,
+            launch.connection_key,
+            launch.generation,
+            launch.channel_id,
             target_tag,
             &token,
         )
@@ -1241,15 +1272,7 @@ async fn execute_settle_through(
     target_tag: u64,
     token: &DeliveryTokenInner,
 ) -> Result<DeliveryState, ConsumerError> {
-    if connection_key != token.connection_key
-        || generation != token.generation
-        || channel_id != token.channel_id
-    {
-        return Err(ConsumerError::new(
-            ConsumerErrorKind::StaleGeneration,
-            "delivery belongs to a stale connection generation or channel",
-        ));
-    }
+    ensure_live_generation(connection_key, generation, channel_id, token)?;
 
     channel
         .ack(target_tag, true)
