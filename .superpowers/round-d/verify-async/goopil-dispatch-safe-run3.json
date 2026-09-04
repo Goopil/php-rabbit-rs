@@ -1,0 +1,153 @@
+{
+    "benchmark": "driver-bench",
+    "phase": "E",
+    "ok": true,
+    "connection": "rabbit-rs",
+    "driver_package": "goopil/rabbit-rs-laravel",
+    "driver_package_version": "dev-main",
+    "mode": "dispatch",
+    "queue": "bench.goopil.driver-bench",
+    "count": 1000,
+    "rounds": 10,
+    "payload_body_bytes": 1024,
+    "payload_target_bytes": 1024,
+    "ops_total": 10000,
+    "time_total_s": 0.464357,
+    "avg_rate_ops_s": 21535.16,
+    "min_rate_ops_s": 21245.1,
+    "max_rate_ops_s": 22040.19,
+    "losses": 0,
+    "late_arrivals_after_drain": 0,
+    "rounds_detail": [
+        {
+            "round": 0,
+            "ops": 1000,
+            "time_s": 0.046801,
+            "rate_ops_s": 21366.91,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 1,
+            "ops": 1000,
+            "time_s": 0.046376,
+            "rate_ops_s": 21562.88,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 2,
+            "ops": 1000,
+            "time_s": 0.046992,
+            "rate_ops_s": 21280.27,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 3,
+            "ops": 1000,
+            "time_s": 0.045892,
+            "rate_ops_s": 21790.43,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 4,
+            "ops": 1000,
+            "time_s": 0.045949,
+            "rate_ops_s": 21763.44,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 5,
+            "ops": 1000,
+            "time_s": 0.046823,
+            "rate_ops_s": 21357.06,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 6,
+            "ops": 1000,
+            "time_s": 0.04707,
+            "rate_ops_s": 21245.1,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 7,
+            "ops": 1000,
+            "time_s": 0.046977,
+            "rate_ops_s": 21286.99,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 8,
+            "ops": 1000,
+            "time_s": 0.046106,
+            "rate_ops_s": 21689.13,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 9,
+            "ops": 1000,
+            "time_s": 0.045372,
+            "rate_ops_s": 22040.19,
+            "stall_recoveries": 0
+        }
+    ],
+    "config": {
+        "driver": "rabbit-rs",
+        "queue": "bench.goopil.driver-bench",
+        "hosts": "127.0.0.1:5672",
+        "vhost": "/",
+        "username": "***",
+        "password": "***",
+        "exchange": "",
+        "routing_key": "{queue}",
+        "prefetch": 64,
+        "safety": "safe",
+        "auto_subscribe": true,
+        "after_commit": false,
+        "block_for": 0,
+        "rabbit_rs_global": {
+            "heartbeat": 30,
+            "tls": {
+                "enabled": false,
+                "ca_cert": null,
+                "client_cert": null,
+                "client_key": null
+            },
+            "safety": "safe",
+            "confirm_timeout": 30000,
+            "prefetch": "64",
+            "wait_timeout": 30000,
+            "topology_mode": "declare",
+            "queue_type": "quorum",
+            "queue_durable": true,
+            "delivery_limit": null,
+            "dead_letter": null,
+            "delay": {
+                "mode": "ttl"
+            },
+            "worker": "default",
+            "auto_subscribe": false,
+            "production_warning": true,
+            "best_effort": false,
+            "topology": {
+                "queue": {
+                    "type": "classic",
+                    "durable": true,
+                    "delivery_limit": null
+                },
+                "dead_letter": null
+            }
+        },
+        "connection": "rabbit-rs",
+        "mode": "dispatch"
+    },
+    "meta": {
+        "php": "8.5.6",
+        "sapi": "cli",
+        "extensions": {
+            "rabbit_rs": "0.1.0",
+            "amqp": false
+        },
+        "laravel": "v13.29.0",
+        "os": "Darwin 25.6.0"
+    }
+}

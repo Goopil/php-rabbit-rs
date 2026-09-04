@@ -125,6 +125,14 @@ impl PublishBuffer {
         self.dropped_error_records.load(Ordering::Relaxed)
     }
 
+    /// TEMPORARY DEBUG (CI diagnosis): number of spawned drains not yet joined.
+    pub(crate) fn drain_handle_count(&self) -> usize {
+        self.drain_handles
+            .lock()
+            .expect("drain handles mutex poisoned")
+            .len()
+    }
+
     /// Records a non-confirmed publish outcome for PHP surfacing.
     ///
     /// The queue is bounded: past [`MAX_PENDING_ERRORS`] the oldest record
@@ -219,6 +227,7 @@ impl PublishBuffer {
         let mut buffer = self.buffer.lock().expect("publish buffer mutex poisoned");
         let publishes = std::mem::take(&mut *buffer);
         drop(buffer);
+        eprintln!("DBG take len={}", publishes.len());
         *self
             .buffered_bytes
             .lock()
@@ -241,6 +250,10 @@ impl PublishBuffer {
             .filter(|publish| publish.request.deadline > now)
             .collect();
         let expired = total - retriable.len();
+        eprintln!(
+            "DBG rebuffer total={} expired={} buffered_len_after_recheck_start",
+            total, expired
+        );
         if expired > 0 {
             self.dropped_publications.fetch_add(
                 u64::try_from(expired).unwrap_or(u64::MAX),
@@ -438,6 +451,11 @@ impl PublishBuffer {
             .unwrap_or_default();
         match self.client.publish_batch(requests).await {
             Ok(outcomes) => {
+                eprintln!(
+                    "DBG drain Ok outcomes={} buffered_now={}",
+                    outcomes.len(),
+                    self.buffered_len()
+                );
                 for outcome in outcomes {
                     if let PublishOutcome::Returned { message_id, reply } = outcome {
                         self.record_error(PendingPublishError {
@@ -452,6 +470,11 @@ impl PublishBuffer {
                 }
             }
             Err(error) => {
+                eprintln!(
+                    "DBG drain Err kind={:?} buffered_now={}",
+                    error.kind(),
+                    self.buffered_len()
+                );
                 if matches!(error.kind(), ClientErrorKind::Closed) {
                     self.dropped_publications.fetch_add(
                         u64::try_from(publishes.len()).unwrap_or(u64::MAX),

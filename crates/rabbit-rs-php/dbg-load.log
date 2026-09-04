@@ -1,0 +1,705 @@
+DBG take len=2
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=64
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=128
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=193
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=2 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=67
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=106
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=170
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=235
+DBG drain Err kind=Backpressure buffered_now=1
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=69
+DBG rebuffer total=193 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=262
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=326
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=390
+DBG rebuffer total=67 expired=0 buffered_len_after_recheck_start
+DBG take len=391
+DBG drain Err kind=Backpressure buffered_now=67
+DBG rebuffer total=235 expired=0 buffered_len_after_recheck_start
+DBG take len=303
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=391 expired=0 buffered_len_after_recheck_start
+DBG take len=392
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=303 expired=0 buffered_len_after_recheck_start
+DBG take len=304
+DBG drain Err kind=Backpressure buffered_now=40
+DBG rebuffer total=392 expired=0 buffered_len_after_recheck_start
+DBG take len=442
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=304 expired=0 buffered_len_after_recheck_start
+DBG take len=305
+DBG drain Err kind=Backpressure buffered_now=8
+DBG rebuffer total=442 expired=0 buffered_len_after_recheck_start
+DBG take len=459
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=305 expired=0 buffered_len_after_recheck_start
+DBG take len=306
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=459 expired=0 buffered_len_after_recheck_start
+DBG take len=467
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=1
+DBG rebuffer total=306 expired=0 buffered_len_after_recheck_start
+DBG take len=369
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=40
+DBG rebuffer total=467 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=467
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=64
+DBG take len=532
+DBG drain Err kind=Backpressure buffered_now=16
+DBG rebuffer total=369 expired=0 buffered_len_after_recheck_start
+DBG take len=400
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=1
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=69
+DBG drain Err kind=Backpressure buffered_now=25
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=95
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=532 expired=0 buffered_len_after_recheck_start
+DBG take len=533
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=400 expired=0 buffered_len_after_recheck_start
+DBG take len=401
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=69 expired=0 buffered_len_after_recheck_start
+DBG take len=74
+DBG drain Err kind=Backpressure buffered_now=45
+DBG rebuffer total=95 expired=0 buffered_len_after_recheck_start
+DBG take len=146
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=533 expired=0 buffered_len_after_recheck_start
+DBG take len=534
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=401 expired=0 buffered_len_after_recheck_start
+DBG take len=402
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=67
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=131
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=196
+DBG drain Err kind=Backpressure buffered_now=16
+DBG rebuffer total=74 expired=0 buffered_len_after_recheck_start
+DBG take len=94
+DBG drain Err kind=Backpressure buffered_now=11
+DBG rebuffer total=146 expired=0 buffered_len_after_recheck_start
+DBG take len=163
+DBG drain Err kind=Backpressure buffered_now=3
+DBG rebuffer total=534 expired=0 buffered_len_after_recheck_start
+DBG take len=541
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=402 expired=0 buffered_len_after_recheck_start
+DBG take len=412
+DBG drain Err kind=Backpressure buffered_now=19
+DBG rebuffer total=196 expired=0 buffered_len_after_recheck_start
+DBG take len=220
+DBG drain Err kind=Backpressure buffered_now=16
+DBG rebuffer total=94 expired=0 buffered_len_after_recheck_start
+DBG take len=116
+DBG drain Err kind=Backpressure buffered_now=17
+DBG rebuffer total=163 expired=0 buffered_len_after_recheck_start
+DBG take len=187
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=541 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=541
+DBG rebuffer total=412 expired=0 buffered_len_after_recheck_start
+DBG take len=542
+DBG drain Err kind=Backpressure buffered_now=412
+DBG rebuffer total=220 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=632
+DBG rebuffer total=116 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=748
+DBG rebuffer total=187 expired=0 buffered_len_after_recheck_start
+DBG take len=936
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=542 expired=0 buffered_len_after_recheck_start
+DBG take len=543
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=54
+DBG rebuffer total=936 expired=0 buffered_len_after_recheck_start
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=936
+DBG rebuffer total=543 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=1479
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=1544
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=2
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=67
+DBG drain Err kind=Backpressure buffered_now=28
+DBG rebuffer total=1544 expired=0 buffered_len_after_recheck_start
+DBG take len=1600
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=65
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=129
+DBG rebuffer total=67 expired=0 buffered_len_after_recheck_start
+DBG take len=197
+DBG take len=40
+DBG drain Err kind=Backpressure buffered_now=58
+DBG take len=64
+DBG rebuffer total=1600 expired=0 buffered_len_after_recheck_start
+DBG take len=1604
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=197 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=197
+DBG rebuffer total=40 expired=0 buffered_len_after_recheck_start
+DBG take len=238
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=85
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=54
+DBG take len=64
+DBG rebuffer total=1604 expired=0 buffered_len_after_recheck_start
+DBG take len=1637
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=238 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=238
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=302
+DBG rebuffer total=85 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=387
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=452
+DBG drain Err kind=Backpressure buffered_now=16
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=85
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=64
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=129
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=1637 expired=0 buffered_len_after_recheck_start
+DBG take len=1649
+DBG drain Err kind=Backpressure buffered_now=24
+DBG rebuffer total=452 expired=0 buffered_len_after_recheck_start
+DBG take len=483
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=85 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=85
+DBG rebuffer total=129 expired=0 buffered_len_after_recheck_start
+DBG take len=215
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=22
+DBG rebuffer total=1649 expired=0 buffered_len_after_recheck_start
+DBG take len=1673
+DBG drain Err kind=Backpressure buffered_now=56
+DBG rebuffer total=483 expired=0 buffered_len_after_recheck_start
+DBG take len=546
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=215 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=215
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG take len=216
+DBG drain Err kind=Backpressure buffered_now=65
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG take len=131
+DBG drain Err kind=Backpressure buffered_now=22
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=87
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=1673 expired=0 buffered_len_after_recheck_start
+DBG take len=1674
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=546 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=546
+DBG rebuffer total=216 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=762
+DBG rebuffer total=131 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=893
+DBG rebuffer total=87 expired=0 buffered_len_after_recheck_start
+DBG take len=981
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=65
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=129
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=194
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=2
+DBG rebuffer total=1674 expired=0 buffered_len_after_recheck_start
+DBG take len=1677
+DBG drain Err kind=Backpressure buffered_now=5
+DBG rebuffer total=981 expired=0 buffered_len_after_recheck_start
+DBG take len=995
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=194 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=194
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=259
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=324
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=22
+DBG rebuffer total=1677 expired=0 buffered_len_after_recheck_start
+DBG take len=1705
+DBG drain Err kind=Backpressure buffered_now=27
+DBG rebuffer total=995 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=1032
+DBG take len=1033
+DBG rebuffer total=324 expired=0 buffered_len_after_recheck_start
+DBG take len=383
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG drain Err kind=Backpressure buffered_now=39
+DBG rebuffer total=1705 expired=0 buffered_len_after_recheck_start
+DBG take len=1747
+DBG drain Err kind=Backpressure buffered_now=10
+DBG rebuffer total=1033 expired=0 buffered_len_after_recheck_start
+DBG take len=1052
+DBG drain Err kind=Backpressure buffered_now=1
+DBG rebuffer total=383 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=389
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG take len=455
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=1747 expired=0 buffered_len_after_recheck_start
+DBG take len=1748
+DBG drain Err kind=Backpressure buffered_now=53
+DBG rebuffer total=1052 expired=0 buffered_len_after_recheck_start
+DBG take len=1115
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=455 expired=0 buffered_len_after_recheck_start
+DBG take len=456
+DBG drain Err kind=Backpressure buffered_now=34
+DBG rebuffer total=1748 expired=0 buffered_len_after_recheck_start
+DBG take len=1786
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=1115 expired=0 buffered_len_after_recheck_start
+DBG take len=1118
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=456 expired=0 buffered_len_after_recheck_start
+DBG take len=457
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=42
+DBG rebuffer total=1786 expired=0 buffered_len_after_recheck_start
+DBG take len=1843
+DBG take len=54
+DBG drain Err kind=Backpressure buffered_now=22
+DBG rebuffer total=1118 expired=0 buffered_len_after_recheck_start
+DBG take len=1145
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=457 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=457
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=522
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=1843 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=1843
+DBG rebuffer total=54 expired=0 buffered_len_after_recheck_start
+DBG take len=1898
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=1145 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=1145
+DBG rebuffer total=522 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=522
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=587
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=1146
+DBG drain Err kind=Backpressure buffered_now=651
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=715
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=779
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=844
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=23
+DBG rebuffer total=1898 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=1955
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2020
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=14
+DBG rebuffer total=1146 expired=0 buffered_len_after_recheck_start
+DBG take len=1162
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=844 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=844
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=908
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=972
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=1037
+DBG drain Err kind=Backpressure buffered_now=2
+DBG rebuffer total=2020 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2032
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2097
+DBG drain Err kind=Backpressure buffered_now=5
+DBG rebuffer total=1162 expired=0 buffered_len_after_recheck_start
+DBG take len=1178
+DBG drain Err kind=Backpressure buffered_now=13
+DBG rebuffer total=1037 expired=0 buffered_len_after_recheck_start
+DBG take len=1055
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=18
+DBG rebuffer total=2097 expired=0 buffered_len_after_recheck_start
+DBG take len=2132
+DBG drain Err kind=Backpressure buffered_now=59
+DBG take len=64
+DBG rebuffer total=1178 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=1178
+DBG rebuffer total=1055 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2233
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2297
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2361
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2425
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2489
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2554
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=2132 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2132
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2197
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=2554 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2554
+DBG rebuffer total=2197 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2197
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2261
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2325
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2555
+DBG drain Err kind=Backpressure buffered_now=2389
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2453
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2517
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2582
+DBG take len=64
+DBG take len=35
+DBG drain Err kind=Backpressure buffered_now=2
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=72
+DBG take len=64
+DBG take len=64
+DBG take len=51
+DBG drain Err kind=Backpressure buffered_now=52
+DBG take len=64
+DBG rebuffer total=2555 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2555
+DBG take len=2556
+DBG rebuffer total=2582 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2582
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2646
+DBG rebuffer total=35 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2681
+DBG rebuffer total=72 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2753
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2817
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2881
+DBG rebuffer total=51 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2932
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2997
+DBG take len=64
+DBG take len=64
+DBG take len=55
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=51
+DBG rebuffer total=2556 expired=0 buffered_len_after_recheck_start
+DBG take len=2608
+DBG take len=42
+DBG take len=32
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=2997 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3014
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3078
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3142
+DBG rebuffer total=55 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3197
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=3262
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=2608 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2622
+DBG rebuffer total=42 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2664
+DBG rebuffer total=32 expired=0 buffered_len_after_recheck_start
+DBG take len=2697
+DBG take len=64
+DBG take len=51
+DBG take len=34
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=30
+DBG rebuffer total=3262 expired=0 buffered_len_after_recheck_start
+DBG take len=3301
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=54
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=2697 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2697
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2761
+DBG rebuffer total=51 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2812
+DBG rebuffer total=34 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2846
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2911
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3301 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3301
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3366
+DBG rebuffer total=54 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3420
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=3485
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=25
+DBG rebuffer total=2911 expired=0 buffered_len_after_recheck_start
+DBG take len=52
+DBG drain Err kind=Backpressure buffered_now=2911
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=2975
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=64
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=128
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=2976
+DBG take len=193
+DBG take len=59
+DBG take len=15
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3485 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3485
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3549
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3613
+DBG rebuffer total=52 expired=0 buffered_len_after_recheck_start
+DBG take len=3666
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=23
+DBG rebuffer total=2976 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3001
+DBG rebuffer total=193 expired=0 buffered_len_after_recheck_start
+DBG take len=3195
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=59 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=59
+DBG rebuffer total=15 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=74
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=139
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3666 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3666
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=3731
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3195 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3195
+DBG rebuffer total=139 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3334
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=3399
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=64
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=129
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=64
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=65
+DBG take len=65
+DBG take len=64
+DBG take len=59
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3731 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3731
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=3796
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3399 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3399
+DBG rebuffer total=129 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3528
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3593
+DBG rebuffer total=65 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3658
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3722
+DBG rebuffer total=59 expired=0 buffered_len_after_recheck_start
+DBG take len=3723
+DBG drain Err kind=Backpressure buffered_now=59
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=124
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3796 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3796
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG take len=3861
+DBG take len=52
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=3723 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3723
+DBG rebuffer total=124 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3847
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3911
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=3975
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=4039
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=4103
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG overflow-check entered buffered_len=4167
+DBG drain Err kind=Backpressure buffered_now=4167
+DBG rebuffer total=3861 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=8028
+DBG rebuffer total=52 expired=0 buffered_len_after_recheck_start
+DBG take len=8080
+DBG rebuffer total=8080 expired=0 buffered_len_after_recheck_start
+DBG overflow recheck buffered_len=8080
+DBG take len=8080
+DBG rebuffer total=8080 expired=0 buffered_len_after_recheck_start
+DBG take len=64
+DBG take len=58
+DBG take len=64
+DBG drain Err kind=Backpressure buffered_now=23
+DBG rebuffer total=58 expired=0 buffered_len_after_recheck_start
+DBG take len=87
+DBG drain Err kind=Backpressure buffered_now=0
+DBG rebuffer total=64 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=64
+DBG rebuffer total=87 expired=0 buffered_len_after_recheck_start
+DBG take len=151
+DBG rebuffer total=151 expired=0 buffered_len_after_recheck_start
+DBG drain Err kind=Backpressure buffered_now=151
+DBG take len=8080
+DBG take len=151

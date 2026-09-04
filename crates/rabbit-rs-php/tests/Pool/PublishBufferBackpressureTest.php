@@ -25,9 +25,12 @@ describe('publish buffer backpressure', function () {
         $message = pubMessage('backpressure', str_repeat('x', 64), [], 30000);
 
         $refused = null;
+        $sightings = [];
+        $okCount = 0;
         for ($i = 0; $i < 16384; $i++) {
             try {
                 $pool->publish($message);
+                $okCount++;
             } catch (\Goopil\RabbitRs\BackpressureException $exception) {
                 if (str_contains($exception->getMessage(), 'publish buffer is full')) {
                     $refused = $exception;
@@ -35,12 +38,31 @@ describe('publish buffer backpressure', function () {
                 }
                 // Surfaced drain backpressure: the batch could not be
                 // attempted and was re-buffered.
-            } catch (\Goopil\RabbitRs\Exception) {
+                $key = str_contains($exception->getMessage(), 'saturated')
+                    ? 'saturated'
+                    : 'other-backpressure: '.substr($exception->getMessage(), 0, 80);
+                $sightings[$key] = ($sightings[$key] ?? 0) + 1;
+            } catch (\Goopil\RabbitRs\Exception $exception) {
                 // A surfaced terminal outcome or drain failure: the
                 // publication was re-buffered with its message_id.
+                $key = $exception::class.': '.substr($exception->getMessage(), 0, 80);
+                $sightings[$key] = ($sightings[$key] ?? 0) + 1;
             }
         }
 
+        if ($refused === null) {
+            fwrite(STDERR, "DIAG ok={$okCount} sightings=".json_encode($sightings)."\n");
+            try {
+                fwrite(STDERR, 'DIAG stats='.json_encode($pool->stats()->getArrayCopy())."\n");
+            } catch (\Throwable $throwable) {
+                fwrite(STDERR, 'DIAG stats threw: '.$throwable->getMessage()."\n");
+            }
+            try {
+                fwrite(STDERR, 'DIAG drainErrors='.json_encode($pool->drainErrors())."\n");
+            } catch (\Throwable $throwable) {
+                fwrite(STDERR, 'DIAG drainErrors threw: '.$throwable->getMessage()."\n");
+            }
+        }
         expect($refused)->not->toBeNull('full publish buffer must raise backpressure');
         // Already-accepted messages are never dropped: the caller is told to
         // retry later.
