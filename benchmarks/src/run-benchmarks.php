@@ -11,6 +11,7 @@ use Bench\AbstractBenchmark;
 use Bench\Budget;
 use Bench\Config;
 use Bench\Drivers;
+use Bench\ResultMeta;
 use Bench\ScenarioMode;
 
 /**
@@ -137,7 +138,10 @@ foreach ($scenarios as $scenarioName => $scenarioMode) {
             $stats = $benchmark->runBenchmark();
             $benchmark->tearDown();
 
-            $allResults[$scenarioName . '/' . $driverName] = $stats;
+            $allResults[$scenarioName . '/' . $driverName] = $stats + [
+                'config' => ResultMeta::config($payloadBytes ?? Config::MESSAGE_PAYLOAD_BYTES),
+                'meta' => ResultMeta::meta(),
+            ];
 
             printf("  Publish: avg %.0f msg/s (min %.0f, max %.0f)\n",
                 $stats['publish']['avg_rate'], $stats['publish']['min_rate'], $stats['publish']['max_rate']);

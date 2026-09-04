@@ -19,6 +19,24 @@ abstract class AbstractBenchmark
         $this->scenarioMode = $mode;
     }
 
+    /**
+     * Publisher safety mode the run executed under (e.g. 'safe', 'blind').
+     * Null when the driver has no such concept.
+     */
+    public function safetyMode(): ?string
+    {
+        return null;
+    }
+
+    /**
+     * Broker connection reconnects the driver performed during the run.
+     * Null when the driver cannot surface the counter.
+     */
+    public function reconnects(): ?int
+    {
+        return null;
+    }
+
     abstract public function getName(): string;
     abstract public function setUp(): void;
     abstract public function tearDown(): void;
@@ -167,6 +185,11 @@ abstract class AbstractBenchmark
 
         return [
             'name' => $this->getName(),
+            'safety' => $this->safetyMode(),
+            'reconnects' => $this->reconnects(),
+            // This harness has no stall-recovery path: a stalled consumer ends
+            // the round early and shows up as losses, never as a recovery.
+            'stall_recoveries' => 0,
             'publish' => [
                 'avg_time' => $avg($publishTimes),
                 'min_time' => min($publishTimes),
