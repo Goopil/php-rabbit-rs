@@ -239,6 +239,21 @@ with the feature, never in a later docs pass.
   mutexes, and a concurrent `take()` could subtract bytes not yet credited
   (`attempt to subtract with overflow` → poisoned mutexes → exit 134) —
   both now mutate under one mutex.
+- **Round J delivered (2026-09-04)** — PRs #136/#137/#138, trackers #127–#129
+  complete. J1: full benchmark metric contract (ResultMeta masked config
+  envelope; reconnects/duplicates/latency_ms archived by every suite; 6 Pest
+  pins) and workload-scoped framing with honest gap notes on curated archives
+  (no historical JSON rewritten). J2: PIE install matrix widened to 5 cells
+  (glibc x86_64 PHP 8.4+8.5 runners; glibc arm64, musl x86_64/arm64 PHP 8.4
+  digest-pinned docker cells) plus a new upgrade→rollback gate, gated behind
+  update-homebrew-formula + split-laravel; the audit job also exposed a
+  redundant `version` stanza in the generated formula (generator now strips
+  it; tap fixed out-of-band). J3: root README repositioned ("native Rust
+  RabbitMQ transport for high-throughput, long-running PHP/Laravel workers")
+  with archived-number citations and a Limitations section. Residual:
+  `PublishBufferBackpressureTest` has an intermittent CI-only null-refusal
+  failure mode (#139, unrelated to the fixed mutex race; diagnostic
+  instrumentation kept in the test to capture the next occurrence).
 
 
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
@@ -288,6 +303,10 @@ deleted (runs fail loudly instead); soak + chaos green; quality gate
 `./scripts/check.sh` green.
 
 ## Round J — proof and packaging (P1, external review 2026-09-02)
+
+**DELIVERED 2026-09-04** (PRs #136/#137/#138; #127–#129 all closed — J1 and
+J3 CI-green first try, J2 needed the Homebrew formula fix + one PHPT rerun).
+Scope kept as record:
 
 Motivation: external review — turn the benchmarks into product proof and
 make installation boring before 1.0. Three file-disjoint tracks, trackers
@@ -685,9 +704,9 @@ optimize confirms → prove results → ship 1.0**):
 1. ~~Round I (#126, P0)~~ — **delivered 2026-09-03** (PRs #132/#133).
 2. ~~Round D (#41, P0, promoted)~~ — **delivered 2026-09-04** (PR #135;
    pipelined safe flush, ×3.64 to blind parity).
-3. **Round J (#127–#129, P1)** — benchmark proof, installation matrix,
-   README repositioning (file-disjoint tracks; #128 has external CI
-   latency and can start in parallel).
+3. ~~Round J (#127–#129, P1)~~ — **delivered 2026-09-04** (PRs #136/#137/#138;
+   benchmark metric contract + workload-scoped framing, PIE install matrix +
+   upgrade/rollback gate, README repositioning).
 4. ~~Round G exit~~ — **complete 2026-09-03** (#82 ops sweep landed as PR
    #131, 12 commits; F2/F3 leftovers #53, #58, #60 fill capacity).
 5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130); **tag v0.1.0 cut
@@ -703,8 +722,12 @@ Conflict points between tracks (rebase or sequence): #66 ↔ #71 share
 `conversion.rs`.
 
 1.0 gate (agreed 2026-08-31, extended 2026-09-02 with the review's DoD):
-**1.0 = Round G exit + Round H landed + Round I/J delivered.** The
-Round G exit criterion is the audit's P0/P1 list at zero, with #69 proving
+**1.0 = Round G exit + Round H landed + Round I/J delivered.** All four are
+complete as of 2026-09-04 (Round G exit PR #131, Round H PR #130 + tag
+v0.1.0, Round I PRs #132/#133, Round J PRs #136/#137/#138); the DoD below is
+satisfied modulo the tracked follow-up #139 (intermittent CI-only test
+flake, diagnostic in place). The
+Round G exit criterion was the audit's P0/P1 list at zero, with #69 proving
 fixes against a real broker; Round H (v0.1.0, connection-first config) ships
 the last breaking change before the tag. The review's 1.0 Definition of
 Done, on top of that gate:
