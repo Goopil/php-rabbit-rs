@@ -299,20 +299,60 @@ jobs:
           echo "OK: 10 provenance + 10 SBOM attestations verified"
 
   verify-pie-install:
-    name: PIE install end-to-end (glibc NTS x86_64 PHP 8.4)
+    name: PIE install end-to-end (${{ matrix.label }})
     needs: [publish-release]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Install-path validation per platform/libc combination. All 8
+          # Linux build cells are compiled and smoke-tested in build-linux;
+          # these jobs prove that a real `pie install` selects and loads the
+          # matching pre-packaged binary from the published release. The
+          # primary glibc x86_64 combination is exercised on both PHP
+          # versions; every other platform/libc combination is exercised on
+          # PHP 8.4 (its build cell already covers PHP 8.5).
+          - label: Linux glibc x86_64 PHP 8.4
+            runner: ubuntu-latest
+            php: "8.4"
+            docker_image: ""
+          - label: Linux glibc x86_64 PHP 8.5
+            runner: ubuntu-latest
+            php: "8.5"
+            docker_image: ""
+          - label: Linux glibc arm64 PHP 8.4
+            runner: ubuntu-24.04-arm
+            php: ""
+            # Digest-pinned multi-arch index, same pin as build-linux
+            # (8.4-glibc); on the arm runner Docker resolves its arm64
+            # variant, so PIE installs the glibc arm64 artifact.
+            docker_image: php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc
+          - label: Linux musl x86_64 PHP 8.4
+            runner: ubuntu-latest
+            php: ""
+            # Digest-pinned multi-arch index, same pin as build-linux
+            # (8.4-musl); the container PHP is musl-linked, so PIE must
+            # resolve the musl artifact.
+            docker_image: php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19
+          - label: Linux musl arm64 PHP 8.4
+            runner: ubuntu-24.04-arm
+            php: ""
+            # Same digest-pinned index as the musl x86_64 cell.
+            docker_image: php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19
     steps:
-      - name: Setup PHP 8.4
+      - name: Setup PHP ${{ matrix.php }}
+        if: matrix.docker_image == ''
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
         with:
-          php-version: "8.4"
+          php-version: ${{ matrix.php }}
           coverage: none
           extensions: json
 
-      - name: Install PIE
+      - name: Install PIE (runner)
+        if: matrix.docker_image == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -329,11 +369,13 @@ jobs:
           pie --version
 
       - name: Authenticate Composer for the GitHub API (release access)
+        if: matrix.docker_image == ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
 
-      - name: Install the published release via PIE
+      - name: Install the published release via PIE (runner)
+        if: matrix.docker_image == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -342,7 +384,8 @@ jobs:
           sudo -E pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
           sudo -E pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
 
-      - name: Smoke test installed extension
+      - name: Smoke test installed extension (runner)
+        if: matrix.docker_image == ''
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           php -m | grep -qx "rabbit_rs" \
@@ -355,6 +398,137 @@ jobs:
             }
             echo 'OK: rabbit_rs ' . \$v . ' installed via PIE from the published release' . PHP_EOL;
           "
+
+      - name: Install the published release via PIE (pinned PHP image)
+        if: matrix.docker_image != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # The GitHub token reaches PIE through Composer's documented
+          # COMPOSER_AUTH_JSON mechanism, composed with jq so the token
+          # never appears in the workflow file or in a command line.
+          COMPOSER_AUTH_JSON="$(jq -cn --arg t "${GITHUB_TOKEN}" '{"github-oauth":{"github.com":$t}}')"
+          export COMPOSER_AUTH_JSON
+          docker run --rm \
+            -e GITHUB_REF_NAME \
+            -e GITHUB_REPOSITORY \
+            -e COMPOSER_AUTH_JSON \
+            "${{ matrix.docker_image }}" \
+            sh -c '
+              set -e
+              if command -v apk >/dev/null 2>&1; then
+                apk add --no-cache curl coreutils
+              else
+                apt-get update -qq && apt-get install -y -qq curl
+              fi
+              # Same pinned PIE phar as the runner cells; its provenance is
+              # attestation-verified there, so the sha256 pin suffices here.
+              curl --proto "=https" -fL --output /tmp/pie.phar https://github.com/php/pie/releases/download/1.4.10/pie.phar
+              echo "b88792235c8e80be568436d4cb043b49fd1869c89b64e83d23e2882ae19d70a8  /tmp/pie.phar" | sha256sum --strict --check -
+              install -m 0755 /tmp/pie.phar /usr/local/bin/pie
+              pie --version
+              pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
+              pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
+              php -m | grep -qx rabbit_rs \
+                || { echo "::error::rabbit_rs is not loaded after pie install"; php -m; exit 1; }
+              EXPECTED="${GITHUB_REF_NAME#v}"
+              INSTALLED="$(php --ri rabbit_rs | awk "/^Version/{print \$3}")"
+              if [ "${INSTALLED}" != "${EXPECTED}" ]; then
+                echo "::error::version mismatch - installed ${INSTALLED}, expected ${EXPECTED}"
+                exit 1
+              fi
+              echo "OK: rabbit_rs ${INSTALLED} installed via PIE from the published release"
+            '
+
+  verify-pie-upgrade-rollback:
+    name: PIE upgrade + rollback (glibc x86_64 PHP 8.4)
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Install PIE
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Same pinned PIE release as verify-pie-install: tagged release,
+          # sha256-verified, then provenance-checked via attestations.
+          # Bump deliberately: update the tag, recompute the checksum
+          # (`shasum -a 256 pie.phar` on the tagged asset), and confirm
+          # `gh attestation verify --owner php` still passes.
+          curl --proto "=https" -fL --output /tmp/pie.phar https://github.com/php/pie/releases/download/1.4.10/pie.phar
+          echo "b88792235c8e80be568436d4cb043b49fd1869c89b64e83d23e2882ae19d70a8  /tmp/pie.phar" | sha256sum --strict --check -
+          gh attestation verify --owner php /tmp/pie.phar
+          sudo mv /tmp/pie.phar /usr/local/bin/pie
+          sudo chmod +x /usr/local/bin/pie
+          pie --version
+
+      - name: Authenticate Composer for the GitHub API (release access)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
+
+      - name: Resolve the previous published release
+        id: previous
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # Newest non-draft, non-prerelease release that is not this tag.
+          # The release is published by now, so contents:read is enough to
+          # see it; a missing baseline fails the release loudly instead of
+          # silently skipping the upgrade/rollback gate.
+          PREVIOUS="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
+            --jq '[.[] | select(.draft == false and .prerelease == false and .tag_name != "'"${GITHUB_REF_NAME}"'")][0].tag_name' 2>/dev/null || true)"
+          if [[ -z "${PREVIOUS}" ]]; then
+            echo "::error::No previous published release found - the PIE upgrade/rollback gate needs at least one earlier release to upgrade from."
+            exit 1
+          fi
+          echo "Baseline for the upgrade test: ${PREVIOUS} (target ${GITHUB_REF_NAME})"
+          echo "tag=${PREVIOUS}" >> "$GITHUB_OUTPUT"
+
+      - name: Install previous, upgrade to new, roll back
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS: ${{ steps.previous.outputs.tag }}
+        run: |
+          set -e
+          assert_version() {
+            local expected="${1#v}"
+            local installed
+            installed="$(php --ri rabbit_rs | awk "/^Version/{print \$3}")"
+            if [ "${installed}" != "${expected}" ]; then
+              echo "::error::rabbit_rs version mismatch - installed ${installed}, expected ${expected}"
+              php --ri rabbit_rs
+              exit 1
+            fi
+            echo "OK: rabbit_rs ${installed} (expected ${expected})"
+          }
+
+          sudo -E pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
+
+          echo "==> Baseline: pie install ${PREVIOUS}"
+          sudo -E pie install --no-interaction "goopil/rabbit-rs-native:${PREVIOUS}"
+          assert_version "${PREVIOUS}"
+
+          echo "==> Upgrade: pie install ${GITHUB_REF_NAME}"
+          sudo -E pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
+          assert_version "${GITHUB_REF_NAME}"
+
+          echo "==> Rollback: pie install ${PREVIOUS}"
+          sudo -E pie install --no-interaction "goopil/rabbit-rs-native:${PREVIOUS}"
+          assert_version "${PREVIOUS}"
+
+          echo "OK: PIE upgrade and rollback validated (${PREVIOUS} -> ${GITHUB_REF_NAME} -> ${PREVIOUS})"
 
   publish-release:
     needs: [create-release, build-linux, build-macos, verify-release]
@@ -375,7 +549,7 @@ jobs:
         run: ./scripts/trigger-packagist-update.sh --repository https://github.com/Goopil/rabbit-rs
 
   update-homebrew-formula:
-    needs: [create-release, publish-release, verify-pie-install]
+    needs: [create-release, publish-release, verify-pie-install, verify-pie-upgrade-rollback]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -408,7 +582,7 @@ jobs:
         run: echo "::notice::MIRROR_TOKEN not configured -- Homebrew formula update skipped."
 
   split-laravel:
-    needs: [publish-release, verify-pie-install]
+    needs: [publish-release, verify-pie-install, verify-pie-upgrade-rollback]
     runs-on: ubuntu-latest
     permissions:
       contents: read

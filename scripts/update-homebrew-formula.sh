@@ -151,7 +151,11 @@ formula_path = "${TAP_DIR}/${FORMULA_PATH}"
 
 content = File.read(formula_path)
 
-content.gsub!(/^  version ".*"/, "  version \"#{version}\"")
+# The stable URL carries the version (v#{version} segment), so an explicit
+# version stanza is redundant and fails `brew audit --strict` ("Stable:
+# version X is redundant with version scanned from URL"). Remove it —
+# Homebrew derives the version from the URL.
+content.gsub!(/^  version ".*"\n/, "")
 
 url84 = "https://github.com/Goopil/rabbit-rs/releases/download/v#{version}/php_rabbit_rs-v#{version}_php8.4-arm64-darwin-nts.zip"
 content.gsub!(/^  url ".*"/, "  url \"#{url84}\"")
