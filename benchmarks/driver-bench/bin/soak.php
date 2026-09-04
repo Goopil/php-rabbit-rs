@@ -65,6 +65,23 @@ function failLoudly(string $message): never
     exit(1);
 }
 
+/**
+ * Config echo with credential-like values masked (never expose secrets).
+ */
+function maskCredentials(array $config): array
+{
+    $masked = [];
+    foreach ($config as $key => $value) {
+        if (is_string($key) && preg_match('/password|pass|secret|token|credential|user|username/i', $key) === 1) {
+            $masked[$key] = '***';
+            continue;
+        }
+        $masked[$key] = is_array($value) ? maskCredentials($value) : $value;
+    }
+
+    return $masked;
+}
+
 // ---------------------------------------------------------------------------
 // Toxiproxy (fingerprint-checked, private proxy, deleted on shutdown)
 // ---------------------------------------------------------------------------
@@ -457,6 +474,13 @@ $result = [
     'null_streak_max' => $nullStreakMax,
     'pop_errors' => $popErrors,
     'push_retries' => $pushRetries,
+    'config' => maskCredentials(array_merge($config, ['rabbit_rs_global' => (array) config('rabbit-rs', [])])),
+    'meta' => [
+        'php' => PHP_VERSION,
+        'sapi' => PHP_SAPI,
+        'extensions' => ['rabbit_rs' => phpversion('rabbit_rs') ?: false],
+        'os' => PHP_OS.' '.php_uname('r'),
+    ],
 ];
 
 $json = json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);

@@ -89,6 +89,43 @@ End-to-end publish-to-consume latency is measured by embedding `hrtime(true)` (n
 
 Results are printed to stdout and written to `results/benchmark-results.json`.
 
+### Published result metric contract (Round J, #127)
+
+Every published result set — the transport suite (this `results/benchmark-results.json`, copied per run into an archive), the driver-level suite (`driver-bench/bin/bench.php`), and the soak harness (`driver-bench/bin/soak.php`) — surfaces the full metric set next to its numbers:
+
+| Metric | Transport suite | driver-bench | soak |
+|---|---|---|---|
+| Throughput (min–max) | avg/min/max publish + consume rate | avg/min/max rate + per-round detail | n/a (continuity harness) |
+| Latency p50/p95/p99 | end-to-end publish→consume | per-op (`latency_ms.source` names the call) | n/a |
+| Losses | `losses` | `losses` + `late_arrivals_after_drain` | `missing` |
+| Duplicates | `duplicates` | worker: job-id dedup; dispatch: `null` (nothing consumed) | `duplicates` |
+| Reconnects | `reconnects` (native pool `reconnects_total`; `null` for drivers without a counter) | `reconnects_total` (rabbit-rs; `null` elsewhere) | `reconnects_total` |
+| Stall recoveries | `stall_recoveries` (0 by construction: stalls fail the run loudly) | `stall_recoveries` (0 by construction since Round I) | null streaks fail loudly |
+| Safety mode | `safety` (safe/blind per scenario) | masked config echo (`safety`) | fills are confirmed |
+| RabbitMQ + PHP configuration | `config` + `meta` (credentials masked) | masked config echo + `meta` | run parameters |
+
+`null` always means "not measured for this driver", never "zero".
+
+Archives recorded before Round J do not carry every field above (transport JSONs lack `safety`/`reconnects`/`config`/`meta`; driver-bench JSONs lack `duplicates`/`latency_ms`/`reconnects_total`). The tooling emits them from Round J on; the curated archives under `results/` are evidence and are never backfilled — each archive README notes its own gaps.
+
+### Delivery semantics
+
+Read every number with the delivery contract in mind:
+
+- **At-least-once**: silent loss is unacceptable; duplicates are permitted, identifiable, and measured in every result set.
+- The publisher replay buffer is **process-memory only**: unconfirmed publications survive connection recovery inside the same PHP process and are replayed with the same `message_id`, but they do **not** survive a PHP process crash.
+- Cross-process durability requires an **external outbox**. No benchmark result constitutes a crash-durability guarantee.
+
+### Reading and quoting results — workload-scoped framing only
+
+Numbers are only comparable within one workload, one configuration, and one session. Quote them like this:
+
+> On this workload (unit `Queue::push`, 1024 B Laravel envelope), with this configuration and these guarantees (safe mode: confirms + mandatory), rabbit-rs reaches X ops/s against Y ops/s for `<driver>` (same session, interleaved runs).
+
+- State the driver semantics/configuration differences next to the numbers (confirms on/off, pop mechanism, prefetch, queue type) — the fairness tables in `driver-bench/README.md` list them.
+- Compare only same-session interleaved runs; cross-session absolute deltas are session factors, not code signals.
+- No absolute "N× faster" claims: quote the two throughput numbers against each other instead.
+
 ### Directory structure
 
 ```
@@ -97,6 +134,7 @@ benchmarks/
 ├── composer.json
 ├── docker-compose.yml       # Standalone RabbitMQ (for CI, uses rabbit_rs/rabbit_rs_lab)
 ├── run-benchmarks.sh         # Shell wrapper
+├── driver-bench/              # Driver-level (Laravel queue API) benchmark app: bench.php + soak.php
 ├── baselines/
 │   └── smoke-budget.json     # Budget thresholds
 ├── results/                  # Output directory (gitignored)

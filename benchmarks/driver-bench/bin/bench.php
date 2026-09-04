@@ -23,11 +23,18 @@ declare(strict_types=1);
 | Exit code 0 only when no message was lost (worker: received == count,
 | queue empty afterwards; dispatch: every push resolved without error).
 |
+| Reliability/metric contract (Round J #127): every archived JSON surfaces
+| per-op latency p50/p95/p99 (`latency_ms`), duplicates (worker: distinct
+| job ids vs pops; dispatch: null — nothing is consumed), and the native
+| pool's reconnects_total (rabbit-rs only; null elsewhere).
+|
 | Usage:
 |   php bin/bench.php --connection=rabbit-rs --mode=dispatch --count=1000
 |   php bin/bench.php --connection=rabbitmq-amqplib --mode=worker --count=1000 --rounds=3
 */
 
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
+use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Queue\Queue as BaseQueue;
 
@@ -141,6 +148,9 @@ $opsTotal = 0;
 $timeTotal = 0.0;
 $losses = 0;
 $lateArrivals = 0;
+$duplicates = null;
+$opLatenciesMs = [];
+$metrics = ['seen' => [], 'duplicates' => 0, 'op_latencies_ms' => []];
 
 for ($round = 0; $round < $rounds; $round++) {
     if ($mode === 'worker') {
@@ -158,10 +168,14 @@ for ($round = 0; $round < $rounds; $round++) {
     $received = 0;
 
     if ($mode === 'worker') {
-        $received = drainUntilEmpty($queue, $queueName, $count);
+        $received = drainUntilEmpty($queue, $queueName, $count, metrics: $metrics);
+        $opLatenciesMs = [...$opLatenciesMs, ...$metrics['op_latencies_ms']];
+        $duplicates = ($duplicates ?? 0) + $metrics['duplicates'];
     } else {
         for ($i = 0; $i < $count; $i++) {
+            $opStart = hrtime(true);
             $queue->push('bench.noop', $payloadData, $queueName);
+            $opLatenciesMs[] = (hrtime(true) - $opStart) / 1e6;
         }
         $received = $count;
     }
@@ -229,6 +243,21 @@ if ($mode === 'worker') {
 $rates = array_map(static fn (array $r) => $r['rate_ops_s'] ?? 0.0, $roundsDetail);
 $rates = array_values(array_filter($rates, static fn ($r) => $r > 0.0));
 
+// Native pool reconnects (rabbit-rs only): read from the same factory the
+// connector uses, so the stats describe THIS run's pool. Other drivers do
+// not surface a reconnect counter (null — not measured, never a zero claim).
+$reconnects = null;
+if ($connection === 'rabbit-rs') {
+    try {
+        $compiled = ConnectionCompiler::compile($connection, $connectionConfig, (array) config('rabbit-rs', []));
+        $reconnects = $app->make(NativePoolFactory::class)
+            ->make($compiled['native'])
+            ->stats()['reconnects_total'] ?? null;
+    } catch (\Throwable) {
+        $reconnects = null;
+    }
+}
+
 $ok = ($mode === 'dispatch' || ($losses === 0)) && $lateArrivals === 0;
 
 $result = [
@@ -250,7 +279,15 @@ $result = [
     'min_rate_ops_s' => $rates !== [] ? round(min($rates), 2) : null,
     'max_rate_ops_s' => $rates !== [] ? round(max($rates), 2) : null,
     'losses' => $losses,
+    'duplicates' => $duplicates,
     'late_arrivals_after_drain' => $lateArrivals,
+    'reconnects_total' => $reconnects,
+    'latency_ms' => [
+        'source' => $mode === 'dispatch' ? 'Queue::push call' : 'pop+ack (delete) call',
+        'p50' => bench_percentile($opLatenciesMs, 0.50),
+        'p95' => bench_percentile($opLatenciesMs, 0.95),
+        'p99' => bench_percentile($opLatenciesMs, 0.99),
+    ],
     'rounds_detail' => $roundsDetail,
     'config' => $configEcho,
     'meta' => [
@@ -383,6 +420,10 @@ function drainAll(object $queue, string $queueName): int
  * ready is a core defect to root-cause, not a benchmark behavior to paper
  * over (Round I #126).
  *
+ * When $metrics is provided (by-ref), the measured drain also records the
+ * per-op pop+ack latency (ms) and duplicate deliveries via the job id
+ * (at-least-once redeliveries are counted, never collapsed).
+ *
  * @return int received (and acked) message count
  */
 function drainUntilEmpty(
@@ -390,6 +431,7 @@ function drainUntilEmpty(
     string $queueName,
     int $expected,
     ?int $nullCapOverride = null,
+    ?array &$metrics = null,
 ): int {
     $received = 0;
     $consecutiveNulls = 0;
@@ -397,6 +439,7 @@ function drainUntilEmpty(
     $deadline = hrtime(true) + 120_000_000_000; // 120 s wall guard
 
     while ($received < $expected) {
+        $opStart = hrtime(true);
         $job = $queue->pop($queueName);
 
         if ($job === null) {
@@ -427,9 +470,38 @@ function drainUntilEmpty(
         $consecutiveNulls = 0;
         $job->delete();
         $received++;
+
+        if ($metrics !== null) {
+            $metrics['op_latencies_ms'][] = (hrtime(true) - $opStart) / 1e6;
+
+            $jobId = (string) $job->getJobId();
+            if ($jobId !== '') {
+                if (isset($metrics['seen'][$jobId])) {
+                    $metrics['duplicates']++;
+                } else {
+                    $metrics['seen'][$jobId] = true;
+                }
+            }
+        }
     }
 
     return $received;
+}
+
+/**
+ * Latency percentile over per-op samples (ms); null when no ops were timed.
+ */
+function bench_percentile(array $latenciesMs, float $p): ?float
+{
+    if ($latenciesMs === []) {
+        return null;
+    }
+
+    $sorted = $latenciesMs;
+    sort($sorted);
+    $index = (int) floor($p * count($sorted));
+
+    return round($sorted[min($index, count($sorted) - 1)], 3);
 }
 
 /**

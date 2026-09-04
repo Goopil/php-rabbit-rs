@@ -9,8 +9,13 @@ Standalone minimal Laravel app that benchmarks the full Laravel queue API
 | `rabbitmq-amqplib`| `vladimir-yuldashev/laravel-queue-rabbitmq`    | php-amqplib (pure PHP) |
 | `rabbitmq-ext`    | `iamfarhad/laravel-rabbitmq`                   | `ext-amqp` (C)         |
 
-Phase A measured the raw transport; Phase E answers: does the ~3x publish
-gap survive once the framework layer is in front of it?
+Phase A measured the raw transport; Phase E asks what those publish differences
+become once the framework queue API sits in front of them — same workload,
+same lab broker, one driver per connection. All numbers below are
+workload-scoped: quote them as "on this workload, with this configuration and
+these guarantees, X reaches A ops/s against B" (see
+`benchmarks/README.md`, "Reading and quoting results"); no absolute
+"N× faster" claims are derived from them.
 
 ## Layout
 
@@ -99,8 +104,11 @@ exactly `count` popped+acked messages and an empty queue afterwards
 is reported as `late_arrivals_after_drain` and fails the run).
 
 Output is a single JSON object (stdout) in the style of the Phase A archives:
-avg/min/max rate, per-round detail, payload size, masked config echo, and
-environment metadata.
+avg/min/max rate, per-op latency p50/p95/p99 (`latency_ms`, with the measured
+call named in `latency_ms.source`), duplicates (worker cells; `null` in
+dispatch, which never consumes), the native pool's `reconnects_total`
+(rabbit-rs cells; `null` for drivers that do not surface a counter),
+per-round detail, payload size, masked config echo, and environment metadata.
 
 Never run two bench runs at the same time: the lab broker is shared, and
 concurrent load (memory pressure / throttling) can slow ingestion enough to
@@ -126,27 +134,31 @@ locally in a single session: all runs interleaved per group,
 
 | Cell | Env | Median rate (ops/s) | Notes |
 |------|-----|---------------------|-------|
-| goopil dispatch | php 8.5 | 9 657 | ×3, interleaved with the 8.4 iamfarhad runs |
-| iamfarhad confirms ON | php 8.4 | 1 075 | ×3, spread 974–1 136 |
-| iamfarhad confirms OFF | php 8.4 | 3 438 | ×1 |
-| goopil dispatch | php 8.5 | 11 156 | ×2, interleaved with the 8.5 iamfarhad runs |
-| iamfarhad confirms ON | php 8.5 | 1 434 | ×3 (1 395–1 456) |
-| iamfarhad confirms OFF | php 8.5 | 16 175 | ×1 |
+| goopil dispatch | php 8.5 | 9 657 | 3 runs, interleaved with the 8.4 iamfarhad runs |
+| iamfarhad confirms ON | php 8.4 | 1 075 | 3 runs, spread 974–1 136 |
+| iamfarhad confirms OFF | php 8.4 | 3 438 | 1 run |
+| goopil dispatch | php 8.5 | 11 156 | 2 runs, interleaved with the 8.5 iamfarhad runs |
+| iamfarhad confirms ON | php 8.5 | 1 434 | 3 runs (1 395–1 456) |
+| iamfarhad confirms OFF | php 8.5 | 16 175 | 1 run |
 
-Reading:
+Reading (workload-scoped; every pair is same-session, interleaved, same
+binary unless noted — on the unit-dispatch workload with per-message
+confirms+mandatory on both sides where the cell says confirms ON):
 
-- **Same-binary pair (php 8.5.6 both sides, same session, interleaved):
-  goopil / iamfarhad-ON ≈ 7.8×** (11 156 / 1 434) — this strengthens the E2
-  conclusion of ≥ 5.0× (5.4× raw under Docker, 5.0–11.7× normalized).
-- iamfarhad local is slower than its archived Docker runs (1 075–1 434 vs
-  2 365) — consistent with the vladimir bridge finding that Docker's
-  loopback path to the broker is ~2.17× faster for RTT-bound workloads.
-- The PHP version strongly affects fire-and-forget dispatch (iamfarhad OFF:
-  3 438 on 8.4 vs 16 175 on 8.5, ~4.7×) but barely affects confirms-ON
-  (RTT-bound: 1 075 → 1 434).
-- The iamfarhad confirms cost is environment-dependent: ≈3.2× (8.4 local),
-  ≈7.8× (Docker), ≈11.1× (8.5 local, standalone pair 16 175 / 1 456,
-  inflated by the much faster OFF baseline).
+- **Same-binary pair (php 8.5.6 both sides, same session, interleaved, both
+  confirms ON): goopil reaches 11 156 ops/s against iamfarhad 1 434 ops/s** —
+  this strengthens the E2 conclusion on the confirms-fair dispatch cell (the
+  Docker-session reading lives in the E2 archives).
+- iamfarhad local runs slower than its archived Docker runs (1 075–1 434 vs
+  2 365 ops/s) — consistent with the vladimir bridge finding that Docker's
+  loopback path to the broker sustains roughly twice the local rate for
+  RTT-bound workloads (9 657 local vs ~20k+ Docker-era normalized).
+- The PHP version strongly affects fire-and-forget dispatch for iamfarhad
+  (3 438 ops/s on 8.4 vs 16 175 on 8.5) but barely affects confirms-ON
+  (RTT-bound: 1 075 → 1 434 ops/s).
+- The iamfarhad confirms cost is environment-dependent (its own OFF → ON
+  dispatch rate): 3 438 → 1 075 ops/s on 8.4 local, 16 175 → 1 456 ops/s on
+  8.5 local; the Docker-session cost lives in the E2 archives.
 
 The E2 archives remain the reference dataset; this cross-check lifts the
 "iamfarhad is Docker-only" caveat. Local runtime smoke: dispatch 1000/1000
@@ -164,34 +176,38 @@ flags are inert. The dispatch matrix was re-run in a single session (php
 8.5.6 for every driver — goopil via the dylib, iamfarhad via a locally
 built ext-amqp 2.2.0), all runs interleaved, `--count=1000 --rounds=10`:
 
-| Cell (dispatch) | Median rate (ops/s) | n | Reading |
-|-----------------|---------------------|---|---------|
-| goopil blind    | 76 794              | 3 | **leads the fire-and-forget family** (2.46× vladimir, 4.9× iamfarhad-OFF) |
-| goopil unsafe   | 62 474              | 3 | 2.0× vladimir |
-| goopil safe     | 9 772               | 2 | 0.31× vladimir — the known ~3.2× framework gap |
+| Cell (dispatch) | Median rate (ops/s) | n | Same-session comparison |
+|-----------------|---------------------|---|-------------------------|
+| goopil blind    | 76 794              | 3 | vs vladimir 31 182 and iamfarhad-OFF 15 655 (all fire-and-forget) |
+| goopil unsafe   | 62 474              | 3 | vs vladimir 31 182 |
+| goopil safe     | 9 772               | 2 | vs vladimir 31 182 — the known safe-publish framework gap |
 | vladimir (f&f)  | 31 182              | 3 | pure-PHP reference |
 | iamfarhad OFF   | 15 655              | 3 | — |
 | iamfarhad ON    | 1 412               | 3 | consistent with the cross-check above (1 434) |
 
-goopil's safety ladder, same session: blind 76.8k → unsafe 62.5k (×1.23) →
-safe 9.8k (×6.4 from unsafe; ×7.9 from blind). The entire at-least-once
-contract cost sits in the per-message confirm+mandatory path (unsafe→safe) —
-that path is the remaining publish-side optimization frontier (see
-`docs/plans/ROADMAP.md`, dispatch-gap round).
+goopil's safety ladder, same session, same workload (unit dispatch,
+1024 B envelope): blind 76 794 → unsafe 62 474 → safe 9 772 ops/s. The
+entire at-least-once contract cost sits in the per-message confirm+mandatory
+path (unsafe→safe) — that path is the remaining publish-side optimization
+frontier (see `docs/plans/ROADMAP.md`, dispatch-gap round).
 
 For context, the transport-level harness (Phase B sweep, `sweep-b1`, a
-different session — read ratios, not absolute values) showed the same
-shape: fire-and-forget 260 679/s for rabbit-rs vs 90 590 (amqplib) and
-94 144 (bunny) → **~2.8× lead**; batch-confirm 37 353 vs 49 902 / 54 770 →
-**0.68× (secondary target)**; safe unitary (laravel-dispatch) 8 213 vs
-28 458 / 29 648 → **0.28× (the frontier)**; laravel-worker consume 14 425
-vs 2 452 / 2 557 → **~5.9× lead**.
+different session — read the shape, not the absolutes) showed the same
+picture on the transport workload (256 B payload): fire-and-forget
+260 679 msg/s for rabbit-rs vs 90 590 (amqplib) and 94 144 (bunny);
+batch-confirm 37 353 vs 49 902 / 54 770 (secondary target); safe unitary
+(laravel-dispatch) 8 213 vs 28 458 / 29 648 (the frontier); laravel-worker
+consume 14 425 vs 2 452 / 2 557.
 
-Net picture: with the delivery contract relaxed, rabbit-rs is already the
-fastest driver at both levels; the whole remaining publish gap is the safe
-per-message path, and the consume side leads everywhere (transport ~5.9×;
-at framework level ~4× vs vladimir even with the stall tax, expected to
-widen once the Round 2 consumer fixes land — see `docs/plans/ROADMAP.md`).
+Net picture, same-workload framing: with the delivery contract relaxed,
+rabbit-rs reaches the highest publish rates measured at both levels on this
+lab, and the highest consume rates in every measured consume cell
+(transport laravel-worker consume: 14 425 msg/s against amqplib 2 452 and
+bunny 2 557; at framework level, goopil worker reaches 16 234 ops/s against
+vladimir 2 029 in the round-i re-bench session). The whole remaining publish
+gap is the safe per-message path; Round D's pipelined flush already closed
+most of it at transport level (`results/round-d-safe-flush`), with the
+frontier tracked in `docs/plans/ROADMAP.md`.
 
 ## Fairness
 

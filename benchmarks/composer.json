@@ -24,5 +24,13 @@
             "Bench\\": "src/",
             "Bench\\Laravel\\": "laravel/"
         }
+    },
+    "require-dev": {
+        "pestphp/pest": "^5.1"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
     }
 }

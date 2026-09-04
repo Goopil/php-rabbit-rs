@@ -23,6 +23,23 @@ class RabbitRsDriver extends AbstractBenchmark
         return 'rabbit-rs';
     }
 
+    public function safetyMode(): ?string
+    {
+        return match ($this->scenarioMode) {
+            ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => 'blind',
+            ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => 'safe',
+        };
+    }
+
+    public function reconnects(): ?int
+    {
+        try {
+            return $this->pool?->stats()['reconnects_total'] ?? null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     public function setUp(): void
     {
         $config = [
@@ -72,10 +89,7 @@ class RabbitRsDriver extends AbstractBenchmark
                     ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,
                     ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => true,
                 },
-                'safety' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => 'blind',
-                    ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => 'safe',
-                },
+                'safety' => $this->safetyMode(),
                 'confirm_timeout' => 30000,
             ],
         ];

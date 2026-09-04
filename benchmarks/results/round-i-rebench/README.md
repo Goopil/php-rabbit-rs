@@ -130,6 +130,16 @@ same-session comparison.
   `transport-<scenario>-<driver>-run<N>.json` + the invocation `.log`).
 - `summary.json` — machine-readable medians, min/max, losses, stalls.
 
+## Metric coverage note (Round J, #127)
+
+These archives predate the Round J metric contract (`benchmarks/README.md`).
+The `raw/` JSONs record no reconnects; the driver-bench cells additionally
+record no per-op latency percentiles and no duplicates, and the transport
+cells record no safety/config/meta fields (`summary.json` is derived from
+the same raw files). The tooling emits these from Round J on; this archive
+is curated evidence and is never backfilled — re-run the cells if a
+reconnect- or latency-scoped question matters.
+
 ## Reproduce
 
 ```bash
