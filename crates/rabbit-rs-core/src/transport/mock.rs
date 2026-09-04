@@ -23,7 +23,7 @@ pub enum TransportOperation {
     DeclareQueue(QueueSpec),
     VerifyQueue(QueueSpec),
     BindQueue(BindingSpec),
-    QueueSize { queue: String, result: u32 },
+    QueueSize { queue: String },
     PurgeQueue { queue: String },
     DeleteQueue { queue: String },
     EnableConfirms,
@@ -60,8 +60,6 @@ struct MockState {
     error_notify: Arc<tokio::sync::Notify>,
     queue_sizes: VecDeque<TransportResult<u32>>,
     connect_gates: VecDeque<MockOperationGateWait>,
-    open_publisher_gates: VecDeque<MockOperationGateWait>,
-    open_consumer_gates: VecDeque<MockOperationGateWait>,
     /// Gates the next `declare_queue` so a test can park the caller mid
     /// declaration — the channel operation runs on the caller's task, not
     /// inside the connection actor loop, so everything else stays live.
@@ -147,20 +145,6 @@ impl MockTransport {
     pub fn push_connect_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().connect_gates.push_back(wait);
-        gate
-    }
-
-    #[must_use]
-    pub fn push_open_publisher_gate(&self) -> MockOperationGate {
-        let (wait, gate) = operation_gate();
-        self.state().open_publisher_gates.push_back(wait);
-        gate
-    }
-
-    #[must_use]
-    pub fn push_open_consumer_gate(&self) -> MockOperationGate {
-        let (wait, gate) = operation_gate();
-        self.state().open_consumer_gates.push_back(wait);
         gate
     }
 
@@ -428,24 +412,20 @@ impl TransportConnection for MockConnection {
     }
 
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
-        let gate = {
+        {
             let mut state = self.state();
             state.operations.push(TransportOperation::OpenPublisher);
-            state.open_publisher_gates.pop_front()
-        };
-        wait_for_gate(gate).await;
+        }
         Ok(Box::new(MockPublisherChannel {
             state: self.state.clone(),
         }))
     }
 
     async fn open_consumer(&self) -> TransportResult<Box<dyn ConsumerChannel>> {
-        let gate = {
+        {
             let mut state = self.state();
             state.operations.push(TransportOperation::OpenConsumer);
-            state.open_consumer_gates.pop_front()
-        };
-        wait_for_gate(gate).await;
+        }
         Ok(Box::new(MockConsumerChannel {
             state: self.state.clone(),
         }))
@@ -522,7 +502,6 @@ impl TopologyChannel for MockPublisherChannel {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.operations.push(TransportOperation::QueueSize {
             queue: queue.to_owned(),
-            result: 0,
         });
         state.queue_sizes.pop_front().unwrap_or(Ok(0))
     }
@@ -686,7 +665,6 @@ impl TopologyChannel for MockConsumerChannel {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.operations.push(TransportOperation::QueueSize {
             queue: queue.to_owned(),
-            result: 0,
         });
         state.queue_sizes.pop_front().unwrap_or(Ok(0))
     }

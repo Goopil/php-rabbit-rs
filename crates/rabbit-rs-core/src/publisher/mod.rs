@@ -79,18 +79,6 @@ impl ByteBudget {
             }
         }
     }
-
-    /// Returns the current number of reserved bytes.
-    #[must_use]
-    pub fn current(&self) -> u64 {
-        self.current.load(Ordering::Relaxed)
-    }
-
-    /// Returns the configured maximum.
-    #[must_use]
-    pub const fn max(&self) -> u64 {
-        self.max
-    }
 }
 
 pub enum PublisherConnectionEvent {
