@@ -239,6 +239,16 @@ impl Pool {
             "dropped_error_records_total",
             i64_from_counter(self.publish_buffer.dropped_error_records()),
         )?;
+        // Publish buffer occupancy (Round K #143): the soak tripwire reads
+        // this to catch a re-buffer leak path (buffer must quiesce to zero).
+        stats.insert(
+            "publish_buffered",
+            i64::try_from(self.publish_buffer.buffered_len()).unwrap_or(i64::MAX),
+        )?;
+        stats.insert(
+            "publish_buffered_bytes",
+            i64::try_from(self.publish_buffer.buffered_bytes()).unwrap_or(i64::MAX),
+        )?;
 
         insert_percentile(
             &mut stats,

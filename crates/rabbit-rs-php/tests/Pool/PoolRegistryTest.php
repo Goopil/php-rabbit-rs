@@ -42,6 +42,15 @@ describe('pool registry', function () {
         $pool->close();
     });
 
+    it('exposes publish buffer occupancy in stats', function () {
+        // Round K #143: the soak tripwire reads the buffer occupancy through
+        // stats(); the keys must exist and read zero on a quiet pool.
+        $pool = new \Goopil\RabbitRs\Pool(poolConfig());
+        expect($pool->stats()['publish_buffered'])->toBe(0);
+        expect($pool->stats()['publish_buffered_bytes'])->toBe(0);
+        $pool->close();
+    });
+
     it('invalidates aliases after closing a shared handle', function () {
         $first = new \Goopil\RabbitRs\Pool(poolConfig());
         $second = new \Goopil\RabbitRs\Pool(poolConfig());

@@ -6,6 +6,7 @@ declare(strict_types=1);
 /*
 |--------------------------------------------------------------------------
 | Round I #126 — soak: sustained pop+ack churn under scheduled kills
+| Round K #143 — memory telemetry + RSS-slope leak detection
 |--------------------------------------------------------------------------
 |
 | Proves the at-least-once contract over a long run: repeated fill+drain
@@ -15,14 +16,25 @@ declare(strict_types=1);
 | (null streak past the plausible bound) and on loss (missing > 0 at the
 | end); duplicates are counted, never hidden.
 |
+| Round K adds memory telemetry: periodic RSS/PHP memory/Pool::stats()
+| samples, a warmup-excluded RSS-slope leak fit (MB/h), and a per-cycle
+| publish-buffer tripwire (buffered must quiesce to 0 after every flush).
+| `--kill-every=0` switches to steady mode (sustained pop+ack, no kills —
+| the cleanest leak signal); the reconnect requirement applies to kill
+| mode only.
+|
 | Requires the ext-rabbit_rs extension (runs the native Pool directly).
 |
 | Usage:
 |   php -d extension=<artifact> bin/soak.php \
-|       --minutes=10 --fill=1000 --kill-every=10 --kill-timeout-ms=50
+|       --minutes=10 --fill=1000 --kill-every=10 --kill-timeout-ms=50 \
+|       [--sample-interval=10] [--leak-mb-per-hour=20]
 |
-| Exit 0 only when missing == 0 and the connection really re-established
-| (reconnects_total >= 1). Full result as a single JSON object on stdout.
+| Exit 0 only when missing == 0, (kill mode) the connection really
+| re-established (reconnects_total >= 1), the per-cycle publish-buffer
+| tripwire never fired, and the post-warmup RSS slope is within
+| --leak-mb-per-hour (a run too short to fit a slope passes without one).
+| Full result as a single JSON object on stdout.
 */
 
 use Goopil\RabbitRs\ConnectionException;
@@ -33,6 +45,7 @@ use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 
 require_once __DIR__.'/../vendor/autoload.php';
+require_once __DIR__.'/soak_memory.php';
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -49,6 +62,8 @@ $minutes = max(1, (int) ($args['minutes'] ?? 10));
 $fill = max(1, (int) ($args['fill'] ?? 1000));
 $killEvery = max(0, (int) ($args['kill-every'] ?? 10));
 $killTimeoutMs = max(1, (int) ($args['kill-timeout-ms'] ?? 50));
+$sampleInterval = max(1, (int) ($args['sample-interval'] ?? 10));
+$leakMbPerHour = max(1, (int) ($args['leak-mb-per-hour'] ?? 20));
 $outputPath = isset($args['output']) ? (string) $args['output'] : null;
 
 const SOAK_QUEUE = 'bench.goopil.soak';
@@ -110,7 +125,8 @@ function toxiproxyRequest(string $method, string $path, ?string $payload = null)
         'content' => $payload,
     ]]);
     $body = @file_get_contents(toxiproxyApi().$path, false, $context);
-    $status = isset($http_response_header[0]) && preg_match('#HTTP/\S+\s+(\d+)#', $http_response_header[0], $m)
+    $headers = http_get_last_response_headers() ?? [];
+    $status = isset($headers[0]) && preg_match('#HTTP/\S+\s+(\d+)#', (string) $headers[0], $m) === 1
         ? (int) $m[1]
         : 0;
 
@@ -236,6 +252,45 @@ function poolReconnects(?Pool $pool): ?int
     }
 }
 
+/**
+ * Appends a memory sample once the sampling interval has elapsed (and
+ * unconditionally for the first sample). O(1) per call, outside the churn
+ * loops (Round K #143); must never throw into them.
+ */
+function memorySample(Pool $pool, array &$samples, int $t0Ns, int $intervalS): void
+{
+    $tS = (hrtime(true) - $t0Ns) / 1e9;
+    if (count($samples) > 0) {
+        $lastT = (float) $samples[count($samples) - 1]['t_s'];
+        if ($tS - $lastT < $intervalS) {
+            return;
+        }
+    }
+
+    $stats = [];
+    try {
+        $snapshot = $pool->stats();
+        foreach (['backpressure_total', 'reconnects_total', 'dropped_publications_total', 'dropped_error_records_total', 'duplicates_total', 'publish_buffered', 'publish_buffered_bytes'] as $key) {
+            $stats[$key] = $snapshot[$key] ?? null;
+        }
+    } catch (\Throwable) {
+        // Recovery in progress: record without stats.
+    }
+
+    $rss = rssSampleBytes();
+    if ($rss === null) {
+        return; // no RSS source on this platform: samples would be useless
+    }
+
+    $samples[] = [
+        't_s' => round($tS, 1),
+        'rss_bytes' => $rss,
+        'php_usage_bytes' => memory_get_usage(true),
+        'php_peak_bytes' => memory_get_peak_usage(true),
+        'stats' => $stats,
+    ];
+}
+
 // Clean slate: purge leftovers from previous runs. Best-effort: on a fresh
 // lab the queue does not exist yet (NOT_FOUND), which already is a clean
 // slate — the driver declares it on the first push below.
@@ -271,16 +326,28 @@ $lastHeartbeat = microtime(true);
 $nullStreakCap = max(200_000, $fill * 200); // ~50 s of pure emptiness mid-drain = stall
 $grace = (int) (120 * 1e9); // drain may outlive the soak deadline briefly
 
+// Round K #143 telemetry state: RSS samples feed the warmup-excluded slope
+// fit; the tripwire counts cycles whose flush left publications buffered.
+$t0Ns = hrtime(true);
+$samples = [];
+$bufferedTripwireViolations = 0;
+memorySample($pool, $samples, $t0Ns, $sampleInterval);
+$warmupS = 0.2 * $minutes * 60;
+
 fwrite(STDERR, sprintf(
-    "soak: %d min, fill %d/cycle, kill every %d cycle(s) (%d ms both-legs timeout), proxy :%d\n",
+    "soak: %d min, fill %d/cycle, kill every %d cycle(s) (%d ms both-legs timeout), proxy :%d, sampling every %ds (warmup %.0fs, leak threshold %d MB/h)\n",
     $minutes,
     $fill,
     $killEvery,
     $killTimeoutMs,
     $proxy['port'],
+    $sampleInterval,
+    $warmupS,
+    $leakMbPerHour,
 ));
 
 while (hrtime(true) < $deadline) {
+    memorySample($pool, $samples, $t0Ns, $sampleInterval);
     $killPostFill = $killEvery > 0 && $cycles % (2 * $killEvery) === 0;
     $killMidDrain = $killEvery > 0 && $cycles % (2 * $killEvery) === $killEvery;
 
@@ -319,6 +386,24 @@ while (hrtime(true) < $deadline) {
         }
     }
 
+    // Per-cycle tripwire (Round K #143): a successful flush quiesces spawned
+    // drains then sync-drains, so the publish buffer must be empty here.
+    // Non-zero means publications are parked across cycles — a re-buffer
+    // leak path that would otherwise hide behind the byte ceiling.
+    try {
+        $buffered = $pool->stats()['publish_buffered'] ?? null;
+        if ($buffered !== 0) {
+            $bufferedTripwireViolations++;
+            fwrite(STDERR, sprintf(
+                "soak: TRIPWIRE publish_buffered=%s after flush (cycle %d)\n",
+                var_export($buffered, true),
+                $cycles,
+            ));
+        }
+    } catch (\Throwable) {
+        // stats unavailable mid-recovery; the flush above already succeeded.
+    }
+
     if ($killPostFill) {
         fireConnectionKill($proxy['name'], $killTimeoutMs);
         $kills++;
@@ -332,6 +417,7 @@ while (hrtime(true) < $deadline) {
     $midKillDone = false;
 
     while ($receivedThisCycle < $fill) {
+        memorySample($pool, $samples, $t0Ns, $sampleInterval);
         if (hrtime(true) > $deadline + $grace) {
             failLoudly(sprintf(
                 'drain did not converge within the grace window (cycle %d, received %d/%d this cycle, %d/%d distinct/total overall)',
@@ -451,7 +537,28 @@ try {
     // best-effort cleanup
 }
 
-$ok = $missing === 0 && $reconnects !== null && $reconnects >= 1;
+// Round K #143: warmup-excluded RSS slope fit + exit contract.
+$rssAfterClose = rssSampleBytes();
+$slope = rssSlopeMbPerHour($samples, $warmupS);
+$rssBefore = count($samples) > 0 ? $samples[0]['rss_bytes'] : null;
+
+// Kill mode must prove recovery (reconnects >= 1); steady mode runs with
+// no kills, so a reconnection can only happen incidentally and is not
+// required.
+$reconnectOk = $killEvery > 0 ? ($reconnects !== null && $reconnects >= 1) : true;
+$slopeOk = $slope === null || $slope <= $leakMbPerHour; // short run: no fit, no verdict
+$ok = $missing === 0 && $reconnectOk && $bufferedTripwireViolations === 0 && $slopeOk;
+
+fwrite(STDERR, sprintf(
+    "soak: done missing=%d duplicates=%d reconnects=%s tripwire=%d slope=%s MB/h (threshold %d, warmup %.0fs)\n",
+    $missing,
+    $duplicates,
+    var_export($reconnects, true),
+    $bufferedTripwireViolations,
+    $slope === null ? 'n/a' : (string) round($slope, 2),
+    $leakMbPerHour,
+    $warmupS,
+));
 
 $result = [
     'benchmark' => 'soak',
@@ -480,6 +587,17 @@ $result = [
         'sapi' => PHP_SAPI,
         'extensions' => ['rabbit_rs' => phpversion('rabbit_rs') ?: false],
         'os' => PHP_OS.' '.php_uname('r'),
+    ],
+    'memory' => [
+        'sample_interval_s' => $sampleInterval,
+        'warmup_s' => round($warmupS, 0),
+        'threshold_mb_per_hour' => $leakMbPerHour,
+        'rss_slope_mb_per_hour' => $slope,
+        'rss_before_bytes' => $rssBefore,
+        'rss_after_close_bytes' => $rssAfterClose,
+        'php_peak_bytes' => memory_get_peak_usage(true),
+        'buffered_tripwire_failures' => $bufferedTripwireViolations,
+        'samples' => $samples,
     ],
 ];
 

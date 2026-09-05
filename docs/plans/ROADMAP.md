@@ -260,6 +260,13 @@ with the feature, never in a later docs pass.
 Tracker: #142. Sub-issues: #143 (soak telemetry), #144 (nightly CI soak).
 Design: `docs/superpowers/specs/2026-09-05-stability-memory-soak-design.md`.
 
+Status 2026-09-05: #141 landed (PR #147, bench.php exits 2 with stderr
+diagnostics); #139 landed (PR #145, deterministic backpressure triggers);
+#143 landed (PR for soak telemetry + `publish_buffered`/`publish_buffered_bytes`
+stats keys; detector validated by injected-leak run). Remaining: #144
+(nightly soak workflow) and the archived 60-min kill / 30-min steady runs
+under `benchmarks/results/round-k-soak/`.
+
 Motivation: the 1.0 gate is complete (v0.1.0, 2026-09-04). Memory safety is
 proven by construction (byte budgets, buffer ceilings, bounded queues) but
 never by measurement — no harness samples memory and no long-duration run
