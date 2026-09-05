@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Require `ext-rabbit_rs ^0.1` (was `^0.0`): the 0.1.0 extension no longer satisfies a caret constraint pinned to 0.0.x, which made the package uninstallable (`composer check-platform-reqs` failure) wherever the current extension was loaded. The constraint, the `RabbitMqServiceProvider::EXTENSION_CONSTRAINT` message constant, and `docs/troubleshooting.md` are aligned, and a unit test now fails when the workspace crate version moves without the requirement following.
+
 ## [0.1.0] - 2026-09-02
 
 ### Added
