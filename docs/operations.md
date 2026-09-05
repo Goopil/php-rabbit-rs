@@ -78,7 +78,7 @@ php artisan rabbit-rs:work --workers=4
 
 ### How it works
 
-1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work --connection=<name> --queue=<q1,q2>`
+1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work <name> --queue=<q1,q2>` (the connection is `queue:work`'s positional argument)
 2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER={i}` environment variable
 3. The supervisor monitors child processes every 100ms
 4. If a child exits unexpectedly, the supervisor waits (backoff seconds) and restarts it

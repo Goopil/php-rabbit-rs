@@ -66,7 +66,7 @@ Add one connection to `config/queue.php`:
 Dispatch and consume:
 
 ```bash
-php artisan queue:work --connection=rabbit-rs
+php artisan queue:work rabbit-rs
 # or the supervised fan-out command:
 php artisan rabbit-rs:work
 ```
@@ -336,7 +336,7 @@ Semantics worth knowing:
   (one child per connection).
 - Combining `--connection` and `--queue` intersects both filters: only listed
   connections that define the listed queues run.
-- Plain `php artisan queue:work --connection=rabbit-rs` still works for a
+- Plain `php artisan queue:work rabbit-rs` still works for a
   single connection; multi-driver setups remain N processes, as with every
   Laravel driver.
 

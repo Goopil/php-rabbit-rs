@@ -52,14 +52,14 @@ Queue::connection('rabbit-rs')->pushRaw($jsonPayload, 'orders.high');
 ### Standard queue worker
 
 ```bash
-php artisan queue:work --connection=rabbit-rs
+php artisan queue:work rabbit-rs
 ```
 
-This uses Laravel's built-in `queue:work` command. Without `--queue`, the worker consumes the connection's default queue (its `queue` key). The `--queue` option resolves a queue or profile on that connection:
+This uses Laravel's built-in `queue:work` command — the connection is its positional argument. Without `--queue`, the worker consumes the connection's default queue (its `queue` key). The `--queue` option resolves a queue or profile on that connection:
 
 ```bash
 # Consume the "orders.high" queue defined on the connection
-php artisan queue:work --connection=rabbit-rs --queue=orders.high
+php artisan queue:work rabbit-rs --queue=orders.high
 ```
 
 The connection compiles to a single worker profile (named after the connection) spanning all its queues — the `queue` key plus every `subscriptions` entry. A single `pop()` call selects the next delivery from any ready subscription using the weighted-fair scheduler.

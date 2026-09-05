@@ -122,7 +122,7 @@ ProcessOrder::dispatch(42);
 
 ```bash
 # Consume
-php artisan queue:work --connection=rabbit-rs
+php artisan queue:work rabbit-rs
 # or the supervised fan-out across every rabbit-rs connection:
 php artisan rabbit-rs:work
 ```
