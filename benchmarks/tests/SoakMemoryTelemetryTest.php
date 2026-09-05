@@ -63,4 +63,24 @@ describe('soak memory telemetry (Round K #143)', function () {
             ['t_s' => 10.0, 'rss_bytes' => 2048],
         ], warmupS: 600.0))->toBeNull();
     });
+
+    it('tracks distinct sequences in a compact bitset', function () {
+        $bits = '';
+        expect(bitPopcount($bits))->toBe(0);
+
+        bitMarkReceived($bits, 1);
+        bitMarkReceived($bits, 2);
+        bitMarkReceived($bits, 8);
+        bitMarkReceived($bits, 9); // crosses into the second byte
+        expect(bitPopcount($bits))->toBe(4);
+
+        // Re-deliveries re-mark the same seq: idempotent.
+        bitMarkReceived($bits, 8);
+        expect(bitPopcount($bits))->toBe(4);
+
+        // A sparse high seq grows the bitset without blowing memory.
+        bitMarkReceived($bits, 3_000_000);
+        expect(bitPopcount($bits))->toBe(5);
+        expect(strlen($bits))->toBe(intdiv(3_000_000 - 1, 8) + 1);
+    });
 });

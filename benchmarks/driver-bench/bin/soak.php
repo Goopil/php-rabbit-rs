@@ -21,7 +21,9 @@ declare(strict_types=1);
 | publish-buffer tripwire (buffered must quiesce to 0 after every flush).
 | `--kill-every=0` switches to steady mode (sustained pop+ack, no kills —
 | the cleanest leak signal); the reconnect requirement applies to kill
-| mode only.
+| mode only. The churn loops retry ANY transient error (recovery windows
+| surface as base-native exceptions too); persistent failure trips the
+| stall/grace caps and fails loudly.
 |
 | Requires the ext-rabbit_rs extension (runs the native Pool directly).
 |
@@ -37,10 +39,8 @@ declare(strict_types=1);
 | Full result as a single JSON object on stdout.
 */
 
-use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
-use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
 
@@ -312,7 +312,7 @@ if (function_exists('pcntl_async_signals')) {
 // ---------------------------------------------------------------------------
 
 $deadline = hrtime(true) + (int) ($minutes * 60 * 1e9);
-$received = []; // seq => true, every payload message ever popped
+$receivedBits = ''; // compact bitset: bit per published seq (see soak_memory.php)
 $receivedTotal = 0;
 $published = 0;
 $cycles = 0;
@@ -359,7 +359,7 @@ while (hrtime(true) < $deadline) {
             try {
                 $queue->push('stdClass', ['msg' => (string) $seq], SOAK_QUEUE);
                 break;
-            } catch (QueueException | ConnectionException $e) {
+            } catch (\Throwable $e) {
                 $lastPushError = $e->getMessage();
                 $pushRetries++;
                 if (++$tries > 300) {
@@ -424,7 +424,7 @@ while (hrtime(true) < $deadline) {
                 $cycles,
                 $receivedThisCycle,
                 $fill,
-                count($received),
+                bitPopcount($receivedBits),
                 $published,
             ));
         }
@@ -437,7 +437,7 @@ while (hrtime(true) < $deadline) {
 
         try {
             $job = $queue->pop(SOAK_QUEUE);
-        } catch (QueueException | ConnectionException) {
+        } catch (\Throwable) {
             $popErrors++;
             usleep(100000);
             continue;
@@ -453,7 +453,7 @@ while (hrtime(true) < $deadline) {
                     $cycles,
                     $receivedThisCycle,
                     $fill,
-                    count($received),
+                    bitPopcount($receivedBits),
                     $published,
                 ));
             }
@@ -464,14 +464,14 @@ while (hrtime(true) < $deadline) {
         $consecutiveNulls = 0;
         $body = json_decode($job->getRawBody(), true);
         $seq = (int) ($body['data']['msg'] ?? 0);
-        $received[$seq] = true;
+        bitMarkReceived($receivedBits, $seq);
         $receivedTotal++;
         $receivedThisCycle++;
         $maxAttempts = max($maxAttempts, $job->attempts());
 
         try {
             $job->delete();
-        } catch (QueueException | ConnectionException) {
+        } catch (\Throwable) {
             // ack lost (e.g. stale after a kill): the broker requeues and the
             // message comes back as a redelivery — counted as a duplicate.
             $popErrors++;
@@ -488,7 +488,7 @@ while (hrtime(true) < $deadline) {
             $cycles,
             $published,
             $receivedTotal,
-            count($received),
+            bitPopcount($receivedBits),
             $kills,
             var_export(poolReconnects($pool), true),
         ));
@@ -504,7 +504,7 @@ $lastReceipt = microtime(true);
 while ((microtime(true) - $lastReceipt) < 3.0) {
     try {
         $job = $queue->pop(SOAK_QUEUE);
-    } catch (QueueException | ConnectionException) {
+    } catch (\Throwable) {
         $popErrors++;
         usleep(100000);
         continue;
@@ -516,17 +516,17 @@ while ((microtime(true) - $lastReceipt) < 3.0) {
     $lastReceipt = microtime(true);
     $body = json_decode($job->getRawBody(), true);
     $seq = (int) ($body['data']['msg'] ?? 0);
-    $received[$seq] = true;
+    bitMarkReceived($receivedBits, $seq);
     $receivedTotal++;
     $maxAttempts = max($maxAttempts, $job->attempts());
     try {
         $job->delete();
-    } catch (QueueException | ConnectionException) {
+    } catch (\Throwable) {
         $popErrors++;
     }
 }
 
-$distinct = count($received);
+$distinct = bitPopcount($receivedBits);
 $missing = $published - $distinct;
 $duplicates = $receivedTotal - $distinct;
 $reconnects = poolReconnects($pool);
