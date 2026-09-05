@@ -6,13 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
-## [Unreleased]
+## [0.1.1] - 2026-09-05
 
 ### Added
 
 - Native: `Pool::stats()` now reports the publish buffer occupancy via two
   new keys, `publish_buffered` and `publish_buffered_bytes` (Round K soak
   tripwire reads them to catch a re-buffer leak path).
+- Native: `Pool::stats()` reports `publication_retries_total` — publications
+  re-armed once after their deadline expired during a connection recovery
+  suspension (#151).
 - Benchmarks: the soak harness (`benchmarks/driver-bench/bin/soak.php`)
   records memory telemetry (RSS, PHP usage/peak, `stats()` snapshots) and
   fails on a warmup-excluded RSS-slope leak (`--leak-mb-per-hour`, default
@@ -32,6 +35,22 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ### Fixed
 
+- Core: a publication whose deadline expired while parked during a connection
+  recovery suspension is re-armed exactly once with a fresh deadline before
+  failing terminally, replayed with the same `message_id` — the first publish
+  after an idle no longer fails with "publish deadline expired" when recovery
+  outlasts `confirm_timeout`; the failure mode is measured by
+  `publication_retries_total` (#151).
+- Laravel: `Horizon\RabbitMqQueue` implements `readyNow()` — Horizon's
+  AutoScaler calls it unconditionally on every scaling pass, so any supervisor
+  pointed at a rabbit-rs connection crash-looped with `Call to undefined
+  method ... readyNow()` (#152).
+- Laravel: the `worker` cross-cutting default from `config/rabbit-rs.php` is
+  inherited by connections that do not declare their own `worker` key (#152).
+- Laravel: exhausted rabbit-rs jobs are now recorded as failed in Horizon —
+  Horizon's `MarshalFailedEvent` listener only bridges framework `JobFailed`
+  events for the Redis job class, so failed jobs stayed marked completed;
+  the Horizon job dispatches Horizon's `JobFailed` itself (#152).
 - Benchmarks: the soak's RSS-slope leak fit uses a peak-envelope estimator
   seeded by the warmup peak — the raw fit misread bounded allocator
   sawtooth under kill churn as growth (false positive measured on the
