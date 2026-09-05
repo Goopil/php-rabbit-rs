@@ -8,6 +8,7 @@ use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Events\Dispatcher;
 use Laravel\Horizon\Events\JobDeleted;
+use Laravel\Horizon\Events\JobFailed;
 
 const HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID = '018f8f1a-5f47-7bc1-9d3b-4ea5a9ce9137';
 
@@ -121,4 +122,42 @@ it('preserves job id, attempts, and raw body from parent', function (): void {
         ->and($delivery->payload())->toBe($job->getRawBody())
         ->and('rabbit-rs')->toBe($job->getConnectionName())
         ->and('orders.high')->toBe($job->getQueue());
+});
+
+/**
+ * Horizon bridges the framework's JobFailed to its own JobFailed through the
+ * MarshalFailedEvent listener, which only recognizes Illuminate\Jobs\RedisJob.
+ * Without this bridge Horizon records exhausted rabbit-rs jobs as completed.
+ */
+it('dispatches the Horizon JobFailed event when the job fails', function (): void {
+    $delivery = horizonDelivery();
+    $job = horizonJob($delivery, horizonQueueForJob());
+    $exception = new TestException('worker threw');
+
+    // The framework's Job::failed() resolves the payload job class from the
+    // container; in production the class exists, mirror that here.
+    $this->app->bind('TestJob', static fn (): object => new stdClass());
+
+    $events = [];
+    $recorder = $this->createMock(Dispatcher::class);
+    $recorder->method('dispatch')->willReturnCallback(
+        static function (object $event) use (&$events): void {
+            if (str_starts_with($event::class, 'Laravel\Horizon\Events\\')) {
+                $events[] = $event;
+            }
+        }
+    );
+    $this->app->instance(Dispatcher::class, $recorder);
+
+    $job->fail($exception);
+
+    expect($events)->toHaveCount(2)
+        ->and($events[0])->toBeInstanceOf(JobDeleted::class)
+        ->and($events[1])->toBeInstanceOf(JobFailed::class)
+        ->and($events[1]->exception)->toBe($exception)
+        ->and($events[1]->job)->toBe($job)
+        ->and($events[1]->payload->decoded['uuid'] ?? null)
+            ->toBe(HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID)
+        ->and($events[1]->queue)->toBe('orders.high')
+        ->and($events[1]->connectionName)->toBe('rabbit-rs');
 });
