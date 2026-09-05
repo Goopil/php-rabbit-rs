@@ -4,6 +4,8 @@
 )]
 
 use std::sync::Arc;
+#[cfg(feature = "extension-tests")]
+use std::time::Duration;
 
 use super::{
     bridge::EventBridge,
@@ -398,9 +400,20 @@ impl Pool {
         handle: Arc<ConnectionHandle>,
         client: Arc<ClientPool>,
         delay_strategy: DelayStrategy,
+        flush_interval: Option<Duration>,
+        flush_threshold: Option<usize>,
     ) -> Self {
+        let publish_buffer = PublishBuffer::new(Arc::clone(&client), Arc::clone(&handle));
+        let publish_buffer = match flush_interval {
+            Some(interval) => publish_buffer.with_flush_interval(interval),
+            None => publish_buffer,
+        };
+        let publish_buffer = match flush_threshold {
+            Some(threshold) => publish_buffer.with_flush_threshold(threshold),
+            None => publish_buffer,
+        };
         Self {
-            publish_buffer: Arc::new(PublishBuffer::new(Arc::clone(&client), Arc::clone(&handle))),
+            publish_buffer: Arc::new(publish_buffer),
             handle,
             bridge: EventBridge::shared(&client),
             client,

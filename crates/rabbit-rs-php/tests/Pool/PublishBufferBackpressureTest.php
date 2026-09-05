@@ -5,27 +5,39 @@ declare(strict_types=1);
 describe('publish buffer backpressure', function () {
     it('raises backpressure when the publish buffer cannot drain', function () {
         // Blocked transport: no pre-pushed confirmations and a publisher
-        // capacity of 1, so every flush fails (core backpressure or the
-        // mock's NotRequested unconfirmed resolution) and re-buffers its
-        // batch — the application-side publish buffer never drains.
-        // The deadline must outlive the loop: deadline-expired publications
-        // are definitive and are not re-buffered, mirroring the core actor's
-        // expire_replay behavior.
+        // capacity of 1, so every attempted drain fails (core backpressure or
+        // the mock's terminal NotRequested unconfirmed resolution) and
+        // re-buffers its batch — the application-side publish buffer never
+        // drains.
+        //
+        // The auto-flush triggers are pinned above the ceiling (interval of
+        // one hour, threshold of 8192 messages) so no pipelined drain ever
+        // engages: pipelined drains re-buffer their failed batch and the next
+        // publish takes it again, so under loaded CI scheduling the buffer can
+        // stay near-empty while publications cycle buffer -> drain -> buffer,
+        // and the 30 s default deadline expires on starved runners, dropping
+        // re-buffered publications. With both triggers disabled the ceiling is
+        // reached through the synchronous overflow path instead, which is
+        // scheduling-independent (issue #139). The one-hour deadline keeps the
+        // re-buffer filter from dropping anything mid-test.
         //
         // Backpressure surfaces in two forms under the pipelined flush
         // (Round D): a surfaced drain record (the flush could not be
         // attempted) or the publish buffer refusing when it is full. Both
         // raise BackpressureException; this test pins the buffer ceiling
         // itself.
-        $pool = testingPool(defaultConfig(), ['publisher_capacity' => 1]);
+        $pool = testingPool(defaultConfig(), [
+            'publisher_capacity' => 1,
+            'buffer_flush_interval_ms' => 3_600_000,
+            'buffer_flush_threshold' => 8192,
+        ]);
 
         // PUBLISH_BUFFER_MAX_MESSAGES = 4096; beyond that, publish() refuses.
         // Re-buffered publications may exceed the ceiling (already accepted),
         // so the loop keeps going until the explicit refusal lands.
-        $message = pubMessage('backpressure', str_repeat('x', 64), [], 30000);
+        $message = pubMessage('backpressure', str_repeat('x', 64), [], 3_600_000);
 
         $refused = null;
-        $sightings = [];
         for ($i = 0; $i < 16384; $i++) {
             try {
                 $pool->publish($message);
@@ -35,34 +47,13 @@ describe('publish buffer backpressure', function () {
                     break;
                 }
                 // Surfaced drain backpressure: the batch could not be
-                // attempted and was re-buffered.
-                $key = 'bp:'.substr($exception->getMessage(), 0, 48);
-                $sightings[$key] = ($sightings[$key] ?? 0) + 1;
-            } catch (\Goopil\RabbitRs\Exception $exception) {
+                // attempted and was re-buffered; keep publishing.
+            } catch (\Goopil\RabbitRs\Exception) {
                 // A surfaced terminal outcome or drain failure: the
-                // publication was re-buffered with its message_id.
-                $key = $exception::class.':'.substr($exception->getMessage(), 0, 48);
-                $sightings[$key] = ($sightings[$key] ?? 0) + 1;
+                // publication was re-buffered with its message_id; keep
+                // publishing.
             }
         }
-
-        if ($refused === null) {
-            // CI-only diagnosis of the intermittent null-refusal mode.
-            $stats = 'stats-threw';
-            try {
-                $stats = json_encode($pool->stats());
-            } catch (\Throwable $statsException) {
-                $stats = 'stats threw: '.$statsException->getMessage();
-            }
-            fwrite(STDERR, sprintf(
-                'DIAG PublishBufferBackpressureTest iterations=%d sightings=%s stats=%s%s',
-                $i,
-                json_encode($sightings),
-                is_string($stats) ? $stats : 'non-string',
-                PHP_EOL,
-            ));
-        }
-
         expect($refused)->not->toBeNull('full publish buffer must raise backpressure');
         // Already-accepted messages are never dropped: the caller is told to
         // retry later.
