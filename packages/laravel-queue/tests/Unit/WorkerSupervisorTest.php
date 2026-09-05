@@ -5,9 +5,15 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
 
-/** queue:work connection flags the supervisor's child commands carry. */
-const CONNECTION_ARG_EU = '--connection=eu';
-const CONNECTION_ARG_US = '--connection=us';
+/**
+ * The queue connection is `queue:work`'s POSITIONAL argument (Laravel's
+ * WorkCommand signature is `queue:work {connection?}` — it defines no
+ * `--connection` option, and Symfony Console rejects unknown options, so an
+ * option-form child would die instantly with "The '--connection' option does
+ * not exist").
+ */
+const CONNECTION_ARG_EU = 'eu';
+const CONNECTION_ARG_US = 'us';
 
 /**
  * Single-entry plan shaped like WorkPlanResolver output.
@@ -93,6 +99,24 @@ describe('buildChildCommands', function (): void {
                 '--queue=orders',
                 '--name=worker-1',
             ]);
+    });
+
+    it('never passes a --connection option (queue:work takes it positionally)', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: [
+                ['connection' => 'eu', 'queues' => ['orders']],
+                ['connection' => 'us', 'queues' => ['orders']],
+            ],
+            workers: 2,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+        );
+
+        foreach ($supervisor->buildChildCommands() as $command) {
+            foreach ($command as $arg) {
+                expect($arg)->not->toStartWith('--connection=');
+            }
+        }
     });
 
     it('builds --workers children per plan entry with continuous worker indexes', function (): void {

@@ -28,7 +28,8 @@ class WorkerSupervisor
     /**
      * @param list<WorkPlanEntry> $plan One entry per targeted connection; each
      *         child consumes one entry's queues via
-     *         `queue:work --connection=<c> --queue=<q1,q2>`.
+     *         `queue:work <connection> --queue=<q1,q2>` (the connection is
+     *         the positional argument of Laravel's WorkCommand).
      * @param int $workers Children spawned per plan entry.
      * @param ?ProcessFactory $processFactory Optional override used by tests
      *         to spawn a stub process instead of `queue:work`.
@@ -79,11 +80,14 @@ class WorkerSupervisor
      */
     private function childCommand(int $workerIndex, array $entry): array
     {
+        // The connection is `queue:work`'s positional argument (Laravel's
+        // WorkCommand signature is `queue:work {connection?}`): passing it as
+        // an option would be rejected by Symfony Console.
         $cmd = [
             PHP_BINARY,
             'artisan',
             'queue:work',
-            "--connection={$entry['connection']}",
+            $entry['connection'],
             '--queue='.implode(',', $entry['queues']),
             '--name=worker-'.$workerIndex,
         ];
