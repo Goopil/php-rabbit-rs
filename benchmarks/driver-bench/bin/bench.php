@@ -20,8 +20,13 @@ declare(strict_types=1);
 | ~1024 bytes, aligned with Config::MESSAGE_PAYLOAD_LARAVEL_BYTES (Phase A).
 |
 | Output: single JSON object on stdout (and optionally --output=PATH).
-| Exit code 0 only when no message was lost (worker: received == count,
-| queue empty afterwards; dispatch: every push resolved without error).
+| Exit codes:
+|   0 — only when no message was lost (worker: received == count, queue
+|       empty afterwards; dispatch: every push resolved without error);
+|   1 — the run completed but failed its integrity checks (losses or late
+|       arrivals) or a drain stall was detected;
+|   2 — usage errors (bad arguments) or any failure before a result could
+|       be produced (bootstrap error, unreachable broker, driver defect).
 |
 | Reliability/metric contract (Round J #127): every archived JSON surfaces
 | per-op latency p50/p95/p99 (`latency_ms`), duplicates (worker: distinct
@@ -67,257 +72,267 @@ if (! in_array($mode, ['dispatch', 'worker'], true)) {
     exit(2);
 }
 
+const PAYLOAD_TARGET_BYTES = 1024;
+
+try {
 // ---------------------------------------------------------------------------
 // Bootstrap the app (loads .env, config, registers + boots providers)
 // ---------------------------------------------------------------------------
 
-$app = require __DIR__.'/../bootstrap/app.php';
-
-$consoleKernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
-$consoleKernel->bootstrap();
-
-/** @var QueueManager $queueManager */
-$queueManager = $app->make('queue');
-
-$driverPackage = match ($connection) {
-    'rabbit-rs' => 'goopil/rabbit-rs-laravel',
-    'rabbitmq-amqplib' => 'vladimir-yuldashev/laravel-queue-rabbitmq',
-    'rabbitmq-ext' => 'iamfarhad/laravel-rabbitmq',
-};
-
-$connectionConfig = (array) config("queue.connections.{$connection}", []);
-$queueName = (string) ($connectionConfig['queue'] ?? 'bench.default');
-
-$queue = $queueManager->connection($connection);
-
-// ---------------------------------------------------------------------------
-// Payload: real ~1024 B Laravel job envelope (aligned with Phase A)
-// ---------------------------------------------------------------------------
-
-const PAYLOAD_TARGET_BYTES = 1024;
-
-$payloadData = buildPayloadData(0);
-$bodySizeAtPadZero = measurePayloadBodySize($queue, $payloadData, $queueName);
-$padBytes = max(0, PAYLOAD_TARGET_BYTES - $bodySizeAtPadZero);
-$payloadData = buildPayloadData($padBytes);
-$payloadBodyBytes = measurePayloadBodySize($queue, $payloadData, $queueName);
-unset($bodySizeAtPadZero);
-
-// ---------------------------------------------------------------------------
-// Config echo (credentials masked)
-// ---------------------------------------------------------------------------
-
-$configEcho = maskCredentials($connectionConfig);
-if ($connection === 'rabbit-rs') {
-    // The goopil driver reads its broker/topology/publisher settings from
-    // the global rabbit-rs config, not the connection entry: echo it too
-    // (credentials masked) so the run records the effective broker config.
-    $configEcho['rabbit_rs_global'] = maskCredentials((array) config('rabbit-rs', []));
-}
-$configEcho['connection'] = $connection;
-$configEcho['mode'] = $mode;
-
-// ---------------------------------------------------------------------------
-// Warmup (unmeasured): purge leftovers from previous runs through the
-// driver's own purge API. The driver may dispatch its warmup pop freely:
-// a consumer that exists while the next fill is ingested receives every
-// delivery (pre-fill delivery races fixed in the core, #37).
-// ---------------------------------------------------------------------------
-
-purgeQueue($queue, $connection, $queueName);
-
-if ($mode === 'dispatch') {
-    $queue->push('bench.noop', buildPayloadData($padBytes), $queueName);
-
-    $drained = drainUntilEmpty($queue, $queueName, 1);
-    if ($drained < 1) {
-        fwrite(STDERR, "error: warmup message was not drained (got {$drained}/1) — aborting\n");
-        exit(1);
+    $app = require __DIR__.'/../bootstrap/app.php';
+    
+    $consoleKernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+    $consoleKernel->bootstrap();
+    
+    /** @var QueueManager $queueManager */
+    $queueManager = $app->make('queue');
+    
+    $driverPackage = match ($connection) {
+        'rabbit-rs' => 'goopil/rabbit-rs-laravel',
+        'rabbitmq-amqplib' => 'vladimir-yuldashev/laravel-queue-rabbitmq',
+        'rabbitmq-ext' => 'iamfarhad/laravel-rabbitmq',
+    };
+    
+    $connectionConfig = (array) config("queue.connections.{$connection}", []);
+    $queueName = (string) ($connectionConfig['queue'] ?? 'bench.default');
+    
+    $queue = $queueManager->connection($connection);
+    
+    // ---------------------------------------------------------------------------
+    // Payload: real ~1024 B Laravel job envelope (aligned with Phase A)
+    // ---------------------------------------------------------------------------
+    
+    $payloadData = buildPayloadData(0);
+    $bodySizeAtPadZero = measurePayloadBodySize($queue, $payloadData, $queueName);
+    $padBytes = max(0, PAYLOAD_TARGET_BYTES - $bodySizeAtPadZero);
+    $payloadData = buildPayloadData($padBytes);
+    $payloadBodyBytes = measurePayloadBodySize($queue, $payloadData, $queueName);
+    unset($bodySizeAtPadZero);
+    
+    // ---------------------------------------------------------------------------
+    // Config echo (credentials masked)
+    // ---------------------------------------------------------------------------
+    
+    $configEcho = maskCredentials($connectionConfig);
+    if ($connection === 'rabbit-rs') {
+        // The goopil driver reads its broker/topology/publisher settings from
+        // the global rabbit-rs config, not the connection entry: echo it too
+        // (credentials masked) so the run records the effective broker config.
+        $configEcho['rabbit_rs_global'] = maskCredentials((array) config('rabbit-rs', []));
     }
-}
-
-// ---------------------------------------------------------------------------
-// Measured rounds
-// ---------------------------------------------------------------------------
-
-gc_collect_cycles();
-gc_disable();
-
-$roundsDetail = [];
-$opsTotal = 0;
-$timeTotal = 0.0;
-$losses = 0;
-$lateArrivals = 0;
-$duplicates = null;
-$opLatenciesMs = [];
-$metrics = ['seen' => [], 'duplicates' => 0, 'op_latencies_ms' => []];
-
-for ($round = 0; $round < $rounds; $round++) {
-    if ($mode === 'worker') {
-        if ($round > 0) {
-            purgeQueue($queue, $connection, $queueName);
-        }
-
-        // Fill phase: mass dispatch, NOT measured (Phase A laravel-worker model).
-        for ($i = 0; $i < $count; $i++) {
-            $queue->push('bench.noop', $payloadData, $queueName);
-        }
-    }
-
-    $started = hrtime(true);
-    $received = 0;
-
-    if ($mode === 'worker') {
-        $received = drainUntilEmpty($queue, $queueName, $count, metrics: $metrics);
-        $opLatenciesMs = [...$opLatenciesMs, ...$metrics['op_latencies_ms']];
-        $duplicates = ($duplicates ?? 0) + $metrics['duplicates'];
-    } else {
-        for ($i = 0; $i < $count; $i++) {
-            $opStart = hrtime(true);
-            $queue->push('bench.noop', $payloadData, $queueName);
-            $opLatenciesMs[] = (hrtime(true) - $opStart) / 1e6;
-        }
-        $received = $count;
-    }
-
-    $elapsed = (hrtime(true) - $started) / 1e9;
-
-    if ($mode === 'worker' && $received < $count) {
-        $losses += $count - $received;
-    }
-
-    $opsTotal += $received;
-    $timeTotal += $elapsed;
-
-    $roundsDetail[] = [
-        'round' => $round,
-        'ops' => $received,
-        'time_s' => round($elapsed, 6),
-        'rate_ops_s' => $elapsed > 0 ? round($received / $elapsed, 2) : null,
-        // Stalls are no longer silently recovered: a null streak past the
-        // plausible bound fails the run loudly, so this stays 0 by
-        // construction.
-        'stall_recoveries' => 0,
-    ];
-}
-
-gc_enable();
-
-// --- Post-run cleanup (dispatch): published rounds are never consumed, so
-// without a final purge the queue keeps this run's backlog and the depth
-// drifts across rounds and consecutive runs. Purge through the driver API
-// (the pop-drain fallback is acceptable here: dispatch never consumes). ---
-if ($mode === 'dispatch') {
+    $configEcho['connection'] = $connection;
+    $configEcho['mode'] = $mode;
+    
+    // ---------------------------------------------------------------------------
+    // Warmup (unmeasured): purge leftovers from previous runs through the
+    // driver's own purge API. The driver may dispatch its warmup pop freely:
+    // a consumer that exists while the next fill is ingested receives every
+    // delivery (pre-fill delivery races fixed in the core, #37).
+    // ---------------------------------------------------------------------------
+    
     purgeQueue($queue, $connection, $queueName);
-}
-
-// ---------------------------------------------------------------------------
-// Post-run verification: the queue must stay empty (worker mode). A settling
-// window absorbs deliveries that are still in flight around the prefetch
-// window when the measured drain completes; anything that surfaces there is
-// acked and reported as a late arrival (a non-zero count fails the run).
-// ---------------------------------------------------------------------------
-
-if ($mode === 'worker') {
-    $late = 0;
-    $consecutiveNulls = 0;
-    $settleDeadline = hrtime(true) + 5_000_000_000; // 5 s settling window
-
-    while (hrtime(true) < $settleDeadline && $consecutiveNulls < 40) {
-        $job = $queue->pop($queueName);
-
-        if ($job === null) {
-            $consecutiveNulls++;
-            usleep(25_000);
-            continue;
+    
+    if ($mode === 'dispatch') {
+        $queue->push('bench.noop', buildPayloadData($padBytes), $queueName);
+    
+        $drained = drainUntilEmpty($queue, $queueName, 1);
+        if ($drained < 1) {
+            fwrite(STDERR, "error: warmup message was not drained (got {$drained}/1) — aborting\n");
+            exit(1);
         }
-
+    }
+    
+    // ---------------------------------------------------------------------------
+    // Measured rounds
+    // ---------------------------------------------------------------------------
+    
+    gc_collect_cycles();
+    gc_disable();
+    
+    $roundsDetail = [];
+    $opsTotal = 0;
+    $timeTotal = 0.0;
+    $losses = 0;
+    $lateArrivals = 0;
+    $duplicates = null;
+    $opLatenciesMs = [];
+    $metrics = ['seen' => [], 'duplicates' => 0, 'op_latencies_ms' => []];
+    
+    for ($round = 0; $round < $rounds; $round++) {
+        if ($mode === 'worker') {
+            if ($round > 0) {
+                purgeQueue($queue, $connection, $queueName);
+            }
+    
+            // Fill phase: mass dispatch, NOT measured (Phase A laravel-worker model).
+            for ($i = 0; $i < $count; $i++) {
+                $queue->push('bench.noop', $payloadData, $queueName);
+            }
+        }
+    
+        $started = hrtime(true);
+        $received = 0;
+    
+        if ($mode === 'worker') {
+            $received = drainUntilEmpty($queue, $queueName, $count, metrics: $metrics);
+            $opLatenciesMs = [...$opLatenciesMs, ...$metrics['op_latencies_ms']];
+            $duplicates = ($duplicates ?? 0) + $metrics['duplicates'];
+        } else {
+            for ($i = 0; $i < $count; $i++) {
+                $opStart = hrtime(true);
+                $queue->push('bench.noop', $payloadData, $queueName);
+                $opLatenciesMs[] = (hrtime(true) - $opStart) / 1e6;
+            }
+            $received = $count;
+        }
+    
+        $elapsed = (hrtime(true) - $started) / 1e9;
+    
+        if ($mode === 'worker' && $received < $count) {
+            $losses += $count - $received;
+        }
+    
+        $opsTotal += $received;
+        $timeTotal += $elapsed;
+    
+        $roundsDetail[] = [
+            'round' => $round,
+            'ops' => $received,
+            'time_s' => round($elapsed, 6),
+            'rate_ops_s' => $elapsed > 0 ? round($received / $elapsed, 2) : null,
+            // Stalls are no longer silently recovered: a null streak past the
+            // plausible bound fails the run loudly, so this stays 0 by
+            // construction.
+            'stall_recoveries' => 0,
+        ];
+    }
+    
+    gc_enable();
+    
+    // --- Post-run cleanup (dispatch): published rounds are never consumed, so
+    // without a final purge the queue keeps this run's backlog and the depth
+    // drifts across rounds and consecutive runs. Purge through the driver API
+    // (the pop-drain fallback is acceptable here: dispatch never consumes). ---
+    if ($mode === 'dispatch') {
+        purgeQueue($queue, $connection, $queueName);
+    }
+    
+    // ---------------------------------------------------------------------------
+    // Post-run verification: the queue must stay empty (worker mode). A settling
+    // window absorbs deliveries that are still in flight around the prefetch
+    // window when the measured drain completes; anything that surfaces there is
+    // acked and reported as a late arrival (a non-zero count fails the run).
+    // ---------------------------------------------------------------------------
+    
+    if ($mode === 'worker') {
+        $late = 0;
         $consecutiveNulls = 0;
-        $job->delete();
-        $late++;
+        $settleDeadline = hrtime(true) + 5_000_000_000; // 5 s settling window
+    
+        while (hrtime(true) < $settleDeadline && $consecutiveNulls < 40) {
+            $job = $queue->pop($queueName);
+    
+            if ($job === null) {
+                $consecutiveNulls++;
+                usleep(25_000);
+                continue;
+            }
+    
+            $consecutiveNulls = 0;
+            $job->delete();
+            $late++;
+        }
+    
+        $lateArrivals = $late;
     }
-
-    $lateArrivals = $late;
-}
-
-$rates = array_map(static fn (array $r) => $r['rate_ops_s'] ?? 0.0, $roundsDetail);
-$rates = array_values(array_filter($rates, static fn ($r) => $r > 0.0));
-
-// Native pool reconnects (rabbit-rs only): read from the same factory the
-// connector uses, so the stats describe THIS run's pool. Other drivers do
-// not surface a reconnect counter (null — not measured, never a zero claim).
-$reconnects = null;
-if ($connection === 'rabbit-rs') {
-    try {
-        $compiled = ConnectionCompiler::compile($connection, $connectionConfig, (array) config('rabbit-rs', []));
-        $reconnects = $app->make(NativePoolFactory::class)
-            ->make($compiled['native'])
-            ->stats()['reconnects_total'] ?? null;
-    } catch (\Throwable) {
-        $reconnects = null;
+    
+    $rates = array_map(static fn (array $r) => $r['rate_ops_s'] ?? 0.0, $roundsDetail);
+    $rates = array_values(array_filter($rates, static fn ($r) => $r > 0.0));
+    
+    // Native pool reconnects (rabbit-rs only): read from the same factory the
+    // connector uses, so the stats describe THIS run's pool. Other drivers do
+    // not surface a reconnect counter (null — not measured, never a zero claim).
+    $reconnects = null;
+    if ($connection === 'rabbit-rs') {
+        try {
+            $compiled = ConnectionCompiler::compile($connection, $connectionConfig, (array) config('rabbit-rs', []));
+            $reconnects = $app->make(NativePoolFactory::class)
+                ->make($compiled['native'])
+                ->stats()['reconnects_total'] ?? null;
+        } catch (\Throwable) {
+            $reconnects = null;
+        }
     }
-}
-
-$ok = ($mode === 'dispatch' || ($losses === 0)) && $lateArrivals === 0;
-
-$result = [
-    'benchmark' => 'driver-bench',
-    'phase' => 'E',
-    'ok' => $ok,
-    'connection' => $connection,
-    'driver_package' => $driverPackage,
-    'driver_package_version' => \Composer\InstalledVersions::getPrettyVersion($driverPackage),
-    'mode' => $mode,
-    'queue' => $queueName,
-    'count' => $count,
-    'rounds' => $rounds,
-    'payload_body_bytes' => $payloadBodyBytes,
-    'payload_target_bytes' => PAYLOAD_TARGET_BYTES,
-    'ops_total' => $opsTotal,
-    'time_total_s' => round($timeTotal, 6),
-    'avg_rate_ops_s' => $timeTotal > 0 ? round($opsTotal / $timeTotal, 2) : null,
-    'min_rate_ops_s' => $rates !== [] ? round(min($rates), 2) : null,
-    'max_rate_ops_s' => $rates !== [] ? round(max($rates), 2) : null,
-    'losses' => $losses,
-    'duplicates' => $duplicates,
-    'late_arrivals_after_drain' => $lateArrivals,
-    'reconnects_total' => $reconnects,
-    'latency_ms' => [
-        'source' => $mode === 'dispatch' ? 'Queue::push call' : 'pop+ack (delete) call',
-        'p50' => bench_percentile($opLatenciesMs, 0.50),
-        'p95' => bench_percentile($opLatenciesMs, 0.95),
-        'p99' => bench_percentile($opLatenciesMs, 0.99),
-    ],
-    'rounds_detail' => $roundsDetail,
-    'config' => $configEcho,
-    'meta' => [
-        'php' => PHP_VERSION,
-        'sapi' => PHP_SAPI,
-        'extensions' => [
-            'rabbit_rs' => phpversion('rabbit_rs') ?: false,
-            'amqp' => phpversion('amqp') ?: false,
+    
+    $ok = ($mode === 'dispatch' || ($losses === 0)) && $lateArrivals === 0;
+    
+    $result = [
+        'benchmark' => 'driver-bench',
+        'phase' => 'E',
+        'ok' => $ok,
+        'connection' => $connection,
+        'driver_package' => $driverPackage,
+        'driver_package_version' => \Composer\InstalledVersions::getPrettyVersion($driverPackage),
+        'mode' => $mode,
+        'queue' => $queueName,
+        'count' => $count,
+        'rounds' => $rounds,
+        'payload_body_bytes' => $payloadBodyBytes,
+        'payload_target_bytes' => PAYLOAD_TARGET_BYTES,
+        'ops_total' => $opsTotal,
+        'time_total_s' => round($timeTotal, 6),
+        'avg_rate_ops_s' => $timeTotal > 0 ? round($opsTotal / $timeTotal, 2) : null,
+        'min_rate_ops_s' => $rates !== [] ? round(min($rates), 2) : null,
+        'max_rate_ops_s' => $rates !== [] ? round(max($rates), 2) : null,
+        'losses' => $losses,
+        'duplicates' => $duplicates,
+        'late_arrivals_after_drain' => $lateArrivals,
+        'reconnects_total' => $reconnects,
+        'latency_ms' => [
+            'source' => $mode === 'dispatch' ? 'Queue::push call' : 'pop+ack (delete) call',
+            'p50' => bench_percentile($opLatenciesMs, 0.50),
+            'p95' => bench_percentile($opLatenciesMs, 0.95),
+            'p99' => bench_percentile($opLatenciesMs, 0.99),
         ],
-        'laravel' => \Composer\InstalledVersions::getPrettyVersion('laravel/framework'),
-        'os' => PHP_OS.' '.php_uname('r'),
-    ],
-];
-
-$json = json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-if ($json === false) {
-    fwrite(STDERR, "error: failed to encode result JSON\n");
-    exit(1);
-}
-
-fwrite(STDOUT, $json.PHP_EOL);
-
-if ($outputPath !== null) {
-    if (@file_put_contents($outputPath, $json.PHP_EOL) === false) {
-        fwrite(STDERR, "error: failed to write output file: {$outputPath}\n");
+        'rounds_detail' => $roundsDetail,
+        'config' => $configEcho,
+        'meta' => [
+            'php' => PHP_VERSION,
+            'sapi' => PHP_SAPI,
+            'extensions' => [
+                'rabbit_rs' => phpversion('rabbit_rs') ?: false,
+                'amqp' => phpversion('amqp') ?: false,
+            ],
+            'laravel' => \Composer\InstalledVersions::getPrettyVersion('laravel/framework'),
+            'os' => PHP_OS.' '.php_uname('r'),
+        ],
+    ];
+    
+    $json = json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        fwrite(STDERR, "error: failed to encode result JSON\n");
         exit(1);
     }
+    
+    fwrite(STDOUT, $json.PHP_EOL);
+    
+    if ($outputPath !== null) {
+        if (@file_put_contents($outputPath, $json.PHP_EOL) === false) {
+            fwrite(STDERR, "error: failed to write output file: {$outputPath}\n");
+            exit(1);
+        }
+    }
+    
+    exit($ok ? 0 : 1);
+} catch (Throwable $e) {
+    // Any escaping Throwable (broker failure, driver defect, bootstrap
+    // error) must not fall through to the global exception handler: the
+    // process would terminate with the exception's code — 0 for
+    // ConnectionException — and no result JSON, silently lying to callers
+    // that check exit codes (issue #141).
+    fwrite(STDERR, sprintf("error: %s: %s\n", $e::class, $e->getMessage()));
+    exit(2);
 }
-
-exit($ok ? 0 : 1);
 
 // ---------------------------------------------------------------------------
 // Helpers
