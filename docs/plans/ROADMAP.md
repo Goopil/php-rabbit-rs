@@ -255,6 +255,54 @@ with the feature, never in a later docs pass.
   failure mode (#139, unrelated to the fixed mutex race; diagnostic
   instrumentation kept in the test to capture the next occurrence).
 
+## Round K — consolidation: stability + memory evidence (post-1.0, 2026-09-05)
+
+Tracker: #142. Sub-issues: #143 (soak telemetry), #144 (nightly CI soak).
+Design: `docs/superpowers/specs/2026-09-05-stability-memory-soak-design.md`.
+
+Motivation: the 1.0 gate is complete (v0.1.0, 2026-09-04). Memory safety is
+proven by construction (byte budgets, buffer ceilings, bounded queues) but
+never by measurement — no harness samples memory and no long-duration run
+exists (the Round I soak is 10 minutes, kill-focused, zero memory telemetry).
+Before any further performance work, the core must be proven stable and
+leak-free over sustained runs. The round also closes the two open rigor
+debts: #141 (bench.php exits 0 without writing its output JSON on permanent
+broker failure — silently invalidated a #140 smoke batch) and #139 (CI-only
+PublishBufferBackpressureTest flake, DIAG waiting for data).
+
+Scope:
+
+1. **Soak memory telemetry** (#143): RSS sampling + PHP usage/peak +
+   `stats()` snapshots every 10 s; warmup-excluded RSS-slope leak detection
+   (least-squares, fail > `--leak-mb-per-hour`, default 20); per-cycle
+   `publish_buffered == 0` tripwire; steady mode (`--kill-every=0`); `memory`
+   block in the archived JSON. Small extension: expose
+   `publish_buffered`/`publish_buffered_bytes` in `Pool::stats()` (today
+   `pub(crate)` only).
+2. **Nightly CI soak** (#144): scheduled workflow — steady segment (30 min) +
+   kill segment (15 min) on the lab, JSON artifacts archived, loud failure.
+3. **#141**: bench.php writes an error JSON and exits non-zero (exit 2) on
+   permanent broker failure; callers fail loudly.
+4. **#139**: bounded local reproduction attempt (full ext suite in one
+   process + CPU contention, budget 20 runs); if reproduced, DIAG data →
+   root cause → fix → remove the diagnostic; if not, document with a stop
+   condition and keep the diagnostic.
+5. **Detector validation**: one-off injected-leak check (temporary patch,
+   verify the soak fails on slope, revert).
+6. **Archived evidence**: local 60-min kill soak + 30-min steady run under
+   `benchmarks/results/round-k-soak/` (round-d archive pattern).
+
+Out of scope: native heap profiling (dhat — escalation only if the RSS slope
+shows growth); micro-optimizations (audit F-38) and `Consumer::next()` ~60 µs
+attribution (each requires a fresh post-Round-D profile first, separate
+round); F2/F3 leftovers #53/#58/#60.
+
+Success criteria: soak.php fails on slope > threshold / per-cycle buffered ≠
+0 / missing > 0 / stall / (kill mode) no reconnect; detector proven to fire
+via injected-leak check; nightly CI green with archived artifacts; local
+evidence archived; #141 closed; #139 fixed or bounded-documented; quality
+gate green; no hot-path changes.
+
 
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
 
@@ -698,8 +746,8 @@ QoS adjustment sequence on the mock transport; fixed mode behavior byte-identica
 Round F1 → Round C → Round F2 → Round E → Round D~~ — Round 2 and Round F are
 landed (v0.0.8).
 
-Current queue (updated 2026-09-04 — **stop features → fix consumer →
-optimize confirms → prove results → ship 1.0**):
+Current queue (updated 2026-09-05 — **1.0 shipped → prove stability + memory →
+then re-profile before any perf work**):
 
 1. ~~Round I (#126, P0)~~ — **delivered 2026-09-03** (PRs #132/#133).
 2. ~~Round D (#41, P0, promoted)~~ — **delivered 2026-09-04** (PR #135;
@@ -712,10 +760,15 @@ optimize confirms → prove results → ship 1.0**):
 5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130); **tag v0.1.0 cut
    and shipped 2026-09-04** (full release pipeline green: 10 builds,
    verify-PIE install, Laravel split, Homebrew).
+6. **Round K (#142, next)** — consolidation: soak memory evidence (leak
+   proof), nightly CI soak, #141 bench error contract, #139 bounded
+   reproduction attempt.
 
-Feature freeze until the P0s land: Round E (#42) and the other parked ideas
-(Kubernetes probes #85, topology command #84, Prometheus, realtime stack)
-stay parked — the review's P2 list confirms the freeze.
+Feature freeze lifted with 1.0; performance work stays gated on fresh
+profiles: micro-optimizations (audit F-38) and the `Consumer::next()` ~60 µs
+attribution each require a re-profile post-Round-D before any change; Round E
+(#42) and the other parked ideas (Kubernetes probes #85, topology command #84,
+Prometheus, realtime stack) remain parked until a need surfaces.
 
 Conflict points between tracks (rebase or sequence): #66 ↔ #71 share
 `consumer/set.rs`; #67 ↔ #73 ↔ #76 share `publisher/actor.rs` /
@@ -817,6 +870,67 @@ this starts before the Round G stabilization exit criterion.
    Pusher protocol for `laravel-echo` (private/presence channels, signed auth
    endpoint) on top of the MQTT bridge, with channels mapped to
    queues/topics; reuse Laravel's broadcast auth conventions. Depends on 2.
+
+### Candidate ideas (2026-09-05 review)
+
+Ten ideas recorded so nothing is lost. **Highlighted** (review pick — next in
+line when capacity frees up): 4, 5, 6, 11, 12 below. The other five are
+**force parked** (good ideas, no near-term need; arbitrate before any of them
+starts).
+
+4. **Laravel log sink (highlighted)** — the core log facade (#56) is
+   silent-by-default with a stderr-only sink (PHP callbacks cannot cross
+   Tokio threads); drain buffered core log records at PHP-visible operations
+   into a Laravel `Log::channel()` sink so core diagnostics land in the
+   app's normal logs.
+5. **Payload compression, opt-in (highlighted)** — zstd (or lz4) on the
+   publish payload, negotiated per connection/config and transparent at
+   consume; direct throughput/memory win for large envelopes; contract
+   invisible (at-least-once and duplicate identification unchanged).
+6. **Trace-context propagation (highlighted)** — W3C `traceparent` (and
+   `baggage`) carried in message headers publish → consume, a span opened
+   around job execution at the extension/Laravel boundary; the foundation
+   that makes the parked Prometheus/OTel exporters actually useful (metrics
+   export alone cannot correlate a job across the queue).
+7. **Optional SQL outbox (force parked)** — the replay buffer is process
+   memory only; an outbox table + relay worker would close the last
+   documented at-least-once gap (crash durability). Real but large; needs a
+   design pass on ordering, cleanup, and multi-process relay ownership.
+8. **Producer backpressure strategies (force parked)** — today
+   `BackpressureException` is throw-only; opt-in strategies
+   (block-with-deadline / shed-oldest / spill-to-outbox) would let callers
+   choose behavior under broker outage. Pairs naturally with the SQL outbox.
+9. **DLQ inspect/replay tooling (force parked)** — #70/#72 settle poison
+   messages terminally, but there is no operational tool to view, replay, or
+   purge a dead-letter queue (`rabbit-rs:dlq {action}` over the management
+   API, replay to the origin exchange with preserved headers).
+10. **Per-key ordering via consistent-hash exchange (force parked)** —
+    scale-out ordering guarantee: route by a partition key through the
+    consistent-hash exchange plugin so one worker fleet member owns a key's
+    stream; complements fan-out, needs key-ownership rebalancing semantics.
+11. **Per-queue custom Job class (highlighted)** — `job_class` per connection
+    and per queue in `queue.connections.*`, resolved by the existing
+    `RabbitMqQueue::marshalJob()` factory and validated against the
+    `RabbitMqJob` (or Horizon) base class: custom payload decoding for
+    queues produced by non-Laravel producers (CloudEvents, protobuf, raw
+    JSON), first-class accessors for AMQP headers (`x-death`, trace
+    context), payload transforms at pop. Guardrail: subclasses override
+    payload accessors, never settlement (`delete()`/`release()`) — the
+    at-least-once contract stays driver-owned. Already achievable today by
+    subclassing the queue and overriding `marshalJob` (public factory,
+    `src/RabbitMqQueue.php:516`); the config key is the DX nicety.
+12. **Failed-message rerouting (highlighted)** — when a Laravel job fails
+    terminally (handler exception after `max_attempts` → framework
+    `failed_jobs` table), mirror it to a broker exchange (`failed_exchange` +
+    `failed_routing_key` with a `{queue}` placeholder — vladimir's
+    `reroute_failed` surface): side consumers, alerting, retry by another
+    system. Distinct failure layer from the DLQ/DLX story (#70/#72 handle
+    delivery-level poison *before* processing; this handles post-processing
+    handler failures) — closes the "failed jobs invisible to the broker" gap.
+13. **Ops facade (force parked)** — a `RabbitRs::` facade over the existing
+    Pool surface (`size()`, `clear()`, `stats()`, publish-to-exchange),
+    mirroring iamfarhad's DX; natural sibling of #84 (admin commands and
+    facade would share one helper layer). DX nicety, no contract impact.
 
 - *(slot reserved — add new ideas here with a date and one-line motivation.)*
 
