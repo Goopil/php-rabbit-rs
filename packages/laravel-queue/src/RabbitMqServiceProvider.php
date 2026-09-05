@@ -20,7 +20,7 @@ class RabbitMqServiceProvider extends ServiceProvider
      * Version constraint of the required ext-rabbit_rs extension. Must stay in
      * sync with the `ext-rabbit_rs` requirement in composer.json.
      */
-    public const EXTENSION_CONSTRAINT = '^0.0';
+    public const EXTENSION_CONSTRAINT = '^0.1';
 
     public function register(): void
     {
