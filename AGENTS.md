@@ -84,7 +84,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 
 ## Reliability Invariants
 
-- Unconfirmed publications survive connection recovery only in bounded process memory and are replayed with the same `message_id` and original deadline.
+- Unconfirmed publications survive connection recovery only in bounded process memory and are replayed with the same `message_id` and original deadline. A publication whose deadline expired while parked during a recovery suspension is re-armed exactly once with a fresh deadline before failing terminally (measured by `publication_retries_total`).
 - Never describe in-memory replay as durable across a PHP process crash; durability beyond a crash requires an external outbox.
 - Publisher confirms, mandatory returns, timeouts, and terminal errors resolve each waiter once. A mandatory return takes precedence over its following ACK.
 - Runtime and connection registries are lazy and process-local. A PID change invalidates inherited resources after a fork.

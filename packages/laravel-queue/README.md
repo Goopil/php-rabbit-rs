@@ -287,7 +287,7 @@ Controls how publishes are confirmed by the broker.
 
 **`mandatory`** — The broker returns messages that cannot be routed (no queue matches the routing key). A return takes precedence over a following ACK.
 
-**`confirm_timeout`** — Milliseconds to wait for a confirm before treating the publish as failed. A timeout resolves the waiter once — it does not mean the message was lost, only that confirmation didn't arrive in time.
+**`confirm_timeout`** — Milliseconds to wait for a confirm before treating the publish as failed. A timeout resolves the waiter once — it does not mean the message was lost, only that confirmation didn't arrive in time. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
 
 ### Delayed Messages
 

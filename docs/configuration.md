@@ -99,7 +99,7 @@ connection is therefore:
 | `exchange` | ?string | `laravel.jobs` | Publishing exchange; `null` publishes through the default exchange |
 | `routing_key` | ?string | `{queue}` | `{queue}` is replaced with the queue name at publish time; `null` means no routing key (default-exchange/fanout usage) |
 | `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (confirms only), `blind` (fire-and-forget) |
-| `confirm_timeout` | int (ms) | `30000` | Publisher confirm timeout, minimum `1000` |
+| `confirm_timeout` | int (ms) | `30000` | Publisher confirm timeout, minimum `1000`; during a recovery, a publish parked in replay is retried once with a fresh deadline, while a confirm timeout on a live connection stays terminal |
 | `prefetch` | int | `64` | QoS prefetch per consumer channel, 1–65535 |
 | `wait_timeout` | int (ms) | `30000` | Consumer acquisition deadline, 1000–86400000 |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |

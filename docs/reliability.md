@@ -24,7 +24,7 @@ Publisher confirms are **enabled by default** (`safety = "safe"`, the default, d
 3. The broker sends `basic.ack` (confirmed) or `basic.nack` (rejected) with the sequence number
 4. The publish call resolves only after the confirm is received
 
-A confirm timeout (connection key `confirm_timeout`, default 30000 ms) ensures the call does not hang indefinitely.
+A confirm timeout (connection key `confirm_timeout`, default 30000 ms) ensures the call does not hang indefinitely. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
 
 ## Mandatory returns
 
