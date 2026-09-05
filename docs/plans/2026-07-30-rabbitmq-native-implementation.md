@@ -1435,7 +1435,7 @@ The ledger must keep for each publication the original request, its waiter, its 
 
 PublisherHandle acquires via try_acquire_owned a permit from a Semaphore sized to the overall capacity before accepting the command. The permit follows the entry until its terminal state; merely draining the mpsc therefore does not release capacity during an outage.
 
-On Ready, reject old or identical generations, verify topology_restored, activate confirm_select on the new channel, then replay the existing deque first before new commands. The original deadline is checked before each attempt and used for the confirm timeout. A recoverable error places the entry back in replay only once; NACK, return, timeout, permanent error and closure are terminal.
+On Ready, reject old or identical generations, verify topology_restored, activate confirm_select on the new channel, then replay the existing deque first before new commands. The original deadline is checked before each attempt and used for the confirm timeout. A recoverable error places the entry back in replay only once; NACK, return, confirm timeout on a live connection, permanent error and closure are terminal, while a publication parked in replay whose deadline expired during a recovery suspension is re-armed exactly once with a fresh deadline before failing terminally.
 
 The ConnectionActor remains solely responsible for backoff and network opening. It republishes nothing itself; after topology reconciliation, the coordinator hands the new PublisherChannel and generation to the PublisherActor.
 
