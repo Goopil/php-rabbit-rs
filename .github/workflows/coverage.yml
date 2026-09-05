@@ -115,7 +115,7 @@ jobs:
 
       - name: Run benchmark metric-contract tests
         run: |
-          composer update --quiet --working-dir=benchmarks --ignore-platform-req=ext-rabbit_rs
+          composer install --no-interaction --no-progress --working-dir=benchmarks --ignore-platform-req=ext-rabbit_rs
           composer test --working-dir=benchmarks
 
       - name: Upload Clover to Codecov
