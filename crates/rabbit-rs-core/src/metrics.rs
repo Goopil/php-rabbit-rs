@@ -46,6 +46,7 @@ impl Metrics {
             reconnects_total: load(&self.inner.reconnects_total),
             recovery_failures_total: load(&self.inner.recovery_failures_total),
             backpressure_total: load(&self.inner.backpressure_total),
+            publication_retries_total: load(&self.inner.publication_retries_total),
             confirmation_latency: self.inner.confirmation_latency.snapshot(),
             settlement_latency: self.inner.settlement_latency.snapshot(),
         }
@@ -94,6 +95,10 @@ impl Metrics {
     pub(crate) fn record_backpressure(&self) {
         increment(&self.inner.backpressure_total);
     }
+
+    pub(crate) fn record_publication_retry(&self) {
+        increment(&self.inner.publication_retries_total);
+    }
 }
 
 impl fmt::Debug for Metrics {
@@ -114,6 +119,7 @@ struct MetricsInner {
     reconnects_total: AtomicU64,
     recovery_failures_total: AtomicU64,
     backpressure_total: AtomicU64,
+    publication_retries_total: AtomicU64,
     confirmation_latency: AtomicHistogram,
     settlement_latency: AtomicHistogram,
 }
@@ -141,6 +147,8 @@ pub struct MetricsSnapshot {
     pub recovery_failures_total: u64,
     /// Publications rejected before acceptance because capacity was exhausted.
     pub backpressure_total: u64,
+    /// Publications whose deadline expired during a recovery suspension and were re-armed once.
+    pub publication_retries_total: u64,
     /// End-to-end latency from publication acceptance to broker confirmation.
     pub confirmation_latency: HistogramSnapshot,
     /// End-to-end latency from delivery reservation to successful settlement.

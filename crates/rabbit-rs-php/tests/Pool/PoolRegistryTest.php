@@ -51,6 +51,12 @@ describe('pool registry', function () {
         $pool->close();
     });
 
+    it('exposes the publication retry counter in stats', function () {
+        $pool = new \Goopil\RabbitRs\Pool(poolConfig());
+        expect($pool->stats()['publication_retries_total'])->toBe(0);
+        $pool->close();
+    });
+
     it('invalidates aliases after closing a shared handle', function () {
         $first = new \Goopil\RabbitRs\Pool(poolConfig());
         $second = new \Goopil\RabbitRs\Pool(poolConfig());

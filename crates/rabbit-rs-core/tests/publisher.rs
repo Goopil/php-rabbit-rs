@@ -1045,7 +1045,7 @@ async fn retained_entries_keep_global_capacity_while_mpsc_is_drained() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn deadline_expiring_during_outage_prevents_replay() {
+async fn replay_expiry_during_outage_is_retried_once_then_fails() {
     let transport = MockTransport::default();
     let actor = actor_recovery(&transport, 8).await;
     suspend(&actor).await;
@@ -1057,9 +1057,13 @@ async fn deadline_expiring_during_outage_prevents_replay() {
         .expect("queued");
     tokio::task::yield_now().await;
 
+    // First expiry re-arms the publication once with a fresh 10 ms window.
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+    // Second expiry exhausts the single retry: terminal Timeout.
     tokio::time::advance(Duration::from_millis(10)).await;
     assert_eq!(
-        waiter.wait().await.expect_err("deadline").kind(),
+        waiter.wait().await.expect_err("retry exhausted").kind(),
         PublishErrorKind::Timeout
     );
 
@@ -1071,7 +1075,56 @@ async fn deadline_expiring_during_outage_prevents_replay() {
         })
         .await
         .expect("resume after expiry");
-    assert!(publish_operations(&transport).is_empty());
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "expiry must never reach the wire"
+    );
+    assert_eq!(actor.metrics_snapshot().publication_retries_total, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn replay_expiry_during_outage_is_retried_once_and_confirmed_after_ready() {
+    let transport = MockTransport::default();
+    let actor = actor_recovery(&transport, 8).await;
+    suspend(&actor).await;
+    let waiter = actor
+        .try_publish(request_recovery(
+            "idle-publish",
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("queued");
+    tokio::task::yield_now().await;
+
+    // Recovery outage outlasts the original deadline: expiry re-arms once.
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::task::yield_now().await;
+
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    actor
+        .connection_event(PublisherConnectionEvent::Ready {
+            generation: 2,
+            channel: new_channel(&transport).await,
+            topology_restored: true,
+        })
+        .await
+        .expect("publisher resumed");
+
+    assert_eq!(
+        waiter.wait().await.expect("confirmed after retry"),
+        PublishOutcome::Confirmed {
+            message_id: "idle-publish".into()
+        }
+    );
+    let attempts = publish_operations(&transport);
+    assert_eq!(
+        attempts.len(),
+        1,
+        "re-arm parks in replay, no early republish"
+    );
+    assert_eq!(
+        attempts[0].properties.message_id.as_deref(),
+        Some("idle-publish")
+    );
 }
 
 #[tokio::test(start_paused = true)]
