@@ -1,0 +1,94 @@
+name: Nightly Soak
+
+# Scheduled workflows are disabled by GitHub after 60 days of repository
+# inactivity — re-enable manually from the Actions tab if that happens.
+
+on:
+  schedule:
+    - cron: "7 2 * * *" # nightly, UTC
+  workflow_dispatch:
+    inputs:
+      steady_minutes:
+        description: "Steady segment duration (minutes)"
+        default: "30"
+      kill_minutes:
+        description: "Kill segment duration (minutes)"
+        default: "15"
+
+# A soak owns the lab exclusively; never run two at once.
+concurrency:
+  group: nightly-soak
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: Soak (steady + kill)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust 1.96
+        uses: ./.github/actions/rust-setup
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Build release PHP extension
+        run: cargo build --release --locked --manifest-path crates/rabbit-rs-php/Cargo.toml
+
+      - name: Install driver-bench dependencies
+        run: composer install --no-interaction --no-progress --working-dir=benchmarks/driver-bench --ignore-platform-req=ext-rabbit_rs
+
+      - name: Start RabbitMQ lab
+        run: ./scripts/lab-up.sh with-plugin
+
+      - name: Wait for lab readiness
+        run: |
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh; then
+              echo "Lab is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Lab did not become ready after 120s." >&2
+          exit 1
+
+      - name: Prepare artifacts directory
+        run: mkdir -p benchmarks/results/round-k-soak
+
+      - name: Soak — steady segment (leak evidence)
+        run: |
+          php -d extension=target/release/librabbit_rs_php.dylib \
+            benchmarks/driver-bench/bin/soak.php \
+            --minutes=${{ inputs.steady_minutes || '30' }} --fill=1000 \
+            --kill-every=0 --sample-interval=10 \
+            --output=benchmarks/results/round-k-soak/nightly-steady.json
+
+      - name: Soak — kill segment (recovery evidence)
+        run: |
+          php -d extension=target/release/librabbit_rs_php.dylib \
+            benchmarks/driver-bench/bin/soak.php \
+            --minutes=${{ inputs.kill_minutes || '15' }} --fill=1000 \
+            --kill-every=10 --kill-timeout-ms=50 --sample-interval=10 \
+            --output=benchmarks/results/round-k-soak/nightly-kill.json
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: soak-results
+          path: benchmarks/results/round-k-soak/nightly-*.json
+          if-no-files-found: warn
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh

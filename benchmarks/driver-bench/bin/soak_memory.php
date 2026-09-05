@@ -87,3 +87,36 @@ function rssSlopeMbPerHour(array $samples, float $warmupS): ?float
 
     return ($num / $den) * 3600.0 / (1024.0 * 1024.0);
 }
+
+/**
+ * Marks sequence number $seq (1-based) as received in a compact bitset.
+ *
+ * The soak tracks every distinct published sequence; a PHP map grows
+ * linearly with the published count (OOM at the 128M default limit on a
+ * 30-min steady run, and a false-positive RSS slope — the harness itself
+ * looked like a leak). A bitset is O(maxSeq/8) instead: ~375 KB for
+ * 3 M messages. Re-marking the same seq is idempotent.
+ */
+function bitMarkReceived(string &$bits, int $seq): void
+{
+    $byte = intdiv($seq - 1, 8);
+    if ($byte >= strlen($bits)) {
+        $bits .= str_repeat("\0", $byte - strlen($bits) + 1);
+    }
+    $bits[$byte] = chr(ord($bits[$byte]) | (1 << (($seq - 1) % 8)));
+}
+
+/**
+ * Counts distinct marked bits (popcount over the whole bitset).
+ */
+function bitPopcount(string $bits): int
+{
+    static $nibble = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
+
+    $total = 0;
+    foreach (count_chars($bits) as $byte => $freq) {
+        $total += $freq * ($nibble[$byte & 0x0F] + $nibble[$byte >> 4]);
+    }
+
+    return $total;
+}
