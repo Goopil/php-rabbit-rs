@@ -14,7 +14,9 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use super::{
     ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, SettlementError,
-    SettlementErrorKind, actor::ConsumerCommand, set::ConsumerSetHandle,
+    SettlementErrorKind,
+    actor::ConsumerCommand,
+    set::{ConsumerSetHandle, map_try_send_error},
 };
 use crate::metrics::MetricsSnapshot;
 
@@ -389,15 +391,6 @@ impl ConsumerHandle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-    }
-}
-
-fn map_try_send_error(
-    error: &tokio::sync::mpsc::error::TrySendError<ConsumerCommand>,
-) -> SettlementErrorKind {
-    match error {
-        tokio::sync::mpsc::error::TrySendError::Full(_) => SettlementErrorKind::ChannelFull,
-        tokio::sync::mpsc::error::TrySendError::Closed(_) => SettlementErrorKind::Closed,
     }
 }
 

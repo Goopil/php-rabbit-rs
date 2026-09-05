@@ -370,39 +370,12 @@ impl ClientPool {
             let mut sources = Vec::with_capacity(brokers.len());
             for broker in &brokers {
                 let coordinator = self.coordinator(broker).await?;
-                let consumer = loop {
-                    if self.is_closed() {
-                        return Err(ClientError::closed());
-                    }
-                    if let Ok(consumer) = coordinator.consumer(&profile_owned).await {
-                        break consumer;
-                    }
-                    match coordinator.state() {
-                        crate::recovery::ConnectionState::FailedPermanent { .. } => {
-                            return Err(ClientError::transport(&TransportError::connection(
-                                "broker connection failed permanently",
-                            )));
-                        }
-                        crate::recovery::ConnectionState::Closed => {
-                            return Err(ClientError::closed());
-                        }
-                        // Consumers are populated while the state stays Ready,
-                        // so retry without blocking; the yield keeps the
-                        // acquisition deadline enforceable while the recovery
-                        // generation completes.
-                        crate::recovery::ConnectionState::Ready { .. } => {
-                            tokio::task::yield_now().await;
-                        }
-                        // Connecting, Recovering, and Disconnected can only
-                        // produce a consumer through a state transition: wait
-                        // for the state to leave what was just observed,
-                        // so the deadline — and other tasks — can make
-                        // progress.
-                        observed => {
-                            coordinator.wait_for_transition(&observed).await;
-                        }
-                    }
-                };
+                let profile_ref = &profile_owned;
+                let consumer = self
+                    .wait_for_coordinator_ready(&coordinator, true, || async {
+                        coordinator.consumer(profile_ref).await.ok()
+                    })
+                    .await?;
                 sources.push(consumer);
             }
 
@@ -519,34 +492,10 @@ impl ClientPool {
         let coordinator = self.coordinator(broker).await?;
         let wait_timeout = self.config.consumer().wait_timeout;
         let acquisition = async {
-            loop {
-                if self.is_closed() {
-                    return Err(ClientError::closed());
-                }
-                if let Ok(channel) = coordinator.admin_channel().await {
-                    return Ok(channel);
-                }
-                match coordinator.state() {
-                    crate::recovery::ConnectionState::FailedPermanent { .. } => {
-                        return Err(ClientError::transport(&TransportError::connection(
-                            "broker connection failed permanently",
-                        )));
-                    }
-                    crate::recovery::ConnectionState::Closed => {
-                        return Err(ClientError::closed());
-                    }
-                    // The channel only becomes servable through a state
-                    // transition (recovery restoring the connection); wait
-                    // for the state to leave what was just observed instead
-                    // of spinning hot so the deadline — and other tasks —
-                    // can make progress.
-                    observed => {
-                        if coordinator.wait_for_transition(&observed).await.is_none() {
-                            return Err(ClientError::closed());
-                        }
-                    }
-                }
-            }
+            self.wait_for_coordinator_ready(&coordinator, false, || async {
+                coordinator.admin_channel().await.ok()
+            })
+            .await
         };
         tokio::time::timeout(wait_timeout, acquisition)
             .await
@@ -555,6 +504,54 @@ impl ClientPool {
                     "broker '{broker}' did not become ready for the admin operation within {wait_timeout:?}"
                 )))
             })?
+    }
+
+    /// Waits for a coordinator-owned resource to become available.
+    ///
+    /// Loops: bail when the client closed, try the operation, then handle the
+    /// coordinator's state — `FailedPermanent` and `Closed` are terminal, on
+    /// `Ready` the resource may appear at any moment (`spin_on_ready` retries
+    /// with a yield so the acquisition deadline stays enforceable while a
+    /// recovery generation completes), and any other state can only produce
+    /// the resource through a transition: wait for the coordinator to leave
+    /// what was just observed so the deadline — and other tasks — can make
+    /// progress.
+    async fn wait_for_coordinator_ready<T, F, Fut>(
+        &self,
+        coordinator: &RecoveryCoordinatorHandle,
+        spin_on_ready: bool,
+        try_op: F,
+    ) -> Result<T, ClientError>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Option<T>>,
+    {
+        loop {
+            if self.is_closed() {
+                return Err(ClientError::closed());
+            }
+            if let Some(value) = try_op().await {
+                return Ok(value);
+            }
+            match coordinator.state() {
+                crate::recovery::ConnectionState::FailedPermanent { .. } => {
+                    return Err(ClientError::transport(&TransportError::connection(
+                        "broker connection failed permanently",
+                    )));
+                }
+                crate::recovery::ConnectionState::Closed => {
+                    return Err(ClientError::closed());
+                }
+                crate::recovery::ConnectionState::Ready { .. } if spin_on_ready => {
+                    tokio::task::yield_now().await;
+                }
+                observed => {
+                    if coordinator.wait_for_transition(&observed).await.is_none() {
+                        return Err(ClientError::closed());
+                    }
+                }
+            }
+        }
     }
 
     /// Spawns the broker coordinator (and its connection actor) without

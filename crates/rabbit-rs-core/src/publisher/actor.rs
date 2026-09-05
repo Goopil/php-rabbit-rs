@@ -3,7 +3,6 @@ use std::{
     future::{self, Future},
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -371,29 +370,11 @@ enum ConfirmationResult {
 
 type ConfirmationFuture = Pin<Box<dyn Future<Output = (u64, u64, ConfirmationResult)> + Send>>;
 
-/// The boxed future returned by [`PublisherChannel::publish`].
-type PublishResultFuture =
-    Pin<Box<dyn Future<Output = TransportResult<Box<dyn PublishReceipt>>> + Send>>;
-
-/// Wraps a publish future and attaches its sequence number, separating the
-/// sequence-tagging concern from the future boxing.
-struct TaggedFuture {
-    fut: PublishResultFuture,
-    sequence: u64,
-}
-
-impl Future for TaggedFuture {
-    type Output = (u64, TransportResult<Box<dyn PublishReceipt>>);
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.fut.as_mut().poll(cx) {
-            Poll::Ready(result) => Poll::Ready((self.sequence, result)),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-type PublishFuture = TaggedFuture;
+/// A publish future carrying its sequence number (the boxed future returned
+/// by [`PublisherChannel::publish`], paired with the tag used to bookkeep its
+/// completion).
+type PublishFuture =
+    Pin<Box<dyn Future<Output = (u64, TransportResult<Box<dyn PublishReceipt>>)> + Send>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
@@ -719,12 +700,13 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         state.publishing.insert(sequence, retained);
 
         let channel_for_pub = Arc::clone(&channel);
-        let mut tagged = TaggedFuture {
-            fut: Box::pin(async move { channel_for_pub.publish(request).await }),
-            sequence,
-        };
+        let sequence_for_pub = sequence;
+        let mut tagged: PublishFuture = Box::pin(async move {
+            let result = channel_for_pub.publish(request).await;
+            (sequence_for_pub, result)
+        });
 
-        match Pin::new(&mut tagged).now_or_never() {
+        match tagged.as_mut().now_or_never() {
             Some((seq, result)) => {
                 drop(tagged);
                 handle_publish_completion(state, seq, result);

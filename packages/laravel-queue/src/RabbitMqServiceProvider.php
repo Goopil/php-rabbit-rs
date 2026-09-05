@@ -12,7 +12,6 @@ use Goopil\RabbitRs\Laravel\Exceptions\MissingExtensionException;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 
 class RabbitMqServiceProvider extends ServiceProvider
@@ -88,15 +87,8 @@ class RabbitMqServiceProvider extends ServiceProvider
      */
     private function registerWorkCommandExtension(): void
     {
-        $extension = RabbitMqWorkCommandExtension::fromEnvironment();
-        if ($extension->workerIndex() === null) {
-            return;
-        }
-
-        $events = $this->app->make('events');
-        $extension->register($events, static function (string $level, array $context): void {
-            Log::channel()->{$level}('rabbit-rs worker', $context);
-        });
+        RabbitMqWorkCommandExtension::fromEnvironment()
+            ->registerWithLog($this->app->make('events'));
     }
 
     private static function throwMissingNativeExtension(): never

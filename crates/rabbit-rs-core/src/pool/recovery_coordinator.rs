@@ -431,14 +431,7 @@ async fn run_coordinator(
                             ) => r,
                             close = close_rx.recv() => {
                                 if let Some(CloseCommand { completed }) = close {
-                                    if let Some(pub_handle) = publisher.lock().await.take() {
-                                        let _ = pub_handle.close().await;
-                                    }
-                                    let consumers_map = std::mem::take(&mut *consumers.lock().await);
-                                    for consumer in consumers_map.values() {
-                                        let _ = consumer.close().await;
-                                    }
-                                    let _ = completed.send(());
+                                    shutdown_coordinator(&publisher, &consumers, completed).await;
                                 }
                                 return;
                             }
@@ -485,19 +478,29 @@ async fn run_coordinator(
             }
             close = close_rx.recv() => {
                 if let Some(CloseCommand { completed }) = close {
-                    if let Some(pub_handle) = publisher.lock().await.take() {
-                        let _ = pub_handle.close().await;
-                    }
-                    let consumers_map = std::mem::take(&mut *consumers.lock().await);
-                    for consumer in consumers_map.values() {
-                        let _ = consumer.close().await;
-                    }
-                    let _ = completed.send(());
+                    shutdown_coordinator(&publisher, &consumers, completed).await;
                 }
                 return;
             }
         }
     }
+}
+
+/// Closes the publisher and every cached consumer, then acknowledges the
+/// close command (shared by both select arms of the coordinator loop).
+async fn shutdown_coordinator(
+    publisher: &SharedPublisher,
+    consumers: &SharedConsumers,
+    completed: oneshot::Sender<()>,
+) {
+    if let Some(pub_handle) = publisher.lock().await.take() {
+        let _ = pub_handle.close().await;
+    }
+    let consumers_map = std::mem::take(&mut *consumers.lock().await);
+    for consumer in consumers_map.values() {
+        let _ = consumer.close().await;
+    }
+    let _ = completed.send(());
 }
 
 async fn recover_generation(
@@ -547,7 +550,7 @@ async fn recover_generation(
             .await
             .map_err(CoordinatorError::Publisher)?;
     } else {
-        let delay_strategy = compile_delay_strategy(&context.config);
+        let delay_strategy = crate::topology::delay::DelayStrategy::compile(&context.config);
         let handle = PublisherActor::spawn_with_delay_strategy_and_metrics(
             publisher_channel.clone(),
             context.publisher_config,
@@ -624,7 +627,7 @@ async fn establish_requested_profile(
         return Ok(());
     };
     let connection_key = crate::pool::ConnectionKey::from_config(&context.config);
-    let delay_strategy = compile_delay_strategy(&context.config);
+    let delay_strategy = crate::topology::delay::DelayStrategy::compile(&context.config);
     let pub_handle = publisher.lock().await.clone();
 
     let mut subscriptions = Vec::with_capacity(worker.subscriptions.len());
@@ -740,12 +743,4 @@ fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> Transp
         TransportErrorKind::Protocol => TransportError::protocol(reason),
         TransportErrorKind::Closed => TransportError::closed(reason),
     }
-}
-
-/// Compiles a delay strategy from configuration for the publisher actor.
-///
-/// In plugin mode the strategy is `Plugin`; in TTL mode it is `TtlBuckets`.
-/// In auto mode we default to `Plugin` for the publisher path.
-fn compile_delay_strategy(config: &ValidatedConfig) -> crate::topology::delay::DelayStrategy {
-    crate::topology::delay::DelayStrategy::compile(config)
 }

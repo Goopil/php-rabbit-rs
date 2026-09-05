@@ -351,13 +351,20 @@ pub(crate) struct DeliveryIdentity {
 }
 
 impl DeliveryTokenInner {
-    pub(crate) fn pending(
+    /// Creates a token in the given terminal-or-pending state: `Pending` for
+    /// live deliveries (settle commands route through `commands`), or
+    /// `AutoAcked` for auto-acked deliveries — any settlement attempt then
+    /// returns [`ConsumerErrorKind::AlreadySettled`] because the
+    /// `Pending → Transitioning` compare-exchange in `settle` fails.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         identity: DeliveryIdentity,
         message_id: MessageId,
         correlation_id: Option<String>,
         payload: Bytes,
         headers: Arc<Headers>,
         attempts: u32,
+        state: DeliveryState,
         commands: mpsc::Sender<ConsumerCommand>,
     ) -> Self {
         Self {
@@ -373,16 +380,32 @@ impl DeliveryTokenInner {
             attempts,
             reserved_at: Instant::now(),
             commands,
-            state: AtomicU8::new(DeliveryState::Pending as u8),
+            state: AtomicU8::new(state as u8),
             settling: AtomicBool::new(false),
         }
     }
 
-    /// Creates a terminal token for an auto-acked delivery.
-    ///
-    /// The token starts in [`DeliveryState::AutoAcked`]; any settlement
-    /// attempt returns [`ConsumerErrorKind::AlreadySettled`] because the
-    /// `Pending → Transitioning` compare-exchange in `settle` fails.
+    pub(crate) fn pending(
+        identity: DeliveryIdentity,
+        message_id: MessageId,
+        correlation_id: Option<String>,
+        payload: Bytes,
+        headers: Arc<Headers>,
+        attempts: u32,
+        commands: mpsc::Sender<ConsumerCommand>,
+    ) -> Self {
+        Self::new(
+            identity,
+            message_id,
+            correlation_id,
+            payload,
+            headers,
+            attempts,
+            DeliveryState::Pending,
+            commands,
+        )
+    }
+
     pub(crate) fn auto_acked(
         identity: DeliveryIdentity,
         message_id: MessageId,
@@ -391,22 +414,16 @@ impl DeliveryTokenInner {
         headers: Arc<Headers>,
         attempts: u32,
     ) -> Self {
-        Self {
-            subscription: identity.subscription,
-            connection_key: identity.connection_key,
-            generation: identity.generation,
-            channel_id: identity.channel_id,
-            delivery_tag: identity.delivery_tag,
+        Self::new(
+            identity,
             message_id,
             correlation_id,
             payload,
             headers,
             attempts,
-            reserved_at: Instant::now(),
-            commands: mpsc::channel(1).0,
-            state: AtomicU8::new(DeliveryState::AutoAcked as u8),
-            settling: AtomicBool::new(false),
-        }
+            DeliveryState::AutoAcked,
+            mpsc::channel(1).0,
+        )
     }
 }
 

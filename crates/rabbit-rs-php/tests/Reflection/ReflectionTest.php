@@ -35,13 +35,7 @@ function expectMethod(string $class, string $method, array $expectedParameters, 
 
 function expectNotConstructible(string $class): void
 {
-    try {
-        new $class();
-    } catch (\Throwable) {
-        return;
-    }
-
-    expect(false)->toBeTrue("{$class} must reject direct construction");
+    expect(fn () => new $class())->toThrow(\Exception::class, 'You cannot instantiate this class from PHP.');
 }
 
 describe('class reflection contract', function () {

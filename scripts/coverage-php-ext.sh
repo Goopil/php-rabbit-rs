@@ -38,6 +38,22 @@ if [[ ! -d "${PHP_EXT_DIR}/vendor" ]]; then
     (cd "${PHP_EXT_DIR}" && composer update --no-interaction --no-security-blocking)
 fi
 
+# Version the extension tests assert against (same resolution as
+# scripts/test-extension.sh, no jq dependency).
+export RABBIT_RS_EXPECTED_VERSION="$({
+    cargo metadata --manifest-path "${ROOT}/Cargo.toml" --no-deps --format-version=1
+} | "${PHP_BIN}" -r '
+    $metadata = json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR);
+    foreach ($metadata["packages"] as $package) {
+        if ($package["name"] === "rabbit-rs-php") {
+            echo $package["version"];
+            exit(0);
+        }
+    }
+    fwrite(STDERR, "rabbit-rs-php package missing from Cargo metadata\n");
+    exit(1);
+')"
+
 echo "Running Pest tests with coverage instrumentation..."
 (
     cd "${PHP_EXT_DIR}"
@@ -49,7 +65,8 @@ echo "Running Pest tests with coverage instrumentation..."
 echo "Resolving llvm-profdata/llvm-cov from the rustup toolchain..."
 # The profraw/profdata format must match the toolchain that built the
 # instrumented artifact (Rust 1.96), so system LLVM must not be used
-# (see AGENTS.md). Same resolution as .github/workflows/coverage.yml.
+# (see AGENTS.md). This script is the canonical implementation; the CI
+# job in .github/workflows/coverage.yml calls it.
 LLVM_BIN_DIR="$(dirname "$(find "${HOME}/.rustup" -name llvm-profdata -type f 2>/dev/null | head -1)")"
 if [[ -z "${LLVM_BIN_DIR}" || ! -x "${LLVM_BIN_DIR}/llvm-profdata" ]]; then
     echo "ERROR: llvm-profdata not found under ~/.rustup." >&2

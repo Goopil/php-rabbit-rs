@@ -21,12 +21,14 @@
     ],
     "autoload": {
         "psr-4": {
-            "Bench\\": "src/",
-            "Bench\\Laravel\\": "laravel/"
+            "Bench\\": "src/"
         }
     },
     "require-dev": {
         "pestphp/pest": "^5.1"
+    },
+    "scripts": {
+        "test": "pest"
     },
     "config": {
         "allow-plugins": {

@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::exception::rabbit_exception;
+use super::exception::{rabbit_exception, rabbit_exception_message};
 use ext_php_rs::{
     binary::Binary,
     boxed::ZBox,
@@ -55,11 +55,8 @@ impl Delivery {
     /// Returns the AMQP delivery tag.
     pub fn deliveryTag(&self) -> PhpResult<i64> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::deliveryTag")?;
-        i64::try_from(self.inner.delivery_tag()).map_err(|_| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                "delivery tag exceeds i64 range".to_owned(),
-            )
-        })
+        i64::try_from(self.inner.delivery_tag())
+            .map_err(|_| rabbit_exception_message("delivery tag exceeds i64 range".to_owned()))
     }
 
     /// Acknowledges the delivery (fire-and-forget with bounded backpressure).
@@ -79,9 +76,7 @@ impl Delivery {
             return rabbit_exception("cannot release an auto-acked delivery");
         }
         let delay = u64::try_from(delayMs).map_err(|_| {
-            ext_php_rs::prelude::PhpException::from_class::<super::exception::RabbitRsException>(
-                "delayMs must be a non-negative integer".to_owned(),
-            )
+            rabbit_exception_message("delayMs must be a non-negative integer".to_owned())
         })?;
         self.settle_with_backpressure(|del| {
             del.try_release(std::time::Duration::from_millis(delay))
@@ -129,16 +124,23 @@ impl Delivery {
             }
             Err(SettlementErrorKind::Closed) => rabbit_exception("consumer set is closed"),
             Err(SettlementErrorKind::ChannelFull) => {
-                for _ in 0..64 {
-                    std::thread::yield_now();
-                    if try_settle(&self.inner).is_ok() {
-                        return Ok(());
-                    }
-                }
-                rabbit_exception("settlement channel full after backpressure timeout")
+                spin_settle(|| try_settle(&self.inner).is_ok())
             }
         }
     }
+}
+
+/// Bounded spin for a full settlement command channel: yields the PHP thread
+/// up to 64 times while the actor drains, then raises. Shared by the
+/// delivery settlements and `Consumer::ackThrough`.
+pub(crate) fn spin_settle(mut retry: impl FnMut() -> bool) -> PhpResult<()> {
+    for _ in 0..64 {
+        std::thread::yield_now();
+        if retry() {
+            return Ok(());
+        }
+    }
+    rabbit_exception("settlement channel full after backpressure timeout")
 }
 
 /// Inserts one header entry, exposing AMQP field arrays/tables as nested PHP

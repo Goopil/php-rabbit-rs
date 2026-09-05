@@ -23,7 +23,7 @@ pub enum TransportOperation {
     DeclareQueue(QueueSpec),
     VerifyQueue(QueueSpec),
     BindQueue(BindingSpec),
-    QueueSize { queue: String, result: u32 },
+    QueueSize { queue: String },
     PurgeQueue { queue: String },
     DeleteQueue { queue: String },
     EnableConfirms,
@@ -60,8 +60,6 @@ struct MockState {
     error_notify: Arc<tokio::sync::Notify>,
     queue_sizes: VecDeque<TransportResult<u32>>,
     connect_gates: VecDeque<MockOperationGateWait>,
-    open_publisher_gates: VecDeque<MockOperationGateWait>,
-    open_consumer_gates: VecDeque<MockOperationGateWait>,
     /// Gates the next `declare_queue` so a test can park the caller mid
     /// declaration — the channel operation runs on the caller's task, not
     /// inside the connection actor loop, so everything else stays live.
@@ -70,7 +68,7 @@ struct MockState {
     close_channel_gates: VecDeque<MockOperationGateWait>,
     ack_gates: VecDeque<MockOperationGateWait>,
     delivery_gates: VecDeque<MockOperationGateWait>,
-    publish_gates: VecDeque<MockPublishGateWait>,
+    publish_gates: VecDeque<MockOperationGateWait>,
 }
 
 #[derive(Clone, Default)]
@@ -150,20 +148,6 @@ impl MockTransport {
         gate
     }
 
-    #[must_use]
-    pub fn push_open_publisher_gate(&self) -> MockOperationGate {
-        let (wait, gate) = operation_gate();
-        self.state().open_publisher_gates.push_back(wait);
-        gate
-    }
-
-    #[must_use]
-    pub fn push_open_consumer_gate(&self) -> MockOperationGate {
-        let (wait, gate) = operation_gate();
-        self.state().open_consumer_gates.push_back(wait);
-        gate
-    }
-
     /// Pushes a gate that makes the next `declare_queue` call pending until
     /// the returned gate is released, parking the declaring task mid
     /// declaration.
@@ -213,14 +197,14 @@ impl MockTransport {
     }
 
     /// Pushes a publish gate that makes the next `publish()` call pending
-    /// until the returned [`MockPublishGate`] is released.
+    /// until the returned [`MockOperationGate`] is released.
     ///
     /// This simulates Lapin's buffer-full scenario where `basic_publish`
     /// does not complete on the first poll, exercising the slow-path
     /// (`FuturesUnordered`) in the publisher actor.
     #[must_use]
-    pub fn push_publish_gate(&self) -> MockPublishGate {
-        let (wait, gate) = publish_gate();
+    pub fn push_publish_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
         self.state().publish_gates.push_back(wait);
         gate
     }
@@ -287,64 +271,6 @@ fn operation_gate() -> (MockOperationGateWait, MockOperationGate) {
 }
 
 async fn wait_for_gate(gate: Option<MockOperationGateWait>) {
-    if let Some(gate) = gate {
-        let _ = gate.entered.send(());
-        let _ = gate.release.await;
-    }
-}
-
-struct MockPublishGateWait {
-    entered: oneshot::Sender<()>,
-    release: oneshot::Receiver<()>,
-}
-
-#[derive(Clone)]
-pub struct MockPublishGate {
-    entered: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
-    release: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-}
-
-impl MockPublishGate {
-    /// Waits until a publish call entered the gate, proving the publish
-    /// future was polled (and is now pending on the gate).
-    pub async fn wait_entered(&self) {
-        let Some(receiver) = self
-            .entered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        else {
-            return;
-        };
-        let _ = receiver.await;
-    }
-
-    /// Releases the gated publish, allowing it to complete.
-    pub fn release(&self) -> bool {
-        self.release
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .is_some_and(|sender| sender.send(()).is_ok())
-    }
-}
-
-fn publish_gate() -> (MockPublishGateWait, MockPublishGate) {
-    let (entered_sender, entered_receiver) = oneshot::channel();
-    let (release_sender, release_receiver) = oneshot::channel();
-    (
-        MockPublishGateWait {
-            entered: entered_sender,
-            release: release_receiver,
-        },
-        MockPublishGate {
-            entered: Arc::new(Mutex::new(Some(entered_receiver))),
-            release: Arc::new(Mutex::new(Some(release_sender))),
-        },
-    )
-}
-
-async fn wait_for_publish_gate(gate: Option<MockPublishGateWait>) {
     if let Some(gate) = gate {
         let _ = gate.entered.send(());
         let _ = gate.release.await;
@@ -428,24 +354,20 @@ impl TransportConnection for MockConnection {
     }
 
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
-        let gate = {
+        {
             let mut state = self.state();
             state.operations.push(TransportOperation::OpenPublisher);
-            state.open_publisher_gates.pop_front()
-        };
-        wait_for_gate(gate).await;
+        }
         Ok(Box::new(MockPublisherChannel {
             state: self.state.clone(),
         }))
     }
 
     async fn open_consumer(&self) -> TransportResult<Box<dyn ConsumerChannel>> {
-        let gate = {
+        {
             let mut state = self.state();
             state.operations.push(TransportOperation::OpenConsumer);
-            state.open_consumer_gates.pop_front()
-        };
-        wait_for_gate(gate).await;
+        }
         Ok(Box::new(MockConsumerChannel {
             state: self.state.clone(),
         }))
@@ -485,73 +407,86 @@ impl MockPublisherChannel {
     }
 }
 
-#[async_trait]
-impl TopologyChannel for MockPublisherChannel {
-    async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::DeclareExchange(spec.clone()))
-    }
+/// Implements [`TopologyChannel`] for both mock channel types. The only
+/// behavioral difference is `declare_queue`: the publisher channel consults
+/// the declare gates (a test can park the caller mid-declaration); the
+/// consumer channel does not.
+macro_rules! impl_topology_channel {
+    ($name:ty, $gate_declare:literal) => {
+        #[async_trait]
+        impl TopologyChannel for $name {
+            async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
+                self.record_topology(TransportOperation::DeclareExchange(spec.clone()))
+            }
 
-    async fn verify_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::VerifyExchange(spec.clone()))
-    }
+            async fn verify_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
+                self.record_topology(TransportOperation::VerifyExchange(spec.clone()))
+            }
 
-    async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        let gate = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .declare_queue_gates
-            .pop_front();
-        self.record_topology(TransportOperation::DeclareQueue(spec.clone()))?;
-        wait_for_gate(gate).await;
-        Ok(())
-    }
+            async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
+                let gate = if $gate_declare {
+                    self.state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .declare_queue_gates
+                        .pop_front()
+                } else {
+                    None
+                };
+                self.record_topology(TransportOperation::DeclareQueue(spec.clone()))?;
+                wait_for_gate(gate).await;
+                Ok(())
+            }
 
-    async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::VerifyQueue(spec.clone()))
-    }
+            async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
+                self.record_topology(TransportOperation::VerifyQueue(spec.clone()))
+            }
 
-    async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::BindQueue(spec.clone()))
-    }
+            async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
+                self.record_topology(TransportOperation::BindQueue(spec.clone()))
+            }
 
-    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.operations.push(TransportOperation::QueueSize {
-            queue: queue.to_owned(),
-            result: 0,
-        });
-        state.queue_sizes.pop_front().unwrap_or(Ok(0))
-    }
+            async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.operations.push(TransportOperation::QueueSize {
+                    queue: queue.to_owned(),
+                });
+                state.queue_sizes.pop_front().unwrap_or(Ok(0))
+            }
 
-    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
-        self.record_topology(TransportOperation::PurgeQueue {
-            queue: queue.to_owned(),
-        })
-    }
+            async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
+                self.record_topology(TransportOperation::PurgeQueue {
+                    queue: queue.to_owned(),
+                })
+            }
 
-    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
-        self.record_topology(TransportOperation::DeleteQueue {
-            queue: queue.to_owned(),
-        })
-    }
+            async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
+                self.record_topology(TransportOperation::DeleteQueue {
+                    queue: queue.to_owned(),
+                })
+            }
 
-    async fn close(&self) -> TransportResult<()> {
-        let gate = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.operations.push(TransportOperation::CloseChannel);
-            state.close_channel_gates.pop_front()
-        };
-        wait_for_gate(gate).await;
-        Ok(())
-    }
+            async fn close(&self) -> TransportResult<()> {
+                let gate = {
+                    let mut state = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.operations.push(TransportOperation::CloseChannel);
+                    state.close_channel_gates.pop_front()
+                };
+                wait_for_gate(gate).await;
+                Ok(())
+            }
+        }
+    };
 }
+
+impl_topology_channel!(MockPublisherChannel, true);
+impl_topology_channel!(MockConsumerChannel, false);
 
 #[async_trait]
 impl PublisherChannel for MockPublisherChannel {
@@ -572,7 +507,7 @@ impl PublisherChannel for MockPublisherChannel {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.publish_gates.pop_front()
         };
-        wait_for_publish_gate(gate).await;
+        wait_for_gate(gate).await;
 
         self.record(TransportOperation::Publish(request));
         let result = self
@@ -654,66 +589,6 @@ impl MockConsumerChannel {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.operations.push(operation);
         state.consumer_results.pop_front().unwrap_or(Ok(()))
-    }
-}
-
-#[async_trait]
-impl TopologyChannel for MockConsumerChannel {
-    async fn declare_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::DeclareExchange(spec.clone()))
-    }
-
-    async fn verify_exchange(&self, spec: &ExchangeSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::VerifyExchange(spec.clone()))
-    }
-
-    async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::DeclareQueue(spec.clone()))
-    }
-
-    async fn verify_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::VerifyQueue(spec.clone()))
-    }
-
-    async fn bind_queue(&self, spec: &BindingSpec) -> TransportResult<()> {
-        self.record_topology(TransportOperation::BindQueue(spec.clone()))
-    }
-
-    async fn queue_size(&self, queue: &str) -> TransportResult<u32> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.operations.push(TransportOperation::QueueSize {
-            queue: queue.to_owned(),
-            result: 0,
-        });
-        state.queue_sizes.pop_front().unwrap_or(Ok(0))
-    }
-
-    async fn purge_queue(&self, queue: &str) -> TransportResult<()> {
-        self.record_topology(TransportOperation::PurgeQueue {
-            queue: queue.to_owned(),
-        })
-    }
-
-    async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
-        self.record_topology(TransportOperation::DeleteQueue {
-            queue: queue.to_owned(),
-        })
-    }
-
-    async fn close(&self) -> TransportResult<()> {
-        let gate = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.operations.push(TransportOperation::CloseChannel);
-            state.close_channel_gates.pop_front()
-        };
-        wait_for_gate(gate).await;
-        Ok(())
     }
 }
 

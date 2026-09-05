@@ -282,7 +282,7 @@ mod tests {
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
     use crate::transport::{
         PublishProperties, Transport,
-        mock::{MockPublishGate, MockTransport, TransportOperation},
+        mock::{MockOperationGate, MockTransport, TransportOperation},
     };
 
     fn broker() -> BrokerConfig {
@@ -366,7 +366,7 @@ mod tests {
         let channel = mock_channel(&transport).await;
         // Intake queue of 4, in-flight cap well above 8: all eight sends must
         // be accepted while every publish is held pending by its gate.
-        let gates: Vec<MockPublishGate> = (0..8).map(|_| transport.push_publish_gate()).collect();
+        let gates: Vec<MockOperationGate> = (0..8).map(|_| transport.push_publish_gate()).collect();
         let pump = PublishPump::spawn(channel, 4, test_budget());
 
         for index in 0..8 {
@@ -383,7 +383,7 @@ mod tests {
         );
 
         for gate in &gates {
-            gate.release();
+            let _ = gate.release();
         }
         wait_for_publishes(&transport, 8).await;
     }
@@ -393,7 +393,8 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         // buffer_capacity = 2 → intake queue of 2, in-flight cap 128.
-        let gates: Vec<MockPublishGate> = (0..131).map(|_| transport.push_publish_gate()).collect();
+        let gates: Vec<MockOperationGate> =
+            (0..131).map(|_| transport.push_publish_gate()).collect();
         let pump = PublishPump::spawn(channel, 2, test_budget());
 
         // Fill the in-flight cap while every publish is gated.
@@ -427,7 +428,7 @@ mod tests {
             .expect("send accepted");
 
         for gate in &gates {
-            gate.release();
+            let _ = gate.release();
         }
         wait_for_publishes(&transport, 131).await;
     }

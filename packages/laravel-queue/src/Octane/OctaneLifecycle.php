@@ -6,6 +6,7 @@ namespace Goopil\RabbitRs\Laravel\Octane;
 
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Container\Container;
 
 final class OctaneLifecycle
@@ -90,19 +91,9 @@ final class OctaneLifecycle
             return;
         }
 
-        $config = $this->container->make('config');
-        $connections = $config->get('queue.connections', []);
-        if (! is_array($connections)) {
-            return;
-        }
-
         $manager = $this->container->make('queue');
 
-        foreach ($connections as $name => $connection) {
-            if (! is_array($connection) || ($connection['driver'] ?? null) !== 'rabbit-rs') {
-                continue;
-            }
-
+        foreach (RabbitRsConnections::all() as $name => $connection) {
             if (! $manager->connected($name)) {
                 continue;
             }

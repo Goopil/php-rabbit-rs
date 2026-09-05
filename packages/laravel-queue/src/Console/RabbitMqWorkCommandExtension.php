@@ -9,6 +9,7 @@ use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\JobReleasedAfterException;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Extends Laravel's `queue:work` command with Rabbit RS worker identification.
@@ -65,6 +66,17 @@ final class RabbitMqWorkCommandExtension
     public function workerIndex(): ?int
     {
         return $this->workerIndex;
+    }
+
+    /**
+     * Register the event listeners that augment worker output, logging to the
+     * default log channel. No-op when the extension is inactive.
+     */
+    public function registerWithLog(EventDispatcher $events): void
+    {
+        $this->register($events, static function (string $level, array $context): void {
+            Log::channel()->{$level}('rabbit-rs worker', $context);
+        });
     }
 
     /**

@@ -68,12 +68,6 @@ impl QueueDefinition {
         self
     }
 
-    #[must_use]
-    pub fn arguments(mut self, arguments: BTreeMap<String, crate::transport::HeaderValue>) -> Self {
-        self.arguments = arguments;
-        self
-    }
-
     fn compile(self) -> Result<QueueSpec, TopologyPlanError> {
         if self.kind == QueueKind::Quorum && (self.exclusive || self.auto_delete) {
             return Err(TopologyPlanError::new(format!(

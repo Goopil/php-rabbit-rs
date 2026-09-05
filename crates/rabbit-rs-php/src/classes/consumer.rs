@@ -135,17 +135,11 @@ impl Consumer {
         {
             Ok(()) => Ok(()),
             Err(rabbit_rs_core::consumer::SettlementErrorKind::ChannelFull) => {
-                for _ in 0..64 {
-                    std::thread::yield_now();
-                    if self
-                        .handle
+                super::delivery::spin_settle(|| {
+                    self.handle
                         .try_settle_through(delivery.inner.inner_token().clone())
                         .is_ok()
-                    {
-                        return Ok(());
-                    }
-                }
-                rabbit_exception("settlement channel full after backpressure timeout")
+                })
             }
             Err(rabbit_rs_core::consumer::SettlementErrorKind::Closed) => {
                 rabbit_exception("consumer set is closed")

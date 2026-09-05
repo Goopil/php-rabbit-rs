@@ -6,7 +6,6 @@ namespace Goopil\RabbitRs\Laravel\Console;
 
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Events\Dispatcher as EventDispatcher;
-use Illuminate\Support\Facades\Log;
 
 class RabbitMqWorkCommand extends Command
 {
@@ -97,15 +96,8 @@ class RabbitMqWorkCommand extends Command
     {
         $extension = RabbitMqWorkCommandExtension::fromOption($this->option('rabbit-rs-worker'));
 
-        if ($extension->workerIndex() === null) {
-            return;
-        }
-
         /** @var EventDispatcher $events */
         $events = $this->laravel->make('events');
-
-        $extension->register($events, static function (string $level, array $context): void {
-            Log::channel()->{$level}('rabbit-rs worker', $context);
-        });
+        $extension->registerWithLog($events);
     }
 }
