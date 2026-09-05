@@ -46,3 +46,25 @@ it('instantiates RabbitMqQueue when worker is not set', function (): void {
     expect($queue)->toBeInstanceOf(RabbitMqQueue::class)
         ->and($queue)->not->toBeInstanceOf(HorizonRabbitMqQueue::class);
 });
+
+it('inherits worker=horizon from the package cross-cutting defaults', function (): void {
+    config()->set('rabbit-rs.worker', 'horizon');
+
+    $queue = $this->app['queue']->connection('rabbit-rs');
+
+    expect($queue)->toBeInstanceOf(HorizonRabbitMqQueue::class);
+});
+
+it('prefers the connection-level worker over the package default', function (): void {
+    config()->set('rabbit-rs.worker', 'horizon');
+    $this->app['config']->set('queue.connections.rabbit-rs-explicit', [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+        'worker' => 'default',
+    ]);
+
+    $queue = $this->app['queue']->connection('rabbit-rs-explicit');
+
+    expect($queue)->toBeInstanceOf(RabbitMqQueue::class)
+        ->and($queue)->not->toBeInstanceOf(HorizonRabbitMqQueue::class);
+});

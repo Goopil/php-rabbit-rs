@@ -32,8 +32,9 @@ final class RabbitMqConnector implements ConnectorInterface
 
     /**
      * Compiles the queue connection lazily: one connection = one broker = one
-     * native pool. Framework keys (queue, after_commit, block_for, worker,
-     * production_warning) stay read from the raw connection config.
+     * native pool. Framework keys (queue, after_commit, block_for) stay read
+     * from the raw connection config; `worker` also falls back to the package
+     * defaults so RABBIT_RS_WORKER applies without a per-connection key.
      *
      * @param array<string, mixed> $config
      */
@@ -60,7 +61,7 @@ final class RabbitMqConnector implements ConnectorInterface
             throw new InvalidArgumentException('block_for exceeds the supported millisecond range');
         }
 
-        $worker = $config['worker'] ?? 'default';
+        $worker = $config['worker'] ?? $this->defaults['worker'] ?? 'default';
         $class = $worker === 'horizon'
             ? HorizonRabbitMqQueue::class
             : RabbitMqQueue::class;

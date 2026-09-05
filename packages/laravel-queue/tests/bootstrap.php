@@ -110,6 +110,22 @@ namespace Laravel\Horizon\Events {
             }
         }
     }
+
+    if (! class_exists(JobFailed::class, false)) {
+        class JobFailed extends RedisEvent
+        {
+            public mixed $exception;
+
+            public mixed $job;
+
+            public function __construct(mixed $exception, mixed $job, string $payload)
+            {
+                parent::__construct($payload);
+                $this->exception = $exception;
+                $this->job = $job;
+            }
+        }
+    }
 }
 
 namespace Goopil\RabbitRs {
