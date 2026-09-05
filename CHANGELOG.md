@@ -32,6 +32,11 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ### Fixed
 
+- Benchmarks: the soak's RSS-slope leak fit uses a peak-envelope estimator
+  seeded by the warmup peak — the raw fit misread bounded allocator
+  sawtooth under kill churn as growth (false positive measured on the
+  60-min calibration run archived under `benchmarks/results/round-k-soak/`).
+
 - Native: the publish buffer's message list and byte accounting were updated
   under two separate mutexes; a concurrent `take()` could subtract payload
   bytes not yet credited, panicking with `attempt to subtract with overflow`

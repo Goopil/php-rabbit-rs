@@ -2,6 +2,7 @@ results/*
 !results/round-2-rebench/
 !results/round-i-rebench/
 !results/round-d-safe-flush/
+!results/round-k-soak/
 composer.lock
 vendor/
 .phpunit.result.cache
