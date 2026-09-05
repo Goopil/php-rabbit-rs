@@ -578,11 +578,19 @@ it('recovers from TCP reset before publisher confirm', function () {
     // Remove the toxic.
     removeToxic($this->chaosProxy, 'reset-before-confirm');
 
-    // Wait for recovery.
-    usleep(3000000); // 3 seconds
-
     // Non-vacuous: the toxic must have actually bounced the connection.
-    [$reconnectsAfter] = poolCounters($this->pool);
+    // The recovery backoff is exponential and caps at 30s, so the first
+    // post-outage connect attempt can land tens of seconds after the toxic
+    // is removed — poll instead of sleeping a fixed interval.
+    $reconnectsAfter = null;
+    $reconnectDeadline = microtime(true) + 45;
+    while (microtime(true) < $reconnectDeadline) {
+        usleep(250000);
+        [$reconnectsAfter] = poolCounters($this->pool);
+        if ($reconnectsAfter !== null && $reconnectsAfter > $reconnectsBefore) {
+            break;
+        }
+    }
     $this->assertNotNull($reconnectsAfter, 'pool stats unavailable; cannot verify the toxic fired');
     $this->assertGreaterThan($reconnectsBefore, $reconnectsAfter, 'the toxic never fired; the scenario would be vacuous');
 
