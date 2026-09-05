@@ -39,11 +39,22 @@ function rssSampleBytes(): ?int
 }
 
 /**
- * Least-squares RSS slope over post-warmup samples, in MB per hour.
+ * Least-squares RSS slope over the peak-envelope of post-warmup samples,
+ * in MB per hour.
  *
- * Samples with t_s before the warmup boundary are excluded (allocator
- * steady state, topology declarations, runtime warm). Returns null when
- * fewer than two post-warmup samples exist — no verdict, not a pass.
+ * The envelope is the running max seeded from the first sample (the warmup
+ * peak included). Rationale (kill-60min calibration run, 2026-09-05): under
+ * kill churn the macOS allocator oscillates between two bounded states
+ * (~25 MB and ~90 MB) with deep transient dips; a raw fit over the
+ * oscillating series misreads uneven plateau durations as growth (+63 MB/h
+ * on a demonstrably leak-free run). A genuine leak must exceed the warmup
+ * peak and keep climbing — which raises the envelope — while bounded
+ * oscillation keeps it flat.
+ *
+ * Samples with t_s before the warmup boundary are excluded from the fit
+ * (allocator steady state, topology declarations, runtime warm). Returns
+ * null when fewer than two post-warmup samples exist — no verdict, not a
+ * pass.
  *
  * @param list<array{t_s: float|int, rss_bytes: int}> $samples
  */
@@ -52,14 +63,17 @@ function rssSlopeMbPerHour(array $samples, float $warmupS): ?float
     $n = 0;
     $sumT = 0.0;
     $sumR = 0.0;
+    $peak = null;
     foreach ($samples as $sample) {
         $t = (float) $sample['t_s'];
+        $r = (float) $sample['rss_bytes'];
+        $peak = $peak === null ? $r : max($peak, $r);
         if ($t < $warmupS) {
             continue;
         }
         $n++;
         $sumT += $t;
-        $sumR += (float) $sample['rss_bytes'];
+        $sumR += $peak;
     }
 
     if ($n < 2) {
@@ -71,12 +85,15 @@ function rssSlopeMbPerHour(array $samples, float $warmupS): ?float
 
     $num = 0.0;
     $den = 0.0;
+    $peak = null;
     foreach ($samples as $sample) {
         $t = (float) $sample['t_s'];
+        $r = (float) $sample['rss_bytes'];
+        $peak = $peak === null ? $r : max($peak, $r);
         if ($t < $warmupS) {
             continue;
         }
-        $num += ($t - $meanT) * ((float) $sample['rss_bytes'] - $meanR);
+        $num += ($t - $meanT) * ($peak - $meanR);
         $den += ($t - $meanT) ** 2;
     }
 

@@ -52,6 +52,49 @@ describe('soak memory telemetry (Round K #143)', function () {
         expect(rssSlopeMbPerHour($samples, warmupS: 600.0))->toBe(0.0);
     });
 
+    it('ignores bounded allocator sawtooth after the warmup peak', function () {
+        $mib = 1024 * 1024;
+        // Kill-churn shape (kill-60min calibration run): the process
+        // oscillates between two bounded allocator states with deep dips; a
+        // raw fit over the oscillating series reports +63 MB/h. The envelope
+        // is seeded by the warmup peak and stays flat -> no growth.
+        $samples = [
+            ['t_s' => 0.0, 'rss_bytes' => 96 * $mib],
+            ['t_s' => 100.0, 'rss_bytes' => 26 * $mib],
+            ['t_s' => 200.0, 'rss_bytes' => 89 * $mib],
+            ['t_s' => 300.0, 'rss_bytes' => 21 * $mib],
+            ['t_s' => 400.0, 'rss_bytes' => 25 * $mib],
+            ['t_s' => 500.0, 'rss_bytes' => 90 * $mib],
+            ['t_s' => 600.0, 'rss_bytes' => 25 * $mib],
+            ['t_s' => 700.0, 'rss_bytes' => 89 * $mib],
+            ['t_s' => 800.0, 'rss_bytes' => 25 * $mib],
+            ['t_s' => 900.0, 'rss_bytes' => 89 * $mib],
+            ['t_s' => 1000.0, 'rss_bytes' => 26 * $mib],
+        ];
+
+        expect(rssSlopeMbPerHour($samples, warmupS: 60.0))->toBe(0.0);
+    });
+
+    it('still detects a leak climbing past the warmup peak', function () {
+        $mib = 1024 * 1024;
+        // Stable below the warmup peak, then monotonic growth past it: the
+        // envelope must rise and the fit must report growth.
+        $samples = [
+            ['t_s' => 0.0, 'rss_bytes' => 120 * $mib],
+            ['t_s' => 100.0, 'rss_bytes' => 90 * $mib],
+            ['t_s' => 200.0, 'rss_bytes' => 90 * $mib],
+            ['t_s' => 300.0, 'rss_bytes' => 95 * $mib],
+            ['t_s' => 400.0, 'rss_bytes' => 105 * $mib],
+            ['t_s' => 500.0, 'rss_bytes' => 115 * $mib],
+            ['t_s' => 600.0, 'rss_bytes' => 125 * $mib],
+            ['t_s' => 700.0, 'rss_bytes' => 135 * $mib],
+            ['t_s' => 800.0, 'rss_bytes' => 145 * $mib],
+        ];
+
+        $slope = rssSlopeMbPerHour($samples, warmupS: 150.0);
+        expect($slope)->toBeGreaterThan(40.0);
+    });
+
     it('returns null when no fit is possible', function () {
         // No samples at all.
         expect(rssSlopeMbPerHour([], warmupS: 0.0))->toBeNull();
