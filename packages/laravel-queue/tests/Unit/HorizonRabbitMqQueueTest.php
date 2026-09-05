@@ -178,3 +178,13 @@ it('marshalJob creates a HorizonRabbitMqJob', function (): void {
         ->and($job)->toBeInstanceOf(RabbitMqJob::class)
         ->and($job->getQueue())->toBe('orders');
 });
+
+it('answers the Horizon AutoScaler readyNow with the AMQP queue size', function (): void {
+    $pool = new Pool(['workers' => horizonWorkers()]);
+    $queue = horizonQueue($pool);
+    $pool->sizeResults['default-broker:default'] = 42;
+
+    expect(42)->toBe($queue->readyNow('default'))
+        ->and($pool->sizeCalls)->toBe([['broker' => 'default-broker', 'queue' => 'default']])
+        ->and(42)->toBe($queue->readyNow());
+});

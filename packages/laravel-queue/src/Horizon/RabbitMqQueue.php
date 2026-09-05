@@ -111,6 +111,16 @@ class RabbitMqQueue extends BaseRabbitMqQueue
         $this->event($queue, new JobDeleted($job, $job->getRawBody()));
     }
 
+    /**
+     * Backlog depth sampled by Horizon's AutoScaler each scaling pass. AMQP
+     * has no separate ready-now list, so the standard queue size contract
+     * answers it.
+     */
+    public function readyNow($queue = null)
+    {
+        return $this->size($queue);
+    }
+
     private function publishHorizonPayload(string $payload, ?string $queue, ?int $delayMs = null): string
     {
         $queueName = $this->queueName($queue);
