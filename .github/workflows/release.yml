@@ -58,7 +58,7 @@ jobs:
           if [[ "$CARGO_VERSION" == 0.0.* ]]; then
             EXPECTED="^0.0"
           else
-            EXPECTED="^${CARGO_VERSION%%.*}.0"
+            EXPECTED="^${CARGO_VERSION%.*}"
           fi
           if [[ "$CONSTRAINT" != "$EXPECTED" ]]; then
             echo "::error::Laravel package ext-rabbit_rs constraint ($CONSTRAINT) does not match the extension version policy ($EXPECTED, derived from Cargo.toml $CARGO_VERSION)."
