@@ -107,6 +107,17 @@ pub(crate) struct PublishBuffer {
     /// count their publications as dropped instead of re-buffering them
     /// into a buffer nobody will flush again.
     tearing_down: AtomicBool,
+    /// Time-based flush trigger interval. Defaults to
+    /// [`BUFFER_FLUSH_INTERVAL`]; the test surface overrides it so tests
+    /// can fill the buffer past the message ceiling without a flush
+    /// trigger stealing the publications mid-fill.
+    flush_interval: Duration,
+    /// Message-count flush trigger. Defaults to [`BUFFER_THRESHOLD`]; the
+    /// test surface overrides it (above the message ceiling) so tests can
+    /// drive the buffer to the ceiling through the synchronous overflow
+    /// path instead of pipelined drains, whose re-buffer/flush cycling is
+    /// scheduling-dependent.
+    flush_threshold: usize,
 }
 
 impl PublishBuffer {
@@ -122,7 +133,28 @@ impl PublishBuffer {
             drain_handles: std::sync::Mutex::new(Vec::new()),
             drain_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DRAINS)),
             tearing_down: AtomicBool::new(false),
+            flush_interval: BUFFER_FLUSH_INTERVAL,
+            flush_threshold: BUFFER_THRESHOLD,
         }
+    }
+
+    /// Overrides the time-based flush trigger interval (test surface only:
+    /// a huge interval fills the buffer past the message ceiling
+    /// deterministically, whatever the host scheduling).
+    #[cfg(feature = "extension-tests")]
+    pub(crate) fn with_flush_interval(mut self, interval: Duration) -> Self {
+        self.flush_interval = interval;
+        self
+    }
+
+    /// Overrides the message-count flush trigger (test surface only: a
+    /// threshold above the message ceiling disables the pipelined auto-flush
+    /// so the synchronous overflow path drives the ceiling refusal
+    /// deterministically).
+    #[cfg(feature = "extension-tests")]
+    pub(crate) fn with_flush_threshold(mut self, threshold: usize) -> Self {
+        self.flush_threshold = threshold;
+        self
     }
 
     /// Returns the number of publications discarded without confirmed
@@ -198,12 +230,12 @@ impl PublishBuffer {
     /// waiting: a batch is flushed once it is older than the interval even
     /// if it never reaches the size threshold.
     pub(crate) fn should_flush(&self) -> bool {
-        self.buffered_len() >= BUFFER_THRESHOLD
+        self.buffered_len() >= self.flush_threshold
             || self
                 .last_flush
                 .lock()
                 .expect("last_flush mutex poisoned")
-                .is_some_and(|instant| instant.elapsed() >= BUFFER_FLUSH_INTERVAL)
+                .is_some_and(|instant| instant.elapsed() >= self.flush_interval)
     }
 
     /// Returns the number of buffered publications.

@@ -36,6 +36,8 @@ struct Scenario {
     pending_confirmations: usize,
     confirmed_publications: usize,
     publication_outcomes: Vec<PublicationFixture>,
+    buffer_flush_interval_ms: Option<u64>,
+    buffer_flush_threshold: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -116,7 +118,13 @@ pub(crate) fn testing_pool(config: &ZendHashTable, scenario: &ZendHashTable) -> 
         publisher_config,
     ));
 
-    Ok(Pool::for_testing(handle, client, delay_strategy))
+    Ok(Pool::for_testing(
+        handle,
+        client,
+        delay_strategy,
+        scenario.buffer_flush_interval_ms.map(Duration::from_millis),
+        scenario.buffer_flush_threshold,
+    ))
 }
 
 impl Scenario {
@@ -131,6 +139,8 @@ impl Scenario {
                 "pending_confirmations",
                 "confirmed_publications",
                 "publication_outcomes",
+                "buffer_flush_interval_ms",
+                "buffer_flush_threshold",
             ],
         )?;
         let publisher_capacity =
@@ -145,6 +155,8 @@ impl Scenario {
             optional_usize(table, "confirmed_publications", "scenario")?.unwrap_or(0);
         let publication_outcomes = optional_publication_outcomes(table)?;
         let deliveries = optional_deliveries(table)?;
+        let buffer_flush_interval_ms = optional_u64(table, "buffer_flush_interval_ms", "scenario")?;
+        let buffer_flush_threshold = optional_usize(table, "buffer_flush_threshold", "scenario")?;
 
         Ok(Self {
             deliveries,
@@ -153,6 +165,8 @@ impl Scenario {
             pending_confirmations,
             confirmed_publications,
             publication_outcomes,
+            buffer_flush_interval_ms,
+            buffer_flush_threshold,
         })
     }
 }
@@ -353,6 +367,14 @@ fn optional_u32(table: &ZendHashTable, key: &str, path: &str) -> Result<Option<u
     let value = optional_non_negative_integer(table, key, path)?;
     value
         .map(u32::try_from)
+        .transpose()
+        .map_err(|_| format!("{path}.{key}: integer is too large"))
+}
+
+fn optional_u64(table: &ZendHashTable, key: &str, path: &str) -> Result<Option<u64>, String> {
+    let value = optional_non_negative_integer(table, key, path)?;
+    value
+        .map(u64::try_from)
         .transpose()
         .map_err(|_| format!("{path}.{key}: integer is too large"))
 }
