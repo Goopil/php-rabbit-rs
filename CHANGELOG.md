@@ -10,6 +10,16 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ### Added
 
+- Native: `Pool::stats()` now reports the publish buffer occupancy via two
+  new keys, `publish_buffered` and `publish_buffered_bytes` (Round K soak
+  tripwire reads them to catch a re-buffer leak path).
+- Benchmarks: the soak harness (`benchmarks/driver-bench/bin/soak.php`)
+  records memory telemetry (RSS, PHP usage/peak, `stats()` snapshots) and
+  fails on a warmup-excluded RSS-slope leak (`--leak-mb-per-hour`, default
+  20 MB/h), on a non-empty publish buffer after a cycle's flush, and —
+  in steady mode (`--kill-every=0`) — no longer requires a reconnection
+  that only kill churn can produce.
+
 - Native: safe-mode publishes are pipelined — `Pool::publish` no longer blocks
   on the batch flush barrier; confirmations, mandatory returns, and transport
   failures are recorded in a bounded pending-error queue and surface at the

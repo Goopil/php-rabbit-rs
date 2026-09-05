@@ -52,3 +52,13 @@ Options: `--driver=rabbit-rs|amqplib|amqp-ext|bunny`, `--scenario=fire-and-forge
 - Throughput is messages per second over the full publish or consume phase.
 - Resource metrics (RSS, CPU) are captured via `getrusage()` and `/proc/self/status` (Linux) or `ps` (macOS).
 - Safety is fixed per scenario via `ScenarioMode` (there is no `--safety` flag): `fire-and-forget`, `auto-ack` and `laravel-worker` publish without confirms, while `batch-confirm` and `laravel-dispatch` publish with confirms + mandatory — drivers are compared apples-to-apples within a scenario.
+
+### Soak memory methodology (Round K #143)
+
+`benchmarks/driver-bench/bin/soak.php` doubles as the stability/memory evidence harness:
+
+- **Sampling** (`--sample-interval`, default 10 s): process RSS (`/proc/self/status` on Linux, `ps -o rss=` on macOS), `memory_get_usage(true)`/`memory_get_peak_usage(true)`, and selected `Pool::stats()` counters (`publish_buffered`, drop/reconnect/duplicate totals) are appended to the run's JSON under `memory.samples`. Sampling is O(1) and runs outside the churn loops.
+- **Leak detection**: the first 20 % of the run duration is excluded from the fit (allocator warm-up); a least-squares RSS slope is fitted over the post-warmup samples and expressed in MB/hour. The run fails when the slope exceeds `--leak-mb-per-hour` (default 20). A run too short to fit a slope passes without a verdict.
+- **Per-cycle tripwire**: the publish buffer must read `publish_buffered == 0` after every cycle's flush; a non-zero reading means publications are parked across cycles (a re-buffer leak path) and fails the run.
+- **Modes**: kill mode (`--kill-every=10`, default) proves recovery under churn and requires `reconnects_total >= 1`; steady mode (`--kill-every=0`) is sustained pop+ack with no kills — the cleanest leak signal — and waives the reconnection requirement.
+- **Evidence**: long-duration runs (60-min kill, 30-min steady) are archived under `benchmarks/results/round-k-soak/`; the nightly CI soak (#144) archives its own artifacts.
