@@ -42,7 +42,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
 
       - name: Build release PHP extension
-        run: cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml
+        run: cargo build --release --locked --manifest-path crates/rabbit-rs-php/Cargo.toml
 
       - name: Install driver-bench dependencies
         run: composer install --no-interaction --no-progress --working-dir=benchmarks/driver-bench --ignore-platform-req=ext-rabbit_rs
