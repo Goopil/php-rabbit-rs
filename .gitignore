@@ -23,4 +23,7 @@ composer.lock
 # local SDD scratch (subagent artifacts, never committed)
 /.superpowers/
 
+# LLVM raw coverage profiles (written to cwd when LLVM_PROFILE_FILE is unset)
+*.profraw
+
 /packages/laravel-queue/composer.lock
