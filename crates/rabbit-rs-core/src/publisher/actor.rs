@@ -159,7 +159,12 @@ impl PublisherHandle {
             )
         })?;
         let (completion, receiver) = oneshot::channel();
+        let timeout = request
+            .deadline
+            .saturating_duration_since(time::Instant::now());
         let command = Command::Publish(Box::new(RetainedPublish {
+            timeout,
+            retried: false,
             request,
             completion,
             accepted_at: Instant::now(),
@@ -356,6 +361,8 @@ struct RetainedPublish {
     _permit: OwnedSemaphorePermit,
     sequence: u64,
     payload_bytes: u64,
+    timeout: Duration,
+    retried: bool,
 }
 
 struct InFlightPublish {
@@ -478,16 +485,23 @@ impl ActorState {
     fn expire_replay(&mut self) {
         let now = time::Instant::now();
         let mut retained = VecDeque::new();
-        while let Some(pending) = self.replay.pop_front() {
+        while let Some(mut pending) = self.replay.pop_front() {
             if pending.request.deadline <= now {
-                self.byte_budget.release(pending.payload_bytes);
-                complete_error(
-                    pending,
-                    PublishError::new(
-                        PublishErrorKind::Timeout,
-                        "publish deadline expired during connection recovery",
-                    ),
-                );
+                if pending.retried {
+                    self.byte_budget.release(pending.payload_bytes);
+                    complete_error(
+                        pending,
+                        PublishError::new(
+                            PublishErrorKind::Timeout,
+                            "publish deadline expired during connection recovery",
+                        ),
+                    );
+                } else {
+                    pending.retried = true;
+                    pending.request.deadline = now + pending.timeout;
+                    self.metrics.record_publication_retry();
+                    retained.push_back(pending);
+                }
             } else {
                 retained.push_back(pending);
             }
