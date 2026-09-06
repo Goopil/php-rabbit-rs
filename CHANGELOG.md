@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.1.3] - 2026-09-06
+
+Feature release: the extension binaries are rebuilt with the hardened TLS
+transport, and the Laravel package gains two console commands plus
+per-subscription adaptive prefetch.
+
+### Added
+
+- Native: the transport enforces TLS certificate verification and sends the
+  SNI `server_name` to the broker.
+- Native + Laravel: adaptive prefetch per subscription (#42, #162) — a
+  `min`/`target buffer`/`max` policy compiled through the driver's compiler,
+  adjusted at runtime by the native pool, and observable via
+  `getPrefetchStats()`.
+- Laravel: `rabbit-rs:doctor` (#155) — one-shot integration diagnostics per
+  connection: config compilation, extension version against the composer
+  constraint, broker probe, Horizon supervisor alignment, event listeners,
+  and publisher safety summary; exits non-zero when a check fails.
+- Laravel: `rabbit-rs:topology` (#84, #165) — preflight topology check for
+  CI/deploy pipelines: passive queue probes per subscription, and (when
+  `management_url` is set) verification of the dead-letter exchange, its
+  binding, and each queue's `x-queue-type`; `--fix` (with `--force` outside
+  declare mode) declares the missing topology.
+
+### Fixed
+
+- Laravel: child workers receive their index through the dedicated
+  `RABBIT_RS_WORKER_INDEX` environment variable (#163) instead of reusing
+  the worker-mode variable.
+- PHP: extension stubs regenerate without the PHP embed SAPI (#156), so the
+  cargo-php tooling builds on macOS without a special link flag.
+
+### Changed
+
+- Docs: the workspace README leads with the product (#161) and the package
+  README documents the connection-first configuration.
+- CI: the `tls_integration` suite is excluded from the integration job (#159).
+
 ## [0.1.2] - 2026-09-06
 
 Packaging/CI release: no Rust or PHP code changes since 0.1.1 (binaries are
