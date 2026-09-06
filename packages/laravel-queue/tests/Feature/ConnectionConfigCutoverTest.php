@@ -91,9 +91,11 @@ describe('connection-first config cutover', function () {
             'management_url' => 'https://mq.local:15672',
         ]);
         Http::fake(['*' => Http::response([
-            'messages_delivered' => 3,
-            'messages_acked' => 2,
-            'messages_redelivered' => 1,
+            'message_stats' => [
+                'deliver_get' => 3,
+                'ack' => 2,
+                'redeliver' => 1,
+            ],
         ])]);
 
         $this->artisan('rabbit-rs:status --format=json')
