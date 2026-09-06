@@ -22,9 +22,14 @@ describe('status command queue stats', function () {
     it('json output includes queue counters from the management api', function () {
         Http::fake([
             STATUS_MGMT_URL.'/api/queues/*' => Http::response([
-                'messages_delivered' => 10,
-                'messages_acked' => 8,
-                'messages_redelivered' => 2,
+                'messages' => 3,
+                'messages_ready' => 3,
+                'messages_unacknowledged' => 0,
+                'message_stats' => [
+                    'deliver_get' => 10,
+                    'ack' => 8,
+                    'redeliver' => 2,
+                ],
             ]),
         ]);
 
@@ -33,12 +38,35 @@ describe('status command queue stats', function () {
             ->expectsOutputToContain('"management_url_configured": true')
             ->expectsOutputToContain('"messages_delivered": 10')
             ->expectsOutputToContain('"messages_acked": 8')
-            ->expectsOutputToContain('"messages_redelivered": 2');
+            ->expectsOutputToContain('"messages_redelivered": 2')
+            ->expectsOutputToContain('"messages_ready": 3');
 
         Http::assertSent(
             fn ($request) => $request->method() === 'GET'
                 && str_starts_with($request->url(), STATUS_MGMT_URL.'/api/queues/'),
         );
+    });
+
+    it('reads cumulative counters from the nested message_stats object', function () {
+        Http::fake([
+            STATUS_MGMT_URL.'/api/queues/*' => Http::response([
+                'messages' => 3,
+                'messages_ready' => 3,
+                'messages_unacknowledged' => 0,
+                'message_stats' => [
+                    'ack' => 100,
+                    'deliver_get' => 106,
+                    'redeliver' => 6,
+                ],
+            ]),
+        ]);
+
+        $this->artisan(STATUS_QUEUE_JSON_COMMAND)
+            ->assertSuccessful()
+            ->expectsOutputToContain('"messages_delivered": 106')
+            ->expectsOutputToContain('"messages_acked": 100')
+            ->expectsOutputToContain('"messages_redelivered": 6')
+            ->expectsOutputToContain('"messages_ready": 3');
     });
 
     it('requests the vhost-encoded queue endpoint', function () {
@@ -71,16 +99,18 @@ describe('status command queue stats', function () {
 
     it('human output shows cross-process queue metrics', function () {
         Http::fake(['*' => Http::response([
-            'messages_delivered' => 10,
-            'messages_acked' => 8,
-            'messages_redelivered' => 2,
+            'messages_ready' => 1,
+            'message_stats' => [
+                'deliver_get' => 10,
+                'ack' => 8,
+                'redeliver' => 2,
+            ],
         ])]);
 
         $this->artisan('rabbit-rs:status')
             ->assertSuccessful()
             ->expectsOutputToContain('Queue Metrics')
-            ->expectsOutputToContain('rabbit-rs/default')
-            ->expectsOutputToContain('redelivered');
+            ->expectsOutputToContain('rabbit-rs/default: delivered 10, acked 8, redelivered 2, ready 1');
     });
 
     it('human output states that redeliveries also count crash requeues', function () {

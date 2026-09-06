@@ -149,11 +149,16 @@ final class RabbitMqStatusCommand extends Command
         }
 
         $body = $response->json();
+        $stats = is_array($body['message_stats'] ?? null) ? $body['message_stats'] : [];
 
+        // Cumulative counters live in the nested message_stats object under
+        // the management API's own names; the top level only carries depth
+        // gauges.
         return $entry + [
-            'messages_delivered' => self::counter($body, 'messages_delivered'),
-            'messages_acked' => self::counter($body, 'messages_acked'),
-            'messages_redelivered' => self::counter($body, 'messages_redelivered'),
+            'messages_delivered' => self::counter($stats, 'deliver_get'),
+            'messages_acked' => self::counter($stats, 'ack'),
+            'messages_redelivered' => self::counter($stats, 'redeliver'),
+            'messages_ready' => self::counter($body, 'messages_ready'),
         ];
     }
 
@@ -220,7 +225,7 @@ final class RabbitMqStatusCommand extends Command
 
                 continue;
             }
-            $this->line("{$label} delivered {$queue['messages_delivered']}, acked {$queue['messages_acked']}, redelivered {$queue['messages_redelivered']}");
+            $this->line("{$label} delivered {$queue['messages_delivered']}, acked {$queue['messages_acked']}, redelivered {$queue['messages_redelivered']}, ready {$queue['messages_ready']}");
         }
         $this->line('    note: redelivered is an approximate duplicate signal — it also counts crash requeues');
     }
