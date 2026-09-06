@@ -191,7 +191,7 @@ pub struct SubscriptionConfig {
     pub queue: String,
     pub weight: u16,
     pub priority_class: i16,
-    pub prefetch: u16,
+    pub prefetch: PrefetchConfig,
     #[serde(
         default = "default_starvation_after",
         deserialize_with = "deserialize_duration_seconds"
@@ -221,6 +221,98 @@ pub struct SubscriptionConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SchedulerStrategy {
     WeightedFair,
+}
+
+/// Per-subscription prefetch policy: a fixed `QoS` value or an adaptive
+/// controller driven by observed job duration.
+///
+/// Wire forms accepted: a plain integer (`16`), `{"mode": "fixed", "value": N}`,
+/// or `{"mode": "adaptive", "initial": N, "min": N, "max": N,
+/// "target_buffer_seconds": S}`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrefetchConfig {
+    Fixed(u16),
+    Adaptive {
+        initial: u16,
+        min: u16,
+        max: u16,
+        target_buffer: Duration,
+    },
+}
+
+impl PrefetchConfig {
+    /// The prefetch applied when the subscription starts.
+    #[must_use]
+    pub const fn initial_value(&self) -> u16 {
+        match self {
+            Self::Fixed(value) => *value,
+            Self::Adaptive { initial, .. } => *initial,
+        }
+    }
+
+    /// The highest prefetch the policy can reach; bounds spawn buffer capacity.
+    #[must_use]
+    pub const fn ceiling(&self) -> u16 {
+        match self {
+            Self::Fixed(value) => *value,
+            Self::Adaptive { max, .. } => *max,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PrefetchConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Plain(u16),
+            Mapped(PrefetchMap),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct PrefetchMap {
+            mode: PrefetchMode,
+            value: Option<u16>,
+            initial: Option<u16>,
+            min: Option<u16>,
+            max: Option<u16>,
+            #[serde(default, deserialize_with = "deserialize_duration_seconds_opt")]
+            target_buffer_seconds: Option<Duration>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum PrefetchMode {
+            Fixed,
+            Adaptive,
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Plain(value) => Ok(Self::Fixed(value)),
+            Wire::Mapped(map) => match map.mode {
+                PrefetchMode::Fixed => {
+                    let value = map.value.ok_or_else(|| de::Error::missing_field("value"))?;
+                    Ok(Self::Fixed(value))
+                }
+                PrefetchMode::Adaptive => Ok(Self::Adaptive {
+                    initial: map
+                        .initial
+                        .ok_or_else(|| de::Error::missing_field("initial"))?,
+                    min: map.min.ok_or_else(|| de::Error::missing_field("min"))?,
+                    max: map.max.ok_or_else(|| de::Error::missing_field("max"))?,
+                    target_buffer: map
+                        .target_buffer_seconds
+                        .ok_or_else(|| de::Error::missing_field("target_buffer_seconds"))?,
+                }),
+            },
+        }
+    }
 }
 
 /// Worker-level scheduler parameters.
@@ -632,11 +724,56 @@ impl Config {
                     "weight must be greater than zero",
                 ));
             }
-            if subscription.prefetch == 0 {
-                return Err(ConfigError::new(
-                    path + ".prefetch",
-                    "prefetch must be greater than zero",
-                ));
+            let prefetch_base = format!(
+                "workers.{worker_name}.subscriptions.{}.prefetch",
+                subscription.name
+            );
+            match subscription.prefetch {
+                PrefetchConfig::Fixed(0) => {
+                    return Err(ConfigError::new(
+                        prefetch_base,
+                        "prefetch must be greater than zero",
+                    ));
+                }
+                PrefetchConfig::Fixed(_) => {}
+                PrefetchConfig::Adaptive {
+                    initial,
+                    min,
+                    max,
+                    target_buffer,
+                } => {
+                    if min == 0 {
+                        return Err(ConfigError::new(
+                            format!("{prefetch_base}.min"),
+                            "min must be greater than zero",
+                        ));
+                    }
+                    if max < min {
+                        return Err(ConfigError::new(
+                            format!("{prefetch_base}.max"),
+                            "max must be greater than or equal to min",
+                        ));
+                    }
+                    if initial < min || initial > max {
+                        return Err(ConfigError::new(
+                            format!("{prefetch_base}.initial"),
+                            "initial must be within [min, max]",
+                        ));
+                    }
+                    if target_buffer.is_zero() {
+                        return Err(ConfigError::new(
+                            format!("{prefetch_base}.target_buffer_seconds"),
+                            "target_buffer_seconds must be greater than zero",
+                        ));
+                    }
+                    if subscription.early_ack || subscription.no_ack {
+                        return Err(ConfigError::new(
+                            format!("{prefetch_base}.mode"),
+                            "adaptive prefetch requires consumer acknowledgements: \
+                             early_ack and no_ack must be false",
+                        ));
+                    }
+                }
             }
             if subscription.starvation_after.is_zero() {
                 return Err(ConfigError::new(
@@ -786,7 +923,28 @@ impl ConfigFingerprint {
                 hash_value(&mut digest, &subscription.queue);
                 digest.update(subscription.weight.to_be_bytes());
                 digest.update(subscription.priority_class.to_be_bytes());
-                digest.update(subscription.prefetch.to_be_bytes());
+                match subscription.prefetch {
+                    PrefetchConfig::Fixed(value) => {
+                        hash_value(&mut digest, "prefetch:fixed");
+                        digest.update(value.to_be_bytes());
+                    }
+                    PrefetchConfig::Adaptive {
+                        initial,
+                        min,
+                        max,
+                        target_buffer,
+                    } => {
+                        hash_value(&mut digest, "prefetch:adaptive");
+                        digest.update(initial.to_be_bytes());
+                        digest.update(min.to_be_bytes());
+                        digest.update(max.to_be_bytes());
+                        digest.update(
+                            u64::try_from(target_buffer.as_millis())
+                                .unwrap_or(u64::MAX)
+                                .to_be_bytes(),
+                        );
+                    }
+                }
                 digest.update(subscription.starvation_after.as_secs().to_be_bytes());
                 digest.update(subscription.max_buffered_bytes.to_be_bytes());
                 hash_value(
@@ -967,6 +1125,13 @@ where
     u64::deserialize(deserializer).map(Duration::from_secs)
 }
 
+fn deserialize_duration_seconds_opt<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer).map(|seconds| seconds.map(Duration::from_secs))
+}
+
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
@@ -999,8 +1164,8 @@ mod tests {
 
     use super::{
         BrokerConfig, Config, ConfigFingerprint, ConsumerConfigSection, Credentials, DelayConfig,
-        Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy,
-        SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
+        Endpoint, PrefetchConfig, PublisherConfigSection, SafetyMode, SchedulerConfig,
+        SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -1023,7 +1188,7 @@ mod tests {
             queue: "jobs".to_owned(),
             weight: 1,
             priority_class: 0,
-            prefetch,
+            prefetch: PrefetchConfig::Fixed(prefetch),
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,
@@ -1069,6 +1234,311 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions.default.prefetch");
+    }
+
+    #[test]
+    fn parses_plain_integer_prefetch_as_fixed() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("plain integer prefetch parses");
+
+        assert!(matches!(
+            candidate.workers[0].subscriptions[0].prefetch,
+            PrefetchConfig::Fixed(16)
+        ));
+    }
+
+    #[test]
+    fn parses_fixed_union_prefetch() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": {"mode": "fixed", "value": 8}
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("fixed union prefetch parses");
+
+        assert!(matches!(
+            candidate.workers[0].subscriptions[0].prefetch,
+            PrefetchConfig::Fixed(8)
+        ));
+    }
+
+    #[test]
+    fn parses_adaptive_union_prefetch() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": {
+                        "mode": "adaptive",
+                        "initial": 64,
+                        "min": 1,
+                        "max": 256,
+                        "target_buffer_seconds": 5
+                    }
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external"
+        }))
+        .expect("adaptive union prefetch parses");
+
+        assert_eq!(
+            candidate.workers[0].subscriptions[0].prefetch,
+            PrefetchConfig::Adaptive {
+                initial: 64,
+                min: 1,
+                max: 256,
+                target_buffer: Duration::from_secs(5),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_prefetch_mode() {
+        let result = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": {"mode": "dynamic", "value": 8}
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external"
+        }));
+
+        assert!(result.is_err(), "unknown prefetch mode must fail to parse");
+    }
+
+    #[test]
+    fn rejects_adaptive_union_missing_field() {
+        let result = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false, "server_name": null},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": {"mode": "adaptive", "initial": 16, "max": 256}
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external"
+        }));
+
+        assert!(
+            result.is_err(),
+            "adaptive union missing `min` must fail to parse"
+        );
+    }
+
+    fn subscription_with(prefetch: PrefetchConfig) -> SubscriptionConfig {
+        SubscriptionConfig {
+            name: "default".to_owned(),
+            broker: "default".to_owned(),
+            queue: "jobs".to_owned(),
+            weight: 1,
+            priority_class: 0,
+            prefetch,
+            starvation_after: Duration::from_secs(30),
+            max_buffered_bytes: 64 * 1024 * 1024,
+            early_ack: false,
+            no_ack: false,
+        }
+    }
+
+    fn worker_with(prefetch: PrefetchConfig) -> WorkerProfile {
+        WorkerProfile {
+            name: "main".to_owned(),
+            subscriptions: vec![subscription_with(prefetch)],
+            scheduler: SchedulerConfig::weighted_fair(),
+        }
+    }
+
+    fn config_with(prefetch: PrefetchConfig) -> Config {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers = vec![worker_with(prefetch)];
+        candidate
+    }
+
+    fn adaptive(initial: u16, min: u16, max: u16, target_buffer: Duration) -> PrefetchConfig {
+        PrefetchConfig::Adaptive {
+            initial,
+            min,
+            max,
+            target_buffer,
+        }
+    }
+
+    #[test]
+    fn rejects_adaptive_min_zero() {
+        let error = config_with(adaptive(16, 0, 256, Duration::from_secs(5)))
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.prefetch.min"
+        );
+    }
+
+    #[test]
+    fn rejects_adaptive_max_below_min() {
+        let error = config_with(adaptive(16, 8, 4, Duration::from_secs(5)))
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.prefetch.max"
+        );
+    }
+
+    #[test]
+    fn rejects_adaptive_initial_outside_bounds() {
+        let error = config_with(adaptive(512, 1, 256, Duration::from_secs(5)))
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.prefetch.initial"
+        );
+    }
+
+    #[test]
+    fn rejects_adaptive_zero_target_buffer() {
+        let error = config_with(adaptive(16, 1, 256, Duration::ZERO))
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.prefetch.target_buffer_seconds"
+        );
+    }
+
+    #[test]
+    fn rejects_adaptive_with_early_ack() {
+        let mut candidate = config_with(adaptive(16, 1, 256, Duration::from_secs(5)));
+        candidate.workers[0].subscriptions[0].early_ack = true;
+        let error = candidate.validate().unwrap_err();
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.prefetch.mode"
+        );
+        assert!(
+            error.to_string().contains("acknowledgements"),
+            "error must explain the acknowledgement requirement, got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_adaptive_with_no_ack() {
+        let mut candidate = config_with(adaptive(16, 1, 256, Duration::from_secs(5)));
+        candidate.workers[0].subscriptions[0].no_ack = true;
+        let error = candidate.validate().unwrap_err();
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.prefetch.mode"
+        );
+    }
+
+    #[test]
+    fn accepts_valid_adaptive_prefetch() {
+        config_with(adaptive(16, 1, 256, Duration::from_secs(5)))
+            .validate()
+            .expect("valid adaptive prefetch");
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_prefetch_policies() {
+        let fixed = config_with(PrefetchConfig::Fixed(16)).validate().unwrap();
+        let adaptive = config_with(adaptive(16, 1, 256, Duration::from_secs(5)))
+            .validate()
+            .unwrap();
+        let other_fixed = config_with(PrefetchConfig::Fixed(32)).validate().unwrap();
+
+        assert_ne!(fixed.fingerprint(), adaptive.fingerprint());
+        assert_ne!(fixed.fingerprint(), other_fixed.fingerprint());
+        assert_eq!(
+            fixed.fingerprint(),
+            config_with(PrefetchConfig::Fixed(16))
+                .validate()
+                .unwrap()
+                .fingerprint()
+        );
     }
 
     #[test]

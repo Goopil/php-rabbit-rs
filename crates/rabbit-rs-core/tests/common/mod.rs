@@ -9,8 +9,8 @@ use std::{sync::Arc, time::Duration};
 use rabbit_rs_core::{
     config::{
         BrokerConfig, Config, ConsumerConfigSection, Credentials, DelayConfig, Endpoint,
-        PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode,
-        ValidatedConfig, WorkerProfile,
+        PrefetchConfig, PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig,
+        TopologyMode, ValidatedConfig, WorkerProfile,
     },
     transport::{
         PublishRequest as TransportRequest, QueueKind,
@@ -41,7 +41,7 @@ pub fn worker_profile(name: &str, broker_name: &str, queue: &str, prefetch: u16)
             queue: queue.to_owned(),
             weight: 1,
             priority_class: 0,
-            prefetch,
+            prefetch: PrefetchConfig::Fixed(prefetch),
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,

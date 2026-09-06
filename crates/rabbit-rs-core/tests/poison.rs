@@ -467,8 +467,8 @@ mod real_broker {
         client::ClientPool,
         config::{
             ConsumerConfigSection, Credentials, DeadLetterConfig, DelayConfig, Endpoint,
-            PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode,
-            WorkerProfile,
+            PrefetchConfig, PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig,
+            TopologyMode, WorkerProfile,
         },
         publisher::{MessageProperties, PublishRequest},
         topology::{
@@ -539,7 +539,7 @@ mod real_broker {
                         queue: queue.to_owned(),
                         weight: 1,
                         priority_class: 0,
-                        prefetch: 8,
+                        prefetch: PrefetchConfig::Fixed(8),
                         starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
                         early_ack: false,
@@ -798,7 +798,7 @@ mod real_broker {
             queue,
             weight: 1,
             priority_class: 0,
-            prefetch: 8,
+            prefetch: PrefetchConfig::Fixed(8),
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,
