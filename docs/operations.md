@@ -206,17 +206,23 @@ Rabbit RS does not include a Prometheus exporter in V1, but the status command p
 | Metric | Description |
 |--------|-------------|
 | `publishes_total` | Total published messages |
-| `confirmations_total` | Total publisher confirms (ACK) |
+| `confirmations_total` | Total broker confirmations (ACK and Nack) |
 | `returns_total` | Total mandatory returns (unroutable) |
 | `backpressure_total` | Times publisher capacity was reached |
 | `reconnects_total` | Total connection recoveries |
 | `deliveries_total` | Total deliveries received |
 | `acks_total` | Total consumer ACKs |
 | `rejects_total` | Total consumer rejects |
+| `duplicates_total` | Deliveries the broker flagged as redeliveries (per-process; see [Reliability — Measuring duplicates](reliability.md#measuring-duplicates)) |
 | `dropped_publications_total` | Publications discarded without confirmed delivery (deadline-expired flush retries, un-attempted batches on a closing pool, unconfirmed leftovers at teardown) |
+| `dropped_error_records_total` | Publish error records evicted from the bounded drain queue before they could be read |
 | `publication_retries_total` | Publications whose deadline expired during a recovery suspension and were re-armed once |
+| `publish_buffered` | Publications currently parked in the publish buffer |
+| `publish_buffered_bytes` | Cumulative payload bytes currently parked in the publish buffer |
 | `confirmation_latency_p50/p95/p99` | Publisher confirmation latency (ms) |
 | `settlement_latency_p50/p95/p99` | Consumer settlement latency (ms) |
+
+The snapshot also carries pool-handle state (`closed`, `pid`, `handle`) — see the `Pool::stats()` stub in `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` for the full shape.
 
 ### Sidecar exporter
 

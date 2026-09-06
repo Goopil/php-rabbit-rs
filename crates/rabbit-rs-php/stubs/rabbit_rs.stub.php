@@ -108,7 +108,11 @@ final class Pool
      * Implemented by the ext-rabbit_rs native extension.
      * @see \Goopil\RabbitRs\Pool Method is provided by the C extension at runtime.
      *
-     * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, publication_retries_total: int, reconnects_total: int, duplicates_total: int, publish_buffered: int, publish_buffered_bytes: int}
+     * Returns the current native metrics snapshot. Counters are integers;
+     * latency percentiles are integer milliseconds (0 when no samples have
+     * been recorded).
+     *
+     * @return array{closed: bool, pid: int, handle: string, publishes_total: int, confirmations_total: int, returns_total: int, backpressure_total: int, publication_retries_total: int, reconnects_total: int, deliveries_total: int, duplicates_total: int, acks_total: int, rejects_total: int, dropped_publications_total: int, dropped_error_records_total: int, publish_buffered: int, publish_buffered_bytes: int, confirmation_latency_p50: int, confirmation_latency_p95: int, confirmation_latency_p99: int, settlement_latency_p50: int, settlement_latency_p95: int, settlement_latency_p99: int}
      */
     public function stats(): array
     {
