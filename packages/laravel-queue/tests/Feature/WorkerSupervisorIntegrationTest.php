@@ -91,7 +91,7 @@ describe('WorkerSupervisor integration', function () {
             $calls++;
 
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER'         => '0',
+                'RABBIT_RS_WORKER_INDEX'   => '0',
                 'RABBIT_RS_STUB_MODE'      => $mode,
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
@@ -154,7 +154,7 @@ describe('WorkerSupervisor integration', function () {
             $calls++;
 
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER'         => '0',
+                'RABBIT_RS_WORKER_INDEX'   => '0',
                 'RABBIT_RS_STUB_MODE'      => $mode,
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
@@ -192,13 +192,13 @@ describe('WorkerSupervisor integration', function () {
             if ($workerIndex === 0) {
                 // Crash-loops: each run dies non-zero after ~1.2s.
                 return new Process([PHP_BINARY, '-r', 'usleep(1200000); exit(1);'], null, [
-                    'RABBIT_RS_WORKER' => '0',
+                    'RABBIT_RS_WORKER_INDEX'   => '0',
                 ]);
             }
 
             // Recycles cleanly every few hundred milliseconds.
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER'         => '1',
+                'RABBIT_RS_WORKER_INDEX'   => '1',
                 'RABBIT_RS_STUB_MODE'      => 'exit-clean',
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
@@ -233,7 +233,7 @@ describe('WorkerSupervisor integration', function () {
             $cmd = [PHP_BINARY, $stubPath];
             $mode = $workerIndex === 0 ? 'crash' : 'run';
             $envForChild = [
-                'RABBIT_RS_WORKER'           => (string) $workerIndex,
+                'RABBIT_RS_WORKER_INDEX'   => (string) $workerIndex,
                 'RABBIT_RS_STUB_MODE'        => $mode,
                 'RABBIT_RS_STUB_STATE_DIR'   => $stateDir,
             ];
@@ -278,7 +278,7 @@ describe('WorkerSupervisor integration', function () {
 
         $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER'         => (string) $workerIndex,
+                'RABBIT_RS_WORKER_INDEX'   => (string) $workerIndex,
                 'RABBIT_RS_STUB_MODE'      => 'crash',
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
@@ -322,7 +322,7 @@ describe('WorkerSupervisor integration', function () {
             if ($workerIndex === 0) {
                 // Crashes immediately on every start.
                 return new Process([PHP_BINARY, $stubPath], null, [
-                    'RABBIT_RS_WORKER'         => '0',
+                    'RABBIT_RS_WORKER_INDEX'   => '0',
                     'RABBIT_RS_STUB_MODE'      => 'crash',
                     'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
                 ]);
@@ -331,7 +331,7 @@ describe('WorkerSupervisor integration', function () {
             // Stays up for a moment, then exits non-zero: its crash lands well
             // inside worker 0's backoff window.
             return new Process([PHP_BINARY, '-r', 'usleep(500000); exit(1);'], null, [
-                'RABBIT_RS_WORKER' => '1',
+                'RABBIT_RS_WORKER_INDEX'   => '1',
             ]);
         };
 
@@ -408,7 +408,7 @@ function makeSupervisor(
             PHP_BINARY,
             $stubPath,
         ];
-        $envForChild = array_merge($env, ['RABBIT_RS_WORKER' => (string) $workerIndex]);
+        $envForChild = array_merge($env, ['RABBIT_RS_WORKER_INDEX'   => (string) $workerIndex]);
 
         return new Process($cmd, null, $envForChild);
     };
@@ -490,7 +490,7 @@ function writeSupervisorScript(
     $code .= "\$stubPath = " . var_export($stubPath, true) . ";\n";
     $code .= "\$stateDir = \$argv[1];\n";
     $code .= "\$factory = static function (int \$workerIndex) use (\$stubPath, \$stateDir): \\Symfony\\Component\\Process\\Process {\n";
-    $code .= "    \$env = ['RABBIT_RS_WORKER' => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => " . var_export($mode, true) . ", 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
+    $code .= "    \$env = ['RABBIT_RS_WORKER_INDEX'   => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => " . var_export($mode, true) . ", 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
     $code .= "    return new \\Symfony\\Component\\Process\\Process([PHP_BINARY, \$stubPath], null, \$env);\n";
     $code .= "};\n";
     $code .= "\$supervisor = new \\Goopil\\RabbitRs\\Laravel\\Console\\WorkerSupervisor(\n";

@@ -17,7 +17,13 @@ class WorkerSupervisor
     public const EXIT_CLEAN = 0;
     public const EXIT_MAX_RESTARTS = 1;
 
-    public const WORKER_ENV = 'RABBIT_RS_WORKER';
+    /**
+     * Environment variable used to pass the worker index to child processes.
+     * Deliberately distinct from RABBIT_RS_WORKER, which is the worker MODE
+     * (default|horizon) read from config/rabbit-rs.php: overriding it here
+     * would silently downgrade Horizon users' supervised children.
+     */
+    public const WORKER_ENV = 'RABBIT_RS_WORKER_INDEX';
 
     /**
      * Worker options that are propagated to each child `queue:work` process.
@@ -49,10 +55,10 @@ class WorkerSupervisor
      * Build one child command per plan entry × worker, with worker indexes
      * numbered across the full child list.
      *
-     * The worker index is passed via the RABBIT_RS_WORKER environment variable
-     * (see {@see workerEnvironment()}) rather than as a CLI option, because
-     * `queue:work` is Laravel's built-in command and Symfony Console rejects
-     * unknown options. The `--name` option (recognised by `queue:work`) is
+     * The worker index is passed via the RABBIT_RS_WORKER_INDEX environment
+     * variable (see {@see workerEnvironment()}) rather than as a CLI option,
+     * because `queue:work` is Laravel's built-in command and Symfony Console
+     * rejects unknown options. The `--name` option (recognised by `queue:work`) is
      * set to a unique value so the worker name appears in logs and metrics.
      *
      * Worker options (timeout, tries, memory, max-jobs, max-time) are

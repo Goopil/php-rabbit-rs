@@ -88,7 +88,7 @@ php artisan rabbit-rs:work --workers=4
 ### How it works
 
 1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work <name> --queue=<q1,q2>` (the connection is `queue:work`'s positional argument)
-2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER={i}` environment variable
+2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER_INDEX={i}` environment variable
 3. The supervisor monitors child processes every 100ms
 4. If a child exits with a non-zero code (a crash), the supervisor waits (backoff seconds) and restarts it; a clean exit (0, e.g. `--max-jobs` recycling) restarts the child immediately and resets its crash budget
 5. On `SIGTERM`/`SIGINT`, the supervisor sends `SIGTERM` to each child and waits up to 10 seconds

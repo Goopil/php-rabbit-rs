@@ -20,7 +20,7 @@ class RabbitMqWorkCommand extends Command
         {--memory=128 : The memory limit in megabytes}
         {--max-jobs= : The number of jobs to process before stopping}
         {--max-time= : The maximum number of seconds the worker should run}
-        {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
+        {--rabbit-rs-worker= : Worker index for logging/metrics attribution (direct invocation only; the supervisor passes it via RABBIT_RS_WORKER_INDEX)}';
 
     protected $description = 'Supervise Rabbit RS queue workers across connections with automatic restart';
 
