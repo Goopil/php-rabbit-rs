@@ -4,6 +4,7 @@ pub mod actor;
 pub mod attempts;
 pub mod composite;
 pub mod delivery;
+mod prefetch;
 pub mod set;
 
 mod scheduler;
