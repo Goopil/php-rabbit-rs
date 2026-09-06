@@ -99,6 +99,15 @@ namespace Goopil\RabbitRs {
         public function drainErrors(): array {}
 
         /**
+         * Per-subscription prefetch state: mode ("fixed" or "adaptive"),
+         * currently applied prefetch, and EWMA of settlement latency in
+         * milliseconds (0 before any acknowledged job).
+         *
+         * @return array<string, array{mode: string, prefetch: int, ewma_ms: int}>
+         */
+        public function getPrefetchStats(): array {}
+
+        /**
          * Returns the next delivery within the requested timeout.
          *
          * The fast path checks the lock-free buffer without crossing into the

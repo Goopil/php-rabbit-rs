@@ -201,6 +201,31 @@ impl Consumer {
         Ok(table)
     }
 
+    /// Returns per-subscription prefetch state for observability.
+    ///
+    /// Returns an array keyed by subscription name; each entry contains
+    /// `mode` (`"fixed"` or `"adaptive"`), `prefetch` (currently applied
+    /// value), and `ewma_ms` (EWMA of acknowledged settlement latency in
+    /// milliseconds, 0 before any acknowledged job).
+    pub fn getPrefetchStats(&self) -> PhpResult<ZBox<ZendHashTable>> {
+        self.ensure_open("Goopil\\RabbitRs\\Consumer::getPrefetchStats")?;
+        let stats = self.runtime.block_on(self.handle.prefetch_stats()).map_err(
+            |error| consumer_exception_message(&error),
+        )?;
+        let mut table = ZendHashTable::new();
+        for stat in stats {
+            let mut entry = ZendHashTable::new();
+            entry.insert("mode", stat.mode)?;
+            entry.insert("prefetch", i64::from(stat.current))?;
+            entry.insert(
+                "ewma_ms",
+                i64::try_from(stat.ewma.as_millis()).unwrap_or(i64::MAX),
+            )?;
+            table.insert(stat.subscription.as_str(), entry)?;
+        }
+        Ok(table)
+    }
+
     /// Closes this consumer handle.
     pub fn close(&self) -> PhpResult<()> {
         if self.pid != std::process::id() {
