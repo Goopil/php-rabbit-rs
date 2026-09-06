@@ -426,7 +426,7 @@ jobs:
                 apk add --no-cache curl coreutils libgcc
               else
                 # unzip: PIE needs it (or php-zip) to extract prebuilt zips;
-                # busybox unzip covers the Alpine cells, Debian images don't ship it.
+                # busybox unzip covers the Alpine cells, Debian images lack it.
                 apt-get update -qq && apt-get install -y -qq curl unzip
               fi
               # Same pinned PIE phar as the runner cells; its provenance is
