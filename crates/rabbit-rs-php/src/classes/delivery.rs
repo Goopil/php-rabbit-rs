@@ -1,6 +1,7 @@
 #![expect(
     non_snake_case,
-    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
+    clippy::doc_markdown,
+    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments, and PHP docblock array shapes keep snake_case keys"
 )]
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +35,13 @@ impl Delivery {
     }
 
     /// Returns delivery metadata as a PHP array.
+    ///
+    /// @return array{message_id: string, correlation_id?: string,
+    ///   subscription: string, attempts: int, state: string,
+    ///   headers: array<string, bool|int|float|string|null>}
+    ///
+    /// Nested broker headers such as `x-death` are omitted from the flat PHP
+    /// header model.
     pub fn metadata(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::metadata")?;
         let mut metadata = ZendHashTable::new();
