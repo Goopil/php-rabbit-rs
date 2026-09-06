@@ -84,7 +84,7 @@ class RabbitMqServiceProvider extends ServiceProvider
 
     /**
      * Register the WorkCommand extension so that supervised `queue:work`
-     * children tag their logs with the worker index from RABBIT_RS_WORKER.
+     * children tag their logs with the worker index from RABBIT_RS_WORKER_INDEX.
      */
     private function registerWorkCommandExtension(): void
     {

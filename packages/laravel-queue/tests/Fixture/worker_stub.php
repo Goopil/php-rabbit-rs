@@ -10,7 +10,7 @@ declare(strict_types=1);
  *
  * Behaviour is controlled by environment variables:
  *
- *   RABBIT_RS_WORKER          Worker index assigned by the supervisor.
+ *   RABBIT_RS_WORKER_INDEX   Worker index assigned by the supervisor.
  *   RABBIT_RS_STUB_MODE       One of: run, exit-clean, crash, crash-after.
  *                             Defaults to "run".
  *   RABBIT_RS_STUB_CRASH_AFTER Number of invocations before crashing. Used with
@@ -27,10 +27,10 @@ declare(strict_types=1);
 namespace {
     require_once __DIR__ . '/worker_stub_functions.php';
 
-    if (isset($_ENV['RABBIT_RS_WORKER'])) {
-        $worker = (string) $_ENV['RABBIT_RS_WORKER'];
-    } elseif (getenv('RABBIT_RS_WORKER') !== false) {
-        $worker = (string) getenv('RABBIT_RS_WORKER');
+    if (isset($_ENV['RABBIT_RS_WORKER_INDEX'])) {
+        $worker = (string) $_ENV['RABBIT_RS_WORKER_INDEX'];
+    } elseif (getenv('RABBIT_RS_WORKER_INDEX') !== false) {
+        $worker = (string) getenv('RABBIT_RS_WORKER_INDEX');
     } else {
         $worker = '0';
     }

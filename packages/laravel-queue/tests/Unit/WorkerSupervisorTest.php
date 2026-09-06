@@ -261,6 +261,21 @@ describe('workerEnvironment', function (): void {
         expect('0')->toBe($env0[WorkerSupervisor::workerEnv()])
             ->and('1')->toBe($env1[WorkerSupervisor::workerEnv()]);
     });
+
+    it('passes the index under a dedicated variable, never overriding the worker-mode variable', function (): void {
+        // RABBIT_RS_WORKER is the worker MODE (default|horizon) read by
+        // config/rabbit-rs.php: the supervisor must not override it in child
+        // processes or Horizon users silently lose HorizonRabbitMqQueue.
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+        );
+
+        expect($supervisor->workerEnvironment(3))->toBe(['RABBIT_RS_WORKER_INDEX' => '3'])
+            ->and(WorkerSupervisor::workerEnv())->toBe('RABBIT_RS_WORKER_INDEX');
+    });
 });
 
 describe('shouldRestart', function (): void {

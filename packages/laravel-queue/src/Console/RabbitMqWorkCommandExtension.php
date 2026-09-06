@@ -15,12 +15,12 @@ use Illuminate\Support\Facades\Log;
  * Extends Laravel's `queue:work` command with Rabbit RS worker identification.
  *
  * The supervisor spawns `queue:work` children and passes the worker index via
- * the `RABBIT_RS_WORKER` environment variable. This extension subscribes to
+ * the `RABBIT_RS_WORKER_INDEX` environment variable. This extension subscribes to
  * the queue job events and tags every log line with the worker index so that
  * logs and metrics from multiple supervised workers can be distinguished.
  *
  * The extension is registered by {@see RabbitMqServiceProvider::boot()} and is
- * only active when the `RABBIT_RS_WORKER` environment variable is set.
+ * only active when the `RABBIT_RS_WORKER_INDEX` environment variable is set.
  */
 final class RabbitMqWorkCommandExtension
 {
@@ -31,8 +31,8 @@ final class RabbitMqWorkCommandExtension
     /**
      * Create an extension instance from the current environment.
      *
-     * The worker index is read from the `RABBIT_RS_WORKER` environment variable
-     * (set by the supervisor when spawning child processes).  When the env var
+     * The worker index is read from the `RABBIT_RS_WORKER_INDEX` environment
+     * variable (set by the supervisor when spawning child processes).  When the env var
      * is absent, the extension is inactive.
      */
     public static function fromEnvironment(): self
