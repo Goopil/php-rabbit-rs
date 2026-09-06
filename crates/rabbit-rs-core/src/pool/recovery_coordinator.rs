@@ -39,8 +39,9 @@ type EstablishLock = Arc<Mutex<()>>;
 ///
 /// The coordinator spawns a [`ConnectionActor`], subscribes to its state
 /// changes, and on each `Ready` generation runs the deterministic recovery
-/// sequence: `connection` → `channels` → `topology` → `QoS` → `consumers` →
-/// `publisher replay`.
+/// sequence: `connection` → `publisher channel` → `topology` →
+/// `publisher replay` → `consumers` (each consumer channel re-applies `QoS`
+/// before `basic.consume`).
 pub struct RecoveryCoordinator;
 
 /// Handle to a running recovery coordinator.

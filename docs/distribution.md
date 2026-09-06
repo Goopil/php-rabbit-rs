@@ -3,9 +3,9 @@
 Rabbit RS distributes two packages in synchronized releases:
 
 - **`goopil/rabbit-rs-native`** — the native PHP extension, installed via [PIE](https://github.com/php/pie)
-- **`goopil/rabbit-rs-laravel`** — the Laravel bridge, installed via [Composer](https://getcomposer.org)
+- **`goopil/rabbit-rs-laravel`** — the Laravel queue driver, installed via [Composer](https://getcomposer.org)
 
-Both packages share the same version number. A release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package requires `ext-rabbit_rs ^0.0` (the constraint tracks the extension version until 1.0).
+Both packages share the same version number. A release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package requires `ext-rabbit_rs ^0.1` (the constraint tracks the extension version until 1.0).
 
 ## PIE build matrix
 
@@ -48,7 +48,7 @@ php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
 
 ### Unified thread-safety suffix
 
-Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.5.x) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in two places that must stay consistent:
+Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.4.10+, the version the release pipeline validates) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in two places that must stay consistent:
 
 - `release/pie-matrix.json` — machine-readable matrix (`ts_suffix` is always `-nts` in V1; ZTS entries are excluded)
 - `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name) via the `.github/actions/package-release-asset` composite action
@@ -77,7 +77,7 @@ Each release archive is accompanied by:
 
 Attestations are stored in the GitHub attestations API and verified with:
 
-    gh attestation verify <asset.zip> --repo Goopil/rabbit-rs \
+    gh attestation verify <asset.zip> --repo Goopil/php-rabbit-rs \
         --predicate-type https://slsa.dev/provenance/v1
 
 Each release therefore contains **30 assets**: 10 ZIPs, 10 SHA256 files, and
@@ -173,7 +173,7 @@ This is a deliberate design decision. PIE is the PHP ecosystem's official extens
     "type": "library",
     "require": {
         "php": "^8.4",
-        "ext-rabbit_rs": "^0.0",
+        "ext-rabbit_rs": "^0.1",
         "illuminate/queue": "^12.0 || ^13.0"
     }
 }
@@ -185,7 +185,7 @@ The `ext-rabbit_rs` constraint tracks the extension version until 1.0. Composer 
 
 | Repository | Purpose |
 |-----------|---------|
-| [Goopil/rabbit-rs](https://github.com/Goopil/rabbit-rs) | Monorepo (source of truth) |
+| [Goopil/php-rabbit-rs](https://github.com/Goopil/php-rabbit-rs) | Monorepo (source of truth) |
 | [Goopil/rabbit-rs-laravel](https://github.com/Goopil/rabbit-rs-laravel) | Laravel package mirror (read-only, auto-split) |
 
 The monorepo is the development source. A CI workflow splits `packages/laravel-queue/` into the mirror repository on every release tag. The mirror exists so Packagist can consume the Laravel package as a standalone repository.

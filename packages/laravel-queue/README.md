@@ -1,6 +1,6 @@
 # Rabbit RS Laravel Queue Driver
 
-A RabbitMQ queue driver for Laravel, built for **high-throughput, long-running workers** and powered by the [Rabbit RS](https://github.com/Goopil/php-rabbit-rs) native PHP extension in Rust. Workload-scoped benchmark results: see the [root README](https://github.com/Goopil/php-rabbit-rs#benchmarks).
+A RabbitMQ queue driver for Laravel, built for **high-throughput, long-running workers** and powered by the [Rabbit RS](https://github.com/Goopil/php-rabbit-rs) native PHP extension in Rust. Workload-scoped benchmark results: see the [benchmark harness](https://github.com/Goopil/php-rabbit-rs/blob/main/benchmarks/README.md).
 
 ## Why?
 
@@ -9,7 +9,7 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 ## Features
 
 - **Native connection pooling** — one AMQP connection per vhost, publisher channels pooled, consumer channels dedicated
-- **Publisher confirms & mandatory returns** — every publish is tracked to ACK, return, or timeout; a mandatory return takes precedence over its following ACK
+- **Publisher confirms & mandatory returns** — in `safe` mode every publish is tracked to ACK, return, or timeout; a mandatory return takes precedence over its following ACK
 - **At-least-once delivery** — unconfirmed publishes survive connection recovery in bounded process memory and are replayed with the same `message_id` and original deadline
 - **Connection-generation-aware ACKs** — stale ACKs are rejected so RabbitMQ redelivers
 - **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers
@@ -30,18 +30,31 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 
 ### 1. Install the native extension
 
-The native extension ships as pre-compiled `.so` binaries on the [releases page](https://github.com/Goopil/php-rabbit-rs/releases).
+**Linux** — via [PIE](https://github.com/php/pie):
 
 ```bash
-# Download the .so matching your PHP version, architecture, and libc
-# Example: PHP 8.4, x86_64, glibc, NTS
-cp php_rabbit_rs-*.so $(php -r "echo ini_get('extension_dir');")
+pie install goopil/rabbit-rs-native
+```
+
+**macOS (Apple Silicon)** — via [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs):
+
+```bash
+brew tap goopil/rabbit-rs
+brew install rabbit-rs
+```
+
+**Manual (any platform)** — download the ZIP matching your PHP version, architecture, and libc from the [releases page](https://github.com/Goopil/php-rabbit-rs/releases), then load it:
+
+```bash
+# Example: PHP 8.4, Apple Silicon, NTS
+unzip php_rabbit_rs-*_php8.4-arm64-darwin-nts.zip
+cp rabbit_rs.so $(php-config --extension-dir)/rabbit_rs.so
 
 # Enable it
-echo "extension=rabbit_rs" > $(php -r "echo PHP_CONFIG_FILE_SCAN_DIR;")/rabbit_rs.ini
+echo "extension=rabbit_rs" > $(php-config --ini-dir)/ext-rabbit_rs.ini
 
 # Verify
-php -m | grep rabbit_rs
+php --ri rabbit_rs
 ```
 
 ### 2. Install the Composer package
@@ -97,7 +110,7 @@ php artisan rabbit-rs:work --workers=4 --max-restarts=3
 
 ## Configuration
 
-Rabbit RS is configured **connection-first**: every broker, its credentials, its routes, and its consumer profile live on a single **queue connection** in `config/queue.php`, exactly like Laravel's built-in `redis` and `sqs` drivers. One connection = one broker/vhost = one native pool.
+Rabbit RS is configured **connection-first**: every broker, its credentials, its routes, and its worker profile live on a single **queue connection** in `config/queue.php`, exactly like Laravel's built-in `redis` and `sqs` drivers. One connection = one broker/vhost = one native pool.
 
 | File | Role |
 | ---- | ---- |
@@ -151,7 +164,7 @@ Add one connection to `config/queue.php`:
 ],
 ```
 
-Every key except `driver` and `queue` is optional — anything the connection omits falls back to `config/rabbit-rs.php` (per sub-key for `tls`, `delay`, and `dead_letter`). The connection above is therefore equivalent to the minimal form shown in [Quick Start](#quick-start).
+Every key except `driver` and `queue` is optional — anything the connection omits falls back to `config/rabbit-rs.php` (per sub-key for `tls`, `delay`, and `dead_letter`); keys with no entry there use the driver's built-in defaults. The connection above is therefore equivalent to the minimal form shown in [Quick Start](#quick-start).
 
 ### Environment variables
 
@@ -180,7 +193,7 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | `RABBIT_RS_DELAY_MAX_BUCKETS` | `8` | Max TTL bucket queues allowed |
 | `RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN` | `60` | Extra `x-expires` margin for bucket queues, in seconds |
 | `RABBIT_RS_WORKER` | `default` | Worker mode: `default` or `horizon` |
-| `RABBIT_RS_AUTO_SUBSCRIBE` | `false` | Let `pop()` resolve plain queue names via implicit profiles |
+| `RABBIT_RS_AUTO_SUBSCRIBE` | `false` | Let `pop()` resolve plain queue names via implicit profiles (requires native runtime profiles — not yet available; declare queues in `subscriptions`) |
 | `RABBIT_RS_PRODUCTION_WARNING` | `true` | Warn about unbounded redeliveries without `delivery_limit` + dead-letter |
 | `RABBIT_RS_BEST_EFFORT` | `false` | Gates `early_ack`/`no_ack` subscriptions on a connection |
 
@@ -257,7 +270,7 @@ By default a connection consumes exactly one queue: its `queue` key. Set `subscr
 
 **`weight`** (default `1`) — Delivery share vs other subscriptions (1–65535). Higher weight gets more consumer credit.
 
-**`priority_class`** (default `0`) — Inter-queue priority (-32768 to 32767); lower numbers are served first. This is client-side scheduler state — nothing is sent to the broker.
+**`priority_class`** (default `0`) — Inter-queue priority (-32768 to 32767); higher numbers are served first. This is client-side scheduler state — nothing is sent to the broker.
 
 **`prefetch`** (default: the connection's `prefetch`) — QoS prefetch for this subscription's dedicated channel.
 
@@ -267,7 +280,8 @@ Rules: at least one entry, unique queues across aliases, unknown fields rejected
 
 ### Safety modes
 
-The `safety` setting selects the delivery guarantee level; publisher confirms and mandatory routing are **derived from it**, never set independently:
+The `safety` setting selects the safety mode; publisher confirms and mandatory
+routing are **derived from it**, never set independently:
 
 | Mode | Behaviour |
 | ---- | --------- |

@@ -48,7 +48,7 @@ The runtime-independent heart of the project. All AMQP logic lives here, behind 
 | `src/topology.rs` | Exchange, queue, binding declarations |
 | `src/metrics.rs` | Pool and consumer metrics |
 | `src/transport/` | Transport abstraction (Lapin implementation + mock) |
-| `tests/` | Integration tests (12 files: blind_pump, consumer, integration, log_facade, metrics, poison, pool_clear, publisher, recovery, topology, transport_liveness, transport_tuning) |
+| `tests/` | Integration tests (13 files: blind_pump, consumer, integration, log_facade, metrics, poison, pool_clear, publisher, recovery, tls_integration, topology, transport_liveness, transport_tuning) |
 
 **Key commands:**
 ```bash
@@ -81,7 +81,7 @@ cargo build -p rabbit-rs-php --features extension-tests   # debug build
 ./scripts/install.sh --release                            # install into PHP
 ```
 
-### `packages/laravel-queue/` — Laravel bridge
+### `packages/laravel-queue/` — Laravel queue driver
 
 Pure PHP package (`goopil/rabbit-rs-laravel`). Uses Pest for tests.
 
@@ -90,7 +90,7 @@ Pure PHP package (`goopil/rabbit-rs-laravel`). Uses Pest for tests.
 | `src/Connectors/` | `RabbitMqConnector` — queue connector |
 | `src/Queue/` | `RabbitMqQueue` — push, pop, later, bulk, size, clear |
 | `src/Jobs/` | `RabbitMqJob` — job wrapper around native Delivery |
-| `src/Console/` | `rabbit-rs:work` and `rabbit-rs:status` commands |
+| `src/Console/` | `rabbit-rs:work`, `rabbit-rs:status`, and `rabbit-rs:doctor` commands |
 | `src/Octane/` | Octane lifecycle hooks (flush, reload, stop) |
 | `src/Config/` | `ConnectionCompiler` — compiles queue.php connections to native config |
 | `src/Support/` | `NativePoolFactory` — pool factory with fork safety |
@@ -163,7 +163,7 @@ The authoritative stub is `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, gener
 ### Rust core tests
 
 - **Unit tests** live next to their modules (`#[cfg(test)]` blocks).
-- **Integration tests** live in `crates/rabbit-rs-core/tests/` (12 files).
+- **Integration tests** live in `crates/rabbit-rs-core/tests/` (13 files).
 - Tests use **paused Tokio time** and a **scriptable mock transport** — no real sleeps, no real broker.
 - Some integration tests require a live RabbitMQ lab (behind the `integration` feature flag).
 
@@ -357,7 +357,7 @@ See [AGENTS.md](../AGENTS.md) for the full list. Key points:
 
 ## Before opening a PR
 
-1. `./scripts/check.sh` passes cleanly (fmt + clippy + test + composer validate)
+1. `./scripts/check.sh` passes cleanly (fmt + clippy + test + cargo deny + composer validate)
 2. `cargo fmt --all` applied after Rust edits
 3. Commits are logical and scoped — no build artifacts, `.air/`, or IDE metadata
 4. If you changed behavior, update the relevant doc in `docs/`

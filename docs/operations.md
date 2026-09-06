@@ -39,6 +39,16 @@ This shows the extension version and configuration. If the extension is not load
 php -m | grep rabbit_rs
 ```
 
+### rabbit-rs:doctor
+
+```bash
+php artisan rabbit-rs:doctor
+# Single connection
+php artisan rabbit-rs:doctor --connection=rabbit-rs
+```
+
+One-shot health report per rabbit-rs connection, resolved through the same config compilation the driver uses. Each check prints `ok`, `warn`, or `fail`; the command exits non-zero when any check fails (warnings are allowed), which makes it usable in CI. Checks cover: extension presence and version against the composer constraint, the resolved worker class (with a warning when `worker` is inherited from the package defaults instead of the connection), broker reachability (AMQP connect, auth, vhost; optional management API probe when `management_url` is set), publisher exchange/routing-key alignment and dead-letter wiring, effective safety settings, Horizon supervisors, and event listeners.
+
 ## rabbit-rs:work supervisor
 
 The `rabbit-rs:work` command supervises `queue:work` child processes across connections. With no flags it **fans out**: one `queue:work` child per rabbit-rs connection, each consuming every queue defined on its connection (its `queue` key first, then its `subscriptions` queues); `--workers` spawns children per connection:
@@ -72,16 +82,15 @@ php artisan rabbit-rs:work --workers=4
 
 | Code | Meaning |
 |------|---------|
-| `0` | Clean shutdown |
+| `0` | Clean shutdown (including `SIGTERM`/`SIGINT`) |
 | `1` | Max restarts exceeded |
-| `130` | Signal received |
 
 ### How it works
 
 1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work <name> --queue=<q1,q2>` (the connection is `queue:work`'s positional argument)
 2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER={i}` environment variable
 3. The supervisor monitors child processes every 100ms
-4. If a child exits unexpectedly, the supervisor waits (backoff seconds) and restarts it
+4. If a child exits with a non-zero code (a crash), the supervisor waits (backoff seconds) and restarts it; a clean exit (0, e.g. `--max-jobs` recycling) restarts the child immediately and resets its crash budget
 5. On `SIGTERM`/`SIGINT`, the supervisor sends `SIGTERM` to each child and waits up to 10 seconds
 
 ## Supervisor (systemd) configuration
@@ -242,7 +251,7 @@ data:
     done
 ```
 
-Alternatively, listen for the `ConnectionStateChanged` and `BackpressureDetected` events and push metrics to your monitoring system. Native events fire during publish and consume operations (`publish()`, `publishBatch()`, consumer `next()`/`tryNext()`/`nextBatch()`, and `stats()`), so no polling is required:
+Alternatively, listen for the `ConnectionStateChanged` and `BackpressureDetected` events and push metrics to your monitoring system. Native events fire during publish and consume operations (`publish()`, `publishBatch()`, `flush()`, `drainErrors()`, consumer `next()`/`tryNext()`/`nextBatch()`, and `stats()`), so no polling is required:
 
 ```php
 use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;

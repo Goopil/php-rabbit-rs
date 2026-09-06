@@ -1,7 +1,7 @@
 # Configuration
 
 Rabbit RS is configured connection-first: every broker, its credentials, its
-routes, and its consumer profile live on a single **queue connection** in
+routes, and its worker profile live on a single **queue connection** in
 `config/queue.php`, exactly like Laravel's built-in `redis` and `sqs` drivers.
 
 Two config homes:
@@ -46,7 +46,7 @@ Add one connection to `config/queue.php`:
         'confirm_timeout' => 30000,     // ms, >= 1000
 
         // Consumption
-        'prefetch' => 64,               // per consumer channel = per worker process
+        'prefetch' => 64,               // per subscription channel (see below)
         'wait_timeout' => 30000,        // ms, 1000..86400000
 
         // Topology (defaults inherited from config/rabbit-rs.php)
@@ -71,10 +71,13 @@ php artisan queue:work rabbit-rs
 php artisan rabbit-rs:work
 ```
 
-Every key above except `driver` and `queue` is optional — anything the
-connection omits falls back to `config/rabbit-rs.php`
-(see [Cross-cutting defaults](#cross-cutting-defaults)). The minimal
-connection is therefore:
+Every key above except `driver` and `queue` is optional. A key the connection
+omits falls back to the cross-cutting defaults in `config/rabbit-rs.php`
+(per sub-key for `tls`, `delay`, and `dead_letter`); keys with no entry there —
+`hosts`, `vhost`, `username`, `password`, `exchange`, `routing_key`,
+`subscriptions`, `management_url`, `max_attempts`, and the framework keys —
+use the driver's built-in defaults (see [Cross-cutting defaults](#cross-cutting-defaults)).
+The minimal connection is therefore:
 
 ```php
 'rabbit-rs' => [
@@ -89,7 +92,7 @@ connection is therefore:
 |-----|------|---------|-------------|
 | `driver` | string | — | Must be `rabbit-rs` |
 | `queue` | string | — (required) | Default queue name: the derived consumer subscription and the `pop()` target |
-| `hosts` | string or string[] | `127.0.0.1:5672` | Comma-separated `host:port` list; IPv6 must be bracketed (`[::1]:5672`) |
+| `hosts` | string or string[] | `127.0.0.1:5672` | Comma-separated `host:port` list (a bare host defaults to port 5672); IPv6 must be bracketed (`[::1]:5672`) |
 | `vhost` | string | `/` | AMQP virtual host (a distinct vhost = a distinct AMQP connection) |
 | `username` | string | `guest` | AMQP username |
 | `password` | string | `guest` | AMQP password |
@@ -98,13 +101,13 @@ connection is therefore:
 | `management_url` | ?string | `null` | Laravel-only: RabbitMQ management API base URL for `rabbit-rs:status` (never sent to the native extension) |
 | `exchange` | ?string | `laravel.jobs` | Publishing exchange; `null` publishes through the default exchange |
 | `routing_key` | ?string | `{queue}` | `{queue}` is replaced with the queue name at publish time; `null` means no routing key (default-exchange/fanout usage) |
-| `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (confirms only), `blind` (fire-and-forget) |
+| `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (no confirms, no mandatory — synchronous socket write), `blind` (fire-and-forget) |
 | `confirm_timeout` | int (ms) | `30000` | Publisher confirm timeout, minimum `1000`; during a recovery, a publish parked in replay is retried once with a fresh deadline, while a confirm timeout on a live connection stays terminal |
 | `prefetch` | int | `64` | QoS prefetch per consumer channel, 1–65535 |
 | `wait_timeout` | int (ms) | `30000` | Consumer acquisition deadline, 1000–86400000 |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
-| `auto_subscribe` | bool | `false` (package default) | Lets `pop()` resolve plain queue names via implicit profiles; an explicit `null` compiles to `true` |
+| `auto_subscribe` | bool | `false` (package default) | Lets `pop()` resolve plain queue names via implicit profiles; an explicit `null` compiles to `true`. **Not functional yet**: the native pool only accepts profiles from its compiled config, so declare queues via `queue`/`subscriptions` until runtime profile registration lands |
 | `topology_mode` | string | `declare` | `declare`, `verify`, `external` — see [Topology](topology.md) |
 | `queue_type` | string | `quorum` | `quorum` or `classic` |
 | `queue_durable` | bool | `true` | Queue durability |
@@ -117,9 +120,12 @@ connection is therefore:
 | `after_commit` | bool | `false` | Framework key: dispatch after the database transaction commits |
 | `block_for` | ?int | `null` | Framework key: seconds to block for new jobs before returning |
 
-`prefetch` applies **per consumer channel** — i.e. per `queue:work` process.
-N concurrent workers × `prefetch` = total in-flight messages. This is standard
-AMQP behavior; size your workers accordingly.
+`prefetch` applies **per subscription channel**. A worker process consuming
+several subscriptions holds one channel per subscription, so its in-flight
+total is the **sum of the subscriptions' prefetch values** (for the default
+single derived subscription, that is the connection's `prefetch`). N
+concurrent workers multiply that per-process total. This is standard AMQP
+behavior; size your workers accordingly.
 
 ## Environment strings
 
@@ -319,7 +325,7 @@ same as every Laravel driver.
 | `--queue=x,y` | all defined | Resolve each name **by definition**: a connection's `queue` key or a `subscriptions` alias. Unknown → error listing all defined queues |
 | `--workers=N` | `1` | Children spawned **per connection** (N connections × N workers total) |
 | `--max-restarts`, `--backoff` | `3`, `1` | Supervisor crash-loop protection |
-| `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | — | Propagated to each `queue:work` child |
+| `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | `60`, `—`, `128`, `—`, `—` | Propagated to each `queue:work` child |
 
 ```bash
 php artisan rabbit-rs:work
@@ -422,14 +428,16 @@ what the counters mean.
 
 ## Safety modes
 
-The `safety` setting selects the delivery guarantee level; publisher confirms
-and mandatory routing are **derived from it**, never set independently:
+The `safety` setting selects the safety mode; publisher confirms and mandatory
+routing are **derived from it**, never set independently:
 
 - `safe` (default) — at-least-once: confirms + mandatory routing. Unconfirmed
   publications are retained in bounded process memory and replayed with their
   original `message_id` across connection recovery.
-- `unsafe` — confirms without mandatory routing: the publish still waits for a
-  broker ACK, but unroutable messages are silently dropped by the broker.
+- `unsafe` — no confirms, no mandatory routing: the publish performs a
+  synchronous socket write and returns without outcome tracking. Unroutable
+  messages are silently dropped by the broker, and a transport failure after
+  the write is a silent loss.
 - `blind` — explicit fire-and-forget: publishing hands the message to a
   bounded background pump and returns without waiting for any transport
   outcome. A transport failure after the hand-off is a silent loss. Delayed
@@ -444,7 +452,8 @@ and only when the affected connection is resolved:
 
 - Unknown keys — on the connection or inside `tls`, `delay`, `dead_letter`,
   `subscriptions` — are rejected (`queue.connections.<name>.<key>: unknown key`).
-- `hosts` must contain at least one non-empty `host:port` entry; empty
+- `hosts` must contain at least one non-empty endpoint (`host` or
+  `host:port`; a bare host gets the default port 5672); empty
   segments (e.g. `"host1:5672,,host2"`) are rejected. Ports must be 1–65535.
 - `safety` must be `safe`, `unsafe`, or `blind`; `confirm_timeout` ≥ 1000;
   `wait_timeout` 1000–86400000; `prefetch` and `weight` 1–65535;

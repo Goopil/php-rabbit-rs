@@ -8,19 +8,19 @@
 
 Rabbit RS is a PHP extension written in Rust. It moves the connection pool, publisher confirms, consumer scheduling, and connection recovery out of PHP userspace, behind the standard Laravel queue API.
 
-The product is built around one feature: the **long-running consumer** — a single worker that consumes from many queues, vhosts, and brokers, survives broker restarts and network failures, and keeps settling deliveries through recovery without manual intervention.
+The product is built around one feature: the **long-running consumer** — a worker that multiplexes many queues per broker connection, survives broker restarts and network failures, and keeps settling deliveries through recovery without manual intervention. A supervised fan-out command runs one worker per connection to span vhosts and brokers.
 
 Delivery is **at-least-once**: silent loss is unacceptable; duplicates are permitted and must remain measurable.
 
 ## What it does
 
-- **Long-running consumer** — one worker multiplexes subscriptions across queues, vhosts, and brokers, and survives broker restarts without manual intervention
+- **Long-running consumer** — one worker multiplexes subscriptions across many queues on its connection and survives broker restarts without manual intervention
 - **At-least-once delivery** — publisher confirms and mandatory routing enabled by default; every publish is tracked to ACK, return, or timeout
-- **Deterministic recovery** — connection, channels, topology, QoS, then consumers, in a fixed order
+- **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers, in a fixed order
 - **Weighted-fair scheduling** — deficit round-robin across subscriptions with starvation prevention
 - **Connection-generation-aware tokens** — stale ACKs are rejected so RabbitMQ redelivers
 - **Bounded replay buffer** — unconfirmed publications survive connection recovery in bounded memory, replayed with the same `message_id`
-- **Multi-vhost consumption** — a vhost owns a distinct AMQP connection; one worker can consume from several brokers
+- **Multi-broker fan-out** — a vhost owns a distinct AMQP connection; define one connection per broker/vhost and `rabbit-rs:work` supervises them all
 - **Octane lifecycle** — flush, reload, and stop hooks prevent channel leaks
 - **No unsafe Rust** — `#![forbid(unsafe_code)]` across the entire workspace
 
@@ -34,7 +34,7 @@ Delivery is **at-least-once**: silent loss is unacceptable; duplicates are permi
 pie install goopil/rabbit-rs-native
 ```
 
-**Step 2 — Install the Laravel bridge:**
+**Step 2 — Install the Laravel queue driver:**
 
 ```bash
 composer require goopil/rabbit-rs-laravel
@@ -56,7 +56,7 @@ Add a rabbit-rs connection to `config/queue.php` (one connection = one broker = 
 ],
 ```
 
-Configuration is connection-first — broker, credentials, routes, safety mode, and consumer profile all live on the queue connection. The full reference (every key, defaults, validation, and the safety modes) is [docs/configuration.md](docs/configuration.md). Optionally publish the cross-cutting defaults:
+Configuration is connection-first — broker, credentials, routes, safety mode, and worker profile all live on the queue connection. The full reference (every key, defaults, validation, and the safety modes) is [docs/configuration.md](docs/configuration.md). Optionally publish the cross-cutting defaults:
 
 ```bash
 php artisan vendor:publish --tag="rabbit-rs-config"
@@ -87,8 +87,8 @@ php artisan rabbit-rs:work
 ## Requirements
 
 - **PHP** 8.4 or 8.5
-- **Laravel** 12 or 13 (for the Laravel bridge)
-- **RabbitMQ** 4.3.x
+- **Laravel** 12 or 13 (for the Laravel queue driver)
+- **RabbitMQ** 4.2.9 or newer (the CI lab runs 4.2.9)
 - **Linux** x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE
 - **macOS** ARM64 (Apple Silicon) — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases)
 - **Rust** 1.96.0 (contributors only — see [Contributing](#contributing))
