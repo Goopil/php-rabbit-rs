@@ -1236,9 +1236,8 @@ mod tests {
         assert_eq!(error.path(), "workers.main.subscriptions.default.prefetch");
     }
 
-    #[test]
-    fn parses_plain_integer_prefetch_as_fixed() {
-        let candidate = serde_json::from_value::<Config>(json!({
+    fn prefetch_candidate(prefetch: &serde_json::Value) -> Result<Config, serde_json::Error> {
+        serde_json::from_value(json!({
             "brokers": [{
                 "name": "default",
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
@@ -1255,13 +1254,17 @@ mod tests {
                     "queue": "jobs",
                     "weight": 1,
                     "priority_class": 0,
-                    "prefetch": 16
+                    "prefetch": prefetch
                 }],
                 "scheduler": {"strategy": "weighted_fair"}
             }],
             "topology_mode": "external"
         }))
-        .expect("plain integer prefetch parses");
+    }
+
+    #[test]
+    fn parses_plain_integer_prefetch_as_fixed() {
+        let candidate = prefetch_candidate(&json!(16)).expect("plain integer prefetch parses");
 
         assert!(matches!(
             candidate.workers[0].subscriptions[0].prefetch,
@@ -1271,30 +1274,8 @@ mod tests {
 
     #[test]
     fn parses_fixed_union_prefetch() {
-        let candidate = serde_json::from_value::<Config>(json!({
-            "brokers": [{
-                "name": "default",
-                "hosts": [{"host": "rabbit.local", "port": 5672}],
-                "vhost": "/",
-                "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
-                "heartbeat": 30
-            }],
-            "workers": [{
-                "name": "main",
-                "subscriptions": [{
-                    "name": "default",
-                    "broker": "default",
-                    "queue": "jobs",
-                    "weight": 1,
-                    "priority_class": 0,
-                    "prefetch": {"mode": "fixed", "value": 8}
-                }],
-                "scheduler": {"strategy": "weighted_fair"}
-            }],
-            "topology_mode": "external"
-        }))
-        .expect("fixed union prefetch parses");
+        let candidate = prefetch_candidate(&json!({"mode": "fixed", "value": 8}))
+            .expect("fixed union prefetch parses");
 
         assert!(matches!(
             candidate.workers[0].subscriptions[0].prefetch,
@@ -1304,34 +1285,12 @@ mod tests {
 
     #[test]
     fn parses_adaptive_union_prefetch() {
-        let candidate = serde_json::from_value::<Config>(json!({
-            "brokers": [{
-                "name": "default",
-                "hosts": [{"host": "rabbit.local", "port": 5672}],
-                "vhost": "/",
-                "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
-                "heartbeat": 30
-            }],
-            "workers": [{
-                "name": "main",
-                "subscriptions": [{
-                    "name": "default",
-                    "broker": "default",
-                    "queue": "jobs",
-                    "weight": 1,
-                    "priority_class": 0,
-                    "prefetch": {
-                        "mode": "adaptive",
-                        "initial": 64,
-                        "min": 1,
-                        "max": 256,
-                        "target_buffer_seconds": 5
-                    }
-                }],
-                "scheduler": {"strategy": "weighted_fair"}
-            }],
-            "topology_mode": "external"
+        let candidate = prefetch_candidate(&json!({
+            "mode": "adaptive",
+            "initial": 64,
+            "min": 1,
+            "max": 256,
+            "target_buffer_seconds": 5
         }))
         .expect("adaptive union prefetch parses");
 
@@ -1348,58 +1307,14 @@ mod tests {
 
     #[test]
     fn rejects_unknown_prefetch_mode() {
-        let result = serde_json::from_value::<Config>(json!({
-            "brokers": [{
-                "name": "default",
-                "hosts": [{"host": "rabbit.local", "port": 5672}],
-                "vhost": "/",
-                "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
-                "heartbeat": 30
-            }],
-            "workers": [{
-                "name": "main",
-                "subscriptions": [{
-                    "name": "default",
-                    "broker": "default",
-                    "queue": "jobs",
-                    "weight": 1,
-                    "priority_class": 0,
-                    "prefetch": {"mode": "dynamic", "value": 8}
-                }],
-                "scheduler": {"strategy": "weighted_fair"}
-            }],
-            "topology_mode": "external"
-        }));
+        let result = prefetch_candidate(&json!({"mode": "dynamic", "value": 8}));
 
         assert!(result.is_err(), "unknown prefetch mode must fail to parse");
     }
 
     #[test]
     fn rejects_adaptive_union_missing_field() {
-        let result = serde_json::from_value::<Config>(json!({
-            "brokers": [{
-                "name": "default",
-                "hosts": [{"host": "rabbit.local", "port": 5672}],
-                "vhost": "/",
-                "credentials": {"username": "guest", "password": "secret"},
-                "tls": {"enabled": false, "server_name": null},
-                "heartbeat": 30
-            }],
-            "workers": [{
-                "name": "main",
-                "subscriptions": [{
-                    "name": "default",
-                    "broker": "default",
-                    "queue": "jobs",
-                    "weight": 1,
-                    "priority_class": 0,
-                    "prefetch": {"mode": "adaptive", "initial": 16, "max": 256}
-                }],
-                "scheduler": {"strategy": "weighted_fair"}
-            }],
-            "topology_mode": "external"
-        }));
+        let result = prefetch_candidate(&json!({"mode": "adaptive", "initial": 16, "max": 256}));
 
         assert!(
             result.is_err(),
