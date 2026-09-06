@@ -69,6 +69,36 @@ function topologyConnection(string $name = 'rabbitmq', array $overrides = []): v
     ], $overrides));
 }
 
+/**
+ * Registers a connection carrying the management url and the dead-letter
+ * wiring the management-API checks read.
+ *
+ * @param array<string, mixed> $overrides
+ */
+function topologyConnectionWithManagement(string $name = 'rabbitmq', array $overrides = []): void
+{
+    topologyConnection($name, array_merge([
+        'management_url' => 'http://localhost:15672',
+        'dead_letter' => ['exchange' => 'orders_dlx', 'queue' => 'orders_dlq'],
+    ], $overrides));
+}
+
+/**
+ * Fakes the three management-API collections the topology command reads.
+ *
+ * @param list<array<string, mixed>> $exchanges
+ * @param list<array<string, mixed>> $queues
+ * @param list<array<string, mixed>> $bindings
+ */
+function fakeManagementApi(array $exchanges = [], array $queues = [], array $bindings = []): void
+{
+    Http::fake([
+        '*/api/exchanges/*' => Http::response($exchanges),
+        '*/api/queues/*' => Http::response($queues),
+        '*/api/bindings/*' => Http::response($bindings),
+    ]);
+}
+
 function missingQueueError(string $queue): string
 {
     return sprintf(
@@ -80,25 +110,21 @@ function missingQueueError(string $queue): string
 describe('rabbit-rs:topology verify', function () {
     it('exits 0 and reports every plan item when the topology is complete', function () {
         bindFakeTopologyProbe($this->app);
-        topologyConnection(overrides: ['management_url' => 'http://localhost:15672']);
-        Http::fake([
-            '*/api/exchanges/*' => Http::response([[
+        fakeManagementApi(
+            exchanges: [[
                 'name' => 'orders_dlx', 'type' => 'direct', 'durable' => true,
                 'auto_delete' => false, 'arguments' => new stdClass,
-            ]]),
-            '*/api/queues/*' => Http::response([[
+            ]],
+            queues: [[
                 'name' => 'orders', 'durable' => true,
                 'arguments' => ['x-queue-type' => 'quorum', 'x-dead-letter-exchange' => 'orders_dlx', 'x-dead-letter-routing-key' => 'orders'],
-            ]]),
-            '*/api/bindings/*' => Http::response([[
+            ]],
+            bindings: [[
                 'source' => 'orders_dlx', 'destination' => 'orders_dlq',
                 'destination_type' => 'queue', 'routing_key' => 'orders',
-            ]]),
-        ]);
-        topologyConnection(overrides: [
-            'management_url' => 'http://localhost:15672',
-            'dead_letter' => ['exchange' => 'orders_dlx', 'queue' => 'orders_dlq'],
-        ]);
+            ]],
+        );
+        topologyConnectionWithManagement();
 
         $this->artisan('rabbit-rs:topology')
             ->expectsOutputToContain("queue 'orders' exists")
@@ -179,15 +205,8 @@ describe('rabbit-rs:topology verify', function () {
 describe('rabbit-rs:topology management api checks', function () {
     it('reports a missing dead-letter exchange with its config path', function () {
         bindFakeTopologyProbe($this->app);
-        topologyConnection(overrides: [
-            'management_url' => 'http://localhost:15672',
-            'dead_letter' => ['exchange' => 'orders_dlx', 'queue' => 'orders_dlq'],
-        ]);
-        Http::fake([
-            '*/api/exchanges/*' => Http::response([]),
-            '*/api/queues/*' => Http::response([]),
-            '*/api/bindings/*' => Http::response([]),
-        ]);
+        topologyConnectionWithManagement();
+        fakeManagementApi();
 
         $this->artisan('rabbit-rs:topology')
             ->expectsOutputToContain("exchange 'orders_dlx' is missing")
@@ -197,15 +216,11 @@ describe('rabbit-rs:topology management api checks', function () {
 
     it('reports an incorrect queue argument with its config path', function () {
         bindFakeTopologyProbe($this->app);
-        topologyConnection(overrides: ['management_url' => 'http://localhost:15672']);
-        Http::fake([
-            '*/api/exchanges/*' => Http::response([]),
-            '*/api/queues/*' => Http::response([[
-                'name' => 'orders', 'durable' => true,
-                'arguments' => ['x-queue-type' => 'classic'],
-            ]]),
-            '*/api/bindings/*' => Http::response([]),
-        ]);
+        topologyConnectionWithManagement();
+        fakeManagementApi(queues: [[
+            'name' => 'orders', 'durable' => true,
+            'arguments' => ['x-queue-type' => 'classic'],
+        ]]);
 
         $this->artisan('rabbit-rs:topology')
             ->expectsOutputToContain('x-queue-type')
@@ -215,20 +230,16 @@ describe('rabbit-rs:topology management api checks', function () {
 
     it('reports a missing dead-letter binding with its config path', function () {
         bindFakeTopologyProbe($this->app);
-        topologyConnection(overrides: [
-            'management_url' => 'http://localhost:15672',
-            'dead_letter' => ['exchange' => 'orders_dlx', 'queue' => 'orders_dlq'],
-        ]);
-        Http::fake([
-            '*/api/exchanges/*' => Http::response([[
+        topologyConnectionWithManagement();
+        fakeManagementApi(
+            exchanges: [[
                 'name' => 'orders_dlx', 'type' => 'direct', 'durable' => true,
                 'auto_delete' => false, 'arguments' => new stdClass,
-            ]]),
-            '*/api/queues/*' => Http::response([[
+            ]],
+            queues: [[
                 'name' => 'orders_dlq', 'durable' => true, 'arguments' => ['x-queue-type' => 'quorum'],
-            ]]),
-            '*/api/bindings/*' => Http::response([]),
-        ]);
+            ]],
+        );
 
         $this->artisan('rabbit-rs:topology')
             ->expectsOutputToContain("binding 'orders_dlx' -> 'orders_dlq'")
@@ -247,7 +258,7 @@ describe('rabbit-rs:topology management api checks', function () {
 
     it('warns when the management api is unreachable', function () {
         bindFakeTopologyProbe($this->app);
-        topologyConnection(overrides: ['management_url' => 'http://localhost:15672']);
+        topologyConnectionWithManagement();
         Http::fake(['*' => Http::response('down', 500)]);
 
         $this->artisan('rabbit-rs:topology')

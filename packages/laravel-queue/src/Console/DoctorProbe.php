@@ -37,18 +37,9 @@ class DoctorProbe
      */
     public function broker(array $nativeConfig): ?string
     {
-        try {
-            $pool = new Pool($nativeConfig);
-            try {
-                $pool->size(self::brokerName($nativeConfig), self::queueName($nativeConfig));
-            } finally {
-                $pool->close();
-            }
-        } catch (\Throwable $e) {
-            return $e->getMessage();
-        }
-
-        return null;
+        return $this->probePool($nativeConfig, function (Pool $pool): void {
+            $pool->size(self::brokerName($nativeConfig), self::queueName($nativeConfig));
+        });
     }
 
     /**
@@ -60,18 +51,9 @@ class DoctorProbe
      */
     public function queueSize(array $nativeConfig, string $broker, string $queue): ?string
     {
-        try {
-            $pool = new Pool($nativeConfig);
-            try {
-                $pool->size($broker, $queue);
-            } finally {
-                $pool->close();
-            }
-        } catch (\Throwable $e) {
-            return $e->getMessage();
-        }
-
-        return null;
+        return $this->probePool($nativeConfig, function (Pool $pool) use ($broker, $queue): void {
+            $pool->size($broker, $queue);
+        });
     }
 
     /**
@@ -85,11 +67,25 @@ class DoctorProbe
      */
     public function declareTopology(array $nativeConfig, string $workerProfile): ?string
     {
+        return $this->probePool($nativeConfig, function (Pool $pool) use ($workerProfile): void {
+            $consumer = $pool->consumer($workerProfile);
+            $consumer->close();
+        });
+    }
+
+    /**
+     * Runs one probe against a transient pool and reports the native error
+     * message, or null when the probe succeeded. The pool is always closed.
+     *
+     * @param array<string, mixed> $nativeConfig
+     * @param callable(Pool): void $probe
+     */
+    private function probePool(array $nativeConfig, callable $probe): ?string
+    {
         try {
             $pool = new Pool($nativeConfig);
             try {
-                $consumer = $pool->consumer($workerProfile);
-                $consumer->close();
+                $probe($pool);
             } finally {
                 $pool->close();
             }
