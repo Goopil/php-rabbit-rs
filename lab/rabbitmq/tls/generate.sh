@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Generates the TLS lab certificates into ./generated (gitignored):
+#
+#   lab-ca.pem / lab-ca.key        trusted lab root CA (signs the server cert)
+#   lab-other-ca.pem / ...key      deliberately untrusted CA (negative tests)
+#   server.pem / server.key        broker certificate signed by the lab CA
+#
+# Server certificate names (SANs): rabbit.internal, localhost, 127.0.0.1
+# The TLS node mounts ./generated at /etc/rabbitmq/tls (see compose.yaml and
+# rabbitmq-tls.conf).
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT="${DIR}/generated"
+DAYS=3650
+
+command -v openssl >/dev/null 2>&1 || { echo "ERROR: openssl is required" >&2; exit 1; }
+
+mkdir -p "${OUT}"
+rm -f "${OUT}"/lab-ca.pem "${OUT}"/lab-ca.key \
+    "${OUT}"/lab-other-ca.pem "${OUT}"/lab-other-ca.key \
+    "${OUT}"/server.pem "${OUT}"/server.key "${OUT}"/server.csr
+
+# 1. Trusted lab root CA.
+openssl req -x509 -newkey rsa:2048 -nodes -days "${DAYS}" \
+    -keyout "${OUT}/lab-ca.key" -out "${OUT}/lab-ca.pem" \
+    -subj "/CN=Rabbit RS Lab Root CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+
+# 2. Untrusted CA: same shape, different key and subject, never used to sign
+#    the server certificate. Handing this file as tls.ca_cert must fail the
+#    handshake.
+openssl req -x509 -newkey rsa:2048 -nodes -days "${DAYS}" \
+    -keyout "${OUT}/lab-other-ca.key" -out "${OUT}/lab-other-ca.pem" \
+    -subj "/CN=Rabbit RS Foreign CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+
+# 3. Server certificate signed by the trusted lab CA.
+openssl req -newkey rsa:2048 -nodes \
+    -keyout "${OUT}/server.key" -out "${OUT}/server.csr" \
+    -subj "/CN=rabbit.internal" >/dev/null 2>&1
+openssl x509 -req -in "${OUT}/server.csr" \
+    -CA "${OUT}/lab-ca.pem" -CAkey "${OUT}/lab-ca.key" -CAcreateserial \
+    -days 825 \
+    -extfile <(printf '%s\n' \
+        "basicConstraints=CA:FALSE" \
+        "keyUsage=digitalSignature,keyEncipherment" \
+        "extendedKeyUsage=serverAuth" \
+        "subjectAltName=DNS:rabbit.internal,DNS:localhost,IP:127.0.0.1") \
+    -out "${OUT}/server.pem" >/dev/null 2>&1
+rm -f "${OUT}/server.csr" "${OUT}/lab-ca.srl"
+
+# Broker keys must not be group/world readable inside the container.
+chmod 600 "${OUT}/server.key" "${OUT}/lab-ca.key" "${OUT}/lab-other-ca.key"
+
+echo "TLS lab certificates generated in ${OUT}:"
+ls -1 "${OUT}" | sed 's/^/  /'

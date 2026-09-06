@@ -73,7 +73,34 @@ impl fmt::Debug for Credentials {
     }
 }
 
+/// How the transport verifies the broker's TLS certificate.
+///
+/// - `Peer` (default): full rustls verification against the platform trust
+///   store plus any `ca_cert` chain. The verified server name is always the
+///   AMQP connection host: the underlying AMQP transport (lapin 4.10) derives
+///   TLS SNI from the URI host and exposes no override.
+/// - `None`: rejected at validation and by the transport with a typed
+///   [`ConfigError`]. lapin 4.10 does not allow disabling certificate
+///   verification, so accepting the value would silently do nothing.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsVerify {
+    #[default]
+    Peer,
+    None,
+}
+
 /// TLS parameters that are safe to retain in normalized configuration.
+///
+/// Contract enforced by [`Config::validate`] and the transport:
+///
+/// - `verify` is `Peer` (default) or an explicit validation error (see
+///   [`TlsVerify`]).
+/// - `server_name` is an explicit assertion of the TLS server name. The
+///   transport always uses the AMQP connection host (its first endpoint) as
+///   SNI, so a `server_name` different from the first host is rejected with a
+///   typed [`ConfigError`] instead of being silently ignored. A matching
+///   value is accepted as a no-op.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct TlsConfig {
@@ -81,6 +108,8 @@ pub struct TlsConfig {
     ca_cert: Option<PathBuf>,
     client_cert: Option<PathBuf>,
     client_key: Option<PathBuf>,
+    verify: TlsVerify,
+    server_name: Option<String>,
 }
 
 impl TlsConfig {
@@ -91,6 +120,8 @@ impl TlsConfig {
             ca_cert: None,
             client_cert: None,
             client_key: None,
+            verify: TlsVerify::Peer,
+            server_name: None,
         }
     }
 
@@ -112,6 +143,16 @@ impl TlsConfig {
     #[must_use]
     pub fn client_key(&self) -> Option<&PathBuf> {
         self.client_key.as_ref()
+    }
+
+    #[must_use]
+    pub const fn verify(&self) -> TlsVerify {
+        self.verify
+    }
+
+    #[must_use]
+    pub fn server_name(&self) -> Option<&str> {
+        self.server_name.as_deref()
     }
 }
 
@@ -453,6 +494,7 @@ impl Config {
             }
 
             broker.hosts.sort_unstable();
+            Self::validate_broker_tls(broker)?;
         }
         self.brokers
             .sort_unstable_by(|left, right| left.name.cmp(&right.name));
@@ -521,6 +563,41 @@ impl Config {
             queue_durable: self.queue_durable,
             fingerprint,
         })
+    }
+
+    /// Enforces the TLS contract documented on [`TlsConfig`]: `verify = none`
+    /// and a `server_name` differing from the first (sorted) host are rejected
+    /// instead of being silently ignored by the transport.
+    fn validate_broker_tls(broker: &BrokerConfig) -> Result<(), ConfigError> {
+        let tls = &broker.tls;
+        if !tls.enabled {
+            return Ok(());
+        }
+        if tls.verify == TlsVerify::None {
+            return Err(ConfigError::new(
+                format!("brokers.{}.tls.verify", broker.name),
+                "'none' requires a custom TLS connector, which the AMQP transport (lapin 4.10) \
+                 does not support; use 'peer' or disable tls.enabled",
+            ));
+        }
+        let first_host = broker
+            .hosts
+            .first()
+            .map(|endpoint| endpoint.host.as_str())
+            .unwrap_or_default();
+        if let Some(server_name) = &tls.server_name
+            && server_name != first_host
+        {
+            return Err(ConfigError::new(
+                format!("brokers.{}.tls.server_name", broker.name),
+                format!(
+                    "'{server_name}' overrides the TLS server name, which the AMQP transport \
+                     (lapin 4.10) cannot do: SNI is always the connection host; supported \
+                     value: '{first_host}'"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn validate_worker(
@@ -777,6 +854,11 @@ fn hash_broker(digest: &mut Sha256, broker: &BrokerConfig) {
     hash_value(digest, &broker.credentials.username);
     hash_value(digest, broker.credentials.password.expose_secret());
     hash_value(digest, if broker.tls.enabled { "tls" } else { "plain" });
+    hash_value(digest, tls_verify_name(broker.tls.verify));
+    hash_value(
+        digest,
+        broker.tls.server_name.as_deref().unwrap_or_default(),
+    );
     hash_value(
         digest,
         broker
@@ -839,6 +921,13 @@ fn hash_consumer(digest: &mut Sha256, consumer: &ConsumerConfigSection) {
 fn hash_value(digest: &mut Sha256, value: &str) {
     digest.update(value.len().to_be_bytes());
     digest.update(value.as_bytes());
+}
+
+const fn tls_verify_name(verify: TlsVerify) -> &'static str {
+    match verify {
+        TlsVerify::Peer => "peer",
+        TlsVerify::None => "none",
+    }
 }
 
 const fn topology_mode_name(mode: TopologyMode) -> &'static str {
@@ -911,7 +1000,7 @@ mod tests {
     use super::{
         BrokerConfig, Config, ConfigFingerprint, ConsumerConfigSection, Credentials, DelayConfig,
         Endpoint, PublisherConfigSection, SafetyMode, SchedulerConfig, SchedulerStrategy,
-        SubscriptionConfig, TlsConfig, TopologyMode, WorkerProfile,
+        SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -1650,6 +1739,29 @@ mod tests {
         }
     }
 
+    fn config_with_broker_tls(tls: TlsConfig) -> Config {
+        Config {
+            brokers: vec![broker_with_tls(tls)],
+            workers: vec![WorkerProfile {
+                name: "main".to_owned(),
+                subscriptions: vec![SubscriptionConfig {
+                    name: "jobs".to_owned(),
+                    broker: "primary".to_owned(),
+                    ..subscription(8)
+                }],
+                scheduler: SchedulerConfig::weighted_fair(),
+            }],
+            topology_mode: TopologyMode::Declare,
+            delay: DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
+        }
+    }
+
     #[test]
     fn tls_enabled_uses_amqps_scheme() {
         let enabled: TlsConfig =
@@ -1768,6 +1880,81 @@ mod tests {
             validated_without.fingerprint(),
             "different TLS CA cert paths must produce different fingerprints"
         );
+    }
+
+    #[test]
+    fn tls_verify_none_is_rejected_at_validation() {
+        let tls: TlsConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "verify": "none"
+        }))
+        .expect("valid TLS config");
+        let config = config_with_broker_tls(tls);
+
+        let error = config.validate().expect_err("verify none must be rejected");
+
+        assert_eq!(error.path(), "brokers.primary.tls.verify");
+        assert!(
+            error.to_string().contains("custom TLS connector"),
+            "error must explain the capability gap: {error}"
+        );
+    }
+
+    #[test]
+    fn tls_server_name_mismatch_is_rejected_at_validation() {
+        let tls: TlsConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "server_name": "other.example.com"
+        }))
+        .expect("valid TLS config");
+        let config = config_with_broker_tls(tls);
+
+        let error = config
+            .validate()
+            .expect_err("SNI mismatch must be rejected");
+
+        assert_eq!(error.path(), "brokers.primary.tls.server_name");
+        assert!(
+            error.to_string().contains("rabbit.example.com"),
+            "error must name the supported server name: {error}"
+        );
+    }
+
+    #[test]
+    fn tls_server_name_matching_first_host_is_accepted() {
+        let tls: TlsConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "server_name": "rabbit.example.com"
+        }))
+        .expect("valid TLS config");
+        let config = config_with_broker_tls(tls);
+
+        config.validate().expect("matching server name is valid");
+    }
+
+    #[test]
+    fn tls_verify_defaults_to_peer() {
+        let tls: TlsConfig =
+            serde_json::from_value(json!({"enabled": true})).expect("valid TLS config");
+
+        assert_eq!(tls.verify(), TlsVerify::Peer);
+        assert_eq!(tls.server_name(), None);
+    }
+
+    #[test]
+    fn tls_verify_and_server_name_changes_affect_fingerprint() {
+        let base: TlsConfig =
+            serde_json::from_value(json!({"enabled": true})).expect("valid TLS config");
+        let renamed: TlsConfig = serde_json::from_value(json!({
+            "enabled": true,
+            "server_name": "rabbit.example.com"
+        }))
+        .expect("valid TLS config");
+
+        let base = config_with_broker_tls(base).validate().expect("valid");
+        let renamed = config_with_broker_tls(renamed).validate().expect("valid");
+
+        assert_ne!(base.fingerprint(), renamed.fingerprint());
     }
 
     #[test]
