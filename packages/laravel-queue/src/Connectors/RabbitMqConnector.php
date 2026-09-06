@@ -61,10 +61,7 @@ final class RabbitMqConnector implements ConnectorInterface
             throw new InvalidArgumentException('block_for exceeds the supported millisecond range');
         }
 
-        $worker = $config['worker'] ?? $this->defaults['worker'] ?? 'default';
-        $class = $worker === 'horizon'
-            ? HorizonRabbitMqQueue::class
-            : RabbitMqQueue::class;
+        $class = self::workerClass($config, $this->defaults);
 
         return new $class(
             $this->pools->make($compiled['native']),
@@ -77,6 +74,24 @@ final class RabbitMqConnector implements ConnectorInterface
             autoSubscribe: $compiled['auto_subscribe'],
             hasDeadLetter: $compiled['topology']['dead_letter'] !== null,
         );
+    }
+
+    /**
+     * Resolves the queue class a connection instantiates: worker=horizon
+     * maps to the Horizon-aware queue, anything else to the base
+     * implementation. Shared by the connector and rabbit-rs:doctor so both
+     * instantiate and report the same class.
+     *
+     * @param array<string, mixed> $config raw connection config
+     * @param array<string, mixed> $defaults package defaults (config('rabbit-rs'))
+     */
+    public static function workerClass(array $config, array $defaults): string
+    {
+        $worker = $config['worker'] ?? $defaults['worker'] ?? 'default';
+
+        return $worker === 'horizon'
+            ? HorizonRabbitMqQueue::class
+            : RabbitMqQueue::class;
     }
 
     /**

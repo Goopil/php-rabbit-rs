@@ -411,6 +411,19 @@ php artisan rabbit-rs:status --format=json
 
 Displays pool state, connection generations, in-flight counters, and consumer counts per broker.
 
+### Integration diagnostics
+
+```bash
+php artisan rabbit-rs:doctor
+
+# Single connection
+php artisan rabbit-rs:doctor --connection=rabbit-rs
+```
+
+One-shot health report per rabbit-rs connection, resolved through the same config compilation the driver uses. Each check prints `ok`, `warn`, or `fail`; the command exits non-zero when any check fails (warnings are allowed), which makes it usable in CI.
+
+Checks: extension presence and version against the `ext-rabbit_rs` composer constraint, resolved worker class (with a loud warning when `worker` is inherited from the package defaults instead of the connection — the known `queue.connections.<name>.worker` trap), broker reachability (AMQP connect, auth, vhost; skipped with a warning when the extension is not loaded), publisher exchange/routing-key alignment and dead-letter wiring, effective safety settings after compilation, Horizon supervisors against the connection subscriptions, and which package events (`BackpressureDetected`, `ConnectionStateChanged`) have listeners.
+
 ### Octane
 
 When Laravel Octane is detected, the driver automatically:

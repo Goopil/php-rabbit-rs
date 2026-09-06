@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel;
 
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\Console\RabbitMqDoctorCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
@@ -31,7 +32,7 @@ class RabbitMqServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->registerQueueConnector();
-        $this->commands([RabbitMqStatusCommand::class, RabbitMqWorkCommand::class]);
+        $this->commands([RabbitMqStatusCommand::class, RabbitMqWorkCommand::class, RabbitMqDoctorCommand::class]);
         $this->registerWorkCommandExtension();
         $this->registerOctaneLifecycle();
 
