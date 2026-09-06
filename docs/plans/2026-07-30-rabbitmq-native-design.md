@@ -343,7 +343,8 @@ The stable V1 is only released after certification of CLI, FPM, and the four ann
 
 ## Planned evolutions
 
-- adaptive prefetch based on EWMA, target buffer time, hysteresis, and memory pressure;
+- adaptive prefetch based on EWMA and target buffer time — implemented (spec
+  `docs/superpowers/specs/2026-08-29-adaptive-prefetch-design.md`);
 - multiprocess rabbit-rs:work command;
 - Prometheus and OpenTelemetry exporters;
 - additional routing and failover strategies;

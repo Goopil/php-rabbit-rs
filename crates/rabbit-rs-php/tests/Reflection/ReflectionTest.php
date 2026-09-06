@@ -92,6 +92,7 @@ describe('method signatures', function () {
                     ['name' => 'deliveries', 'type' => 'array', 'optional' => false],
                 ], 'void'],
                 'drainErrors' => [[], 'array'],
+                'getPrefetchStats' => [[], 'array'],
                 'close' => [[], 'void'],
             ],
             $delivery => [

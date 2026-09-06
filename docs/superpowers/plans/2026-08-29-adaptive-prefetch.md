@@ -37,7 +37,7 @@ This task switches the prefetch representation end to end and restores compilati
 - Consumes: existing `SubscriptionConfig`, `Config::validate()`, `ConfigFingerprint::calculate`.
 - Produces: `PrefetchConfig` enum (derives `Clone, Copy, Debug, Eq, PartialEq`) with `initial_value() -> u16` and `ceiling() -> u16`; `Subscription::prefetch(u16)` (unchanged signature → `Fixed`), `Subscription::prefetch_config(PrefetchConfig)`, `Subscription::initial_prefetch() -> u16`; `deserialize_duration_seconds_opt` helper.
 
-- [ ] **Step 1: Write failing wire-parsing tests**
+- [x] **Step 1: Write failing wire-parsing tests**
 
 In `config.rs` `mod tests`, add after the existing JSON tests (imports: add `PrefetchConfig` to the `use super::{...}` list):
 
@@ -211,12 +211,12 @@ In `config.rs` `mod tests`, add after the existing JSON tests (imports: add `Pre
     }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `rtk cargo test -p rabbit-rs-core config::tests`
 Expected: COMPILE ERROR — `PrefetchConfig` does not exist.
 
-- [ ] **Step 3: Implement `PrefetchConfig` and its `Deserialize`**
+- [x] **Step 3: Implement `PrefetchConfig` and its `Deserialize`**
 
 In `config.rs`, right after the `SubscriptionConfig` struct (line ~234), add:
 
@@ -327,7 +327,7 @@ where
 
 Check the imports at the top of `config.rs` include `serde::{Deserialize, Deserializer}` (they already do for the existing helpers).
 
-- [ ] **Step 4: Restore compilation — validation, fingerprint, set.rs, recovery_coordinator.rs**
+- [x] **Step 4: Restore compilation — validation, fingerprint, set.rs, recovery_coordinator.rs**
 
 Replace the prefetch validation block (`config.rs` lines 576-584) with:
 
@@ -450,7 +450,7 @@ In `consumer/set.rs`:
 
 In `pool/recovery_coordinator.rs` line 422, change `.prefetch(sub_config.prefetch)` to `.prefetch_config(sub_config.prefetch)` (the config type is `Copy`, no clone needed).
 
-- [ ] **Step 5: Write failing validation + fingerprint tests**
+- [x] **Step 5: Write failing validation + fingerprint tests**
 
 In `config.rs` `mod tests`, add helpers and tests (keep the existing `subscription(u16)` / `worker(u16)` helpers untouched — they keep compiling because they wrap `Fixed`):
 
@@ -574,12 +574,12 @@ In `config.rs` `mod tests`, add helpers and tests (keep the existing `subscripti
 
 Note: `ConfigError` exposes `path()` and `Display` (`"{path}: {message}"`) — use `to_string()` for message assertions.
 
-- [ ] **Step 6: Run the config tests to verify they pass**
+- [x] **Step 6: Run the config tests to verify they pass**
 
 Run: `rtk cargo test -p rabbit-rs-core config::tests`
 Expected: PASS (new + existing, including the unchanged `rejects_zero_prefetch` with path `workers.main.subscriptions.default.prefetch`).
 
-- [ ] **Step 7: Add the policy-bound unit test**
+- [x] **Step 7: Add the policy-bound unit test**
 
 Append at the end of `consumer/set.rs`:
 
@@ -610,12 +610,12 @@ mod tests {
 
 (The full capacity path is exercised by the integration tests in Task 3.)
 
-- [ ] **Step 8: Run the whole core suite to confirm zero regression**
+- [x] **Step 8: Run the whole core suite to confirm zero regression**
 
 Run: `rtk cargo test -p rabbit-rs-core`
 Expected: PASS — all existing tests unchanged in behavior.
 
-- [ ] **Step 9: Format and commit**
+- [x] **Step 9: Format and commit**
 
 ```bash
 rtk cargo fmt --all
@@ -634,7 +634,7 @@ git commit -m "feat(config): adaptive prefetch policy type with backward-compati
 **Interfaces:**
 - Produces: `pub(crate) struct AdaptivePrefetch` with `const fn new(min: u16, max: u16, initial: u16, target_buffer: Duration) -> Self`, `fn observe(&mut self, latency: Duration)`, `fn tick(&mut self) -> Option<u16>`, `fn current(&self) -> u16`, `fn ewma(&self) -> Duration`; constants `EWMA_ALPHA: f64 = 0.25`, `PREFETCH_TICK: Duration = 1s`, `MIN_SAMPLES: u64 = 3`. Task 4 adds `pub struct PrefetchStat` to this module.
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 Create `crates/rabbit-rs-core/src/consumer/prefetch.rs` containing only the module doc, imports, and this test module:
 
@@ -727,12 +727,12 @@ ecult        assert_eq!(candidate.current(), 16);
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `rtk cargo test -p rabbit-rs-core consumer::prefetch`
 Expected: COMPILE ERROR — module has no `AdaptivePrefetch`.
 
-- [ ] **Step 3: Implement the controller**
+- [x] **Step 3: Implement the controller**
 
 In the same file, above the test module, add:
 
@@ -848,12 +848,12 @@ impl AdaptivePrefetch {
 
 Export it in `consumer/mod.rs` — add `mod prefetch;` next to `mod scheduler;` (keep the module private; Task 4 adds `pub use prefetch::PrefetchStat;`).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `rtk cargo test -p rabbit-rs-core consumer::prefetch`
 Expected: PASS (7 tests).
 
-- [ ] **Step 5: Format, clippy, and commit**
+- [x] **Step 5: Format, clippy, and commit**
 
 ```bash
 rtk cargo fmt --all
@@ -874,7 +874,7 @@ git commit -m "feat(consumer): pure adaptive prefetch controller with EWMA and h
 - Consumes: `AdaptivePrefetch`, `PREFETCH_TICK` from Task 2; `Subscription::prefetch: PrefetchConfig` from Task 1.
 - Produces: `ActorState` field `adaptive_prefetch: HashMap<SubscriptionId, AdaptivePrefetch>`; `RuntimeSubscription` fields `queue: String`, `prefetch: PrefetchConfig`; `SettlementResult` field `is_plain_ack: bool`; methods `fn has_adaptive_prefetch(&self) -> bool`, `fn collect_prefetch_updates(&mut self) -> Vec<(SubscriptionId, Arc<dyn ConsumerChannel>, u16)>`.
 
-- [ ] **Step 1: Write the failing integration tests**
+- [x] **Step 1: Write the failing integration tests**
 
 In `crates/rabbit-rs-core/tests/consumer.rs`:
 
@@ -1014,12 +1014,12 @@ async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer adaptive`
 Expected: FAIL/COMPILE ERROR — `Adaptive` variants never trigger QoS changes (first two tests see only `vec![16]`), and no `drain_errors` entry appears for the third.
 
-- [ ] **Step 3: Implement the actor changes**
+- [x] **Step 3: Implement the actor changes**
 
 In `crates/rabbit-rs-core/src/consumer/actor.rs`:
 
@@ -1215,17 +1215,17 @@ Then inside `tokio::select!`, after the `() = dispatch_notify.notified()` arm, a
 
 Note: the first tick of a `tokio::time::interval` completes immediately; the controllers have zero samples then, so `tick()` returns `None` — no spurious QoS.
 
-- [ ] **Step 4: Run the adaptive tests to verify they pass**
+- [x] **Step 4: Run the adaptive tests to verify they pass**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer adaptive`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Run the whole consumer suite to confirm zero regression**
+- [x] **Step 5: Run the whole consumer suite to confirm zero regression**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer`
 Expected: PASS — including the fixed-mode tests, which must not observe any QoS beyond the spawn value.
 
-- [ ] **Step 6: Format, clippy, and commit**
+- [x] **Step 6: Format, clippy, and commit**
 
 ```bash
 rtk cargo fmt --all
@@ -1247,7 +1247,7 @@ git commit -m "feat(consumer): apply adaptive prefetch adjustments from the acto
 **Interfaces:**
 - Produces: `pub struct PrefetchStat { pub subscription: String, pub queue: String, pub mode: &'static str, pub current: u16, pub ewma: Duration }` (derives `Clone, Debug, Eq, PartialEq`); `ConsumerCommand::GetPrefetchStats { completed: oneshot::Sender<Vec<PrefetchStat>> }`; `pub async fn ConsumerHandle::prefetch_stats(&self) -> Result<Vec<PrefetchStat>, ConsumerError>`; `fn ActorState::prefetch_stats(&self) -> Vec<PrefetchStat>`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `crates/rabbit-rs-core/tests/consumer.rs`:
 
@@ -1286,12 +1286,12 @@ async fn prefetch_stats_reports_fixed_and_adaptive_state() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer prefetch_stats`
 Expected: COMPILE ERROR — no `prefetch_stats` on `ConsumerHandle`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `consumer/prefetch.rs`, above `AdaptivePrefetch`, add the public snapshot type:
 
@@ -1382,14 +1382,14 @@ In `consumer/actor.rs`:
 
 and add `PrefetchStat` to the `use super::{...}` import list at the top of the file.
 
-- [ ] **Step 3b: check `SubscriptionId::as_str` exists** — it is used already in `set.rs:192` (`format!("rabbit-rs.{}", subscription.id.as_str())`), so it exists; if the name differs, adjust.
+- [x] **Step 3b: check `SubscriptionId::as_str` exists** — it is used already in `set.rs:192` (`format!("rabbit-rs.{}", subscription.id.as_str())`), so it exists; if the name differs, adjust.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `rtk cargo test -p rabbit-rs-core --test consumer prefetch_stats`
 Expected: PASS.
 
-- [ ] **Step 5: Run the full core suite, format, and commit**
+- [x] **Step 5: Run the full core suite, format, and commit**
 
 ```bash
 rtk cargo test -p rabbit-rs-core
@@ -1411,7 +1411,7 @@ git commit -m "feat(consumer): expose per-subscription prefetch stats"
 - Consumes: `ConsumerHandle::prefetch_stats() -> Result<Vec<PrefetchStat>, ConsumerError>` from Task 4.
 - Produces: PHP method `Goopil\RabbitRs\Consumer::getPrefetchStats(): array` keyed by subscription name with entries `{ mode: string, prefetch: int, ewma_ms: int }`.
 
-- [ ] **Step 1: Write the failing reflection test**
+- [x] **Step 1: Write the failing reflection test**
 
 In `crates/rabbit-rs-php/tests/Reflection/ReflectionTest.php`, next to the existing `Consumer` method expectations (the `drainErrors` expectation), add:
 
@@ -1419,12 +1419,12 @@ In `crates/rabbit-rs-php/tests/Reflection/ReflectionTest.php`, next to the exist
         expectMethod(\Goopil\RabbitRs\Consumer::class, 'getPrefetchStats', [], 'array');
 ```
 
-- [ ] **Step 2: Run the extension test suite to verify it fails**
+- [x] **Step 2: Run the extension test suite to verify it fails**
 
 Run: `./scripts/test-extension.sh`
 Expected: FAIL — `getPrefetchStats` is not declared on the class (reflection assertion).
 
-- [ ] **Step 3: Implement the method**
+- [x] **Step 3: Implement the method**
 
 In `crates/rabbit-rs-php/src/classes/consumer.rs`, inside the `#[php_impl] impl Consumer` block after `drainErrors`, add:
 
@@ -1472,12 +1472,12 @@ In `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, directly after the `drainErr
 
 Validate the stub syntax: `php -l crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`.
 
-- [ ] **Step 4: Run the extension test suite to verify it passes**
+- [x] **Step 4: Run the extension test suite to verify it passes**
 
 Run: `./scripts/test-extension.sh`
 Expected: PASS (reflection + Pest + PHPT).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/rabbit-rs-php/src/classes/consumer.rs crates/rabbit-rs-php/stubs/rabbit_rs.stub.php crates/rabbit-rs-php/tests/Reflection/ReflectionTest.php
@@ -1499,7 +1499,7 @@ git commit -m "feat(php): expose consumer prefetch stats to PHP"
 - Consumes: core wire forms from Task 1.
 - Produces: `ConfigNormalizer` emits a plain int for fixed mode (unchanged) and `array{mode: 'adaptive', initial: int, min: int, max: int, target_buffer_seconds: int}` for adaptive mode; rejects adaptive combined with `early_ack`/`no_ack`.
 
-- [ ] **Step 1: Write the failing Pest tests**
+- [x] **Step 1: Write the failing Pest tests**
 
 In `packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php`, add a new describe block (imports already present: `ConfigNormalizer`):
 
@@ -1615,12 +1615,12 @@ describe('prefetch', function (): void {
 });
 ```
 
-- [ ] **Step 2: Run the Laravel unit tests to verify they fail**
+- [x] **Step 2: Run the Laravel unit tests to verify they fail**
 
 Run: `./scripts/test-laravel.sh`
 Expected: FAIL — adaptive mode rejected with "must be fixed".
 
-- [ ] **Step 3: Implement the normalizer changes**
+- [x] **Step 3: Implement the normalizer changes**
 
 In `ConfigNormalizer.php`, replace `prefetch()` (lines 421-431) with:
 
@@ -1700,7 +1700,7 @@ In `normalizeSubscription`, move the prefetch computation after the ack flags so
 
 and update the method docblock at line 325 to `prefetch: int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}`.
 
-- [ ] **Step 3b: Add the feature test (provider → native pool with adaptive config)**
+- [x] **Step 3b: Add the feature test (provider → native pool with adaptive config)**
 
 In `packages/laravel-queue/tests/Feature/MultiVhostWorkerTest.php`, inside the `describe('multi-vhost worker', ...)` block, add (the fake native `Pool` class is provided by the Feature bootstrap — no extension needed):
 
@@ -1735,7 +1735,7 @@ In `packages/laravel-queue/tests/Feature/MultiVhostWorkerTest.php`, inside the `
     });
 ```
 
-- [ ] **Step 4: Update config docs and README**
+- [x] **Step 4: Update config docs and README**
 
 In `config/rabbit-rs.php`, replace lines 175-177 (the `prefetch.mode` / `prefetch.value` comments) with:
 
@@ -1770,12 +1770,12 @@ duration (EWMA of ack latency) and adjusts the broker prefetch between `min` and
 ```
 ```
 
-- [ ] **Step 5: Run the Laravel suite to verify everything passes**
+- [x] **Step 5: Run the Laravel suite to verify everything passes**
 
 Run: `./scripts/test-laravel.sh`
 Expected: PASS (Unit + Feature, without the extension).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add packages/laravel-queue/src/Config/ConfigNormalizer.php packages/laravel-queue/config/rabbit-rs.php packages/laravel-queue/README.md packages/laravel-queue/tests/Unit/ConfigNormalizerTest.php packages/laravel-queue/tests/Feature/MultiVhostWorkerTest.php
@@ -1789,7 +1789,7 @@ git commit -m "feat(laravel): adaptive prefetch configuration support"
 **Files:**
 - Modify: `docs/plans/2026-07-30-rabbitmq-native-design.md` (section "Planned evolutions", line ~344)
 
-- [ ] **Step 1: Mark the roadmap item as implemented**
+- [x] **Step 1: Mark the roadmap item as implemented**
 
 In `docs/plans/2026-07-30-rabbitmq-native-design.md`, change the line:
 
@@ -1804,12 +1804,12 @@ to:
   `docs/superpowers/specs/2026-08-29-adaptive-prefetch-design.md`);
 ```
 
-- [ ] **Step 2: Run the full quality gate**
+- [x] **Step 2: Run the full quality gate**
 
 Run: `rtk ./scripts/check.sh`
 Expected: fmt + clippy (`-D warnings`) + nextest + composer validate all green.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/plans/2026-07-30-rabbitmq-native-design.md
@@ -1820,9 +1820,9 @@ git commit -m "docs: mark adaptive prefetch as implemented in the native design"
 
 ## Verification checklist (end of round)
 
-- [ ] `rtk ./scripts/check.sh` green
-- [ ] `rtk cargo test -p rabbit-rs-core --test consumer adaptive` — 3 deterministic paused-time tests
-- [ ] `rtk cargo test -p rabbit-rs-core --test consumer prefetch_stats` — observability
-- [ ] `./scripts/test-extension.sh` — reflection + Pest + PHPT green
-- [ ] `./scripts/test-laravel.sh` — Unit + Feature green
-- [ ] Fixed-mode behavior byte-identical (existing suites untouched and green)
+- [x] `rtk ./scripts/check.sh` green
+- [x] `rtk cargo test -p rabbit-rs-core --test consumer adaptive` — 3 deterministic paused-time tests
+- [x] `rtk cargo test -p rabbit-rs-core --test consumer prefetch_stats` — observability
+- [x] `./scripts/test-extension.sh` — reflection + Pest + PHPT green
+- [x] `./scripts/test-laravel.sh` — Unit + Feature green
+- [x] Fixed-mode behavior byte-identical (existing suites untouched and green)

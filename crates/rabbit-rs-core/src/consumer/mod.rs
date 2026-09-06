@@ -4,6 +4,7 @@ pub mod actor;
 pub mod attempts;
 pub mod composite;
 pub mod delivery;
+mod prefetch;
 pub mod set;
 
 mod scheduler;
@@ -17,5 +18,6 @@ pub use delivery::{
     ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, DeliveryTokenInner, Headers,
     MessageId, Settlement, SettlementError, SettlementErrorKind,
 };
+pub use prefetch::PrefetchStat;
 pub use scheduler::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler};
 pub use set::{ConsumerSet, ConsumerSetHandle, Subscription};

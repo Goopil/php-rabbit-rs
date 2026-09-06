@@ -650,7 +650,7 @@ async fn establish_requested_profile(
             consumer_channel,
         )
         .generation(generation)
-        .prefetch(sub_config.prefetch)
+        .prefetch_config(sub_config.prefetch)
         .channel_id(channel_id)
         .policy(SubscriptionPolicy::new(
             sub_config.weight,

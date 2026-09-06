@@ -5,8 +5,8 @@ use rabbit_rs_core::{
     client::ClientPool,
     config::{
         BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig, DelayMode,
-        PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
-        ValidatedConfig, WorkerProfile,
+        PrefetchConfig, PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig,
+        TopologyMode, ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
@@ -102,7 +102,7 @@ mod helper {
             queue: queue.to_owned(),
             weight: 1,
             priority_class: 0,
-            prefetch: 8,
+            prefetch: PrefetchConfig::Fixed(8),
             starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,

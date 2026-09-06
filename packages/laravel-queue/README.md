@@ -272,7 +272,19 @@ By default a connection consumes exactly one queue: its `queue` key. Set `subscr
 
 **`priority_class`** (default `0`) — Inter-queue priority (-32768 to 32767); higher numbers are served first. This is client-side scheduler state — nothing is sent to the broker.
 
-**`prefetch`** (default: the connection's `prefetch`) — QoS prefetch for this subscription's dedicated channel.
+**`prefetch`** (default: the connection's `prefetch`) — QoS prefetch for this subscription's dedicated channel. A plain integer (or `['mode' => 'fixed', 'value' => N]`) applies a constant prefetch; `['mode' => 'adaptive', ...]` keeps about `target_buffer_seconds` of ready work buffered instead (see below).
+
+**`prefetch.mode: adaptive`** — instead of a constant value, the extension keeps about `target_buffer_seconds` of ready work buffered per queue: it learns the job duration (EWMA of ack latency) and adjusts the broker prefetch between `min` and `max`, with a 25% hysteresis so QoS is not thrashed. Requires acknowledgements (`early_ack`/`no_ack` must stay `false`).
+
+```php
+'prefetch' => [
+    'mode' => 'adaptive',
+    'initial' => 64,
+    'min' => 1,
+    'max' => 256,
+    'target_buffer_seconds' => 5,
+],
+```
 
 **`starvation_after`** (default `30`) — Seconds before aging kicks in: the subscription's effective priority is raised to prevent starvation by higher-priority subscriptions.
 

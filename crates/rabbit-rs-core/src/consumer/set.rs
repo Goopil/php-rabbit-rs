@@ -10,12 +10,13 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use super::{
-    ConsumerError, Delivery, DeliveryTokenInner, SettlementError, SettlementErrorKind,
-    SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, DeliveryTokenInner, PrefetchStat, SettlementError,
+    SettlementErrorKind, SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
     attempts::DEFAULT_MAX_ATTEMPTS_NON_ZERO,
 };
 use crate::{
+    config::PrefetchConfig,
     metrics::{Metrics, MetricsSnapshot},
     pool::ConnectionKey,
     publisher::{Destination, PublisherHandle},
@@ -36,7 +37,7 @@ pub struct Subscription {
     pub(crate) generation: u64,
     pub(crate) channel_id: u16,
     pub(crate) queue: String,
-    pub(crate) prefetch: u16,
+    pub(crate) prefetch: PrefetchConfig,
     pub(crate) policy: SubscriptionPolicy,
     pub(crate) early_ack: bool,
     pub(crate) no_ack: bool,
@@ -63,7 +64,7 @@ impl Subscription {
             generation: 1,
             channel_id: 1,
             queue: queue.into(),
-            prefetch: 16,
+            prefetch: PrefetchConfig::Fixed(16),
             policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
             early_ack: false,
             no_ack: false,
@@ -77,10 +78,24 @@ impl Subscription {
         }
     }
 
+    /// Sets a fixed prefetch policy for the subscription.
     #[must_use]
     pub const fn prefetch(mut self, prefetch: u16) -> Self {
+        self.prefetch = PrefetchConfig::Fixed(prefetch);
+        self
+    }
+
+    /// Sets the full prefetch policy (fixed or adaptive).
+    #[must_use]
+    pub const fn prefetch_config(mut self, prefetch: PrefetchConfig) -> Self {
         self.prefetch = prefetch;
         self
+    }
+
+    /// The prefetch applied to the channel when the subscription starts.
+    #[must_use]
+    pub const fn initial_prefetch(&self) -> u16 {
+        self.prefetch.initial_value()
     }
 
     #[must_use]
@@ -186,7 +201,10 @@ impl ConsumerSet {
         metrics: Metrics,
         generation: u64,
     ) -> Result<ConsumerSetHandle, ConsumerError> {
-        let total_prefetch: u64 = subscriptions.iter().map(|s| u64::from(s.prefetch)).sum();
+        let total_prefetch: u64 = subscriptions
+            .iter()
+            .map(|subscription| u64::from(subscription.prefetch.ceiling()))
+            .sum();
         // The command channel carries Incoming delivery commands from the
         // per-subscription pumps plus settlement commands. Size it from the
         // total prefetch so a large prefetch does not turn every delivery
@@ -197,7 +215,11 @@ impl ConsumerSet {
         let mut streams = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
-            if let Err(error) = subscription.channel.set_qos(subscription.prefetch).await {
+            if let Err(error) = subscription
+                .channel
+                .set_qos(subscription.prefetch.initial_value())
+                .await
+            {
                 close_subscription_channels(&subscriptions).await;
                 return Err(ConsumerError::new(
                     super::ConsumerErrorKind::Transport,
@@ -368,6 +390,20 @@ impl ConsumerSetHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Snapshot of per-subscription prefetch state (mode, applied value, EWMA).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the consumer is closed.
+    pub async fn prefetch_stats(&self) -> Result<Vec<PrefetchStat>, ConsumerError> {
+        let (completed, receiver) = oneshot::channel();
+        self.commands
+            .send(ConsumerCommand::GetPrefetchStats { completed })
+            .await
+            .map_err(|_| ConsumerError::closed())?;
+        receiver.await.map_err(|_| ConsumerError::closed())
     }
 
     /// Drains all settlement errors that the actor has recorded since the
@@ -661,5 +697,21 @@ mod tests {
             1,
             "drop-close must close the subscription channel"
         );
+    }
+
+    #[test]
+    fn prefetch_policy_bounds_follow_mode() {
+        let fixed = PrefetchConfig::Fixed(16);
+        let adaptive = PrefetchConfig::Adaptive {
+            initial: 16,
+            min: 1,
+            max: 256,
+            target_buffer: Duration::from_secs(5),
+        };
+
+        assert_eq!(fixed.ceiling(), 16);
+        assert_eq!(fixed.initial_value(), 16);
+        assert_eq!(adaptive.ceiling(), 256);
+        assert_eq!(adaptive.initial_value(), 16);
     }
 }
