@@ -85,7 +85,7 @@ it('does not call deleteReserved when already deleted', function (): void {
     $job = horizonJob($delivery, $queue);
 
     $dispatchCount = 0;
-    $events = $this->createMock(Dispatcher::class);
+    $events = $this->createStub(Dispatcher::class);
     $events->method('dispatch')->willReturnCallback(
         static function () use (&$dispatchCount): void { $dispatchCount++; }
     );
@@ -104,7 +104,7 @@ it('releases through the native delivery handle', function (): void {
     $delivery = horizonDelivery();
     $job = horizonJob($delivery, $queue);
 
-    $events = $this->createMock(Dispatcher::class);
+    $events = $this->createStub(Dispatcher::class);
     $this->app->instance(Dispatcher::class, $events);
 
     $job->release(5);
@@ -139,7 +139,7 @@ it('dispatches the Horizon JobFailed event when the job fails', function (): voi
     $this->app->bind('TestJob', static fn (): object => new stdClass());
 
     $events = [];
-    $recorder = $this->createMock(Dispatcher::class);
+    $recorder = $this->createStub(Dispatcher::class);
     $recorder->method('dispatch')->willReturnCallback(
         static function (object $event) use (&$events): void {
             if (str_starts_with($event::class, 'Laravel\Horizon\Events\\')) {
