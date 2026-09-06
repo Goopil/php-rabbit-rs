@@ -209,9 +209,10 @@ impl Consumer {
     /// milliseconds, 0 before any acknowledged job).
     pub fn getPrefetchStats(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::getPrefetchStats")?;
-        let stats = self.runtime.block_on(self.handle.prefetch_stats()).map_err(
-            |error| consumer_exception_message(&error),
-        )?;
+        let stats = self
+            .runtime
+            .block_on(self.handle.prefetch_stats())
+            .map_err(|error| consumer_exception_message(&error))?;
         let mut table = ZendHashTable::new();
         for stat in stats {
             let mut entry = ZendHashTable::new();
