@@ -728,6 +728,15 @@ bench-validated optimization or a documented, quantified ceiling.
 
 ## Round E — adaptive prefetch per subscription
 
+**DELIVERED 2026-09-06** (PR #162, squash-merged as e1a9441): core union wire
+format + pure EWMA controller + actor tick with detached `set_qos` +
+`ConsumerHandle::prefetch_stats()`; PHP `Consumer::getPrefetchStats()`; Laravel
+`ConnectionCompiler` validation (adaptive rejected with `early_ack`/`no_ack`
+at the exact config path) + config template and README docs. Full gate green
+(378 Rust, 105 ext Pest + PHPT, 369 Laravel). The SonarCloud duplication gate
+tripped in review (15.8% new-code duplication from copy-pasted parse-test JSON
+skeletons) and was fixed in-PR by extracting shared test builders.
+
 Motivation: fixed prefetch cannot serve opposite queue profiles at once — fast jobs
 under-fill the pipeline (RTT visible, throughput capped at `prefetch / job duration`)
 while slow jobs with high prefetch waste memory and amplify the post-crash redelivery
@@ -749,13 +758,13 @@ Success criteria: full quality gate green; deterministic paused-time tests prove
 QoS adjustment sequence on the mock transport; fixed mode behavior byte-identical
 (regression tests).
 
-## Order of execution (agreed 2026-08-30, updated 2026-09-04)
+## Order of execution (agreed 2026-08-30, updated 2026-09-06)
 
 ~~Round 2 (starting with the error_tx drop-oldest fix as the P1 hypothesis) →
 Round F1 → Round C → Round F2 → Round E → Round D~~ — Round 2 and Round F are
 landed (v0.0.8).
 
-Current queue (updated 2026-09-05 — **1.0 shipped → prove stability + memory →
+Current queue (updated 2026-09-06 — **1.0 shipped → prove stability + memory →
 then re-profile before any perf work**):
 
 1. ~~Round I (#126, P0)~~ — **delivered 2026-09-03** (PRs #132/#133).
@@ -769,15 +778,20 @@ then re-profile before any perf work**):
 5. ~~Round H (v0.1.0)~~ — **landed 2026-09-02** (PR #130); **tag v0.1.0 cut
    and shipped 2026-09-04** (full release pipeline green: 10 builds,
    verify-PIE install, Laravel split, Homebrew).
-6. **Round K (#142, next)** — consolidation: soak memory evidence (leak
-   proof), nightly CI soak, #141 bench error contract, #139 bounded
-   reproduction attempt.
+6. ~~Round K (#142)~~ — **delivered 2026-09-05** (soak telemetry #143 +
+   nightly soak #144, #141 in PR #147, #139 reproduction attempt in PR #145;
+   60-min kill soak: missing=0, 297/297 reconnects — evidence under
+   `benchmarks/results/round-k-soak/`).
+7. ~~Round E (#42)~~ — **delivered 2026-09-06** (PR #162).
 
 Feature freeze lifted with 1.0; performance work stays gated on fresh
 profiles: micro-optimizations (audit F-38) and the `Consumer::next()` ~60 µs
-attribution each require a re-profile post-Round-D before any change; Round E
-(#42) and the other parked ideas (Kubernetes probes #85, topology command #84,
-Prometheus, realtime stack) remain parked until a need surfaces.
+attribution each require a re-profile post-Round-D before any change. Parked
+ideas (Kubernetes probes #85, Prometheus, realtime stack) stay parked until a
+need surfaces. Active tracks: `rabbit-rs:topology` (#84, in progress — red
+test suite written on `feat/rabbit-rs-topology`, no implementation yet), #158
+(CodSpeed benchmarking, not started), and #164 (audit follow-ups from the
+docs coherence pass — each item needs a fix/document/delete decision).
 
 Conflict points between tracks (rebase or sequence): #66 ↔ #71 share
 `consumer/set.rs`; #67 ↔ #73 ↔ #76 share `publisher/actor.rs` /
@@ -821,7 +835,7 @@ this starts before the Round G stabilization exit criterion.
 - **Multiprocess `rabbit-rs:work`** (design milestone 2) — supervisor already
   exists (WorkerSupervisor); the remaining scope is advanced subscription
   selection and multiprocess mode on top of it.
-- **Adaptive prefetch** — Round E (#42), design and plan already approved.
+- ~~**Adaptive prefetch** — Round E (#42)~~ — **delivered 2026-09-06** (PR #162).
 - **Additional routing and failover strategies** (host selection beyond the
   current list rotation).
 - **Alternative AMQP backend** — Round D profiles landed (latency-bound
@@ -851,7 +865,7 @@ this starts before the Round G stabilization exit criterion.
   (the child loop switches from the standard `queue:work` pop-per-job to
   `nextBatch` + batch-completion acks) — parked as an idea only: it departs
   from standard `queue:work` semantics and weakens ack-after-job-completion.
-  Sequenced post-1.0 (parked with #41/#42).
+  Sequenced post-1.0 (#41 and #42 delivered since — 2026-09-04 / 2026-09-06).
 - **Profile `Consumer::next()` per-call cost** (2026-09-01) — evaluation, to
   run once everything else is done (Round G exit + Round H landed): ~60µs per
   unit `next()` call is high for an ext-php-rs boundary; attribute the cost
@@ -946,7 +960,7 @@ starts).
 ## Parked (no round yet)
 
 - **Per-queue publish safety**: `publisher.safety` is a connection-level setting
-  (ConfigNormalizer validates safe|unsafe|blind; the core applies one SafetyMode
+  (ConnectionCompiler validates safe|unsafe|blind; the core applies one SafetyMode
   per connection/vhost). Several Laravel connections (same broker, distinct
   vhosts) already give per-vhost safety today. A true per-queue safety inside one
   connection would be a core config-surface extension — arbitrate post-1.0
