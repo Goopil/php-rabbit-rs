@@ -250,7 +250,9 @@ jobs:
           exit 1
 
       - name: Run Rust integration tests
-        run: cargo nextest run -p rabbit-rs-core --test '*' --features integration -j 1 --no-fail-fast
+        # Exclude tls_integration: it requires the TLS lab profile and its
+        # generated certificates (opt-in via `./scripts/test-integration.sh --with-tls`).
+        run: cargo nextest run -p rabbit-rs-core --test '*' --features integration -j 1 --no-fail-fast -E 'not binary(tls_integration)'
 
       - name: Run Laravel integration suite
         run: ./scripts/test-integration.sh
