@@ -23,6 +23,8 @@ use rabbit_rs_core::consumer::{ConsumerHandle, Delivery as NativeDelivery};
 use tokio::{runtime::Handle, time};
 
 /// Native consumer for an aggregated subscription profile.
+///
+/// Obtained via `Pool::consumer()`; not constructible from PHP.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Consumer")]
 #[php(flags = ClassFlags::Final)]

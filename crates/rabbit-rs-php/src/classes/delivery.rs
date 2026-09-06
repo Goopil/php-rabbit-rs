@@ -18,6 +18,9 @@ use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState, Settle
 use rabbit_rs_core::transport::HeaderValue;
 
 /// Native delivery and its acknowledgement token.
+///
+/// Obtained via `Consumer::next()`, `Consumer::tryNext()`, or
+/// `Consumer::nextBatch()`; not constructible from PHP.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Delivery")]
 #[php(flags = ClassFlags::Final)]

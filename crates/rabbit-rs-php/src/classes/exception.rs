@@ -6,12 +6,15 @@ use ext_php_rs::{
 use rabbit_rs_core::client::{ClientError, ClientErrorKind};
 use rabbit_rs_core::consumer::{ConsumerError, ConsumerErrorKind};
 
+/// Base exception for all `rabbit_rs` native errors.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Exception")]
 #[php(extends(ce = ce::exception, stub = "\\Exception"))]
 #[derive(Default)]
 pub struct RabbitRsException;
 
+/// Thrown when the bounded publish buffer is full (backpressure): retry
+/// with the same message later; already-buffered messages are never dropped.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\BackpressureException")]
 #[php(extends(RabbitRsException))]
@@ -19,6 +22,8 @@ pub struct RabbitRsException;
 #[derive(Default)]
 pub struct BackpressureException;
 
+/// Thrown on broker connection-level failures (transport errors, stale
+/// connection generations, source replacement).
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\ConnectionException")]
 #[php(extends(RabbitRsException))]
@@ -35,6 +40,8 @@ impl ConnectionException {
     /// machinery), so PHP userland that must surface a connection-level
     /// failure itself — e.g. the Laravel queue draining an async settlement
     /// error — calls this factory instead of constructing the class.
+    ///
+    /// @return never
     pub fn throw(message: String) -> PhpResult<()> {
         Err(PhpException::from_class::<ConnectionException>(message))
     }

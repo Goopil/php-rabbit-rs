@@ -48,7 +48,7 @@ The runtime-independent heart of the project. All AMQP logic lives here, behind 
 | `src/topology.rs` | Exchange, queue, binding declarations |
 | `src/metrics.rs` | Pool and consumer metrics |
 | `src/transport/` | Transport abstraction (Lapin implementation + mock) |
-| `tests/` | Integration tests (6 files: publisher, consumer, recovery, topology, metrics, integration) |
+| `tests/` | Integration tests (12 files: blind_pump, consumer, integration, log_facade, metrics, poison, pool_clear, publisher, recovery, topology, transport_liveness, transport_tuning) |
 
 **Key commands:**
 ```bash
@@ -139,7 +139,7 @@ The `--features extension-tests` flag enables test helpers in the extension (reg
 
 ### Why `cargo-php` needs wrapper scripts
 
-`cargo php install` and `cargo php stubs` fail at the workspace root because the root `Cargo.toml` is a workspace manifest, not a package manifest. `cargo-php` (v0.1.11) does not resolve workspace members automatically.
+`cargo php install` and `cargo php stubs` fail at the workspace root because the root `Cargo.toml` is a workspace manifest, not a package manifest. `cargo-php` (v0.1.21) does not resolve workspace members automatically.
 
 The wrapper scripts pass `--manifest crates/rabbit-rs-php/Cargo.toml` under the hood:
 
@@ -163,7 +163,7 @@ The authoritative stub is `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, gener
 ### Rust core tests
 
 - **Unit tests** live next to their modules (`#[cfg(test)]` blocks).
-- **Integration tests** live in `crates/rabbit-rs-core/tests/` (6 files).
+- **Integration tests** live in `crates/rabbit-rs-core/tests/` (12 files).
 - Tests use **paused Tokio time** and a **scriptable mock transport** — no real sleeps, no real broker.
 - Some integration tests require a live RabbitMQ lab (behind the `integration` feature flag).
 

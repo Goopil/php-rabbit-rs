@@ -3,10 +3,18 @@
 // Stubs for rabbit_rs
 
 namespace Goopil\RabbitRs {
+    /**
+     * Thrown when the bounded publish buffer is full (backpressure): retry
+     * with the same message later; already-buffered messages are never dropped.
+     */
     class BackpressureException extends Goopil\RabbitRs\Exception {
         public function __construct() {}
     }
 
+    /**
+     * Thrown on broker connection-level failures (transport errors, stale
+     * connection generations, source replacement).
+     */
     class ConnectionException extends Goopil\RabbitRs\Exception {
         public function __construct() {}
 
@@ -19,6 +27,8 @@ namespace Goopil\RabbitRs {
          * failure itself — e.g. the Laravel queue draining an async settlement
          * error — calls this factory instead of constructing the class.
          *
+         * @return never
+         *
          * @param string $message
          * @return void
          */
@@ -27,6 +37,8 @@ namespace Goopil\RabbitRs {
 
     /**
      * Native consumer for an aggregated subscription profile.
+     *
+     * Obtained via `Pool::consumer()`; not constructible from PHP.
      */
     class Consumer {
         public function __construct() {}
@@ -127,6 +139,9 @@ namespace Goopil\RabbitRs {
 
     /**
      * Native delivery and its acknowledgement token.
+     *
+     * Obtained via `Consumer::next()`, `Consumer::tryNext()`, or
+     * `Consumer::nextBatch()`; not constructible from PHP.
      */
     class Delivery {
         public function __construct() {}
@@ -183,6 +198,9 @@ namespace Goopil\RabbitRs {
         public function release(int $delayMs = 0): void {}
     }
 
+    /**
+     * Base exception for all `rabbit_rs` native errors.
+     */
     class Exception extends \Exception {
         public function __construct() {}
     }
