@@ -13,7 +13,7 @@ use std::sync::{
 use futures_util::stream::{FuturesUnordered, StreamExt};
 
 use super::{
-    ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, SettlementError,
+    ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, PrefetchStat, SettlementError,
     SettlementErrorKind,
     actor::ConsumerCommand,
     set::{ConsumerSetHandle, map_try_send_error},
@@ -129,6 +129,19 @@ impl ConsumerHandle {
             errors.extend(source.drain_errors());
         }
         errors
+    }
+
+    /// Snapshot of per-subscription prefetch state across every live source.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when every source is closed.
+    pub async fn prefetch_stats(&self) -> Result<Vec<PrefetchStat>, ConsumerError> {
+        let mut stats = Vec::new();
+        for source in &self.inner.sources {
+            stats.extend(source.prefetch_stats().await?);
+        }
+        Ok(stats)
     }
 
     /// Fire-and-forget batch settlement routed to the set that produced the

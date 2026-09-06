@@ -145,6 +145,21 @@ mod helper {
         }
     }
 
+    pub async fn adaptive_subscription(
+        transport: &MockTransport,
+        id: &str,
+        key: ConnectionKey,
+    ) -> Subscription {
+        subscription(transport, id, key, 16, 0)
+            .await
+            .prefetch_config(PrefetchConfig::Adaptive {
+                initial: 16,
+                min: 1,
+                max: 256,
+                target_buffer: Duration::from_secs(5),
+            })
+    }
+
     pub async fn let_actor_process() {
         for _ in 0..4 {
             tokio::task::yield_now().await;
@@ -1862,4 +1877,218 @@ async fn profile_requested_after_a_publishing_phase_is_established_on_demand() {
     );
 
     pool.close().await.expect("close pool");
+}
+
+// ---------------------------------------------------------------------------
+// Adaptive prefetch
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn adaptive_prefetch_grows_to_max_after_fast_jobs() {
+    let transport = MockTransport::default();
+    for tag in 1..=4 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![adaptive_subscription(&transport, "adaptive", connection_key("adaptive", "/")).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    for _ in 0..3 {
+        let delivery = consumer.next().await.expect("delivery");
+        delivery.ack().await.expect("ack");
+        let_actor_process().await;
+    }
+    // Deterministically fire the 1s controller tick under paused time, then
+    // let the detached set_qos task record its operation.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let_actor_process().await;
+
+    let qos_values: Vec<u16> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Qos { prefetch } => Some(*prefetch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(qos_values, vec![16, 256]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn adaptive_prefetch_holds_when_hysteresis_band_not_crossed() {
+    let transport = MockTransport::default();
+    for tag in 1..=4 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let subscription = subscription(
+        &transport,
+        "adaptive",
+        connection_key("adaptive", "/"),
+        16,
+        0,
+    )
+    .await
+    .prefetch_config(PrefetchConfig::Adaptive {
+        initial: 16,
+        min: 16,
+        max: 16,
+        target_buffer: Duration::from_secs(5),
+    });
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
+        .await
+        .expect("consumer set");
+    let_sources_fill().await;
+
+    for _ in 0..3 {
+        let delivery = consumer.next().await.expect("delivery");
+        delivery.ack().await.expect("ack");
+        let_actor_process().await;
+    }
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let_actor_process().await;
+
+    let qos_values: Vec<u16> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Qos { prefetch } => Some(*prefetch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        qos_values,
+        vec![16],
+        "target clamps to the band; no extra QoS"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
+    let transport = MockTransport::default();
+    for tag in 1..=5 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![adaptive_subscription(&transport, "adaptive", connection_key("adaptive", "/")).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    for _ in 0..3 {
+        let delivery = consumer.next().await.expect("delivery");
+        delivery.ack().await.expect("ack");
+        let_actor_process().await;
+    }
+    transport.push_consumer_result(Err(TransportError::connection("qos rejected")));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let_actor_process().await;
+
+    let errors = consumer.drain_errors();
+    assert!(
+        errors.iter().any(|error| error
+            .message
+            .contains("adaptive prefetch set_qos(256) failed")),
+        "expected the set_qos failure in drain_errors, got {errors:?}"
+    );
+
+    // The actor keeps consuming and settling after the failed adjustment.
+    let fourth = consumer.next().await.expect("delivery after failure");
+    fourth.ack().await.expect("ack after failure");
+    let_actor_process().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn settle_through_observations_feed_the_adaptive_controller() {
+    let transport = MockTransport::default();
+    for tag in 1..=9 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![adaptive_subscription(&transport, "adaptive", connection_key("adaptive", "/")).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    // Three contiguous-prefix settlements (tags 1..=3, 4..=6, 7..=9): each
+    // completion must feed one EWMA sample through the SettleThrough path.
+    let first = consumer.next().await.expect("third of prefix one");
+    let _ = consumer.next().await.expect("delivery");
+    let _ = consumer.next().await.expect("delivery");
+    consumer
+        .try_settle_through(first.inner_token().clone())
+        .expect("settle prefix one");
+    let_actor_process().await;
+
+    let second = consumer.next().await.expect("third of prefix two");
+    let _ = consumer.next().await.expect("delivery");
+    let _ = consumer.next().await.expect("delivery");
+    consumer
+        .try_settle_through(second.inner_token().clone())
+        .expect("settle prefix two");
+    let_actor_process().await;
+
+    let third = consumer.next().await.expect("third of prefix three");
+    let _ = consumer.next().await.expect("delivery");
+    let _ = consumer.next().await.expect("delivery");
+    consumer
+        .try_settle_through(third.inner_token().clone())
+        .expect("settle prefix three");
+    let_actor_process().await;
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let_actor_process().await;
+
+    let qos_values: Vec<u16> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Qos { prefetch } => Some(*prefetch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        qos_values,
+        vec![16, 256],
+        "SettleThrough completions feed the EWMA"
+    );
+}
+
+#[tokio::test]
+async fn prefetch_stats_reports_fixed_and_adaptive_state() {
+    let transport = MockTransport::default();
+    let fixed_subscription =
+        subscription(&transport, "fixed", connection_key("fixed", "/"), 16, 0).await;
+    let adaptive_sub =
+        helper::adaptive_subscription(&transport, "adaptive", connection_key("adaptive", "/"))
+            .await;
+    let consumer =
+        ConsumerSet::spawn_with_metrics(vec![fixed_subscription, adaptive_sub], Metrics::default())
+            .await
+            .expect("consumer set");
+
+    let stats = consumer.prefetch_stats().await.expect("stats");
+
+    assert_eq!(stats.len(), 2);
+    let adaptive = stats
+        .iter()
+        .find(|stat| stat.subscription == "adaptive")
+        .expect("adaptive stat");
+    assert_eq!(adaptive.mode, "adaptive");
+    assert_eq!(adaptive.current, 16);
+    assert_eq!(adaptive.ewma, Duration::ZERO);
+    let fixed = stats
+        .iter()
+        .find(|stat| stat.subscription == "fixed")
+        .expect("fixed stat");
+    assert_eq!(fixed.mode, "fixed");
+    assert_eq!(fixed.current, 16);
+    assert_eq!(fixed.ewma, Duration::ZERO);
 }

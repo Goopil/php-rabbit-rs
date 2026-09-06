@@ -8,15 +8,20 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::MissedTickBehavior,
+};
 
 use super::{
     AttemptsResolver, ConsumerError, ConsumerErrorKind, Delivery, DeliveryState, MessageId,
     SubscriptionId, WeightedFairScheduler,
     delivery::{DeliveryIdentity, DeliveryToken, DeliveryTokenInner, Settlement, SettlementError},
+    prefetch::{AdaptivePrefetch, PREFETCH_TICK, PrefetchStat},
     set::Subscription,
 };
 use crate::{
+    config::PrefetchConfig,
     metrics::Metrics,
     publisher::{
         Destination, MessageProperties, PublishOutcome, PublishRequest, delay::DelayRouter,
@@ -50,6 +55,7 @@ struct SettleParams {
 struct SettlementResult {
     channel_key: ChannelKey,
     token: Arc<DeliveryTokenInner>,
+    is_plain_ack: bool,
     result: Result<DeliveryState, ConsumerError>,
 }
 
@@ -81,6 +87,9 @@ pub(crate) enum ConsumerCommand {
     SettleThrough {
         token: Arc<DeliveryTokenInner>,
     },
+    GetPrefetchStats {
+        completed: oneshot::Sender<Vec<PrefetchStat>>,
+    },
 }
 
 struct RuntimeSubscription {
@@ -95,10 +104,13 @@ struct RuntimeSubscription {
     no_ack: bool,
     max_attempts: Option<NonZeroU32>,
     has_dead_letter: bool,
+    queue: String,
+    prefetch: PrefetchConfig,
 }
 
 struct ActorState {
     subscriptions: HashMap<SubscriptionId, RuntimeSubscription>,
+    adaptive_prefetch: HashMap<SubscriptionId, AdaptivePrefetch>,
     buffers: HashMap<SubscriptionId, VecDeque<TransportDelivery>>,
     buffered_bytes: HashMap<SubscriptionId, u64>,
     max_buffered_bytes: HashMap<SubscriptionId, u64>,
@@ -138,6 +150,7 @@ impl ActorState {
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
         let mut runtime = HashMap::new();
+        let mut adaptive_prefetch = HashMap::new();
         let mut buffers = HashMap::new();
         let mut buffered_bytes = HashMap::new();
         let mut max_buffered_bytes = HashMap::new();
@@ -147,6 +160,18 @@ impl ActorState {
             buffers.insert(subscription.id.clone(), VecDeque::new());
             buffered_bytes.insert(subscription.id.clone(), 0);
             max_buffered_bytes.insert(subscription.id.clone(), subscription.max_buffered_bytes);
+            if let PrefetchConfig::Adaptive {
+                initial,
+                min,
+                max,
+                target_buffer,
+            } = subscription.prefetch
+            {
+                adaptive_prefetch.insert(
+                    subscription.id.clone(),
+                    AdaptivePrefetch::new(min, max, initial, target_buffer),
+                );
+            }
             let channel_key = (
                 subscription.id.clone(),
                 subscription.channel_id,
@@ -167,12 +192,15 @@ impl ActorState {
                     no_ack: subscription.no_ack,
                     max_attempts: subscription.max_attempts,
                     has_dead_letter: subscription.dead_letter,
+                    queue: subscription.queue,
+                    prefetch: subscription.prefetch,
                 },
             );
         }
 
         Self {
             subscriptions: runtime,
+            adaptive_prefetch,
             buffers,
             buffered_bytes,
             max_buffered_bytes,
@@ -199,6 +227,54 @@ impl ActorState {
         self.subscriptions
             .get(subscription)
             .map(|runtime| (subscription.clone(), runtime.channel_id, runtime.generation))
+    }
+
+    fn has_adaptive_prefetch(&self) -> bool {
+        !self.adaptive_prefetch.is_empty()
+    }
+
+    /// Advances every adaptive controller and returns the `QoS` changes to apply.
+    fn collect_prefetch_updates(
+        &mut self,
+    ) -> Vec<(
+        SubscriptionId,
+        Arc<dyn crate::transport::ConsumerChannel>,
+        u16,
+    )> {
+        let mut updates = Vec::new();
+        for (id, controller) in &mut self.adaptive_prefetch {
+            if let Some(value) = controller.tick()
+                && let Some(runtime) = self.subscriptions.get(id)
+            {
+                updates.push((id.clone(), Arc::clone(&runtime.channel), value));
+            }
+        }
+        updates
+    }
+
+    /// Snapshot of per-subscription prefetch state (mode, applied value, EWMA).
+    fn prefetch_stats(&self) -> Vec<PrefetchStat> {
+        let mut stats = Vec::with_capacity(self.subscriptions.len());
+        for (id, runtime) in &self.subscriptions {
+            let (mode, mut current) = match runtime.prefetch {
+                PrefetchConfig::Fixed(value) => ("fixed", value),
+                PrefetchConfig::Adaptive { initial, .. } => ("adaptive", initial),
+            };
+            let mut ewma = Duration::ZERO;
+            if let Some(controller) = self.adaptive_prefetch.get(id) {
+                current = controller.current();
+                ewma = controller.ewma();
+            }
+            stats.push(PrefetchStat {
+                subscription: id.as_str().to_owned(),
+                queue: runtime.queue.clone(),
+                mode,
+                current,
+                ewma,
+            });
+        }
+        stats.sort_by(|left, right| left.subscription.cmp(&right.subscription));
+        stats
     }
 
     #[allow(clippy::too_many_lines)]
@@ -509,6 +585,11 @@ pub(crate) async fn run_actor(
     );
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
+    // Conditional tick arm: no active interval when no subscription is
+    // adaptive, so fixed-only sets keep their previous behavior exactly.
+    let has_adaptive = state.has_adaptive_prefetch();
+    let mut prefetch_interval = tokio::time::interval(PREFETCH_TICK);
+    prefetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             command = receiver.recv(),
@@ -623,6 +704,9 @@ pub(crate) async fn run_actor(
                         }
                     }
                 }
+                Some(ConsumerCommand::GetPrefetchStats { completed }) => {
+                    let _ = completed.send(state.prefetch_stats());
+                }
                 None => return,
             },
             _ = close_rx.changed() => {
@@ -635,6 +719,27 @@ pub(crate) async fn run_actor(
             }
             () = dispatch_notify.notified() => {
                 state.dispatch();
+            }
+            _ = prefetch_interval.tick(), if has_adaptive => {
+                // The tick itself is pure; the network round trip of `set_qos`
+                // runs in a detached task so it never blocks dispatch and
+                // settlements during the RTT. Failures surface through the
+                // bounded error channel; the actor keeps going.
+                for (subscription, channel, value) in state.collect_prefetch_updates() {
+                    let error_tx = state.error_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = channel.set_qos(value).await {
+                            let _ = error_tx.send(SettlementError {
+                                delivery_tag: 0,
+                                subscription,
+                                kind: ConsumerErrorKind::Transport,
+                                message: format!(
+                                    "adaptive prefetch set_qos({value}) failed: {error}"
+                                ),
+                            });
+                        }
+                    });
+                }
             }
             Some(settlement_result) = state.pending_settlements.next(),
                 if !state.pending_settlements.is_empty() => {
@@ -657,7 +762,18 @@ pub(crate) async fn run_actor(
                     if let Ok(terminal) = &settlement_result.result {
                         match terminal {
                             DeliveryState::Acked => {
-                                state.metrics.record_ack(settlement_result.token.reserved_at.elapsed());
+                                if settlement_result.is_plain_ack
+                                    && let Some(controller) = state
+                                        .adaptive_prefetch
+                                        .get_mut(&settlement_result.token.subscription)
+                                {
+                                    controller.observe(
+                                        settlement_result.token.reserved_at.elapsed(),
+                                    );
+                                }
+                                state
+                                    .metrics
+                                    .record_ack(settlement_result.token.reserved_at.elapsed());
                             }
                             DeliveryState::Rejected => {
                                 state.metrics.record_reject(settlement_result.token.reserved_at.elapsed());
@@ -786,6 +902,17 @@ pub(crate) async fn run_actor(
 
                 if is_terminal {
                     if let Ok(DeliveryState::Acked) = &settle_through_result.result {
+                        if let Some(controller) = state
+                            .adaptive_prefetch
+                            .get_mut(&channel_key.0)
+                        {
+                            controller.observe(
+                                settle_through_result
+                                    .affected_tokens
+                                    .last()
+                                    .map_or(Duration::ZERO, |token| token.reserved_at.elapsed()),
+                            );
+                        }
                         for token in &settle_through_result.affected_tokens {
                             let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
                             if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
@@ -1001,6 +1128,7 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
     };
     let delivery_tag = params.token.delivery_tag;
     let settlement = params.settlement;
+    let is_plain_ack = matches!(settlement, Settlement::Ack);
     let token = params.token.clone();
     drop(params);
 
@@ -1021,6 +1149,7 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
         SettlementResult {
             channel_key,
             token,
+            is_plain_ack,
             result,
         }
     }));

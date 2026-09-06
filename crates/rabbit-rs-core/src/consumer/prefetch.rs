@@ -3,7 +3,7 @@
 //! The controller keeps an EWMA of settlement latency (which includes the PHP
 //! job duration for acknowledged deliveries) and derives the prefetch value
 //! that keeps approximately `target_buffer` of ready work buffered. Changes
-//! apply through a relative hysteresis so broker QoS is not thrashed.
+//! apply through a relative hysteresis so broker `QoS` is not thrashed.
 
 use std::time::Duration;
 
@@ -16,6 +16,21 @@ pub(crate) const MIN_SAMPLES: u64 = 3;
 /// Relative hysteresis: a change applies when the target differs from the
 /// current value by at least `current / HYSTERESIS_DIVISOR` (minimum 1).
 const HYSTERESIS_DIVISOR: u64 = 4;
+
+/// Per-subscription prefetch observability snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrefetchStat {
+    /// Subscription identifier.
+    pub subscription: String,
+    /// Queue consumed by the subscription.
+    pub queue: String,
+    /// `"fixed"` or `"adaptive"`.
+    pub mode: &'static str,
+    /// Prefetch currently applied (spawn value for fixed subscriptions).
+    pub current: u16,
+    /// EWMA of acknowledged settlement latency; zero before any sample.
+    pub ewma: Duration,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AdaptivePrefetch {
@@ -76,10 +91,6 @@ impl AdaptivePrefetch {
 
     /// Computes the next prefetch adjustment, if hysteresis allows one.
     #[must_use]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "nanosecond durations fit in the 52-bit mantissa"
-    )]
     pub(crate) fn tick(&mut self) -> Option<u16> {
         if self.samples < MIN_SAMPLES {
             return None;

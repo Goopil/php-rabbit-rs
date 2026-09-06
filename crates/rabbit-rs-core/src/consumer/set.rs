@@ -10,8 +10,8 @@ use std::{
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use super::{
-    ConsumerError, Delivery, DeliveryTokenInner, SettlementError, SettlementErrorKind,
-    SubscriptionId, SubscriptionPolicy,
+    ConsumerError, Delivery, DeliveryTokenInner, PrefetchStat, SettlementError,
+    SettlementErrorKind, SubscriptionId, SubscriptionPolicy,
     actor::{ConsumerCommand, run_actor},
     attempts::DEFAULT_MAX_ATTEMPTS_NON_ZERO,
 };
@@ -390,6 +390,20 @@ impl ConsumerSetHandle {
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    /// Snapshot of per-subscription prefetch state (mode, applied value, EWMA).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the consumer is closed.
+    pub async fn prefetch_stats(&self) -> Result<Vec<PrefetchStat>, ConsumerError> {
+        let (completed, receiver) = oneshot::channel();
+        self.commands
+            .send(ConsumerCommand::GetPrefetchStats { completed })
+            .await
+            .map_err(|_| ConsumerError::closed())?;
+        receiver.await.map_err(|_| ConsumerError::closed())
     }
 
     /// Drains all settlement errors that the actor has recorded since the
