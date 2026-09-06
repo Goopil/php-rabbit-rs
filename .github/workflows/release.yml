@@ -428,7 +428,11 @@ jobs:
               echo "b88792235c8e80be568436d4cb043b49fd1869c89b64e83d23e2882ae19d70a8  /tmp/pie.phar" | sha256sum --strict --check -
               install -m 0755 /tmp/pie.phar /usr/local/bin/pie
               pie --version
-              pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
+              # Packagist serves the package with a dist URL pointing at the
+              # release asset; adding the VCS repository instead requires
+              # git/ssh to sync repo metadata, which these minimal containers
+              # intentionally do not carry. Packagist metadata for the native
+              # package must therefore always reference this repository.
               pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
               php -m | grep -qx rabbit_rs \
                 || { echo "::error::rabbit_rs is not loaded after pie install"; php -m; exit 1; }
