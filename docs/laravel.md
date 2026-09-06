@@ -29,6 +29,7 @@ Delayed jobs use the configured delay strategy (plugin or TTL fallback). See [To
 
 ```php
 use App\Jobs\ProcessOrder;
+use Illuminate\Support\Facades\Queue;
 
 $jobs = [
     new ProcessOrder(1),
@@ -36,8 +37,8 @@ $jobs = [
     new ProcessOrder(3),
 ];
 
-// Bulk dispatch — uses a single native call for all immediate jobs
-ProcessOrder::dispatchBatch($jobs);
+// Bulk dispatch — a single native call for all immediate jobs
+Queue::connection('rabbit-rs')->bulk($jobs);
 ```
 
 ### Raw payloads

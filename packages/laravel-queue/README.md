@@ -110,7 +110,7 @@ The full configuration lives in `config/rabbit-rs.php`. Every option is document
 | `RABBIT_RS_QUEUE` | Default queue name | `default` |
 | `RABBIT_RS_EXCHANGE` | Default exchange for routing | `laravel.jobs` |
 | `RABBIT_RS_HEARTBEAT` | AMQP heartbeat in seconds | `30` |
-| `RABBIT_RS_PREFETCH` | QoS prefetch count per consumer | `16` |
+| `RABBIT_RS_PREFETCH` | QoS prefetch count per consumer | `64` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
 | `RABBIT_RS_TOPOLOGY_MODE` | `declare`, `verify`, or `external` | `declare` |
 | `RABBIT_RS_DELAY_MODE` | `auto`, `plugin`, or `ttl` | `auto` |
@@ -215,7 +215,7 @@ Each worker profile defines a set of subscriptions consumed by a single `rabbit-
                 'priority_class' => 0,
                 'prefetch' => [
                     'mode' => 'fixed',
-                    'value' => (int) env('RABBIT_RS_PREFETCH', 16),
+                    'value' => (int) env('RABBIT_RS_PREFETCH', 64),
                 ],
                 'starvation_after' => 30,
             ],
@@ -522,10 +522,10 @@ protected $listen = [
 
 ```bash
 # Unit + Feature tests (no broker required)
-php vendor/bin/phpunit --testsuite="Rabbit RS Laravel"
+php vendor/bin/pest tests/Unit tests/Feature
 
 # Integration tests (requires a running RabbitMQ broker)
-php vendor/bin/phpunit --testsuite="Rabbit RS Integration"
+php vendor/bin/pest tests/Integration
 ```
 
 ## Architecture
