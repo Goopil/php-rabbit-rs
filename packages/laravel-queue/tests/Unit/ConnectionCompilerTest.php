@@ -570,14 +570,14 @@ describe('adaptive prefetch', function (): void {
     });
 
     it('forwards an adaptive prefetch config at connection level', function (): void {
-        $adaptive = ['mode' => 'adaptive', 'initial' => 16, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5];
+        $adaptive = adaptivePrefetch();
         $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'prefetch' => $adaptive]);
 
         expect($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe($adaptive);
     });
 
     it('forwards an adaptive prefetch config per subscription', function (): void {
-        $adaptive = ['mode' => 'adaptive', 'initial' => 16, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5];
+        $adaptive = adaptivePrefetch();
         $compiled = ConnectionCompiler::compile('orders', [
             'queue' => 'default',
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'prefetch' => $adaptive]],
@@ -588,26 +588,26 @@ describe('adaptive prefetch', function (): void {
 
     it('rejects an adaptive prefetch whose max is below min', function (): void {
         expectCompileRejected([
-            'prefetch' => ['mode' => 'adaptive', 'initial' => 16, 'min' => 8, 'max' => 4, 'target_buffer_seconds' => 5],
+            'prefetch' => adaptivePrefetch(['min' => 8, 'max' => 4]),
         ], 'queue.connections.orders.prefetch.max');
     });
 
     it('rejects an adaptive prefetch whose initial is outside the bounds', function (): void {
         expectCompileRejected([
-            'prefetch' => ['mode' => 'adaptive', 'initial' => 512, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5],
+            'prefetch' => adaptivePrefetch(['initial' => 512]),
         ], 'queue.connections.orders.prefetch.initial');
     });
 
     it('rejects a zero target buffer seconds', function (): void {
         expectCompileRejected([
-            'prefetch' => ['mode' => 'adaptive', 'initial' => 16, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 0],
+            'prefetch' => adaptivePrefetch(['target_buffer_seconds' => 0]),
         ], 'queue.connections.orders.prefetch.target_buffer_seconds');
     });
 
     it('rejects an adaptive prefetch combined with early_ack', function (): void {
         expectCompileRejected([
             'best_effort' => true,
-            'prefetch' => ['mode' => 'adaptive', 'initial' => 16, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5],
+            'prefetch' => adaptivePrefetch(),
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true]],
         ], 'queue.connections.orders.subscriptions.jobs.prefetch.mode');
     });
@@ -615,11 +615,29 @@ describe('adaptive prefetch', function (): void {
     it('rejects an adaptive prefetch combined with no_ack', function (): void {
         expectCompileRejected([
             'best_effort' => true,
-            'prefetch' => ['mode' => 'adaptive', 'initial' => 16, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5],
+            'prefetch' => adaptivePrefetch(),
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]],
         ], 'queue.connections.orders.subscriptions.jobs.prefetch.mode');
     });
 });
+
+/**
+ * A valid adaptive prefetch config; $overrides patches individual keys
+ * (e.g. to make it invalid for rejection tests).
+ *
+ * @param array<string, mixed> $overrides
+ * @return array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}
+ */
+function adaptivePrefetch(array $overrides = []): array
+{
+    return array_merge([
+        'mode' => 'adaptive',
+        'initial' => 16,
+        'min' => 1,
+        'max' => 256,
+        'target_buffer_seconds' => 5,
+    ], $overrides);
+}
 
 /**
  * Package defaults as the service provider will feed them: the package
