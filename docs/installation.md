@@ -1,16 +1,16 @@
 # Installation
 
-This guide covers installing the Rabbit RS native extension and the Laravel bridge.
+This guide covers installing the Rabbit RS native extension and the Laravel queue driver.
 
 ## Prerequisites
 
 - PHP 8.4 or 8.5 (**NTS only** — ZTS is not supported in V1, see [Thread safety](#thread-safety))
 - Linux x86_64 or ARM64 (glibc or musl)
-- RabbitMQ 4.3.x (reachable from your PHP process)
-- [PIE](https://github.com/php/pie) 1.5+ for extension installation
-- [Composer](https://getcomposer.org) for the Laravel bridge
+- RabbitMQ 4.2.9 or newer (reachable from your PHP process — the CI lab runs 4.2.9)
+- [PIE](https://github.com/php/pie) 1.4.10+ for extension installation (the version the release pipeline validates against)
+- [Composer](https://getcomposer.org) for the Laravel queue driver
 
-> **macOS and Windows** are not supported as production platforms in V1. You can compile and test locally on macOS for development purposes, but pre-compiled binaries target Linux only.
+> **macOS** (Apple Silicon) is supported through the Homebrew tap or a manual release download; Windows is not supported in V1. macOS installs are validated best-effort — see [Distribution](distribution.md#how-pre-packaged-binaries-work).
 
 ### Thread safety
 
@@ -43,7 +43,7 @@ Expected output:
 rabbit_rs
 
 Rabbit RS - High-performance RabbitMQ transport for PHP and Laravel, powered by Rust
-Version => 0.0.9
+Version => 0.1.2
 ...
 ```
 
@@ -64,7 +64,7 @@ RUN pie install goopil/rabbit-rs-native
 # Verify
 RUN php --ri rabbit_rs
 
-# Install Composer and the Laravel bridge
+# Install Composer and the Laravel queue driver
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 RUN composer require goopil/rabbit-rs-laravel
 
@@ -73,7 +73,7 @@ RUN composer require goopil/rabbit-rs-laravel
 
 For a complete Dockerfile example, see [examples/laravel/Dockerfile](../examples/laravel/Dockerfile).
 
-## Step 2 — Install the Laravel bridge
+## Step 2 — Install the Laravel queue driver
 
 ```bash
 composer require goopil/rabbit-rs-laravel
@@ -117,8 +117,8 @@ For contributors or environments without PIE:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Goopil/rabbit-rs.git
-cd rabbit-rs
+git clone https://github.com/Goopil/php-rabbit-rs.git
+cd php-rabbit-rs
 
 # Build the extension in release mode
 cargo build --release -p rabbit-rs-php
@@ -145,20 +145,20 @@ The separation is:
 | Tool | Responsibility |
 |------|---------------|
 | PIE | Downloads and installs the correct pre-compiled `.so` binary |
-| Composer | Installs the Laravel bridge (PHP source) and verifies `ext-rabbit_rs` is loaded |
+| Composer | Installs the Laravel queue driver (PHP source) and verifies `ext-rabbit_rs` is loaded |
 
-The Laravel bridge's `composer.json` declares `"ext-rabbit_rs": "^0.0"`, which causes Composer to check that the extension is loaded at install time. If the extension is missing, Composer reports the error. But Composer never installs the binary — that is PIE's role.
+The Laravel driver's `composer.json` declares `"ext-rabbit_rs": "^0.1"`, which causes Composer to check that the extension is loaded at install time. If the extension is missing, Composer reports the error. But Composer never installs the binary — that is PIE's role.
 
 ## Multiple PHP versions
 
-If you have multiple PHP installations, PIE and `cargo-php` target the PHP found in your `PATH`. To target a specific PHP:
+If you have multiple PHP installations, PIE and `cargo-php` target the PHP found in your `PATH`. To target a specific PHP, run them with that PHP's interpreter and ensure its `php-config`/`phpize` come first in the `PATH`:
 
 ```bash
 # With PIE (uses the php-config/phpize in PATH)
 /path/to/php/bin/php /usr/local/bin/pie install goopil/rabbit-rs-native
 
-# With cargo-php
-PHP_CONFIG=/path/to/php-config ./scripts/install.sh --release
+# With cargo-php (php-config of the target PHP first in PATH)
+PATH="/path/to/php/bin:$PATH" ./scripts/install.sh --release
 ```
 
 ## Upgrading and rollback
@@ -183,7 +183,7 @@ Check which version is active before and after:
 php --ri rabbit_rs
 ```
 
-Keep the Laravel bridge in sync: `goopil/rabbit-rs-laravel` requires a specific `ext-rabbit_rs` major version. When moving across a major boundary — in either direction — upgrade or roll back the extension and the bridge together. Composer fails loudly at `composer update` if the loaded extension does not satisfy the bridge's constraint, so a half-upgraded system (new bridge with old extension, or the reverse) cannot go unnoticed.
+Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` requires a specific `ext-rabbit_rs` major version. When moving across a major boundary — in either direction — upgrade or roll back the extension and the driver together. Composer fails loudly at `composer update` if the loaded extension does not satisfy the driver's constraint, so a half-upgraded system (new driver with old extension, or the reverse) cannot go unnoticed.
 
 Every release exercises these paths in CI before it is finalized: the release pipeline installs the previous published release, upgrades it to the new release, and rolls back again (see [Distribution](distribution.md#end-to-end-pie-validation)).
 

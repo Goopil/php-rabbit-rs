@@ -376,10 +376,12 @@ final class ConnectionCompiler
 
     /**
      * safety is the only wire-level opt-out (safe confirms+mandatory, unsafe
-     * confirms-only, blind neither). mandatory always compiles to true: the
-     * core config rejects mandatory=false (Round G #78 — the field is
-     * deprecated) and the publisher actor branches on the safety mode, never
-     * on this flag.
+     * and blind neither — the core gates confirms and mandatory on the safety
+     * mode, where unsafe performs a synchronous socket write without outcome
+     * tracking). The confirms/mandatory fields below are deprecated wire
+     * fields the core ignores: the core config rejects mandatory=false
+     * (Round G #78) and the publisher actor branches on the safety mode,
+     * never on these flags.
      *
      * @param array<string, mixed> $config
      * @return array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int}

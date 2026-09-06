@@ -23,7 +23,7 @@ ProcessOrder::dispatch($order)->onQueue('orders.high');
 ProcessOrder::dispatch($order)->delay(now()->addMinutes(5));
 ```
 
-Delayed jobs use the configured delay strategy (plugin or TTL fallback). See [Topology — Delay routing](topology.md#delay-routing).
+Delayed jobs use the configured delay mode: `auto` and `plugin` publish through the `x-delayed-message` exchange, `ttl` uses bucketed TTL queues (use `ttl` when the plugin is not installed). See [Topology — Delay routing](topology.md#delay-routing).
 
 ### Dispatch in bulk
 
@@ -97,9 +97,8 @@ Exit codes:
 
 | Code | Meaning |
 |------|---------|
-| `0` | Clean shutdown |
+| `0` | Clean shutdown (including `SIGTERM`/`SIGINT`) |
 | `1` | Max restarts exceeded |
-| `130` | Signal received |
 
 ### Status command
 
@@ -107,7 +106,7 @@ Exit codes:
 php artisan rabbit-rs:status
 ```
 
-Displays connection state, pool metrics, consumer stats, and latency histograms. For machine-readable output:
+Displays pool state (handle, PID, closed), publisher counters (publishes, confirmations, returns, backpressure, reconnects, duplicates), consumer counters (deliveries, acks, rejects), and confirmation/settlement latency percentiles. For machine-readable output:
 
 ```bash
 php artisan rabbit-rs:status --format=json
@@ -137,7 +136,7 @@ Queue::connection('rabbit-rs')->pushRaw($rawPayload, 'orders.high', ['content_ty
 Queue::connection('rabbit-rs')->later(300, ProcessOrder::class, ['orderId' => 42], 'orders.high');
 ```
 
-The delay is specified in seconds. Rabbit RS converts it to milliseconds and routes through the delay strategy.
+The delay is specified in seconds. Rabbit RS converts it to milliseconds and routes through the delay mode.
 
 ### bulk
 
@@ -177,8 +176,6 @@ $purged = Queue::connection('rabbit-rs')->clear('orders.high');
 ```
 
 Purges all messages from the queue and returns the number of jobs removed (the pending count measured before the purge; messages racing the purge are counted but may survive). Requires configuration permissions on the broker. The `ClearableQueue` contract makes `php artisan queue:clear rabbit-rs` available.
-
-Purges all messages from the queue. Requires configuration permissions on the broker.
 
 ## Events
 
@@ -250,7 +247,7 @@ $pool->onBackpressure(function (string $broker, int $inFlight, int $capacity): v
 - `getRawBody()` — returns the raw payload string
 - `attempts()` — returns the delivery attempt count (from `x-acquired-count` / `x-delivery-count` headers)
 - `delete()` — sends `basic.ack` and releases the delivery handle
-- `release($delay)` — sends `basic.reject(requeue=true)` for delay 0, or republicates via delay strategy for delay > 0
+- `release($delay)` — sends `basic.reject(requeue=true)` for delay 0, or republicates via the delay mode for delay > 0
 
 The delivery handle is released after a terminal transition (ack, reject, or release) to prevent double-settlement.
 
@@ -300,9 +297,7 @@ The value can be set per connection (`auto_subscribe` in `config/queue.php`, as 
 
 The worker handles `SIGTERM` and `SIGINT`. In-flight deliveries are not acknowledged during shutdown — RabbitMQ redelivers them after the connection closes.
 
-### Restart signal
-
-Send `SIGTERM` to the supervisor to restart workers gracefully. The supervisor stops all children, who finish current jobs, and then exits.
+Sending `SIGTERM` to the supervisor stops all children gracefully — they finish their current jobs — and the supervisor exits with code 0. There is no separate restart signal: the process supervisor (systemd, Supervisor, Kubernetes) is responsible for restarting the stopped worker.
 
 ## Octane integration
 

@@ -22,7 +22,7 @@ Publisher confirms are **enabled by default** (`safety = "safe"`, the default, d
 1. The publisher calls `confirm.select` on the channel
 2. Each published message is assigned a sequence number
 3. The broker sends `basic.ack` (confirmed) or `basic.nack` (rejected) with the sequence number
-4. The publish call resolves only after the confirm is received
+4. The publish call resolves once its confirm is received. Batched publishes are **pipelined**: the call returns before confirmations resolve, and unconfirmed outcomes surface at the next operation (the next publish flush, `drainSettlementErrors()`, or `stats()`)
 
 A confirm timeout (connection key `confirm_timeout`, default 30000 ms) ensures the call does not hang indefinitely. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
 
@@ -32,9 +32,9 @@ Mandatory routing is **always on in safe mode** (`safety = "safe"`, which derive
 
 - The broker returns unroutable messages via `basic.return` instead of silently dropping them
 - `basic.return` is processed **before** the corresponding `basic.ack` — a return takes precedence over a following ACK
-- The publish call resolves with a `Returned` outcome, and the Laravel bridge throws a `QueueException`
+- The publish call resolves with a `Returned` outcome, and the Laravel queue driver throws a `QueueException`
 
-There is no separate `mandatory` config key: it is derived from `safety` (`safe` → confirms + mandatory, `unsafe` → confirms only, `blind` → neither) — a connection key named `mandatory` hits the unknown-key rejection with an actionable error. The supported opt-outs from mandatory routing are `safety = "unsafe"` or `"blind"`.
+There is no separate `mandatory` config key: it is derived from `safety` (`safe` → confirms + mandatory, `unsafe` → neither — a synchronous socket write without outcome tracking, `blind` → neither — fire-and-forget through a bounded pump) — a connection key named `mandatory` hits the unknown-key rejection with an actionable error. The only mode with mandatory routing is `safe`.
 
 ### Delayed publishes
 
@@ -42,28 +42,29 @@ Publications carrying the `x-delay` header (delay plugin mode) are **never manda
 
 ## Connection recovery
 
-Rabbit RS handles connection loss automatically. The connection state machine is:
+Rabbit RS handles connection loss automatically. The connection states are `Disconnected`, `Connecting`, `Ready`, `Recovering`, `FailedPermanent`, and `Closed`:
 
 ```
 Disconnected → Connecting → Ready → Recovering → Ready
-                                    |
-                                    +→ Draining → Closed
+                 |                       |
+                 +→ FailedPermanent ←----+
+             (permanent errors: authentication failure,
+              incompatible topology)
+
+close() → Closed (from any state)
 ```
 
 ### Recovery sequence
 
 Recovery follows a **deterministic order**:
 
-1. **Connection** — re-establish TCP connection and AMQP negotiation
-2. **Channels** — open new publisher and consumer channels
-3. **Exchanges** — declare or verify exchanges
-4. **Queues** — declare or verify queues
-5. **Bindings** — declare or verify bindings
-6. **QoS** — re-apply prefetch settings
-7. **Consumers** — re-register `basic.consume` for each subscription
-8. **Publisher replay** — replay unconfirmed publications from the bounded buffer
+1. **Connection** — re-establish the TCP connection and AMQP negotiation (the generation increments)
+2. **Publisher channel** — open a fresh publisher channel
+3. **Topology** — declare or verify exchanges, then queues, then bindings
+4. **Publisher replay** — replay unconfirmed publications from the bounded buffer
+5. **Consumers** — per subscription: open the consumer channel, re-apply QoS, re-register `basic.consume`
 
-This order ensures that consumers are only re-registered after their queues and bindings exist, and that publishers only resume after the topology is restored.
+This order ensures that consumers are only re-registered after their queues and bindings exist, and that publishers resume — replay included — after the topology is restored, before consumers re-register.
 
 With multiple brokers, each broker recovers independently through its own coordinator: one broker recovering never blocks consumption from the others. When a broker's consumer set is replaced after recovery, the composed multi-broker consumer surfaces a one-shot `ConnectionException` ("broker source replaced by recovery; re-fetch consumer") — re-fetch the consumer to resume deliveries from that broker (see [Multiple brokers and vhosts](configuration.md#multiple-brokers-and-vhosts)).
 
@@ -143,7 +144,7 @@ Duplicates are expected and normal. They occur in these scenarios:
 
 ### Measuring duplicates
 
-Native pool metrics — including `duplicates_total` — are **per-process by design**: they count post-redelivery duplicates handled by *that* process. Every worker process has its own counters, and `rabbit-rs:status` creates a brand-new pool inside the artisan CLI process, so the native metrics it prints are **same-process only** and read zero in a fresh CLI process.
+Native pool metrics — including `duplicates_total` — are **per-process by design**: they count deliveries that the broker flagged as redeliveries and that *that* process settled. Every worker process has its own counters, and `rabbit-rs:status` creates a brand-new pool inside the artisan CLI process, so the native metrics it prints are **same-process only** and read zero in a fresh CLI process.
 
 `php artisan rabbit-rs:status` therefore observes two distinct things:
 
@@ -152,7 +153,7 @@ Native pool metrics — including `duplicates_total` — are **per-process by de
 - `reconnects_total` — number of connection recoveries (each can cause duplicates)
 - `deliveries_total` — total deliveries received
 - `acks_total` / `rejects_total` — settlement counts
-- `duplicates_total` — post-redelivery duplicates handled by this process
+- `duplicates_total` — deliveries the broker flagged as redeliveries, settled by this process
 
 **Queue counters (cross-process).** Set the optional per-connection key `queue.connections.<name>.management_url` (e.g. `http://broker-host:15672`) and the status command fetches per-queue counters from the RabbitMQ management API, across every process touching the queue:
 

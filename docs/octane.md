@@ -139,7 +139,7 @@ Rabbit RS is certified with all four Octane servers:
 
 ### Worker count
 
-Each Octane worker is a separate PHP process with its own native pool. Connections are not shared between workers. Set the worker count based on your CPU cores and RabbitMQ connection limits:
+On process-based runtimes, each Octane worker is a separate PHP process with its own native pool; connections are not shared between workers. Thread-based runtimes (e.g. FrankenPHP workers) share one OS process, and the native runtime registry is process-local — prefer process-based workers for hard pool isolation. Set the worker count based on your CPU cores and RabbitMQ connection limits:
 
 ```bash
 # Start with 4 workers (each has its own connection pool)
