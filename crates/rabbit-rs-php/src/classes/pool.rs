@@ -1,6 +1,7 @@
 #![expect(
     non_snake_case,
-    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
+    clippy::doc_markdown,
+    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments, and PHP docblock array shapes keep snake_case keys"
 )]
 
 use std::sync::Arc;
@@ -47,6 +48,12 @@ pub struct Pool {
 #[php_impl]
 impl Pool {
     /// Creates a native pool from its PHP configuration.
+    ///
+    /// The `$config` array follows the normalized native configuration schema.
+    /// The optional `consumer.wait_timeout` key (integer milliseconds, default
+    /// 30000, bounded 1000..86400000) caps how long `consumer()` blocks while
+    /// a broker connection becomes ready before failing with a
+    /// ConnectionException.
     pub fn __construct(config: &ZendHashTable) -> PhpResult<Self> {
         let config =
             Arc::new(conversion::validated_config(config).map_err(rabbit_exception_message)?);
@@ -72,6 +79,8 @@ impl Pool {
     /// The callback receives `(string $broker, string $state, int $generation)`.
     /// It is invoked synchronously on the PHP thread during publish, consume,
     /// and `stats()` operations.
+    ///
+    /// @param callable(string, string, int): void $callback
     pub fn onConnectionState(&self, callback: &Zval) -> PhpResult<()> {
         self.bridge
             .set_connection_state_callback(callback.shallow_clone())
@@ -82,6 +91,8 @@ impl Pool {
     /// The callback receives `(string $broker, int $inFlight, int $capacity)`.
     /// It is invoked synchronously on the PHP thread during publish, consume,
     /// and `stats()` operations.
+    ///
+    /// @param callable(string, int, int): void $callback
     pub fn onBackpressure(&self, callback: &Zval) -> PhpResult<()> {
         self.bridge
             .set_backpressure_callback(callback.shallow_clone())
@@ -97,6 +108,19 @@ impl Pool {
     }
 
     /// Publishes one message and returns its stable message identifier.
+    ///
+    /// @param array{broker: string, exchange: string, routing_key: string,
+    ///   payload: string, message_id: string, content_type?: string,
+    ///   correlation_id?: string, delay_ms?: int, timeout_ms?: int,
+    ///   headers?: array<string, bool|int|float|string|null>} $message
+    ///
+    /// Payload and all headers are limited to 1 MiB and 64 KiB per call
+    /// respectively. Headers are flat, contain at most 128 entries, and
+    /// `timeout_ms` is between 1 and 86,400,000.
+    ///
+    /// @throws \Goopil\RabbitRs\BackpressureException when the bounded publish
+    ///   buffer is full (outage with sustained traffic); retry with the same
+    ///   message later. Already-buffered messages are never dropped.
     pub fn publish(&self, message: &ZendHashTable) -> PhpResult<String> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::publish")?;
         let publish = conversion::publish(message, "message", &self.delay_strategy)
@@ -161,6 +185,15 @@ impl Pool {
     }
 
     /// Publishes multiple messages in one boundary crossing.
+    ///
+    /// @param list<array{broker: string, exchange: string, routing_key: string,
+    ///   payload: string, message_id: string, content_type?: string,
+    ///   correlation_id?: string, delay_ms?: int, timeout_ms?: int,
+    ///   headers?: array<string, bool|int|float|string|null>}> $messages
+    /// @return list<string>
+    ///
+    /// A batch contains at most 256 messages and 1 MiB of cumulative payload.
+    /// Header count and size limits are cumulative across the complete call.
     pub fn publish_batch(&self, messages: &ZendHashTable) -> PhpResult<Vec<String>> {
         self.flush()?;
         self.ensure_open("Goopil\\RabbitRs\\Pool::publishBatch")?;
@@ -210,6 +243,20 @@ impl Pool {
     /// A pending pipelined publish failure surfaces here (thrown) before the
     /// snapshot is built, so a failed publish is observable at the next
     /// stats operation at the latest.
+    ///
+    /// @return array{closed: bool, pid: int, handle: string,
+    ///   publishes_total: int, confirmations_total: int, returns_total: int,
+    ///   backpressure_total: int, publication_retries_total: int,
+    ///   reconnects_total: int, deliveries_total: int,
+    ///   duplicates_total: int, acks_total: int, rejects_total: int,
+    ///   dropped_publications_total: int, dropped_error_records_total: int,
+    ///   publish_buffered: int, publish_buffered_bytes: int,
+    ///   confirmation_latency_p50: int, confirmation_latency_p95: int,
+    ///   confirmation_latency_p99: int, settlement_latency_p50: int,
+    ///   settlement_latency_p95: int, settlement_latency_p99: int}
+    ///
+    /// Latency percentiles are integer milliseconds (`0` when no samples have
+    /// been recorded yet).
     pub fn stats(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::stats")?;
         self.surface_publish_errors()?;
@@ -332,6 +379,8 @@ impl Pool {
     /// `message`. The queue is cleared by this call; the same records would
     /// otherwise surface as exceptions at the next publish/flush/size/
     /// clear/stats operation.
+    ///
+    /// @return list<array{kind: string, message_id: string, message: string}>
     pub fn drainErrors(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::drainErrors")?;
         self.bridge.drain();

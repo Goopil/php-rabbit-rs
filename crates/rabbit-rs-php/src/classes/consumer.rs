@@ -1,6 +1,7 @@
 #![expect(
     non_snake_case,
-    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments"
+    clippy::doc_markdown,
+    reason = "ext-php-rs preserves parameter identifiers for PHP named arguments, and PHP docblock array shapes keep snake_case keys"
 )]
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,8 @@ use rabbit_rs_core::consumer::{ConsumerHandle, Delivery as NativeDelivery};
 use tokio::{runtime::Handle, time};
 
 /// Native consumer for an aggregated subscription profile.
+///
+/// Obtained via `Pool::consumer()`; not constructible from PHP.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Consumer")]
 #[php(flags = ClassFlags::Final)]
@@ -85,6 +88,8 @@ impl Consumer {
     /// async runtime. When the buffer is empty, the slow path blocks on the
     /// async runtime with the specified timeout, then drains whatever is
     /// available. `max` is clamped to `1..=256`.
+    ///
+    /// @return list<\Goopil\RabbitRs\Delivery>
     pub fn nextBatch(&self, max: i64, timeoutMs: i64) -> PhpResult<Vec<Delivery>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::nextBatch")?;
         self.drain_publish_buffer()?;
@@ -156,6 +161,8 @@ impl Consumer {
     /// Bounded to 256 deliveries per call. The cap is checked before any
     /// settlement is enqueued so a rejected call has no side effects
     /// (audit F-20).
+    ///
+    /// @param list<\Goopil\RabbitRs\Delivery> $deliveries
     pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::ackBatch")?;
 
@@ -173,6 +180,9 @@ impl Consumer {
     /// Drains settlement errors that have surfaced asynchronously since the
     /// last call. Returns an array of error hashes, each containing
     /// `delivery_tag`, `subscription`, `error_kind`, and `message`.
+    ///
+    /// @return list<array{delivery_tag: int, subscription: string,
+    ///   error_kind: string, message: string}>
     pub fn drainErrors(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::drainErrors")?;
         let errors = self.handle.drain_errors();

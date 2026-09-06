@@ -20,7 +20,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 ## Workspace Map
 
 - `crates/rabbit-rs-core/`: runtime-independent configuration, connection pooling, topology, publishing, consuming, recovery, metrics, and transport abstractions.
-- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (9 files: publisher, consumer, recovery, topology, metrics, integration, blind_pump, transport_tuning, pool_clear).
+- `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (12 files: blind_pump, consumer, integration, log_facade, metrics, poison, pool_clear, publisher, recovery, topology, transport_liveness, transport_tuning).
 - `crates/rabbit-rs-php/`: `cdylib` for the native PHP extension; depends on the core crate. Pest tests in `tests/`.
 - `packages/laravel-queue/`: Laravel queue driver package (`goopil/rabbit-rs-laravel`). Pest tests in `tests/`.
 - `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.
@@ -53,13 +53,13 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 
 ## PHP Extension Tooling
 
-- `cargo php install` and `cargo php stubs` fail at the workspace root because the root `Cargo.toml` is a workspace manifest, not a package manifest. `cargo-php` (v0.1.11) does not resolve workspace members automatically.
+- `cargo php install` and `cargo php stubs` fail at the workspace root because the root `Cargo.toml` is a workspace manifest, not a package manifest. `cargo-php` (v0.1.21) does not resolve workspace members automatically.
 - Use the wrapper scripts instead:
   - `./scripts/install.sh [--release] [--yes]` — builds and installs the extension into the current PHP.
   - `./scripts/stubs.sh [--stdout] [-o <path>]` — generates PHP stubs from the compiled extension.
 - Both scripts pass `--manifest crates/rabbit-rs-php/Cargo.toml` to `cargo-php` under the hood.
-- `cargo php stubs` requires the PHP embed SAPI to introspect the extension. Homebrew PHP (`php@8.4`) does not include embed by default, so `./scripts/stubs.sh` may abort with SIGABRT (exit 134) on macOS. The authoritative stub is `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, maintained manually and validated by `php -l` and PHPT reflection tests.
-- To regenerate stubs via `cargo php stubs`, build PHP with `--enable-embed` or use a Docker image that ships the embed SAPI.
+- `cargo php stubs` (cargo-php ≥ 0.1.21) does not need the PHP embed SAPI: it builds the cdylib, dlopens it, and reads its exported metadata. On macOS, install cargo-php with `RUSTFLAGS="-C link-arg=-Wl,-undefined,dynamic_lookup" cargo install cargo-php` (upstream build.rs is missing the macOS link flag).
+- The authoritative stub is `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`, regenerated via `./scripts/stubs.sh --out crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` and validated by `php -l`, the Pest suite, and the PHPT tests. Its docblocks come from the Rust `///` docs in `crates/rabbit-rs-php/src/classes/*.rs` — edit there, then regenerate.
 
 ## Extension Loading in Test Scripts
 
