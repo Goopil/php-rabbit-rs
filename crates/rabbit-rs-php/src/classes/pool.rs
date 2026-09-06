@@ -246,7 +246,8 @@ impl Pool {
     ///
     /// @return array{closed: bool, pid: int, handle: string,
     ///   publishes_total: int, confirmations_total: int, returns_total: int,
-    ///   backpressure_total: int, reconnects_total: int, deliveries_total: int,
+    ///   backpressure_total: int, publication_retries_total: int,
+    ///   reconnects_total: int, deliveries_total: int,
     ///   duplicates_total: int, acks_total: int, rejects_total: int,
     ///   dropped_publications_total: int, dropped_error_records_total: int,
     ///   publish_buffered: int, publish_buffered_bytes: int,
