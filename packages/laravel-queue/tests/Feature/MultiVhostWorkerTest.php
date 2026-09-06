@@ -47,6 +47,18 @@ describe('multi-subscription worker', function () {
         expect($compiled['native']['topology_mode'])->toBe('external');
     });
 
+    it('boots the native pool with an adaptive prefetch subscription', function () {
+        $adaptive = ['mode' => 'adaptive', 'initial' => 16, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5];
+        $config = multiVhostConfig();
+        $config['subscriptions']['orders_high']['prefetch'] = $adaptive;
+
+        $compiled = ConnectionCompiler::compile('main', $config);
+        $pool = new Pool($compiled['native']);
+
+        expect($pool->config)->toBe($compiled['native'])
+            ->and($pool->config['workers'][0]['subscriptions'][0]['prefetch'])->toBe($adaptive);
+    });
+
     it('unknown profile is rejected before calling the native pool', function () {
         [$queue, $pool] = multiVhostQueue($this->app);
 

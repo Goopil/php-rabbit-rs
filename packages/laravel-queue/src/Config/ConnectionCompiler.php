@@ -324,7 +324,7 @@ final class ConnectionCompiler
      *
      * @param array<string, mixed> $subscription
      * @param array<string, mixed> $config
-     * @return array{name: string, broker: string, queue: string, weight: int, priority_class: int, prefetch: int, starvation_after: int, early_ack: bool, no_ack: bool}
+     * @return array{name: string, broker: string, queue: string, weight: int, priority_class: int, prefetch: int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}, starvation_after: int, early_ack: bool, no_ack: bool}
      */
     private static function subscription(string $name, string $alias, array $subscription, array $config, bool $bestEffort, string $path): array
     {
@@ -353,15 +353,72 @@ final class ConnectionCompiler
             'queue' => self::string($subscription['queue'] ?? null, $path.self::PATH_QUEUE),
             'weight' => self::positiveInt($subscription['weight'] ?? 1, $path.'.weight', 65535),
             'priority_class' => self::boundedI16($subscription['priority_class'] ?? 0, $path.'.priority_class'),
-            'prefetch' => self::positiveInt(
+            'prefetch' => self::prefetch(
                 $subscription['prefetch'] ?? ($config['prefetch'] ?? 64),
                 $path.'.prefetch',
-                65535,
+                $earlyAck,
+                $noAck,
             ),
             'starvation_after' => self::positiveInt($subscription['starvation_after'] ?? 30, $path.'.starvation_after'),
             'early_ack' => $earlyAck,
             'no_ack' => $noAck,
         ];
+    }
+
+    /**
+     * A plain integer compiles to a fixed prefetch (unchanged wire form); the
+     * `fixed` array form does the same, and the `adaptive` form rides through
+     * to the native config — which learns the job duration and adjusts the
+     * broker prefetch between min and max. Adaptive requires consumer
+     * acknowledgements: it is meaningless with early_ack or no_ack, where the
+     * settlement latency the EWMA learns does not exist.
+     *
+     * @return int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}
+     */
+    private static function prefetch(mixed $prefetch, string $path, bool $earlyAck, bool $noAck): int|array
+    {
+        if (is_int($prefetch) || is_string($prefetch)) {
+            return self::positiveInt($prefetch, $path, 65535);
+        }
+        if (! is_array($prefetch)) {
+            self::invalid($path, 'must be an integer or an array with a mode');
+        }
+
+        $mode = $prefetch['mode'] ?? null;
+        if ($mode === 'fixed') {
+            return self::positiveInt($prefetch['value'] ?? null, $path.'.value', 65535);
+        }
+        if ($mode === 'adaptive') {
+            $min = self::positiveInt($prefetch['min'] ?? null, $path.'.min', 65535);
+            $max = self::positiveInt($prefetch['max'] ?? null, $path.'.max', 65535);
+            if ($max < $min) {
+                self::invalid($path.'.max', 'must be greater than or equal to min');
+            }
+            $initial = self::positiveInt($prefetch['initial'] ?? null, $path.'.initial', 65535);
+            if ($initial < $min || $initial > $max) {
+                self::invalid($path.'.initial', 'must be within [min, max]');
+            }
+            $targetBufferSeconds = self::positiveInt(
+                $prefetch['target_buffer_seconds'] ?? null,
+                $path.'.target_buffer_seconds',
+            );
+            if ($earlyAck || $noAck) {
+                self::invalid(
+                    $path.'.mode',
+                    'adaptive prefetch requires consumer acknowledgements: early_ack and no_ack must be false',
+                );
+            }
+
+            return [
+                'mode' => 'adaptive',
+                'initial' => $initial,
+                'min' => $min,
+                'max' => $max,
+                'target_buffer_seconds' => $targetBufferSeconds,
+            ];
+        }
+
+        self::invalid($path.'.mode', 'must be fixed or adaptive');
     }
 
     private static function boundedI16(mixed $value, string $path): int

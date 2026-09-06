@@ -25,6 +25,10 @@ return [
     // safe (confirms + mandatory) | unsafe (no confirms) | blind (fire-and-forget)
     'safety' => env('RABBIT_RS_SAFETY', 'safe'),
     'confirm_timeout' => env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),
+    // int | ['mode' => 'fixed', 'value' => N] | ['mode' => 'adaptive', 'initial' => N, 'min' => N, 'max' => N, 'target_buffer_seconds' => N]
+    // adaptive learns the job duration (EWMA of ack latency) and keeps about
+    // target_buffer_seconds of ready work buffered between min and max;
+    // requires acknowledgements (early_ack and no_ack must be false).
     'prefetch' => env('RABBIT_RS_PREFETCH', 64),
     'wait_timeout' => env('RABBIT_RS_CONSUMER_WAIT_TIMEOUT', 30000),
     // declare | verify | external
