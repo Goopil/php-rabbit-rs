@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.1.2] - 2026-09-06
+
+Packaging/CI release: no Rust or PHP code changes since 0.1.1 (binaries are
+functionally identical apart from the version string). It re-runs the release
+pipeline end to end after fixing the issues below.
+
+### Fixed
+
+- Release: the `verify-pie-install` container cells install from Packagist
+  metadata instead of a VCS repository sync, write Composer `auth.json`
+  explicitly (PIE 1.4.10 ignores `COMPOSER_AUTH_JSON`), install `unzip` in
+  Debian-based cells (busybox unzip already covers Alpine), and install
+  `libgcc` in musl cells (runtime dependency of the Rust-built artifact).
+- Release: the Packagist update trigger uses the renamed repository slug
+  `Goopil/php-rabbit-rs` (the old `Goopil/rabbit-rs` URL 404s on the
+  update-package API now that the package points at the new repository).
+- Release: the ext-rabbit_rs constraint policy check derives the expected
+  constraint as `^major.minor` instead of `^major.0` for 0.x releases.
+
 ## [0.1.1] - 2026-09-05
 
 ### Added
