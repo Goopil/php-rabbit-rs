@@ -52,6 +52,55 @@ class DoctorProbe
     }
 
     /**
+     * Checks queue existence with a passive probe (`Pool::size()`), returning
+     * the native error message when the queue is missing (AMQP NOT-FOUND) or
+     * the broker cannot be reached, and null when it exists.
+     *
+     * @param array<string, mixed> $nativeConfig
+     */
+    public function queueSize(array $nativeConfig, string $broker, string $queue): ?string
+    {
+        try {
+            $pool = new Pool($nativeConfig);
+            try {
+                $pool->size($broker, $queue);
+            } finally {
+                $pool->close();
+            }
+        } catch (\Throwable $e) {
+            return $e->getMessage();
+        }
+
+        return null;
+    }
+
+    /**
+     * Declares the worker profile's topology by opening and closing a
+     * transient consumer: the native connection brings up connection,
+     * channels, exchanges, queues, bindings and consumers in recovery order,
+     * which in declare mode creates anything missing. Returns the error
+     * message, or null when the declaration succeeded.
+     *
+     * @param array<string, mixed> $nativeConfig
+     */
+    public function declareTopology(array $nativeConfig, string $workerProfile): ?string
+    {
+        try {
+            $pool = new Pool($nativeConfig);
+            try {
+                $consumer = $pool->consumer($workerProfile);
+                $consumer->close();
+            } finally {
+                $pool->close();
+            }
+        } catch (\Throwable $e) {
+            return $e->getMessage();
+        }
+
+        return null;
+    }
+
+    /**
      * @param array<string, mixed> $nativeConfig
      */
     private static function brokerName(array $nativeConfig): string
