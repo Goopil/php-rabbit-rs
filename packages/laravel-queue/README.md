@@ -89,265 +89,232 @@ SendReport::dispatch($report)->delay(now()->addMinutes(5));
 
 ```bash
 # Run the worker
-php artisan rabbit-rs:work --queue=default
+php artisan rabbit-rs:work
 
-# Supervised — 4 child workers with automatic restart
-php artisan rabbit-rs:work --queue=default --workers=4 --max-restarts=3
+# Supervised — 4 child workers per connection with automatic restart
+php artisan rabbit-rs:work --workers=4 --max-restarts=3
 ```
 
 ## Configuration
 
-The full configuration lives in `config/rabbit-rs.php`. Every option is documented inline. Below is a structured reference.
+Rabbit RS is configured **connection-first**: every broker, its credentials, its routes, and its consumer profile live on a single **queue connection** in `config/queue.php`, exactly like Laravel's built-in `redis` and `sqs` drivers. One connection = one broker/vhost = one native pool.
 
-### Environment Variables
+| File | Role |
+| ---- | ---- |
+| `config/queue.php` → `queue.connections.*` | **The primary surface** — broker, credentials, publication, consumption, topology |
+| `config/rabbit-rs.php` | Cross-cutting **defaults** merged under every rabbit-rs connection |
 
-| Variable | Description | Default |
-| -------- | ----------- | ------- |
-| `RABBIT_RS_HOSTS` | Comma-separated broker addresses (`host:port,host:port`) | `127.0.0.1:5672` |
-| `RABBIT_RS_VHOST` | AMQP virtual host | `/` |
-| `RABBIT_RS_USERNAME` | Broker username | `guest` |
-| `RABBIT_RS_PASSWORD` | Broker password | `guest` |
-| `RABBIT_RS_QUEUE` | Default queue name | `default` |
-| `RABBIT_RS_EXCHANGE` | Default exchange for routing | `laravel.jobs` |
-| `RABBIT_RS_HEARTBEAT` | AMQP heartbeat in seconds | `30` |
-| `RABBIT_RS_PREFETCH` | QoS prefetch count per consumer | `64` |
-| `RABBIT_RS_CONFIRM_TIMEOUT` | Publisher confirm timeout in ms | `30000` |
-| `RABBIT_RS_TOPOLOGY_MODE` | `declare`, `verify`, or `external` | `declare` |
-| `RABBIT_RS_DELAY_MODE` | `auto`, `plugin`, or `ttl` | `auto` |
-| `RABBIT_RS_DELAY_BUCKETS` | Comma-separated delay buckets in seconds | `1,5,30,120` |
-| `RABBIT_RS_DELAY_MAX_BUCKETS` | Max TTL bucket queues allowed | `8` |
-| `RABBIT_RS_TLS` | Enable TLS | `false` |
-| `RABBIT_RS_TLS_CA_CERT` | Path to CA certificate | — |
-| `RABBIT_RS_TLS_CLIENT_CERT` | Path to client certificate (mTLS) | — |
-| `RABBIT_RS_TLS_CLIENT_KEY` | Path to client key (mTLS) | — |
-| `RABBIT_RS_TLS_SERVER_NAME` | Expected server name for SNI | — |
-| `RABBIT_RS_TLS_VERIFY` | `peer` or `none` | `peer` |
-| `RABBIT_RS_WORKER` | Worker mode: `default` or `horizon` | `default` |
+Each connection is compiled lazily, when the queue manager first resolves it. Unknown keys and type errors throw `InvalidArgumentException` with the exact config path — e.g. `queue.connections.orders.prefetch` — so a typo only fails the driver's use, never the whole application.
 
-### Brokers
+The full connection reference, subscription escape hatch, validation rules, and pool-reuse semantics live in [docs/configuration.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/configuration.md).
 
-Each broker is a named connection pool. A vhost owns a distinct AMQP connection — publisher channels are pooled, consumer channels are dedicated.
+### Queue connection
+
+Add one connection to `config/queue.php`:
 
 ```php
-'brokers' => [
-    // Primary cluster
-    'default' => [
-        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+'connections' => [
+    'rabbit-rs' => [
+        'driver' => 'rabbit-rs',
+        'queue' => env('RABBIT_RS_QUEUE', 'default'),
+
+        // Broker — one connection = one broker/vhost = one native pool
+        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'), // comma-separated, IPv6 bracketed: [::1]:5672
         'vhost' => env('RABBIT_RS_VHOST', '/'),
-        'credentials' => [
-            'username' => env('RABBIT_RS_USERNAME', 'guest'),
-            'password' => env('RABBIT_RS_PASSWORD', 'guest'),
+        'username' => env('RABBIT_RS_USERNAME', 'guest'),
+        'password' => env('RABBIT_RS_PASSWORD', 'guest'),
+        'heartbeat' => env('RABBIT_RS_HEARTBEAT', 30),
+        'tls' => [
+            'enabled' => (bool) env('RABBIT_RS_TLS', false),
+            'ca_cert' => env('RABBIT_RS_TLS_CA_CERT'),
+            'client_cert' => env('RABBIT_RS_TLS_CLIENT_CERT'),
+            'client_key' => env('RABBIT_RS_TLS_CLIENT_KEY'),
         ],
-        'heartbeat' => (int) env('RABBIT_RS_HEARTBEAT', 30),
-    ],
 
-    // Secondary broker for a different vhost or cluster
-    'analytics' => [
-        'hosts' => 'rabbitmq-analytics.internal:5672',
-        'vhost' => '/analytics',
-        'credentials' => [
-            'username' => env('RABBIT_RS_ANALYTICS_USER', 'analytics'),
-            'password' => env('RABBIT_RS_ANALYTICS_PASS', 'secret'),
-        ],
-        'heartbeat' => 60,
+        // Publication
+        'exchange' => env('RABBIT_RS_EXCHANGE', 'laravel.jobs'), // null = default exchange (direct-to-queue)
+        'routing_key' => '{queue}',                              // {queue} placeholder; null = no routing key
+        'safety' => env('RABBIT_RS_SAFETY', 'safe'),             // safe | unsafe | blind
+        'confirm_timeout' => env('RABBIT_RS_CONFIRM_TIMEOUT', 30000), // ms, >= 1000
+
+        // Consumption
+        'prefetch' => env('RABBIT_RS_PREFETCH', 64),             // per consumer channel = per worker process
+        'wait_timeout' => env('RABBIT_RS_CONSUMER_WAIT_TIMEOUT', 30000), // ms
+
+        // Topology (defaults inherited from config/rabbit-rs.php)
+        'topology_mode' => env('RABBIT_RS_TOPOLOGY_MODE', 'declare'), // declare | verify | external
+        'queue_type' => 'quorum',       // quorum | classic
+        'queue_durable' => true,
+        'delivery_limit' => null,       // null = no limit; requires dead_letter when set
+        'dead_letter' => null,
     ],
 ],
 ```
 
-**`hosts`** — Comma-separated list of `host:port` endpoints. The pool connects to the first available and fails over on recovery. IPv6 addresses must be bracketed: `[::1]:5672`.
+Every key except `driver` and `queue` is optional — anything the connection omits falls back to `config/rabbit-rs.php` (per sub-key for `tls`, `delay`, and `dead_letter`). The connection above is therefore equivalent to the minimal form shown in [Quick Start](#quick-start).
 
-**`vhost`** — Each unique vhost gets its own connection within the pool.
+### Environment variables
 
-**`heartbeat`** — If no data is exchanged for 2× this interval, the connection is considered dead and recovery kicks in. Keep below your TCP keepalive threshold.
+The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-only keys (`hosts`, `vhost`, `username`, `password`, `exchange`, `routing_key`, …) are wired directly in `queue.php`:
 
-### TLS
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `RABBIT_RS_QUEUE` | `default` | Default queue name (wired on the connection) |
+| `RABBIT_RS_HOSTS` | `127.0.0.1:5672` | Comma-separated broker addresses (wired on the connection) |
+| `RABBIT_RS_VHOST` | `/` | AMQP virtual host (wired on the connection) |
+| `RABBIT_RS_USERNAME` | `guest` | Broker username (wired on the connection) |
+| `RABBIT_RS_PASSWORD` | `guest` | Broker password (wired on the connection) |
+| `RABBIT_RS_EXCHANGE` | `laravel.jobs` | Publishing exchange (wired on the connection) |
+| `RABBIT_RS_HEARTBEAT` | `30` | AMQP heartbeat in seconds |
+| `RABBIT_RS_TLS` | `false` | Enable TLS |
+| `RABBIT_RS_TLS_CA_CERT` | — | Path to CA certificate |
+| `RABBIT_RS_TLS_CLIENT_CERT` | — | Path to client certificate (mTLS) |
+| `RABBIT_RS_TLS_CLIENT_KEY` | — | Path to client key (mTLS) |
+| `RABBIT_RS_SAFETY` | `safe` | `safe`, `unsafe`, or `blind` |
+| `RABBIT_RS_CONFIRM_TIMEOUT` | `30000` | Publisher confirm timeout in ms |
+| `RABBIT_RS_PREFETCH` | `64` | QoS prefetch per consumer channel |
+| `RABBIT_RS_CONSUMER_WAIT_TIMEOUT` | `30000` | Consumer acquisition deadline in ms |
+| `RABBIT_RS_TOPOLOGY_MODE` | `declare` | `declare`, `verify`, or `external` |
+| `RABBIT_RS_DELAY_MODE` | `auto` | `auto`, `plugin`, or `ttl` |
+| `RABBIT_RS_DELAY_BUCKETS` | `1,5,30,120` | Comma-separated delay buckets in seconds |
+| `RABBIT_RS_DELAY_MAX_BUCKETS` | `8` | Max TTL bucket queues allowed |
+| `RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN` | `60` | Extra `x-expires` margin for bucket queues, in seconds |
+| `RABBIT_RS_WORKER` | `default` | Worker mode: `default` or `horizon` |
+| `RABBIT_RS_AUTO_SUBSCRIBE` | `false` | Let `pop()` resolve plain queue names via implicit profiles |
+| `RABBIT_RS_PRODUCTION_WARNING` | `true` | Warn about unbounded redeliveries without `delivery_limit` + dead-letter |
+| `RABBIT_RS_BEST_EFFORT` | `false` | Gates `early_ack`/`no_ack` subscriptions on a connection |
+
+### Multiple brokers
+
+A vhost owns a distinct AMQP connection. To consume from or publish to several brokers or vhosts, define one connection per broker — the framework's own way of expressing multiple backends:
 
 ```php
-'tls' => [
-    'enabled' => (bool) env('RABBIT_RS_TLS', false),
-    'ca_cert' => env('RABBIT_RS_TLS_CA_CERT'),
-    'client_cert' => env('RABBIT_RS_TLS_CLIENT_CERT'),
-    'client_key' => env('RABBIT_RS_TLS_CLIENT_KEY'),
+'connections' => [
+    'orders-eu' => [
+        'driver' => 'rabbit-rs',
+        'queue' => 'orders',
+        'hosts' => ['rabbit-1:5672', 'rabbit-2:5672'],
+        'vhost' => '/orders-eu',
+        'username' => 'orders',
+        'password' => env('ORDERS_PASSWORD'),
+        'exchange' => 'laravel.jobs',
+    ],
+
+    'billing' => [
+        'driver' => 'rabbit-rs',
+        'queue' => 'invoices',
+        'hosts' => 'rabbit-3:5672',
+        'vhost' => '/billing',
+        'username' => 'billing',
+        'password' => env('BILLING_PASSWORD'),
+        'tls' => [
+            'enabled' => true,
+            'ca_cert' => '/etc/ssl/certs/rabbit-ca.pem',
+        ],
+        'exchange' => 'billing.jobs',
+    ],
 ],
 ```
-
-Set `enabled=true` for `amqps://`. The `ca_cert` enables server certificate verification. `client_cert` and `client_key` enable mutual TLS.
-
-### Routes
-
-Routes map Laravel queue names to AMQP exchanges and routing keys. When you dispatch a job to a queue, the driver looks up the route by name.
 
 ```php
-'routes' => [
-    'default' => [
-        'broker' => 'default',
-        'exchange' => env('RABBIT_RS_EXCHANGE', 'laravel.jobs'),
-        'routing_key' => '{queue}',
-    ],
-
-    // Route a queue to a different broker
-    'analytics' => [
-        'broker' => 'analytics',
-        'exchange' => 'analytics.events',
-        'routing_key' => 'events.{queue}',
-    ],
-],
+BillingJob::dispatch($invoice)->onConnection('billing');
+OrdersJob::dispatch($orderId)->onConnection('orders-eu');
 ```
 
-**`routing_key`** — The placeholder `{queue}` is replaced with the actual queue name at publish time. Use a fixed string for topic-based routing.
+```bash
+# Consume every queue of every rabbit-rs connection
+php artisan rabbit-rs:work
 
-### Workers
+# Consume only the listed connections
+php artisan rabbit-rs:work --connection=orders-eu,billing
+```
 
-Each worker profile defines a set of subscriptions consumed by a single `rabbit-rs:work` process. The native scheduler multiplexes subscriptions on a dedicated channel per consumer.
+**`hosts`** — Comma-separated list of `host:port` endpoints (or an array of such strings). Endpoints are sorted and the pool connects to the first reachable host, failing over on recovery. IPv6 addresses must be bracketed: `[::1]:5672`.
+
+### Subscriptions
+
+By default a connection consumes exactly one queue: its `queue` key. Set `subscriptions` to consume several queues on the same broker with per-subscription tuning. One composed consumer fans deliveries in through a single `pop()` call under weighted-fair scheduling:
 
 ```php
-'workers' => [
-    'default' => [
-        'scheduler' => [
-            'strategy' => 'weighted_fair',
+'orders-eu' => [
+    // ...
+    'subscriptions' => [
+        'critical' => [
+            'queue' => 'orders.critical',
+            'weight' => 8,
+            'priority_class' => 1,
+            'prefetch' => 8,
         ],
-        'subscriptions' => [
-            'default' => [
-                'enabled' => true,
-                'broker' => 'default',
-                'queue' => env('RABBIT_RS_QUEUE', 'default'),
-                'weight' => 1,
-                'priority_class' => 0,
-                'prefetch' => [
-                    'mode' => 'fixed',
-                    'value' => (int) env('RABBIT_RS_PREFETCH', 64),
-                ],
-                'starvation_after' => 30,
-            ],
-        ],
-    ],
-
-    // Worker with multiple subscriptions and priority
-    'multi' => [
-        'scheduler' => [
-            'strategy' => 'weighted_fair',
-        ],
-        'subscriptions' => [
-            'high-priority' => [
-                'enabled' => true,
-                'broker' => 'default',
-                'queue' => 'priority',
-                'weight' => 4,
-                'priority_class' => -1,
-                'prefetch' => ['mode' => 'fixed', 'value' => 32],
-                'starvation_after' => 15,
-            ],
-            'default' => [
-                'enabled' => true,
-                'broker' => 'default',
-                'queue' => 'default',
-                'weight' => 1,
-                'priority_class' => 0,
-                'prefetch' => ['mode' => 'fixed', 'value' => 16],
-                'starvation_after' => 30,
-            ],
-            // Disabled subscription — kept in config but skipped
-            'legacy' => [
-                'enabled' => false,
-                'broker' => 'default',
-                'queue' => 'legacy-jobs',
-                'weight' => 1,
-                'priority_class' => 0,
-                'prefetch' => ['mode' => 'fixed', 'value' => 8],
-                'starvation_after' => 30,
-            ],
+        'bulk' => [
+            'queue' => 'orders.bulk',
+            'weight' => 2,
+            'prefetch' => 32,
+            'starvation_after' => 60,
         ],
     ],
 ],
 ```
 
-**`strategy`** — Currently only `weighted_fair` is supported. The scheduler distributes consumer credit proportional to weight.
+**`weight`** (default `1`) — Delivery share vs other subscriptions (1–65535). Higher weight gets more consumer credit.
 
-**`weight`** — Relative weight in the weighted-fair scheduler. Higher weight gets more consumer credit.
+**`priority_class`** (default `0`) — Inter-queue priority (-32768 to 32767); lower numbers are served first. This is client-side scheduler state — nothing is sent to the broker.
 
-**`priority_class`** — Integer (-32768 to 32767). Lower numbers are higher priority on quorum queues. The scheduler groups subscriptions by class and serves the highest priority first.
+**`prefetch`** (default: the connection's `prefetch`) — QoS prefetch for this subscription's dedicated channel.
 
-**`prefetch.value`** — QoS prefetch count. The broker delivers at most this many unacked messages per consumer channel.
+**`starvation_after`** (default `30`) — Seconds before aging kicks in: the subscription's effective priority is raised to prevent starvation by higher-priority subscriptions.
 
-**`starvation_after`** — Seconds without a delivery before the scheduler boosts this subscription's weight to prevent starvation by heavier-weight subscriptions.
+Rules: at least one entry, unique queues across aliases, unknown fields rejected, and a subscription cannot cross brokers (its broker is always its own connection — use a second connection for that). `early_ack`/`no_ack` tuning exists behind the `best_effort` gate; see [docs/configuration.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/configuration.md).
 
-### Publisher
+### Safety modes
 
-Controls how publishes are confirmed by the broker.
+The `safety` setting selects the delivery guarantee level; publisher confirms and mandatory routing are **derived from it**, never set independently:
 
-```php
-'publisher' => [
-    'confirms' => true,
-    'mandatory' => true,
-    'confirm_timeout' => (int) env('RABBIT_RS_CONFIRM_TIMEOUT', 30000),
-],
-```
+| Mode | Behaviour |
+| ---- | --------- |
+| `safe` (default) | Confirms + mandatory routing. At-least-once: unconfirmed publications are retained in bounded process memory and replayed with their original `message_id` across connection recovery. |
+| `unsafe` | Confirms without mandatory routing — unroutable messages are silently dropped by the broker. |
+| `blind` | Explicit fire-and-forget through a bounded background pump. A transport failure after the hand-off is a silent loss; delayed jobs are **not** honored. |
 
-**`confirms`** — Every publish is tracked until the broker ACKs or returns it. Unconfirmed publishes survive connection recovery in bounded process memory and are replayed with the same `message_id` and original deadline.
-
-**`mandatory`** — The broker returns messages that cannot be routed (no queue matches the routing key). A return takes precedence over a following ACK.
-
-**`confirm_timeout`** — Milliseconds to wait for a confirm before treating the publish as failed. A timeout resolves the waiter once — it does not mean the message was lost, only that confirmation didn't arrive in time. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
+**`confirm_timeout`** — Milliseconds to wait for a confirm before treating the publish as failed. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
 
 ### Delayed Messages
 
-Controls how delayed jobs (`Job::dispatch()->delay(...)`) are handled.
-
-```php
-'delay' => [
-    'mode' => env('RABBIT_RS_DELAY_MODE', 'auto'),
-    'buckets' => array_map('intval', array_filter(array_map('trim', explode(',', env('RABBIT_RS_DELAY_BUCKETS', '1,5,30,120'))))),
-    'max_buckets' => (int) env('RABBIT_RS_DELAY_MAX_BUCKETS', 8),
-    'queue_expiry_margin' => (int) env('RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN', 60),
-    'detection_timeout' => (int) env('RABBIT_RS_DELAY_DETECTION_TIMEOUT', 5),
-],
-```
-
-**`mode`**
+Controls how delayed jobs (`Job::dispatch()->delay(...)`) are handled. Per-connection keys: `mode`, `buckets`, `max_buckets`, `queue_expiry_margin`.
 
 | Mode | Behaviour |
 | ---- | -------- |
-| `auto` | Detect the `rabbitmq_delayed_message_exchange` plugin. Use it if present, fall back to TTL bucketed queues if not. |
+| `auto` | Publish delayed messages through the `rabbitmq_delayed_message_exchange` plugin (same as `plugin`). Use `ttl` when the plugin is not installed. |
 | `plugin` | Always use the delayed exchange plugin. Fails if the plugin is not installed. |
-| `ttl` | Always use bucketed TTL queues. Creates one queue per bucket with a per-message TTL and dead-letter to the target queue. |
+| `ttl` | Always use bucketed TTL queues. Creates one queue per bucket with a per-message TTL and dead-lettering to the target queue. |
 
 **`buckets`** — Delay thresholds in seconds. Messages are placed in the bucket whose TTL is the smallest value ≥ the requested delay.
 
-**`queue_expiry_margin`** — Extra TTL (seconds) added to bucket queues so they survive brief broker restarts.
+**`queue_expiry_margin`** — Extra TTL (seconds) added to bucket queues (`x-expires`) so they survive brief broker restarts.
 
 ### Topology
 
-Defines the queue and dead-letter topology the driver declares when `topology_mode` is `declare`.
+Defines the queue and dead-letter topology the driver declares when `topology_mode` is `declare`. Flat keys on the connection:
 
 ```php
-'topology' => [
-    'queue' => [
-        'type' => 'quorum',       // quorum (default) or classic
-        'durable' => true,
-        'delivery_limit' => null, // null = no limit; requires dead_letter when set
-    ],
-    'dead_letter' => null,
-],
+'queue_type' => 'quorum',       // quorum (default) or classic
+'queue_durable' => true,
+'delivery_limit' => null,       // null = no limit; requires dead_letter when set
+'dead_letter' => null,
 ```
 
-**`queue.type`** — `quorum` (default) for replicated, Raft-based queues with delivery limits. Recommended for production. `classic` for single-node durable queues.
+**`queue_type`** — `quorum` (default) for replicated, Raft-based queues with delivery limits. Recommended for production. `classic` for single-node durable queues.
 
-**`queue.delivery_limit`** — Max redelivery count on quorum queues. After this many attempts, the message is dead-lettered. **`dead_letter` MUST be configured when `delivery_limit` is set** — without a DLX, poison messages are silently dropped after the limit is reached. Set to `null` to disable the delivery limit entirely.
+**`delivery_limit`** — Max redelivery count on quorum queues. After this many attempts, the message is dead-lettered. **`dead_letter` MUST be configured when `delivery_limit` is set** — without a DLX, poison messages are silently dropped after the limit is reached. Set to `null` to disable the delivery limit entirely.
 
 #### Dead-letter exchange
 
 ```php
-'topology' => [
-    'queue' => [
-        'type' => 'quorum',
-        'durable' => true,
-        'delivery_limit' => 20,
-    ],
-    'dead_letter' => [
-        'exchange' => 'dead-letters',
-        'queue' => 'failed-jobs',
-        'routing_key' => null,  // null = use original routing key
-    ],
+'queue_type' => 'quorum',
+'delivery_limit' => 20,
+'dead_letter' => [
+    'exchange' => 'dead-letters',
+    'queue' => 'failed-jobs',
+    'routing_key' => null,  // null = use original routing key
 ],
 ```
 
@@ -379,25 +346,28 @@ ProcessPayment::dispatch($invoice)->onQueue('high-priority');
 ### Running the worker
 
 ```bash
-# Single worker
-php artisan rabbit-rs:work --queue=default
+# Every rabbit-rs connection, every defined queue
+php artisan rabbit-rs:work
 
-# Supervised — 4 child workers with automatic restart
-php artisan rabbit-rs:work --queue=default --workers=4 --max-restarts=3
+# Restrict to connections and queues (comma-separated; queue names are
+# resolved by definition: the connection's `queue` key or a subscriptions alias)
+php artisan rabbit-rs:work --connection=orders-eu,billing
+php artisan rabbit-rs:work --queue=critical
 
-# Custom connection
-php artisan rabbit-rs:work --connection=rabbit-rs --queue=high-priority
+# 4 child workers per connection
+php artisan rabbit-rs:work --connection=orders-eu --workers=4
 ```
 
-The supervisor spawns child `queue:work` processes, passes the worker index via `RABBIT_RS_WORKER`, and restarts them on exit: a clean exit (0, e.g. `--max-jobs` recycling) restarts immediately without consuming the restart budget, while a non-zero exit is treated as a crash and restarted with exponential backoff up to `--max-restarts` times.
+The supervisor spawns one `queue:work` child **per targeted connection** — each child consumes that connection's whole queue set through the native weighted-fair scheduler — and restarts children on exit: a clean exit (0, e.g. `--max-jobs` recycling) restarts immediately without consuming the restart budget, while a non-zero exit is treated as a crash and restarted with exponential backoff (capped at 60 s) up to `--max-restarts` times.
 
 | Option | Description | Default |
 | ------ | ----------- | ------- |
-| `--connection` | Queue connection name | `rabbit-rs` |
-| `--queue` | Queue or worker profile name | `default` |
-| `--workers` | Number of child workers | `1` |
-| `--max-restarts` | Max restarts per worker | `3` |
+| `--connection` | Comma-separated queue connections | every rabbit-rs connection |
+| `--queue` | Comma-separated queue names, resolved by definition | every defined queue |
+| `--workers` | Child workers per connection | `1` |
+| `--max-restarts` | Max crash restarts per child worker | `3` |
 | `--backoff` | Base backoff in seconds | `1` |
+| `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | Propagated to each `queue:work` child | `60`, —, `128`, —, — |
 
 ### Status diagnostics
 
@@ -409,7 +379,9 @@ php artisan rabbit-rs:status
 php artisan rabbit-rs:status --format=json
 ```
 
-Displays pool state, connection generations, in-flight counters, and consumer counts per broker.
+Prints per-connection native pool metrics: handle state (PID, closed), cumulative publisher counters (publishes, confirmations, returns, backpressure, reconnects, duplicates), consumer counters (deliveries, acks, rejects), and confirmation/settlement latency percentiles. These metrics are same-process only.
+
+When a connection defines `management_url`, queue counters (`delivered`, `acked`, `redelivered`) are also fetched from the RabbitMQ management API for a cross-process view — `redelivered` is an approximate duplicate signal (it also counts crash requeues).
 
 ### Integration diagnostics
 
@@ -422,7 +394,7 @@ php artisan rabbit-rs:doctor --connection=rabbit-rs
 
 One-shot health report per rabbit-rs connection, resolved through the same config compilation the driver uses. Each check prints `ok`, `warn`, or `fail`; the command exits non-zero when any check fails (warnings are allowed), which makes it usable in CI.
 
-Checks: extension presence and version against the `ext-rabbit_rs` composer constraint, resolved worker class (with a loud warning when `worker` is inherited from the package defaults instead of the connection — the known `queue.connections.<name>.worker` trap), broker reachability (AMQP connect, auth, vhost; skipped with a warning when the extension is not loaded), publisher exchange/routing-key alignment and dead-letter wiring, effective safety settings after compilation, Horizon supervisors against the connection subscriptions, and which package events (`BackpressureDetected`, `ConnectionStateChanged`) have listeners.
+Checks: extension presence and version against the `ext-rabbit_rs` composer constraint, resolved worker class (with a loud warning when `worker` is inherited from the package defaults instead of the connection — the known `queue.connections.<name>.worker` trap), broker reachability (AMQP connect, auth, vhost; optional management API probe when `management_url` is set; skipped with a warning when the extension is not loaded), publisher exchange/routing-key alignment and dead-letter wiring, effective safety settings after compilation, Horizon supervisors against the connection subscriptions, and which package events (`BackpressureDetected`, `ConnectionStateChanged`) have listeners.
 
 ### Octane
 
