@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Support;
 
+use Illuminate\Support\Arr;
+use InvalidArgumentException;
+
 /**
  * Listing of the queue connections driven by Rabbit RS and of the queues
  * each of them defines. Shared by the work plan resolver, the status
@@ -31,6 +34,58 @@ final class RabbitRsConnections
         }
 
         return $rabbitRs;
+    }
+
+    /**
+     * Rabbit-rs connections targeted by an artisan --connection=* option
+     * (comma-separated values allowed), in config order; all of them when
+     * the option is absent.
+     *
+     * @param list<string> $names raw option values
+     * @return array<string, array<string, mixed>>
+     */
+    public static function targeted(array $names): array
+    {
+        $rabbitRs = self::all();
+
+        $wanted = [];
+        foreach ($names as $value) {
+            foreach (explode(',', (string) $value) as $item) {
+                $item = trim($item);
+                if ($item !== '') {
+                    $wanted[] = $item;
+                }
+            }
+        }
+
+        if ($wanted === []) {
+            return $rabbitRs;
+        }
+
+        $unknown = array_values(array_unique(array_diff($wanted, array_keys($rabbitRs))));
+        if ($unknown !== []) {
+            throw new InvalidArgumentException(sprintf(
+                'Unknown rabbit-rs connection(s): %s. Available rabbit-rs connections: %s',
+                implode(', ', $unknown),
+                implode(', ', array_keys($rabbitRs)),
+            ));
+        }
+
+        return array_intersect_key($rabbitRs, array_flip($wanted));
+    }
+
+    /**
+     * Package defaults as the service provider feeds them: the merged
+     * `rabbit-rs` config minus the keys reserved for brokers, routes, and
+     * workers (per sub-key for tls, delay and dead_letter).
+     *
+     * @return array<string, mixed>
+     */
+    public static function packageDefaults(): array
+    {
+        $config = config('rabbit-rs');
+
+        return Arr::except(is_array($config) ? $config : [], ['brokers', 'routes', 'workers']);
     }
 
     /**

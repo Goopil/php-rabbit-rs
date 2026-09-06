@@ -7,7 +7,6 @@ namespace Goopil\RabbitRs\Laravel\Console;
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Console\Command;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 
@@ -34,7 +33,7 @@ final class RabbitMqTopologyCommand extends Command
     public function handle(DoctorProbe $probe): int
     {
         try {
-            $connections = $this->targetedConnections();
+            $connections = RabbitRsConnections::targeted((array) $this->option('connection'));
         } catch (InvalidArgumentException $e) {
             $this->error($e->getMessage());
 
@@ -65,7 +64,7 @@ final class RabbitMqTopologyCommand extends Command
         $this->info($name);
 
         try {
-            $compiled = ConnectionCompiler::compile($name, $config, $this->packageDefaults());
+            $compiled = ConnectionCompiler::compile($name, $config, RabbitRsConnections::packageDefaults());
         } catch (InvalidArgumentException $e) {
             // The compiler's message is "<config path>: <problem>"; splitting
             // keeps the actionable path on its own console line.
@@ -278,52 +277,6 @@ final class RabbitMqTopologyCommand extends Command
         }
 
         return false;
-    }
-
-    /**
-     * Rabbit-rs connections targeted by --connection (comma-separated values
-     * allowed), in config order; all of them when the option is absent.
-     *
-     * @return array<string, array<string, mixed>>
-     */
-    private function targetedConnections(): array
-    {
-        $rabbitRs = RabbitRsConnections::all();
-
-        $names = [];
-        foreach ((array) $this->option('connection') as $value) {
-            foreach (explode(',', (string) $value) as $item) {
-                $item = trim($item);
-                if ($item !== '') {
-                    $names[] = $item;
-                }
-            }
-        }
-
-        if ($names === []) {
-            return $rabbitRs;
-        }
-
-        $unknown = array_values(array_unique(array_diff($names, array_keys($rabbitRs))));
-        if ($unknown !== []) {
-            throw new InvalidArgumentException(sprintf(
-                'Unknown rabbit-rs connection(s): %s. Available rabbit-rs connections: %s',
-                implode(', ', $unknown),
-                implode(', ', array_keys($rabbitRs)),
-            ));
-        }
-
-        return array_intersect_key($rabbitRs, array_flip($names));
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function packageDefaults(): array
-    {
-        $config = $this->laravel->make('config')->get('rabbit-rs');
-
-        return Arr::except(is_array($config) ? $config : [], ['brokers', 'routes', 'workers']);
     }
 
     /**
