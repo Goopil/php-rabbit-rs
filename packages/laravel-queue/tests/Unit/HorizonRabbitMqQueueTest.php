@@ -54,7 +54,10 @@ function horizonQueue(?Pool $pool = null): HorizonRabbitMqQueue
 }
 
 beforeEach(function (): void {
-    $this->events = $this->createMock(Dispatcher::class);
+    // A stub, not a mock: these tests record dispatched events with
+    // willReturnCallback() and never configure expectations, which PHPUnit 12
+    // reports as "PHPUnit Notices" for mocks without expectations.
+    $this->events = $this->createStub(Dispatcher::class);
     $this->app->instance(Dispatcher::class, $this->events);
 });
 
@@ -154,7 +157,7 @@ it('dispatches JobDeleted on deleteReserved', function (): void {
         }
     );
 
-    $job = $this->createMock(RabbitMqJob::class);
+    $job = $this->createStub(RabbitMqJob::class);
     $job->method('getRawBody')->willReturn(json_encode(['uuid' => 'test-uuid', 'job' => 'TestJob']));
 
     $queue->deleteReserved('orders', $job);
