@@ -354,6 +354,8 @@ When set, messages that exceed `delivery_limit` are routed here instead of being
 | `verify` | Check that the declared topology exists but never create. Fails fast if missing. |
 | `external` | Don't touch topology at all. The broker is expected to be fully configured externally. |
 
+See [Topology verification](#topology-verification) for the `rabbit-rs:topology` command that checks (and optionally declares) this topology against a live broker.
+
 ## Usage
 
 ### Dispatching jobs
@@ -421,6 +423,31 @@ php artisan rabbit-rs:doctor --connection=rabbit-rs
 One-shot health report per rabbit-rs connection, resolved through the same config compilation the driver uses. Each check prints `ok`, `warn`, or `fail`; the command exits non-zero when any check fails (warnings are allowed), which makes it usable in CI.
 
 Checks: extension presence and version against the `ext-rabbit_rs` composer constraint, resolved worker class (with a loud warning when `worker` is inherited from the package defaults instead of the connection — the known `queue.connections.<name>.worker` trap), broker reachability (AMQP connect, auth, vhost; optional management API probe when `management_url` is set; skipped with a warning when the extension is not loaded), publisher exchange/routing-key alignment and dead-letter wiring, effective safety settings after compilation, Horizon supervisors against the connection subscriptions, and which package events (`BackpressureDetected`, `ConnectionStateChanged`) have listeners.
+
+### Topology verification
+
+```bash
+# Verify only (read-only)
+php artisan rabbit-rs:topology
+
+# Single connection
+php artisan rabbit-rs:topology --connection=rabbit-rs
+
+# Declare missing queues/exchanges/bindings
+php artisan rabbit-rs:topology --fix
+
+# Declare anyway in verify/external mode
+php artisan rabbit-rs:topology --fix --force
+```
+
+Preflight topology check per rabbit-rs connection, usable in CI or in a deploy pipeline. The command compiles the config through the driver's own compiler, then verifies that what the config promises exists on the broker:
+
+- **Subscription queues** — passive native probe per queue; a missing queue is reported with its `queue.connections.<name>.queue` path.
+- **Exchanges, dead-letter bindings, queue arguments** (when `management_url` is set) — the configured dead-letter exchange must exist, a binding `dead_letter.exchange -> dead_letter.queue` must exist, and each subscription queue's `x-queue-type` must match the configured `queue_type`. Without `management_url`, a warning says these were not verified; an unreachable API is a warning, not a failure — only actual mismatches fail the command.
+
+Every missing item names the exact config path, and the command exits non-zero when anything is missing.
+
+`--fix` declares the missing topology by opening and closing a transient consumer on the worker profile — the native connection runs its full recovery order (connection, channels, exchanges, queues, bindings, consumers), which in `declare` mode creates anything absent. In `verify` or `external` mode `--fix` is refused without `--force`, since those modes promise externally managed topology.
 
 ### Octane
 

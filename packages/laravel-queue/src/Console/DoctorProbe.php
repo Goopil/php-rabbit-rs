@@ -37,10 +37,55 @@ class DoctorProbe
      */
     public function broker(array $nativeConfig): ?string
     {
+        return $this->probePool($nativeConfig, function (Pool $pool): void {
+            $pool->size(self::brokerName($nativeConfig), self::queueName($nativeConfig));
+        });
+    }
+
+    /**
+     * Checks queue existence with a passive probe (`Pool::size()`), returning
+     * the native error message when the queue is missing (AMQP NOT-FOUND) or
+     * the broker cannot be reached, and null when it exists.
+     *
+     * @param array<string, mixed> $nativeConfig
+     */
+    public function queueSize(array $nativeConfig, string $broker, string $queue): ?string
+    {
+        return $this->probePool($nativeConfig, function (Pool $pool) use ($broker, $queue): void {
+            $pool->size($broker, $queue);
+        });
+    }
+
+    /**
+     * Declares the worker profile's topology by opening and closing a
+     * transient consumer: the native connection brings up connection,
+     * channels, exchanges, queues, bindings and consumers in recovery order,
+     * which in declare mode creates anything missing. Returns the error
+     * message, or null when the declaration succeeded.
+     *
+     * @param array<string, mixed> $nativeConfig
+     */
+    public function declareTopology(array $nativeConfig, string $workerProfile): ?string
+    {
+        return $this->probePool($nativeConfig, function (Pool $pool) use ($workerProfile): void {
+            $consumer = $pool->consumer($workerProfile);
+            $consumer->close();
+        });
+    }
+
+    /**
+     * Runs one probe against a transient pool and reports the native error
+     * message, or null when the probe succeeded. The pool is always closed.
+     *
+     * @param array<string, mixed> $nativeConfig
+     * @param callable(Pool): void $probe
+     */
+    private function probePool(array $nativeConfig, callable $probe): ?string
+    {
         try {
             $pool = new Pool($nativeConfig);
             try {
-                $pool->size(self::brokerName($nativeConfig), self::queueName($nativeConfig));
+                $probe($pool);
             } finally {
                 $pool->close();
             }

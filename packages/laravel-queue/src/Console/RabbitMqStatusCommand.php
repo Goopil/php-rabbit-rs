@@ -8,7 +8,6 @@ use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Console\Command;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 
 final class RabbitMqStatusCommand extends Command
@@ -66,7 +65,7 @@ final class RabbitMqStatusCommand extends Command
         $stats = [];
         try {
             foreach ($connections as $name => $config) {
-                $compiled = ConnectionCompiler::compile($name, $config, $this->packageDefaults());
+                $compiled = ConnectionCompiler::compile($name, $config, RabbitRsConnections::packageDefaults());
                 $stats[$name] = $pools->make($compiled['native'])->stats();
             }
         } catch (\Throwable $e) {
@@ -156,16 +155,6 @@ final class RabbitMqStatusCommand extends Command
             'messages_acked' => self::counter($body, 'messages_acked'),
             'messages_redelivered' => self::counter($body, 'messages_redelivered'),
         ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function packageDefaults(): array
-    {
-        $config = $this->laravel->make('config')->get('rabbit-rs');
-
-        return Arr::except(is_array($config) ? $config : [], ['brokers', 'routes', 'workers']);
     }
 
     /**
