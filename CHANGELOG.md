@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.1.4] - 2026-09-06
+
+Bugfix release: `rabbit-rs:status` cross-process queue counters.
+
+### Fixed
+
+- Laravel: the management-API section of `rabbit-rs:status` always reported
+  zeros — the command read top-level `messages_delivered`/`messages_acked`/
+  `messages_redelivered` keys, while the management API nests cumulative
+  counters under `message_stats` and names them `deliver_get`/`ack`/
+  `redeliver`. The command now reads the nested object and additionally
+  exposes the current queue depth as `messages_ready`.
+
 ## [0.1.3] - 2026-09-06
 
 Feature release: the extension binaries are rebuilt with the hardened TLS
