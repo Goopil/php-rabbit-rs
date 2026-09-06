@@ -9,6 +9,17 @@ PROJECT_ROOT="$(ext_project_root)"
 
 command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is required" >&2; exit 1; }
 
+WITH_TLS=false
+for arg in "$@"; do
+    case "${arg}" in
+        --with-tls) WITH_TLS=true ;;
+        *)
+            echo "Usage: $0 [--with-tls]" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # Stop the lab on success and on any failure, mirroring test-fpm.sh.
 LAB_STARTED=false
 cleanup() {
@@ -30,7 +41,11 @@ fi
 
 echo "=== Starting RabbitMQ lab ==="
 LAB_STARTED=true
-./scripts/lab-up.sh with-plugin
+if [[ "${WITH_TLS}" == true ]]; then
+    ./scripts/lab-up.sh with-tls
+else
+    ./scripts/lab-up.sh with-plugin
+fi
 
 echo "=== Waiting for lab readiness ==="
 for i in $(seq 1 120); do
@@ -50,6 +65,12 @@ echo "Lab is ready."
 echo ""
 echo "=== Running Rust integration tests ==="
 cargo test -p rabbit-rs-core --features integration --test integration -- --test-threads=1
+
+if [[ "${WITH_TLS}" == true ]]; then
+    echo ""
+    echo "=== Running Rust TLS integration tests ==="
+    cargo test -p rabbit-rs-core --features integration --test tls_integration -- --test-threads=1
+fi
 
 echo ""
 echo "=== Building ext-rabbit_rs ==="

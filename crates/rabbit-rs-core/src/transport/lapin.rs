@@ -312,6 +312,38 @@ impl DeliveryStream for LapinDeliveryStream {
 
 fn build_tls_config(config: &BrokerConfig) -> TransportResult<OwnedTLSConfig> {
     let tls = &config.tls;
+    if !tls.is_enabled() {
+        return Ok(OwnedTLSConfig::default());
+    }
+
+    // The transport is the last line of defense for the TLS contract: callers
+    // may bypass `Config::validate` and hand a raw [`BrokerConfig`] to
+    // [`LapinTransport::connect`], so the policy is enforced again here.
+    match tls.verify() {
+        crate::config::TlsVerify::Peer => {}
+        crate::config::TlsVerify::None => {
+            return Err(TransportError::config(format!(
+                "brokers.{}.tls.verify: 'none' requires a custom TLS connector, which the AMQP \
+                 transport (lapin 4.10) does not support; use 'peer' or disable tls.enabled",
+                config.name
+            )));
+        }
+    }
+    if let Some(server_name) = tls.server_name() {
+        let first_host = config
+            .hosts()
+            .first()
+            .map_or(String::new(), |endpoint| endpoint.host().to_owned());
+        if server_name != first_host {
+            return Err(TransportError::config(format!(
+                "brokers.{}.tls.server_name: '{server_name}' overrides the TLS server name, \
+                 which the AMQP transport (lapin 4.10) cannot do: SNI is always the connection \
+                 host; supported value: '{first_host}'",
+                config.name
+            )));
+        }
+    }
+
     let identity = build_tls_identity(tls)?;
     let cert_chain = match tls.ca_cert() {
         Some(path) => Some(std::fs::read_to_string(path).map_err(|error| {
@@ -691,13 +723,131 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use lapin::tcp::OwnedTLSConfig;
     use lapin::types::{AMQPValue, FieldTable};
 
     use super::{
-        connection_uri, map_header_value, map_headers, publish_header_value, publish_properties,
+        build_tls_config, connection_uri, map_header_value, map_headers, publish_header_value,
+        publish_properties,
     };
-    use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
+    use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig, TlsVerify};
     use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
+
+    fn broker_with_tls(host: &str, tls: TlsConfig) -> BrokerConfig {
+        BrokerConfig {
+            name: "primary".to_owned(),
+            hosts: vec![Endpoint::new(host, 5671)],
+            vhost: "/".to_owned(),
+            credentials: Credentials::new("guest", "guest"),
+            tls,
+            heartbeat: Duration::from_secs(30),
+        }
+    }
+
+    fn tls_from_json(value: serde_json::Value) -> TlsConfig {
+        serde_json::from_value(value).expect("valid TLS config")
+    }
+
+    #[test]
+    fn tls_verify_none_is_rejected_by_the_transport() {
+        let config = broker_with_tls(
+            "rabbit.example.com",
+            tls_from_json(serde_json::json!({"enabled": true, "verify": "none"})),
+        );
+
+        let error = build_tls_config(&config).expect_err("verify none must be rejected");
+
+        assert_eq!(
+            error.kind(),
+            crate::transport::TransportErrorKind::Configuration
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "brokers.{}.tls.verify: 'none' requires a custom TLS connector, which the AMQP \
+                 transport (lapin 4.10) does not support; use 'peer' or disable tls.enabled",
+                config.name
+            )
+        );
+    }
+
+    #[test]
+    fn tls_server_name_mismatch_is_rejected_by_the_transport() {
+        let config = broker_with_tls(
+            "rabbit.example.com",
+            tls_from_json(serde_json::json!({
+                "enabled": true,
+                "server_name": "other.example.com"
+            })),
+        );
+
+        let error = build_tls_config(&config).expect_err("SNI mismatch must be rejected");
+
+        assert_eq!(
+            error.kind(),
+            crate::transport::TransportErrorKind::Configuration
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("brokers.primary.tls.server_name"),
+            "error must identify the exact input path: {error}"
+        );
+    }
+
+    #[test]
+    fn tls_server_name_matching_host_is_accepted() {
+        let config = broker_with_tls(
+            "rabbit.example.com",
+            tls_from_json(serde_json::json!({
+                "enabled": true,
+                "server_name": "rabbit.example.com"
+            })),
+        );
+
+        build_tls_config(&config).expect("matching server name must be accepted");
+    }
+
+    #[test]
+    fn tls_ca_cert_is_read_into_the_tls_config() {
+        let ca_path = std::env::temp_dir().join(format!(
+            "rabbit-rs-tls-ca-{}-{}.pem",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
+        std::fs::write(
+            &ca_path,
+            "-----BEGIN CERTIFICATE-----\nlab\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write CA fixture");
+        let config = broker_with_tls(
+            "rabbit.example.com",
+            tls_from_json(serde_json::json!({
+                "enabled": true,
+                "ca_cert": ca_path.to_string_lossy()
+            })),
+        );
+
+        let tls_config = build_tls_config(&config).expect("valid TLS config");
+
+        assert_eq!(
+            tls_config.cert_chain.as_deref(),
+            Some("-----BEGIN CERTIFICATE-----\nlab\n-----END CERTIFICATE-----\n")
+        );
+        assert!(tls_config.identity.is_none());
+
+        std::fs::remove_file(&ca_path).expect("remove CA fixture");
+    }
+
+    #[test]
+    fn tls_disabled_yields_default_tls_config() {
+        let config = broker_with_tls("rabbit.example.com", TlsConfig::disabled());
+
+        let tls_config = build_tls_config(&config).expect("valid TLS config");
+
+        assert_eq!(tls_config, OwnedTLSConfig::default());
+        assert_eq!(config.tls.verify(), TlsVerify::Peer);
+    }
 
     #[test]
     fn uri_percent_encodes_credentials_and_vhost_as_segments() {

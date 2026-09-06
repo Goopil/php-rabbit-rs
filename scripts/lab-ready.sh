@@ -114,6 +114,25 @@ TOXI_UPSTREAM=$(echo "${TOXI_RESP}" | jq -r '.upstream // empty')
     || fail "port ${TOXIPROXY_PORT} is answered by a foreign Toxiproxy (rabbitmq-1 upstream: ${TOXI_UPSTREAM:-none})"
 ok "Toxiproxy API responding (lab fingerprint rabbitmq-1 -> rabbitmq-1:5672)"
 
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^rabbitrs-rabbitmq-tls-1$'; then
+    echo "Checking AMQPS listener (TLS profile)..."
+    command -v openssl >/dev/null 2>&1 || fail "openssl is required to verify the amqps listener"
+    TLS_VERIFY=""
+    TLS_READY=false
+    for i in $(seq 1 30); do
+        TLS_VERIFY=$(echo | openssl s_client -connect localhost:5671 -servername rabbit.internal \
+            -CAfile "${LAB_DIR}/tls/generated/lab-ca.pem" 2>/dev/null | grep "Verify return code" || true)
+        if [[ "${TLS_VERIFY}" == *"Verify return code: 0 (ok)"* ]]; then
+            TLS_READY=true
+            break
+        fi
+        sleep 1
+    done
+    [[ "${TLS_READY}" == true ]] \
+        || fail "amqps listener on localhost:5671 failed TLS verification against the lab CA (${TLS_VERIFY:-no handshake})"
+    ok "amqps listener verified against the lab CA (SNI rabbit.internal)"
+fi
+
 echo "Checking delayed message exchange plugin..."
 CONTAINER_NAME="rabbitrs-rabbitmq-1-1"
 if ! docker exec "${CONTAINER_NAME}" rabbitmq-diagnostics -q ping >/dev/null 2>&1; then

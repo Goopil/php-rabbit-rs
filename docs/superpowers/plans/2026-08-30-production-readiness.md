@@ -1067,11 +1067,12 @@ git commit -m "fix(core): enforce byte budget on blind publish pump"
 
 **Context:** `TlsVerify::None` and `effective_server_name()` (`config.rs:194`) are validated and hashed into the fingerprint but never read by the transport (`lapin.rs:351-372`). Changing `verify`/`server_name` changes the fingerprint → new pool → unchanged behavior. No real TLS test exists.
 
-**API decision:** Lapin 4.10 with rustls only consumes `OwnedTLSConfig { identity, cert_chain }`; SNI and verification disabling require a custom TLS connector (`lapin::tcp::TLSBackend` / `ConnectionProperties::with_ssl` or injected rustls connector). Verify the exact lapin 4.10 API in `~/.cargo/registry/src/*/lapin-4.10*/src/tcp/` before implementing; if lapin does not allow injecting a custom `rustls::ClientConfig`, implement:
-1. `verify = Peer` (default): default rustls behavior (hostname verification = `effective_server_name()`). **Explicitly document in the stub and `config.rs` that verification uses the first host's name when `server_name` is absent.**
-2. `verify = None`: not supported in V1 → explicit `ConfigError` "tls.verify: 'none' requires a custom TLS connector, not yet supported" (instead of being silently ignored). Remove from the exposed Laravel surface if unwired.
+**API decision (verified against lapin 4.10 / amq-protocol-tcp 10.6.2 / tcp-stream 0.34.14 / rustls-connector 0.23.6):** Lapin's entire TLS surface is `OwnedTLSConfig { identity, cert_chain }` — CA roots and a client identity only. `AMQPUriTcpExt::connect_with_config` hardcodes the TLS server name (SNI and verification name) to the AMQP URI host, `RustlsConnectorConfig` always builds a full verifier (platform verifier or `RootCertStore`), and `Connection` has no stream-injection constructor. A custom `rustls::ClientConfig` therefore cannot be injected, so both SNI override and verification bypass are impossible through the public API. Implemented:
+1. `verify = Peer` (default): default rustls behavior (hostname verification = connection host = the first sorted endpoint when `server_name` is absent). **Documented in the `TlsConfig`/`TlsVerify` docblocks that verification uses the first host's name.**
+2. `verify = None`: not supported in V1 → explicit `ConfigError` at validation and a matching typed `TransportError` in the transport ("requires a custom TLS connector, not yet supported") instead of being silently ignored.
+3. `server_name`: accepted only as an explicit assertion equal to the first (sorted) host — lapin cannot send a different SNI, so any other value is rejected with a typed `ConfigError` identifying the exact input path. A real SNI override is a documented gap that needs either an upstream lapin API or a custom connector.
 
-- [ ] **Step 1: Write the failing integration tests**
+- [x] **Step 1: Write the failing integration tests**
 
 `crates/rabbit-rs-core/tests/tls_integration.rs` (marked `#[cfg(feature = "integration")]`, lab required):
 
@@ -1097,19 +1098,19 @@ async fn server_name_overrides_sni() {
 }
 ```
 
-- [ ] **Step 2: Add the TLS profile to the lab**
+- [x] **Step 2: Add the TLS profile to the lab**
 
 - `lab/rabbitmq/compose.yaml`: `with-tls` profile — ports `5675-5677` in amqps, certificate volumes.
 - Generate the certificates (self-signed CA + server cert SAN `rabbit.internal`, `127.0.0.1`) via a `lab/rabbitmq/tls/generate.sh` script (openssl, pinned by image digest or local openssl), keep generated PEMs `.gitignore`d out of the repo (generated at `lab-up`).
 - `scripts/lab-ready.sh`: verify amqps listening.
 - `scripts/test-integration.sh`: include the TLS profile when `--with-tls`.
 
-- [ ] **Step 3: Implement and verify**
+- [x] **Step 3: Implement and verify**
 
 Implement SNI/verify per the API decision above (and the explicit `ConfigError` for unsupported `verify: none`). Run: `rtk cargo test -p rabbit-rs-core --features integration --test tls_integration && ./scripts/test-integration.sh --with-tls`
 Expected: PASS.
 
-- [ ] **Step 4: Full gate and commit**
+- [x] **Step 4: Full gate and commit**
 
 Run: `rtk ./scripts/check.sh`
 Expected: PASS.
@@ -1545,7 +1546,7 @@ git commit -m "build: drop unproven ZTS from the V1 release matrix (revisit in V
 
 - [ ] All P0 tasks delivered and verified in CI.
 - [ ] All P1 tasks delivered; the `pie install` chain validated on a real release (Task 13).
-- [ ] Task 12 (TLS) validated on the 3-node lab with handshake, untrusted CA, and SNI.
+- [x] Task 12 (TLS) validated on the 3-node lab with handshake, untrusted CA, and SNI.
 - [ ] `./scripts/check.sh` green + Pint/PHPStan 0 errors + non-regressed coverage (Codecov).
 - [x] ZTS: decision settled and applied (Task 20 — Option A by default).
 - [ ] 1.0 CHANGELOG written, version constraints aligned, docs consistent.
