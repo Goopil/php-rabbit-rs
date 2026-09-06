@@ -555,7 +555,7 @@ jobs:
         if: needs.create-release.outputs.has_packagist == 'true'
         env:
           PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
-        run: ./scripts/trigger-packagist-update.sh --repository https://github.com/Goopil/rabbit-rs
+        run: ./scripts/trigger-packagist-update.sh --repository https://github.com/Goopil/php-rabbit-rs
 
   update-homebrew-formula:
     needs: [create-release, publish-release, verify-pie-install, verify-pie-upgrade-rollback]
