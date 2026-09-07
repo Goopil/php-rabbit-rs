@@ -2,9 +2,15 @@
 
 Reference documentation for the native extension: installation and distribution, the reliability contract, and troubleshooting.
 
+**Contents**
+
+- [Installation](#installation) — prerequisites, PIE, Homebrew, Docker, multi-PHP, upgrades
+- [Reliability](#reliability) — the at-least-once contract, safety modes, recovery, duplicates, metrics
+- [Troubleshooting](#troubleshooting) — common errors and diagnosis
+
 ## Installation
 
-This guide covers installing the Rabbit RS native extension and the Laravel queue driver.
+Installing the Rabbit RS native extension and the Laravel queue driver.
 
 ### Prerequisites
 

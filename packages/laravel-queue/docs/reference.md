@@ -2,6 +2,15 @@
 
 Reference documentation for the Laravel queue driver: configuration, usage, topology, operations, Octane, and recipes. The everyday path is the [getting started](getting-started.md).
 
+**Contents**
+
+- [Usage](#usage) — dispatch API, events, job class, Horizon
+- [Configuration](#configuration) — every connection key, validation
+- [Topology](#topology) — declare/verify/external, dead-letter wiring
+- [Operations](#operations) — diagnostics, supervisors, Kubernetes, metrics
+- [Octane Integration](#octane-integration) — lifecycle hooks and pitfalls
+- [Recipes](#recipes) — topology patterns, broker tuning, capacity planning
+
 ## Usage
 
 The everyday path is the [getting started](getting-started.md); this page is the reference for the driver's API and runtime behaviour: dispatching, consuming, events, the job class, and Horizon.
@@ -1027,7 +1036,7 @@ See [Reliability — Recovery](https://github.com/Goopil/php-rabbit-rs/blob/main
 
 ## Operations
 
-This guide covers operating Rabbit RS in production: diagnostics, supervisor configuration, Kubernetes deployment, and monitoring.
+Operating Rabbit RS in production: diagnostics, supervisor configuration, Kubernetes deployment, and monitoring.
 
 ### Diagnostics
 
@@ -1324,7 +1333,7 @@ See [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/referen
 
 ## Octane Integration
 
-Rabbit RS integrates with [Laravel Octane](https://laravel.com/docs/octane) to support long-lived worker processes. This guide covers the lifecycle hooks, configuration, and pitfalls.
+Rabbit RS integrates with [Laravel Octane](https://laravel.com/docs/octane) to support long-lived worker processes. This chapter covers the lifecycle hooks, configuration, and pitfalls.
 
 ### How Octane lifecycle hooks work
 

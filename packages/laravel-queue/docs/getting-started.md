@@ -62,7 +62,7 @@ The queue is declared on first use (`topology_mode: declare`). `rabbit-rs:work` 
 
 Delivery is **at-least-once**: silent loss is unacceptable, duplicates are permitted and measurable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability).
 
-The `safety` key selects the publisher guarantees (default `safe`: confirms + mandatory routing, derived — never set independently). In `safe` mode every publish is tracked to ACK, return, or timeout; unconfirmed publications survive connection recovery in bounded process memory and are replayed with their original `message_id`. That replay buffer is **process memory, not durability**: it does not survive a PHP crash, and cross-process durability needs an external outbox.
+The `safety` key selects the publisher guarantees (default `safe`: publisher confirms plus mandatory routing — there is no separate `mandatory` switch, it follows the safety mode). In `safe` mode every publish is tracked to ACK, return, or timeout; unconfirmed publications survive connection recovery in bounded process memory and are replayed with their original `message_id`. That replay buffer is **process memory, not durability**: it does not survive a PHP crash, and cross-process durability needs an external outbox.
 
 The one production must-do: bound redeliveries with a delivery limit and a dead-letter exchange, so poison messages are routed instead of looped forever:
 
