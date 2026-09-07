@@ -835,6 +835,12 @@ pub struct ValidatedConfig {
     fingerprint: ConfigFingerprint,
 }
 
+/// Prefix marking a worker profile name synthesized on first use (the
+/// Laravel `auto_subscribe` contract). Synthesized profiles carry exactly
+/// one subscription named `auto`, mirroring the defaults the Laravel
+/// compiler emits for a fixed-prefetch connection.
+pub const AUTO_PROFILE_PREFIX: &str = "__auto__.";
+
 impl ValidatedConfig {
     #[must_use]
     pub fn broker(&self, name: &str) -> Option<&BrokerConfig> {
@@ -844,6 +850,62 @@ impl ValidatedConfig {
     #[must_use]
     pub fn worker(&self, name: &str) -> Option<&WorkerProfile> {
         self.workers.iter().find(|worker| worker.name == name)
+    }
+
+    /// Synthesizes the default worker profile for an `__auto__.name` profile.
+    ///
+    /// The auto path resolves queues that no configured profile covers: the
+    /// synthesized profile subscribes to the queue named after the prefix on
+    /// the single configured broker, with the same defaults the Laravel
+    /// compiler emits (weight 1, priority class 0, fixed prefetch 64,
+    /// 30 s starvation, acknowledgements on). The profile is validated with
+    /// the same rules as configured profiles, so every bound applies.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ConfigError`] when the name lacks the `__auto__.` prefix,
+    /// carries an empty queue part, more than one broker is configured, or the
+    /// synthesized profile fails validation.
+    pub fn synthesize_auto_profile(&self, profile: &str) -> Result<WorkerProfile, ConfigError> {
+        const SUBSCRIPTION_NAME: &str = "auto";
+        let Some(queue) = profile.strip_prefix(AUTO_PROFILE_PREFIX) else {
+            return Err(ConfigError::new(
+                format!("workers.{profile}"),
+                "unknown worker profile",
+            ));
+        };
+        if queue.is_empty() {
+            return Err(ConfigError::new(
+                format!("workers.{profile}"),
+                "automatic profile names must carry a queue after __auto__.",
+            ));
+        }
+        if self.brokers.len() != 1 {
+            return Err(ConfigError::new(
+                format!("workers.{profile}.subscriptions.{SUBSCRIPTION_NAME}.broker"),
+                "automatic profiles require a single configured broker; \
+                 declare this profile under workers.*",
+            ));
+        }
+        let worker = WorkerProfile {
+            name: profile.to_owned(),
+            subscriptions: vec![SubscriptionConfig {
+                name: SUBSCRIPTION_NAME.to_owned(),
+                broker: self.brokers[0].name.clone(),
+                queue: queue.to_owned(),
+                weight: 1,
+                priority_class: 0,
+                prefetch: PrefetchConfig::Fixed(64),
+                starvation_after: Duration::from_secs(30),
+                max_buffered_bytes: default_max_buffered_bytes(),
+                early_ack: false,
+                no_ack: false,
+            }],
+            scheduler: SchedulerConfig::weighted_fair(),
+        };
+        let broker_names: HashSet<&str> = self.brokers.iter().map(|b| b.name.as_str()).collect();
+        Config::validate_worker(&worker, &broker_names)?;
+        Ok(worker)
     }
 
     /// Returns all worker profiles in canonical order.
@@ -1165,7 +1227,8 @@ mod tests {
     use super::{
         BrokerConfig, Config, ConfigFingerprint, ConsumerConfigSection, Credentials, DelayConfig,
         Endpoint, PrefetchConfig, PublisherConfigSection, SafetyMode, SchedulerConfig,
-        SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, WorkerProfile,
+        SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, ValidatedConfig,
+        WorkerProfile,
     };
     use crate::transport::QueueKind;
     use crate::transport::lapin::connection_uri;
@@ -2421,5 +2484,103 @@ mod tests {
         let publisher = validated.publisher();
         assert_eq!(publisher.safety, SafetyMode::Blind);
         assert_eq!(publisher.effective_safety(), SafetyMode::Blind);
+    }
+
+    fn broker_config(name: &str) -> BrokerConfig {
+        BrokerConfig {
+            name: name.to_owned(),
+            hosts: vec![Endpoint::new("rabbit.local", 5672)],
+            vhost: "/".to_owned(),
+            credentials: Credentials::new("guest", "super-secret"),
+            tls: TlsConfig::disabled(),
+            heartbeat: Duration::from_secs(30),
+        }
+    }
+
+    fn single_broker_config() -> ValidatedConfig {
+        Config {
+            brokers: vec![broker_config("main")],
+            workers: vec![],
+            topology_mode: TopologyMode::Declare,
+            delay: DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid config")
+    }
+
+    #[test]
+    fn synthesizes_default_profile_for_auto_name() {
+        let config = single_broker_config();
+
+        let worker = config
+            .synthesize_auto_profile("__auto__.emails")
+            .expect("synthesis succeeds");
+
+        assert_eq!(worker.name, "__auto__.emails");
+        assert_eq!(worker.scheduler, SchedulerConfig::weighted_fair());
+        let [subscription] = worker.subscriptions.as_slice() else {
+            panic!("expected exactly one subscription");
+        };
+        assert_eq!(subscription.name, "auto");
+        assert_eq!(subscription.queue, "emails");
+        assert_eq!(subscription.broker, "main");
+        assert_eq!(subscription.weight, 1);
+        assert_eq!(subscription.priority_class, 0);
+        assert_eq!(subscription.prefetch, PrefetchConfig::Fixed(64));
+        assert_eq!(subscription.starvation_after, Duration::from_secs(30));
+        assert!(!subscription.early_ack);
+        assert!(!subscription.no_ack);
+    }
+
+    #[test]
+    fn synthesizes_only_for_auto_prefix() {
+        let config = single_broker_config();
+
+        let error = config
+            .synthesize_auto_profile("orders")
+            .expect_err("plain names are not synthesizable");
+
+        assert_eq!(error.to_string(), "workers.orders: unknown worker profile");
+    }
+
+    #[test]
+    fn synthesizes_rejects_empty_queue_part() {
+        let config = single_broker_config();
+
+        let error = config
+            .synthesize_auto_profile("__auto__.")
+            .expect_err("empty queue part must be rejected");
+
+        assert!(error.to_string().contains("must carry a queue"));
+    }
+
+    #[test]
+    fn synthesizes_rejects_multi_broker() {
+        let config = Config {
+            brokers: vec![broker_config("one"), broker_config("two")],
+            workers: vec![],
+            topology_mode: TopologyMode::Declare,
+            delay: DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid config");
+
+        let error = config
+            .synthesize_auto_profile("__auto__.emails")
+            .expect_err("multi-broker synthesis must fail");
+
+        assert!(error.to_string().contains("single configured broker"));
     }
 }
