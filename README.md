@@ -84,6 +84,8 @@ php artisan queue:work rabbit-rs
 php artisan rabbit-rs:work
 ```
 
+Unknown queues are consumed automatically (`auto_subscribe`), no `workers.*` entry required.
+
 ## Requirements
 
 - **PHP** 8.4 or 8.5

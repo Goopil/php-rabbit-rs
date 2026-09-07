@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Added
+
+- Core synthesizes default worker profiles for `__auto__.{queue}` names at
+  first pop; the auto-subscribe path no longer depends on config mutation and
+  works after pool creation.
+
 ## [0.1.4] - 2026-09-06
 
 Bugfix release: `rabbit-rs:status` cross-process queue counters.
