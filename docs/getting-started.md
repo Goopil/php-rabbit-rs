@@ -81,7 +81,7 @@ Because `topology_mode` is `declare`, the queue is created on first use. Use `ve
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: silent loss is unacceptable, duplicates are permitted and measurable. Your processing must be idempotent — the `message_id` you publish is the stable deduplication key. The full contract: [Reliability](reference.md#reliability).
+Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and measurable. Your processing must be idempotent — the `message_id` you publish is the stable deduplication key. The full contract: [Reliability](reference.md#reliability).
 
 **Safety modes** — one key controls the publisher guarantees (`publisher.safety`):
 
