@@ -6,13 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
-## [Unreleased]
+## [0.1.5] - 2026-09-07
+
+Feature release: synthesized auto worker profiles for `auto_subscribe`, plus a documentation restructure.
 
 ### Added
 
 - Core synthesizes default worker profiles for `__auto__.{queue}` names at
   first pop; the auto-subscribe path no longer depends on config mutation and
   works after pool creation.
+
+### Changed
+
+- Documentation restructured into getting-started tracks (native extension
+  and Laravel driver, same four-level progression) followed by one
+  `reference.md` per track; the Laravel driver reference now lives under
+  `packages/laravel-queue/docs/` and travels with the split package mirror.
+  The README hero leads with the benefit, and the at-least-once contract is
+  scoped to the confirmed delivery path.
 
 ## [0.1.4] - 2026-09-06
 
@@ -314,7 +325,8 @@ pipeline end to end after fixing the issues below.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/Goopil/rabbit-rs/compare/v0.1.4...v0.1.5
 [0.1.0]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8
