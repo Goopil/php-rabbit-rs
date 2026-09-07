@@ -31,8 +31,7 @@ LARAVEL_COMPOSER="${ROOT_DIR}/packages/laravel-queue/composer.json"
 CARGO_TOML="${ROOT_DIR}/Cargo.toml"
 PIE_MATRIX="${ROOT_DIR}/release/pie-matrix.json"
 WORKFLOW="${ROOT_DIR}/.github/workflows/release.yml"
-DOCS="${ROOT_DIR}/docs/distribution.md"
-PKG_SCRIPT="${ROOT_DIR}/scripts/package-pie-binary.sh"
+DOCS="${ROOT_DIR}/docs/installation.md"
 SPLIT_SCRIPT="${ROOT_DIR}/scripts/split-laravel-package.sh"
 EXPECTED_LINUX_ARCHIVE_COUNT=8
 
@@ -69,9 +68,7 @@ need_file "${CARGO_TOML}"
 need_file "${PIE_MATRIX}"
 need_file "${WORKFLOW}"
 need_file "${DOCS}"
-need_file "${PKG_SCRIPT}"
 need_file "${SPLIT_SCRIPT}"
-[[ -x "${PKG_SCRIPT}" ]] || fail "scripts/package-pie-binary.sh is not executable"
 [[ -x "${SPLIT_SCRIPT}" ]] || fail "scripts/split-laravel-package.sh is not executable"
 need_cmd jq
 need_cmd grep
@@ -285,8 +282,8 @@ ok "release workflow produces the unified naming pattern"
 
 echo "==> Checking documented convention"
 grep -q 'php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip' "${DOCS}" \
-    || fail "docs/distribution.md does not document the unified naming pattern"
-ok "docs/distribution.md documents the unified naming pattern"
+    || fail "docs/installation.md does not document the unified naming pattern"
+ok "docs/installation.md documents the unified naming pattern"
 
 # --- Release artifacts (former verify-release-assets.sh) ----------------------
 
@@ -341,8 +338,8 @@ if [[ ! -d "${RELEASE_DIR}" ]]; then
         fail "release directory not found: ${RELEASE_DIR}"
     fi
     echo "==> Skipping artifact verification"
-    echo "  ${RELEASE_DIR} does not exist — package artifacts with"
-    echo "  scripts/package-pie-binary.sh and assemble the release directory to verify."
+    echo "  ${RELEASE_DIR} does not exist — run the release workflow (push a tag)"
+    echo "  and assemble the release directory to verify."
     echo ""
     echo "All distribution checks passed (no artifacts to verify)."
     exit 0
@@ -379,8 +376,8 @@ if [[ "${found_files}" -eq 0 ]]; then
         fail "no artifacts found in ${RELEASE_DIR}"
     fi
     echo "==> Skipping artifact verification"
-    echo "  ${RELEASE_DIR} contains no archives — package artifacts with"
-    echo "  scripts/package-pie-binary.sh and assemble the release directory to verify."
+    echo "  ${RELEASE_DIR} contains no archives — run the release workflow (push a tag)"
+    echo "  and assemble the release directory to verify."
     echo ""
     echo "All distribution checks passed (no artifacts to verify)."
     exit 0

@@ -239,6 +239,78 @@ $pool->onBackpressure(function (string $broker, int $inFlight, int $capacity): v
 });
 ```
 
+## Laravel Horizon
+
+Rabbit RS integrates with [Laravel Horizon](https://laravel.com/docs/horizon) so jobs processed via RabbitMQ appear in the Horizon dashboard alongside Redis jobs. RabbitMQ remains the transport; Redis is used by Horizon for job tracking, metrics, and dashboard state.
+
+### Setup
+
+1. Install Horizon:
+
+```bash
+composer require laravel/horizon
+php artisan horizon:install
+```
+
+2. Set the worker mode to `horizon`:
+
+```bash
+# .env
+RABBIT_RS_WORKER=horizon
+```
+
+Or per-connection in `config/queue.php`:
+
+```php
+'connections' => [
+    'rabbit-rs' => [
+        'driver' => 'rabbit-rs',
+        'queue' => 'default',
+        'worker' => 'horizon',
+    ],
+],
+```
+
+3. Configure Horizon supervisors for both Redis and Rabbit RS in `config/horizon.php`:
+
+```php
+'environments' => [
+    'production' => [
+        'supervisor-redis' => [
+            'connection' => 'redis',
+            'queue' => ['default', 'notifications'],
+            'maxProcesses' => 5,
+        ],
+        'supervisor-rabbit' => [
+            'connection' => 'rabbit-rs',
+            'queue' => ['orders', 'billing'],
+            'maxProcesses' => 3,
+        ],
+    ],
+],
+```
+
+### How it works
+
+When `worker=horizon`, the driver uses `Horizon\RabbitMqQueue` which dispatches Horizon events at each job lifecycle stage:
+
+| Stage | Event | When |
+|-------|-------|------|
+| Before push | `JobPending` | `push()` before sending to RabbitMQ |
+| After push | `JobPushed` | `push()` after the broker accepts the message |
+| After pop | `JobReserved` | `pop()` returns a job to the worker |
+| After delete | `JobDeleted` | `delete()` acknowledges the job |
+
+Horizon stores this metadata in Redis and displays it in the dashboard. The RabbitMQ message itself is the source of truth for delivery — Horizon's Redis state is for observability only.
+
+### Coexistence with Redis queues
+
+Both Redis and Rabbit RS connections can run in the same Horizon instance. Redis queues use Horizon's native Redis backend; Rabbit RS queues dispatch events that Horizon tracks in Redis while using RabbitMQ as the actual transport.
+
+### Without Horizon
+
+If Horizon is not installed, set `RABBIT_RS_WORKER=default` (the default). The `horizon` mode requires `laravel/horizon` to be installed.
+
 ## Job class
 
 `RabbitMqJob` extends `Illuminate\Queue\Jobs\Job` and implements:

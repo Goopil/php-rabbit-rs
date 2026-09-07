@@ -159,13 +159,11 @@ Read before betting a pipeline on this.
 | Topic | File |
 |-------|------|
 | Installation | [docs/installation.md](docs/installation.md) |
-| Distribution matrix | [docs/distribution.md](docs/distribution.md) |
 | Configuration reference | [docs/configuration.md](docs/configuration.md) |
 | Laravel usage | [docs/laravel.md](docs/laravel.md) |
 | Topology management | [docs/topology.md](docs/topology.md) |
 | Reliability and delivery | [docs/reliability.md](docs/reliability.md) |
 | Operations | [docs/operations.md](docs/operations.md) |
-| Performance strategy | [docs/performance.md](docs/performance.md) |
 | Recipes (patterns, tuning, capacity) | [docs/recipes/](docs/recipes/) |
 | Octane integration | [docs/octane.md](docs/octane.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |

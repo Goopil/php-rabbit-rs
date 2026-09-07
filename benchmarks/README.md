@@ -74,6 +74,18 @@ The smoke budget (`baselines/smoke-budget.json`) checks:
 | `consume_p99_max_ms` | `actual <= budget` |
 | `losses_max` | `actual == 0` |
 
+Current thresholds: publish throughput ≥ 1,000 msgs/s, consume throughput ≥ 500 msgs/s, p99 latency ≤ 2,000 ms (publish and consume), losses == 0. **No CI runs the benchmark runner** — `run-benchmarks.php` prints the budget comparison but does not fail anything, so the budgets are informational. Treat them as a manual smoke signal on your own hardware, not an anti-regression gate.
+
+### Soak memory methodology (Round K #143)
+
+`benchmarks/driver-bench/bin/soak.php` doubles as the stability/memory evidence harness:
+
+- **Sampling** (`--sample-interval`, default 10 s): process RSS (`/proc/self/status` on Linux, `ps -o rss=` on macOS), `memory_get_usage(true)`/`memory_get_peak_usage(true)`, and selected `Pool::stats()` counters (`publish_buffered`, drop/reconnect/duplicate totals) are appended to the run's JSON under `memory.samples`. Sampling is O(1) and runs outside the churn loops. Sequence bookkeeping uses a compact bitset, so harness memory stays flat and cannot contaminate the signal.
+- **Leak detection**: the first 20 % of the run duration is excluded from the fit (allocator warm-up). The fit is a least-squares slope over the **peak envelope seeded by the warmup peak** (expressed in MB/hour): under kill churn the allocator oscillates between bounded states with deep transient dips (a raw fit misreads uneven plateau durations as growth — measured on the kill-60min calibration run), while a genuine leak must exceed the warmup peak and keep climbing, raising the envelope. The run fails when the slope exceeds `--leak-mb-per-hour` (default 20). A run too short to fit a slope passes without a verdict.
+- **Per-cycle tripwire**: the publish buffer must read `publish_buffered == 0` after every cycle's flush; a non-zero reading means publications are parked across cycles (a re-buffer leak path) and fails the run.
+- **Modes**: kill mode (`--kill-every=10`, default) proves recovery under churn and requires `reconnects_total >= 1`; steady mode (`--kill-every=0`) is sustained pop+ack with no kills — the cleanest leak signal — and waives the reconnection requirement.
+- **Evidence**: long-duration runs (60-min kill, 30-min steady) are archived under `benchmarks/results/round-k-soak/`; the nightly CI soak (#144) archives its own artifacts.
+
 ### Configuration
 
 All benchmark parameters are in `src/Config.php`:
