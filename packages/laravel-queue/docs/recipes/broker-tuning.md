@@ -48,7 +48,7 @@ messages where you can see them.
   publication is retried once with a fresh deadline. Sizing: the timeout must
   comfortably exceed worst-case broker stall, and the warning signs of
   approaching it are the watermarks above — see
-  [Reliability — Publisher confirms](../reliability.md#publisher-confirms).
+  [Reliability — Publisher confirms](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md#publisher-confirms).
 
 ## Prefetch (driver side) — the highest-leverage knob
 

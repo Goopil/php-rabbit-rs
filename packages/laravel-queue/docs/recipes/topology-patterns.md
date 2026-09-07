@@ -13,12 +13,12 @@ mechanics (modes, declarations, recovery order) live in
 | Weighted multi-queue | Job classes with different latency needs | `subscriptions` with `weight` / `priority_class` / per-subscription `prefetch` |
 | Pub/sub (fan-out) | One event, several independent consumer groups | A topic exchange plus one subscription queue per group, each bound with its own routing key |
 | Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — plugin exchange when available, TTL buckets otherwise |
-| Request/reply (RPC) | Service-to-service call/answer | Not yet built — milestone M3, see the [ROADMAP](../plans/ROADMAP.md) |
+| Request/reply (RPC) | Service-to-service call/answer | Not yet built — milestone M3, see the [ROADMAP](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/plans/ROADMAP.md) |
 
 One rule cuts across all patterns: **jobs must be idempotent.** The
 at-least-once contract redelivers anything not acknowledged, so an extra copy
 is normal, counted, and possible after any reconnect
-([Reliability](../reliability.md#duplicates)).
+([Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md#duplicates)).
 
 ## Work queue — the default
 

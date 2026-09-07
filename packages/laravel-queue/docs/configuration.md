@@ -262,7 +262,7 @@ set is replaced after recovery, the composed consumer surfaces a one-shot
 `Goopil\RabbitRs\ConnectionException` ("broker source replaced by recovery;
 re-fetch consumer") — re-fetch the consumer (e.g. `closeConsumers()` on the
 queue connector) and the fresh handle re-subscribes without duplicating
-subscriptions (see [Reliability — Connection recovery](reliability.md#connection-recovery)).
+subscriptions (see [Reliability — Connection recovery](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md#connection-recovery)).
 
 ## Subscriptions escape hatch
 
@@ -423,7 +423,7 @@ php artisan rabbit-rs:status --format=json
 
 `management_url` is Laravel-only: it is validated on the connection but never
 propagated to the native extension. `null` or blank disables the feature. See
-[Reliability — Measuring duplicates](reliability.md#measuring-duplicates) for
+[Reliability — Measuring duplicates](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md#measuring-duplicates) for
 what the counters mean.
 
 ## Safety modes
@@ -443,7 +443,7 @@ routing are **derived from it**, never set independently:
   outcome. A transport failure after the hand-off is a silent loss. Delayed
   jobs are not honored in this mode.
 
-See [Reliability](reliability.md) for the full contract.
+See [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md) for the full contract.
 
 ## Validation and strict errors
 

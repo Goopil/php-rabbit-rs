@@ -244,7 +244,7 @@ rabbitmqctl list_queues -p /your-vhost name messages
 3. Check broker health — high confirmation latency indicates broker saturation
 4. Scale the publisher buffer — the publisher's bounded capacity (1024 publications by default) is currently **not configurable**: it is not exposed through the Laravel package config (`config/rabbit-rs.php`), and the raw native extension configuration does not accept a `buffer_capacity` key either. Until it is plumbed through, the mitigations above are the only levers.
 
-See [Operations — Backpressure](operations.md#backpressure-detection-and-response).
+See [Operations — Backpressure](../packages/laravel-queue/docs/operations.md#backpressure-detection-and-response).
 
 ### Delayed messages not arriving
 

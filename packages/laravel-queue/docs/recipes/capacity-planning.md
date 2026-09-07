@@ -2,7 +2,7 @@
 
 Use the published evidence as a starting point, then measure **your** workload
 — numbers are only comparable within one workload, one configuration, and one
-session ([the framing rules](../../benchmarks/README.md#reading-and-quoting-results--workload-scoped-framing-only)).
+session ([the framing rules](https://github.com/Goopil/php-rabbit-rs/blob/main/benchmarks/README.md#reading-and-quoting-results--workload-scoped-framing-only)).
 
 ## What the published evidence covers
 

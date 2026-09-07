@@ -201,4 +201,4 @@ In `external` mode, no reconciliation commands are sent. The infrastructure is e
 
 In `verify` mode, passive declarations are re-issued to detect drift after recovery.
 
-See [Reliability — Recovery](reliability.md#connection-recovery) for the full recovery sequence.
+See [Reliability — Recovery](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md#connection-recovery) for the full recovery sequence.

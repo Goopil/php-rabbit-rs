@@ -97,7 +97,7 @@ The package auto-discovers the service provider in Laravel 12 and 13. If you dis
 php artisan vendor:publish --tag="rabbit-rs-config"
 ```
 
-This creates `config/rabbit-rs.php` with sensible defaults. See [Configuration](configuration.md) for the full reference.
+This creates `config/rabbit-rs.php` with sensible defaults. See [Configuration](../packages/laravel-queue/docs/configuration.md) for the full reference.
 
 ## Step 4 — Verify the installation
 
@@ -292,7 +292,7 @@ This is a deliberate design decision: PIE is the PHP ecosystem's official extens
 
 ## Next steps
 
-- [Configuration reference](configuration.md)
-- [Laravel usage](laravel.md)
-- [Topology management](topology.md)
+- [Configuration reference](../packages/laravel-queue/docs/configuration.md)
+- [Laravel usage](../packages/laravel-queue/docs/usage.md)
+- [Topology management](../packages/laravel-queue/docs/topology.md)
 - [Reliability](reliability.md)

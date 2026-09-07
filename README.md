@@ -56,7 +56,7 @@ Add a rabbit-rs connection to `config/queue.php` (one connection = one broker = 
 ],
 ```
 
-Configuration is connection-first — broker, credentials, routes, safety mode, and worker profile all live on the queue connection. The full reference (every key, defaults, validation, and the safety modes) is [docs/configuration.md](docs/configuration.md). Optionally publish the cross-cutting defaults:
+Configuration is connection-first — broker, credentials, routes, safety mode, and worker profile all live on the queue connection. The full reference (every key, defaults, validation, and the safety modes) is [packages/laravel-queue/docs/configuration.md](packages/laravel-queue/docs/configuration.md). Optionally publish the cross-cutting defaults:
 
 ```bash
 php artisan vendor:publish --tag="rabbit-rs-config"
@@ -159,13 +159,13 @@ Read before betting a pipeline on this.
 | Topic | File |
 |-------|------|
 | Installation | [docs/installation.md](docs/installation.md) |
-| Configuration reference | [docs/configuration.md](docs/configuration.md) |
-| Laravel usage | [docs/laravel.md](docs/laravel.md) |
-| Topology management | [docs/topology.md](docs/topology.md) |
+| Configuration reference | [packages/laravel-queue/docs/configuration.md](packages/laravel-queue/docs/configuration.md) |
+| Laravel usage | [packages/laravel-queue/docs/usage.md](packages/laravel-queue/docs/usage.md) |
+| Topology management | [packages/laravel-queue/docs/topology.md](packages/laravel-queue/docs/topology.md) |
 | Reliability and delivery | [docs/reliability.md](docs/reliability.md) |
-| Operations | [docs/operations.md](docs/operations.md) |
-| Recipes (patterns, tuning, capacity) | [docs/recipes/](docs/recipes/) |
-| Octane integration | [docs/octane.md](docs/octane.md) |
+| Operations | [packages/laravel-queue/docs/operations.md](packages/laravel-queue/docs/operations.md) |
+| Recipes (patterns, tuning, capacity) | [packages/laravel-queue/docs/recipes/](packages/laravel-queue/docs/recipes/) |
+| Octane integration | [packages/laravel-queue/docs/octane.md](packages/laravel-queue/docs/octane.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
 | Development guide | [docs/development.md](docs/development.md) |

@@ -145,7 +145,7 @@ redirect_stderr=true
 stdout_logfile=/var/log/rabbit-rs/worker.log
 ```
 
-A complete Supervisor config is provided in [`examples/laravel/worker-supervisor.conf`](../examples/laravel/worker-supervisor.conf).
+A complete Supervisor config is provided in [`examples/laravel/worker-supervisor.conf`](https://github.com/Goopil/php-rabbit-rs/blob/main/examples/laravel/worker-supervisor.conf).
 
 ## Kubernetes deployment
 
@@ -222,7 +222,7 @@ Rabbit RS does not include a Prometheus exporter in V1, but the status command p
 | `deliveries_total` | Total deliveries received |
 | `acks_total` | Total consumer ACKs |
 | `rejects_total` | Total consumer rejects |
-| `duplicates_total` | Deliveries the broker flagged as redeliveries (per-process; see [Reliability — Measuring duplicates](reliability.md#measuring-duplicates)) |
+| `duplicates_total` | Deliveries the broker flagged as redeliveries (per-process; see [Reliability — Measuring duplicates](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md#measuring-duplicates)) |
 | `dropped_publications_total` | Publications discarded without confirmed delivery (deadline-expired flush retries, un-attempted batches on a closing pool, unconfirmed leftovers at teardown) |
 | `dropped_error_records_total` | Publish error records evicted from the bounded drain queue before they could be read |
 | `publication_retries_total` | Publications whose deadline expired during a recovery suspension and were re-armed once |
@@ -293,4 +293,4 @@ The `BackpressureDetected` event is dispatched with:
 
 Backpressure is not an error — the publisher continues accepting commands, but new publish calls receive a `BackpressureException` when capacity is full. This is a signal to slow down, not a failure. Connection loss, by contrast, triggers the recovery and replay mechanism.
 
-See [Reliability](reliability.md) for the full publisher safety model.
+See [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md) for the full publisher safety model.

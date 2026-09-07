@@ -2,7 +2,7 @@
 
 Rabbit RS provides at-least-once delivery. Silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable.
 
-The documented exception is `safety = blind`: an explicit fire-and-forget mode (silent loss possible), set per connection (`safety` key) or package-wide (env `RABBIT_RS_SAFETY`) as well as in the raw native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](configuration.md#safety-modes).
+The documented exception is `safety = blind`: an explicit fire-and-forget mode (silent loss possible), set per connection (`safety` key) or package-wide (env `RABBIT_RS_SAFETY`) as well as in the raw native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](../packages/laravel-queue/docs/configuration.md#safety-modes).
 
 ## At-least-once contract
 
@@ -38,7 +38,7 @@ There is no separate `mandatory` config key: it is derived from `safety` (`safe`
 
 ### Delayed publishes
 
-Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. Publisher confirms remain enabled — the publish still resolves only after the broker confirm, and the no-silent-loss contract is preserved by the confirmed `rabbit-rs.delayed` binding (see [Topology — Delay routing](topology.md#delay-routing)). Delayed messages published through TTL bucket queues carry no `x-delay` header on the wire and remain mandatory.
+Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. Publisher confirms remain enabled — the publish still resolves only after the broker confirm, and the no-silent-loss contract is preserved by the confirmed `rabbit-rs.delayed` binding (see [Topology — Delay routing](../packages/laravel-queue/docs/topology.md#delay-routing)). Delayed messages published through TTL bucket queues carry no `x-delay` header on the wire and remain mandatory.
 
 ## Connection recovery
 
@@ -66,7 +66,7 @@ Recovery follows a **deterministic order**:
 
 This order ensures that consumers are only re-registered after their queues and bindings exist, and that publishers resume — replay included — after the topology is restored, before consumers re-register.
 
-With multiple brokers, each broker recovers independently through its own coordinator: one broker recovering never blocks consumption from the others. When a broker's consumer set is replaced after recovery, the composed multi-broker consumer surfaces a one-shot `ConnectionException` ("broker source replaced by recovery; re-fetch consumer") — re-fetch the consumer to resume deliveries from that broker (see [Multiple brokers and vhosts](configuration.md#multiple-brokers-and-vhosts)).
+With multiple brokers, each broker recovers independently through its own coordinator: one broker recovering never blocks consumption from the others. When a broker's consumer set is replaced after recovery, the composed multi-broker consumer surfaces a one-shot `ConnectionException` ("broker source replaced by recovery; re-fetch consumer") — re-fetch the consumer to resume deliveries from that broker (see [Multiple brokers and vhosts](../packages/laravel-queue/docs/configuration.md#multiple-brokers-and-vhosts)).
 
 ### Backoff
 
