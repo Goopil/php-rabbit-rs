@@ -10,7 +10,7 @@ use rabbit_rs_core::{
     publisher::{Destination, MessageProperties, PublishRequest},
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind, TransportError,
-        mock::MockTransport,
+        mock::{MockTransport, TransportOperation},
     },
 };
 
@@ -103,7 +103,7 @@ async fn plain_unknown_names_still_error() {
 async fn synthesis_bound_is_enforced() {
     let transport = Arc::new(MockTransport::default());
     let config = single_worker_config(TopologyMode::Declare, worker_on("orders"));
-    let pool = ClientPool::new(config, transport);
+    let pool = ClientPool::new(config, transport.clone());
 
     // 64 distinct auto names succeed; the 65th is rejected before any
     // broker contact. Pop-order errors surface on consumer().
@@ -116,6 +116,44 @@ async fn synthesis_bound_is_enforced() {
         panic!("over bound must not resolve");
     };
     assert!(error.to_string().contains("profile registry is full"));
+    assert!(
+        transport
+            .declared_queues()
+            .iter()
+            .all(|q| q != "__auto__.queue-64")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn verify_mode_does_not_declare_auto_queues() {
+    let transport = Arc::new(MockTransport::default());
+    let config = single_worker_config(TopologyMode::Verify, worker_on("orders"));
+    let pool = ClientPool::new(config, transport.clone());
+
+    let consumer = pool
+        .consumer("__auto__.queue-0")
+        .await
+        .expect("auto profile resolves; the queue must exist externally");
+
+    // The honest observable: the mock accepts `verify_queue`, so the leak
+    // shows up as a VerifyQueue operation for the synthesized queue — a
+    // passive declare on a queue the broker has never seen. The reconcile
+    // of the FIRST generation must not mention it. The synthesized
+    // subscription's queue is the plain name (the `__auto__.` prefix names
+    // the profile, not the queue).
+    let verified_auto = transport.operations().iter().any(|operation| {
+        matches!(
+            operation,
+            TransportOperation::VerifyQueue(spec) if spec.name == "queue-0"
+        )
+    });
+    assert!(
+        !verified_auto,
+        "synthesized queue must not join the verify plan: the passive verify 404s and stalls every recovery generation"
+    );
+    assert!(transport.declared_queues().is_empty());
+
+    drop(consumer);
 }
 
 #[tokio::test(start_paused = true)]
@@ -138,6 +176,9 @@ async fn recovery_re_establishes_synthesized_consumer() {
     // Let the first generation's delivery pump reach its first empty poll:
     // no delivery stream is kept open here, so it exits and cannot consume
     // the delivery scripted for the re-established subscription below.
+    // The fixed yield count is deterministic: the pump exits on its first
+    // empty poll, and the delivery is only pushed after these yields, so
+    // pump exit strictly precedes the push regardless of scheduling.
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }
@@ -148,7 +189,10 @@ async fn recovery_re_establishes_synthesized_consumer() {
         .await
         .expect("loss reported");
     // The delivery is scripted before recovery so the fresh subscription's
-    // stream pops it on its first poll.
+    // stream pops it on its first poll. The yields are deterministic: each
+    // advance only unblocks the recovery step whose timer fired, and the
+    // delivery is already queued, so interleaving pump tasks between steps
+    // cannot reorder an observable outcome.
     transport.push_delivery(Ok(delivery(2)));
     for _ in 0..5 {
         tokio::time::advance(Duration::from_secs(1)).await;

@@ -688,6 +688,9 @@ Caveats:
   driver, so the broker rejects the consumer with a 404 unless the queue
   already exists — the same contract as `declare => false` in other drivers.
   The default `declare` mode declares the auto queue on first use.
+- With `topology_mode: verify` auto queues are neither declared nor
+  verifiable: the queue must exist externally, the pop surfaces the broker's
+  404, and the rest of the connection stays healthy.
 - Synthesized profiles require a single broker in the pool config — always
   true for this driver (one connection = one broker). Core configurations
   with several brokers must declare every auto-consumed queue explicitly.

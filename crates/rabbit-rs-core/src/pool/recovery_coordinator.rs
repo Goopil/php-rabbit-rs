@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{BrokerConfig, ValidatedConfig, WorkerProfile},
+    config::{BrokerConfig, TopologyMode, ValidatedConfig, WorkerProfile},
     consumer::{ConsumerError, ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
     metrics::Metrics,
     metrics::MetricsSnapshot,
@@ -767,12 +767,25 @@ fn requested_extras(context: &CoordinatorContext) -> Vec<String> {
 /// runtime extras (names not in config). Computed per reconcile so a
 /// profile requested after the coordinator spawned still gets its queue
 /// declared (declare-on-use).
+///
+/// Extras join the plan in Declare mode only. In Verify mode a synthesized
+/// queue would passively 404 (the broker has never seen it), failing every
+/// recovery generation connection-wide: publisher replay and consumer
+/// re-establishment would stall until the queue appears externally. Verify
+/// mode inherits the External-mode contract instead — the pop surfaces the
+/// broker's 404 on `basic.consume` and the rest of the connection stays
+/// healthy.
 fn generation_plan(context: &CoordinatorContext) -> TopologyPlan {
-    let extras: Vec<WorkerProfile> = lock_requested(context)
-        .values()
-        .filter(|worker| context.config.worker(&worker.name).is_none())
-        .cloned()
-        .collect();
+    let extras: Vec<WorkerProfile> =
+        if matches!(context.config.topology_mode(), TopologyMode::Declare) {
+            lock_requested(context)
+                .values()
+                .filter(|worker| context.config.worker(&worker.name).is_none())
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
     TopologyPlan::from_config_and(&context.config, &extras)
 }
 

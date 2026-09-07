@@ -84,7 +84,7 @@ php artisan queue:work rabbit-rs
 php artisan rabbit-rs:work
 ```
 
-Unknown queues are consumed automatically (`auto_subscribe`), no `workers.*` entry required.
+No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#auto-subscribe)).
 
 ## Requirements
 
