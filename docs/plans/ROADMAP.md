@@ -873,26 +873,58 @@ this starts before the Round G stabilization exit criterion.
   `cargo bench`/profiling before deciding on a cheaper core fast path that
   would benefit every consumer shape.
 
-### Realtime stack (2026-08-31) — suggested order 1 → 2 → 3 (each builds on the previous)
+### Ecosystem (2026-09-06) — platform plan, adoption-first
 
-1. **Request/reply (RPC) integrated up to Laravel** — typed
-   `RabbitMqRpc::call(queue, payload, timeout)` on the AMQP direct reply-to
-   pattern (`amq.rabbitmq.reply-to` pseudo-queue): core gets `reply_to` support
-   (`correlation_id` already exists in `MessageProperties`), the extension gets
-   a blocking-with-deadline call API, Laravel gets a handler API that answers
-   on the reply queue. Semantics differ from the queue contract — calls are
-   at-most-once with a typed timeout error; document the broker-restart
-   behavior explicitly. Foundation for the two items below (replies ride it).
-2. **Pusher-style front client over MQTT** — browser client (Pusher-like
-   ergonomics) speaking MQTT over WebSocket through RabbitMQ's `rabbitmq_mqtt`
-   plugin: front → MQTT → RabbitMQ → Laravel consumers, and back via publish.
-   Scope notes: auth story (per-user credentials from a signed endpoint),
-   MQTT QoS 0/1 vs the at-least-once contract, topic↔exchange mapping, small
-   JS client library, `rabbitmq_mqtt` lab profile.
-3. **Laravel Echo compatibility layer** — a server speaking enough of the
-   Pusher protocol for `laravel-echo` (private/presence channels, signed auth
-   endpoint) on top of the MQTT bridge, with channels mapped to
-   queues/topics; reuse Laravel's broadcast auth conventions. Depends on 2.
+Positioning: Rabbit RS is the native messaging platform for Laravel — **jobs**
+(the at-least-once queue contract), **realtime events to the browser**, and
+**RPC between services** — one RabbitMQ cluster, one native driver, one
+integrated ops story (`doctor` / `topology` / `status`). Target: open-source
+adoption — DX and time-to-first-message are the product. Tracked by the
+umbrella issue (#176); this section supersedes "Realtime stack (2026-08-31)".
+
+Milestones — each ships docs + tests + a runnable example and stands alone;
+nothing starts before its predecessor's findings:
+
+- **M0 — docs/recipes (#171)**: RabbitMQ topology patterns, broker tuning,
+  capacity planning, as `docs/recipes/` pages (README keeps pointers only).
+  Zero code; the credibility of the "ecosystem" pitch starts with the docs.
+- **M1 — MQTT bridge spike (#172, time-boxed)**: lab profile `with-mqtt`
+  (`rabbitmq_mqtt` plugin, WebSocket port 15675), a topic↔exchange
+  convention (e.g. `channel.{name}`), and one proof — a Laravel publish
+  received in a browser over mqtt.js. Findings (auth story: per-user
+  credentials from a signed endpoint vs RabbitMQ HTTP auth backend; MQTT
+  QoS 0/1 vs the at-least-once contract; session/retained semantics)
+  archived here with a go/no-go. The spike productizes nothing by itself.
+- **M2 — Laravel broadcast driver + front client v0 (#173, depends on M1)**:
+  `Broadcast::extend('rabbit-rs')` publishing events to a topic exchange
+  through the existing native publisher, a small TypeScript front client
+  over mqtt.js with Pusher-like ergonomics, a playground demo, and the
+  delivery-semantics gap documented up front (the queue contract is
+  at-least-once; broker→browser delivery is at-most-once in practice —
+  QoS and disconnects; retained messages or a snapshot endpoint are the
+  state-catch-up options, out of scope until a real need).
+- **M3 — RPC over AMQP direct reply-to (#174)**: core `reply_to` support
+  (`correlation_id` already exists in `MessageProperties`), a
+  blocking-with-deadline call API in the extension, and a typed Laravel
+  handler API (`RabbitMqRpc::call(queue, payload, timeout)`). Calls are
+  at-most-once with a typed timeout error — different from the queue
+  contract; the broker-restart behavior is documented explicitly.
+- **M4 — Laravel Echo compatibility layer (#175, depends on M2)**: a
+  minimal Pusher-protocol server (private/presence channels, signed auth
+  endpoint) so the unmodified `laravel-echo` npm package connects over the
+  M2 stack; Laravel's broadcast auth conventions reused as-is.
+
+Notes:
+
+- RPC is no longer a prerequisite for the broadcast path (revised from the
+  2026-08-31 ordering): the spike validates the bridge first, and replies
+  ride the M3 API when it lands.
+- Parked with explicit triggers, not immediate work: UI admin/ops dashboard
+  (when DLQ inspect/replay tooling and metrics exporters exist),
+  multi-language clients (when a real consumer appears), and the parked
+  candidate ideas below keep their arbitration process.
+- Adoption blockers stay in view between milestones: #58 (install friction)
+  is the #1 one.
 
 ### Candidate ideas (2026-09-05 review)
 
