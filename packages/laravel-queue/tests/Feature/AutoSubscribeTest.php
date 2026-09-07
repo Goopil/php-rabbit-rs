@@ -29,8 +29,8 @@ function autoSubscribeWorkers(): array
 
 /**
  * A fake pool seeded with the implicit worker profile that auto-subscribe
- * requests ('__auto__.emails'), mirroring a native pool able to resolve
- * runtime-registered profiles.
+ * requests ('__auto__.emails'), mirroring the core synthesizing
+ * `__auto__.` profiles at first pop.
  */
 function autoSubscribeSeededPool(): Pool
 {

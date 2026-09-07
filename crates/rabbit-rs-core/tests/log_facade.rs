@@ -15,7 +15,6 @@ use rabbit_rs_core::{
     pool::recovery_coordinator::{RecoveryCoordinator, RecoveryCoordinatorConfig},
     publisher::PublisherConfig,
     recovery::ConnectionState,
-    topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{Transport, TransportError, mock::MockTransport},
 };
 
@@ -26,33 +25,28 @@ mod helper {
 
     pub use crate::common::{broker, config, worker_profile};
 
-    use rabbit_rs_core::config::TopologyMode;
-
     pub fn publisher_config() -> PublisherConfig {
         PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe)
-    }
-
-    pub fn topology_plan() -> TopologyPlan {
-        TopologyPlan::compile(
-            TopologyMode::Declare,
-            TopologyDefinition::new(vec![], vec![QueueDefinition::new("jobs")], vec![]),
-        )
-        .expect("topology plan")
     }
 
     pub fn coordinator_config(
         config: Arc<rabbit_rs_core::config::ValidatedConfig>,
     ) -> RecoveryCoordinatorConfig {
+        // "main" is requested up front with its payload (issue #49: recovery
+        // only establishes requested profiles).
+        let requested = [(
+            "main".to_owned(),
+            config.worker("main").expect("worker profile").clone(),
+        )]
+        .into_iter()
+        .collect();
         RecoveryCoordinatorConfig {
             broker: broker("primary", "/", "guest"),
             policy: rabbit_rs_core::recovery::RecoveryPolicy::default(),
-            topology_plan: topology_plan(),
             publisher_config: publisher_config(),
             config,
             metrics: rabbit_rs_core::metrics::Metrics::default(),
-            requested_profiles: Arc::new(std::sync::Mutex::new(
-                ["main".to_owned()].into_iter().collect(),
-            )),
+            requested_profiles: Arc::new(std::sync::Mutex::new(requested)),
         }
     }
 

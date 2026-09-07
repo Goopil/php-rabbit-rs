@@ -8,7 +8,7 @@ use bytes::Bytes;
 use rabbit_rs_core::metrics::Metrics;
 use rabbit_rs_core::{
     client::ClientPool,
-    config::{SafetyMode, TopologyMode},
+    config::SafetyMode,
     pool::connection_actor::ConnectionActor,
     pool::recovery_coordinator::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
@@ -21,7 +21,6 @@ use rabbit_rs_core::{
         Clock, ConnectionState, EqualJitter, IdentityJitter, JitterSource, RecoveryPolicy,
         TokioClock,
     },
-    topology::{QueueDefinition, TopologyDefinition, TopologyPlan},
     transport::{
         PublishConfirmation, Transport, TransportError, TransportErrorKind,
         mock::{MockTransport, TransportOperation},
@@ -51,30 +50,26 @@ mod helper {
         )
     }
 
-    pub fn topology_plan() -> TopologyPlan {
-        TopologyPlan::compile(
-            TopologyMode::Declare,
-            TopologyDefinition::new(vec![], vec![QueueDefinition::new("jobs")], vec![]),
-        )
-        .expect("topology plan")
-    }
-
     pub fn coordinator_config(
         config: Arc<rabbit_rs_core::config::ValidatedConfig>,
     ) -> RecoveryCoordinatorConfig {
+        // These tests exercise the deterministic recovery sequence with the
+        // profile's consumer established, so "main" is requested up front
+        // with its payload (issue #49: recovery only establishes requested
+        // profiles).
+        let requested = [(
+            "main".to_owned(),
+            config.worker("main").expect("worker profile").clone(),
+        )]
+        .into_iter()
+        .collect();
         RecoveryCoordinatorConfig {
             broker: broker("primary", "/", "guest"),
             policy: RecoveryPolicy::default(),
-            topology_plan: topology_plan(),
             publisher_config: publisher_config(),
             config,
             metrics: rabbit_rs_core::metrics::Metrics::default(),
-            // These tests exercise the deterministic recovery sequence with
-            // the profile's consumer established, so "main" is requested up
-            // front (issue #49: recovery only establishes requested profiles).
-            requested_profiles: Arc::new(std::sync::Mutex::new(
-                ["main".to_owned()].into_iter().collect(),
-            )),
+            requested_profiles: Arc::new(std::sync::Mutex::new(requested)),
         }
     }
 

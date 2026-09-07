@@ -1,9 +1,9 @@
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     error::Error,
     fmt,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{Arc, Mutex as StdMutex, MutexGuard},
 };
 
 use tokio::{
@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    config::{BrokerConfig, ValidatedConfig},
+    config::{BrokerConfig, TopologyMode, ValidatedConfig, WorkerProfile},
     consumer::{ConsumerError, ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
     metrics::Metrics,
     metrics::MetricsSnapshot,
@@ -28,9 +28,11 @@ use super::connection_actor::{ConnectionActor, ConnectionActorClosed, Connection
 
 type SharedPublisher = Arc<Mutex<Option<PublisherHandle>>>;
 type SharedConsumers = Arc<Mutex<std::collections::HashMap<String, ConsumerSetHandle>>>;
-/// Worker profiles explicitly requested through the client pool, shared
-/// between the pool and every coordinator.
-type RequestedProfiles = Arc<StdMutex<HashSet<String>>>;
+/// Worker profiles explicitly requested through the client pool, carrying
+/// their payload: entries enter only through `consumer()` resolution, so
+/// requested and established stay the same set. Shared between the pool and
+/// every coordinator.
+type RequestedProfiles = Arc<StdMutex<BTreeMap<String, WorkerProfile>>>;
 /// Serializes consumer establishment between recovery generations and
 /// on-demand acquisition so a profile is never established twice.
 type EstablishLock = Arc<Mutex<()>>;
@@ -119,8 +121,6 @@ pub struct RecoveryCoordinatorConfig {
     pub broker: BrokerConfig,
     /// The recovery backoff policy.
     pub policy: RecoveryPolicy,
-    /// The topology plan to reconcile on each connection.
-    pub topology_plan: TopologyPlan,
     /// Publisher actor configuration.
     pub publisher_config: PublisherConfig,
     /// The validated application configuration.
@@ -161,7 +161,6 @@ impl RecoveryCoordinator {
 
         let context = Arc::new(CoordinatorContext {
             broker: config.broker,
-            topology_plan: config.topology_plan,
             reconciler: Mutex::new(TopologyReconciler::new()),
             publisher_config: config.publisher_config,
             config: config.config,
@@ -193,7 +192,6 @@ impl RecoveryCoordinator {
 
 struct CoordinatorContext {
     broker: BrokerConfig,
-    topology_plan: TopologyPlan,
     /// Shared topology reconciler: the recovery generation and the on-demand
     /// consumer establishment path both apply the plan through it, so
     /// whichever runs first declares the topology and the other observes the
@@ -521,17 +519,14 @@ async fn recover_generation(
     // Step 2: Reconcile topology (exchanges → queues → bindings).
     //
     // The reconciler is shared with the on-demand consumer establishment
-    // path: whichever runs first for this generation declares the topology,
-    // so `basic.consume` is always issued after the plan is applied.
+    // path: whichever runs first declares the topology, so `basic.consume`
+    // is always issued after the plan is applied.
+    let fresh_plan = generation_plan(context);
     context
         .reconciler
         .lock()
         .await
-        .reconcile(
-            publisher_channel.as_ref(),
-            &context.topology_plan,
-            generation,
-        )
+        .reconcile(publisher_channel.as_ref(), &fresh_plan, generation)
         .await
         .map_err(CoordinatorError::Topology)?;
 
@@ -586,6 +581,19 @@ async fn recover_generation(
         )
         .await?;
     }
+    // Runtime-synthesized profiles, name-sorted for determinism.
+    for name in requested_extras(context) {
+        establish_requested_profile(
+            actor,
+            context,
+            publisher,
+            consumers,
+            establish_lock,
+            &name,
+            generation,
+        )
+        .await?;
+    }
 
     Ok(())
 }
@@ -624,8 +632,12 @@ async fn establish_requested_profile(
         return Ok(());
     }
 
-    let Some(worker) = context.config.worker(profile).cloned() else {
-        return Ok(());
+    let worker = match context.config.worker(profile) {
+        Some(worker) => worker.clone(),
+        None => match lock_requested(context).get(profile).cloned() {
+            Some(worker) => worker,
+            None => return Ok(()),
+        },
     };
     let connection_key = crate::pool::ConnectionKey::from_config(&context.config);
     let delay_strategy = crate::topology::delay::DelayStrategy::compile(&context.config);
@@ -691,16 +703,19 @@ async fn establish_requested_profile(
     // establish lock while the recovery generation is still mid reconcile —
     // or before it even starts. A fresh quorum queue rejects `basic.consume`
     // with 404 until its `queue.declare` completes, so apply the topology
-    // plan here when the generation has not been reconciled yet. The shared
-    // reconciler makes the two paths idempotent: whoever runs first
-    // declares, the other observes the generation as applied.
+    // plan here when this generation has not been reconciled with it yet —
+    // including the fresh plan of a generation already reconciled without
+    // this profile's queue (declare-on-use). The shared reconciler makes the
+    // two paths idempotent: whoever runs first declares, the other observes
+    // the generation as applied.
+    let fresh_plan = generation_plan(context);
     let mut reconciler = context.reconciler.lock().await;
-    if !reconciler.is_applied(generation) {
+    if !reconciler.is_applied(generation, &fresh_plan) {
         let channel = actor.open_publisher().await.map_err(|_| {
             CoordinatorError::Transport(TransportError::closed("failed to open topology channel"))
         })?;
         let result = reconciler
-            .reconcile(channel.as_ref(), &context.topology_plan, generation)
+            .reconcile(channel.as_ref(), &fresh_plan, generation)
             .await;
         let _ = channel.close().await;
         result.map_err(CoordinatorError::Topology)?;
@@ -725,15 +740,53 @@ fn is_requested(context: &CoordinatorContext, profile: &str) -> bool {
         .requested_profiles
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains(profile)
+        .contains_key(profile)
 }
 
 fn requested_snapshot(context: &CoordinatorContext) -> HashSet<String> {
+    lock_requested(context).keys().cloned().collect()
+}
+
+fn lock_requested(context: &CoordinatorContext) -> MutexGuard<'_, BTreeMap<String, WorkerProfile>> {
     context
         .requested_profiles
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+}
+
+/// Requested runtime profiles that are not in config, name-sorted.
+fn requested_extras(context: &CoordinatorContext) -> Vec<String> {
+    lock_requested(context)
+        .keys()
+        .filter(|name| context.config.worker(name).is_none())
+        .cloned()
+        .collect()
+}
+
+/// The plan for this generation: configured profiles plus requested
+/// runtime extras (names not in config). Computed per reconcile so a
+/// profile requested after the coordinator spawned still gets its queue
+/// declared (declare-on-use).
+///
+/// Extras join the plan in Declare mode only. In Verify mode a synthesized
+/// queue would passively 404 (the broker has never seen it), failing every
+/// recovery generation connection-wide: publisher replay and consumer
+/// re-establishment would stall until the queue appears externally. Verify
+/// mode inherits the External-mode contract instead — the pop surfaces the
+/// broker's 404 on `basic.consume` and the rest of the connection stays
+/// healthy.
+fn generation_plan(context: &CoordinatorContext) -> TopologyPlan {
+    let extras: Vec<WorkerProfile> =
+        if matches!(context.config.topology_mode(), TopologyMode::Declare) {
+            lock_requested(context)
+                .values()
+                .filter(|worker| context.config.worker(&worker.name).is_none())
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+    TopologyPlan::from_config_and(&context.config, &extras)
 }
 
 fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> TransportError {

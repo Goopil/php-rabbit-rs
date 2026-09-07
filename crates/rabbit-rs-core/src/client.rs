@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     error::Error,
     fmt,
     sync::{Arc, Mutex as StdMutex, MutexGuard},
@@ -8,7 +8,7 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    config::{SafetyMode, ValidatedConfig},
+    config::{SafetyMode, ValidatedConfig, WorkerProfile},
     consumer::{ConsumerError, ConsumerHandle},
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
@@ -17,7 +17,6 @@ use crate::{
         PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
-    topology::TopologyPlan,
     transport::{PublisherChannel, Transport, TransportError, lapin::LapinTransport},
 };
 
@@ -25,6 +24,10 @@ use crate::{
 use crate::publisher::PublisherActor;
 
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
+
+/// Upper bound on runtime-synthesized profiles per process (the
+/// `__auto__.` `auto_subscribe` path). Config profiles are not counted.
+const MAX_SYNTHESIZED_PROFILES: usize = 64;
 
 /// Returns the distinct broker names of a worker profile's subscriptions, in
 /// subscription order.
@@ -59,10 +62,12 @@ pub struct ClientPool {
     publisher_initializers: Initializers,
     consumers: StdMutex<HashMap<String, ConsumerHandle>>,
     consumer_initializers: Initializers,
-    /// Worker profiles explicitly requested through [`ClientPool::consumer`].
-    /// Shared with every coordinator so recovery only establishes requested
-    /// consumers; declared-but-unrequested profiles stay dormant.
-    requested_profiles: Arc<StdMutex<HashSet<String>>>,
+    /// Worker profiles explicitly requested through [`ClientPool::consumer`],
+    /// carrying their payload: entries enter only through `consumer()`
+    /// resolution, so requested and established stay the same set. Shared with
+    /// every coordinator so recovery only establishes requested consumers;
+    /// declared-but-unrequested profiles stay dormant.
+    requested_profiles: Arc<StdMutex<BTreeMap<String, WorkerProfile>>>,
     metrics: Metrics,
 }
 
@@ -108,7 +113,7 @@ impl ClientPool {
             publisher_initializers: StdMutex::new(HashMap::new()),
             consumers: StdMutex::new(HashMap::new()),
             consumer_initializers: StdMutex::new(HashMap::new()),
-            requested_profiles: Arc::new(StdMutex::new(HashSet::new())),
+            requested_profiles: Arc::new(StdMutex::new(BTreeMap::new())),
             metrics: Metrics::default(),
         }
     }
@@ -325,17 +330,25 @@ impl ClientPool {
     /// failure, `QoS` failure, or consumer registration failure.
     pub async fn consumer(&self, profile: &str) -> Result<ConsumerHandle, ClientError> {
         let generation = self.open_generation()?;
-        let worker = self.config.worker(profile).cloned().ok_or_else(|| {
-            ClientError::new(
-                ClientErrorKind::Configuration,
-                format!("workers.{profile}: unknown worker profile"),
-            )
-        })?;
+        let worker = match self.config.worker(profile) {
+            Some(worker) => worker.clone(),
+            None if profile.starts_with(crate::config::AUTO_PROFILE_PREFIX) => {
+                self.synthesized_worker(profile)?
+            }
+            None => {
+                return Err(ClientError::new(
+                    ClientErrorKind::Configuration,
+                    format!("workers.{profile}: unknown worker profile"),
+                ));
+            }
+        };
 
         // Record the request before any coordinator is triggered so that the
         // current or next recovery generation establishes this profile's
         // consumer channels (see `recover_generation`).
-        lock(&self.requested_profiles).insert(profile.to_owned());
+        lock(&self.requested_profiles)
+            .entry(profile.to_owned())
+            .or_insert_with(|| worker.clone());
 
         // Check for a cached consumer handle. If the coordinator has moved to a
         // newer generation, the cached handle is stale and must be evicted.
@@ -396,6 +409,33 @@ impl ClientPool {
             let _ = consumer.close().await;
             Err(ClientError::closed())
         }
+    }
+
+    /// Synthesizes and records the payload for an `__auto__.` profile,
+    /// enforcing the process-wide bound on synthesized profiles.
+    fn synthesized_worker(&self, profile: &str) -> Result<WorkerProfile, ClientError> {
+        let worker = self
+            .config
+            .synthesize_auto_profile(profile)
+            .map_err(|error| ClientError::new(ClientErrorKind::Configuration, error.to_string()))?;
+        let mut requested = lock(&self.requested_profiles);
+        let synthesized = requested
+            .values()
+            .filter(|worker| self.config.worker(&worker.name).is_none())
+            .count();
+        if !requested.contains_key(profile) && synthesized >= MAX_SYNTHESIZED_PROFILES {
+            return Err(ClientError::new(
+                ClientErrorKind::Configuration,
+                format!(
+                    "workers.{profile}: profile registry is full \
+                     ({MAX_SYNTHESIZED_PROFILES} synthesized profiles)"
+                ),
+            ));
+        }
+        requested
+            .entry(profile.to_owned())
+            .or_insert_with(|| worker.clone());
+        Ok(worker)
     }
 
     /// Returns a lock-free metrics snapshot shared by all actors in this pool.
@@ -735,11 +775,9 @@ impl ClientPool {
             return Ok(coordinator);
         }
 
-        let topology_plan = TopologyPlan::from_config(&self.config);
         let coordinator_config = RecoveryCoordinatorConfig {
             broker: broker_config,
             policy: crate::recovery::RecoveryPolicy::default(),
-            topology_plan,
             publisher_config: self.publisher_config,
             config: self.config.clone(),
             metrics: self.metrics.clone(),

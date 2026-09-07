@@ -84,6 +84,8 @@ php artisan queue:work rabbit-rs
 php artisan rabbit-rs:work
 ```
 
+No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#auto-subscribe)).
+
 ## Requirements
 
 - **PHP** 8.4 or 8.5

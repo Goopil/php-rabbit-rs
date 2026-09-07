@@ -59,6 +59,8 @@ struct MockState {
     /// a stream parked still surfaces. Always armed.
     error_notify: Arc<tokio::sync::Notify>,
     queue_sizes: VecDeque<TransportResult<u32>>,
+    /// Queue names passed to `queue_declare` on any channel, in call order.
+    declared_queues: Mutex<Vec<String>>,
     connect_gates: VecDeque<MockOperationGateWait>,
     /// Gates the next `declare_queue` so a test can park the caller mid
     /// declaration — the channel operation runs on the caller's task, not
@@ -207,6 +209,15 @@ impl MockTransport {
         let (wait, gate) = operation_gate();
         self.state().publish_gates.push_back(wait);
         gate
+    }
+
+    /// Queue names passed to `queue_declare` on any channel, in call order.
+    pub fn declared_queues(&self) -> Vec<String> {
+        self.state()
+            .declared_queues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     #[must_use]
@@ -424,6 +435,13 @@ macro_rules! impl_topology_channel {
             }
 
             async fn declare_queue(&self, spec: &QueueSpec) -> TransportResult<()> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .declared_queues
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(spec.name.clone());
                 let gate = if $gate_declare {
                     self.state
                         .lock()

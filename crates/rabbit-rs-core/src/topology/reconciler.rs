@@ -9,24 +9,29 @@ use super::TopologyPlan;
 
 #[derive(Debug, Default)]
 pub struct TopologyReconciler {
-    applied_generation: Option<u64>,
+    applied: Option<(u64, TopologyPlan)>,
 }
 
 impl TopologyReconciler {
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            applied_generation: None,
-        }
+        Self { applied: None }
     }
 
-    /// Returns whether the plan has already been applied for `generation`.
+    /// Returns whether `plan` has already been applied for `generation`.
     #[must_use]
-    pub fn is_applied(&self, generation: u64) -> bool {
-        self.applied_generation == Some(generation)
+    pub fn is_applied(&self, generation: u64, plan: &TopologyPlan) -> bool {
+        matches!(
+            &self.applied,
+            Some((applied_generation, applied_plan))
+                if *applied_generation == generation && applied_plan == plan
+        )
     }
 
-    /// Applies a plan at most once per connection generation.
+    /// Applies a plan at most once per connection generation per plan
+    /// content: the same generation with a *fresh* plan (a queue requested
+    /// after the generation was reconciled — declare-on-use) is re-applied,
+    /// while re-applying the identical plan is a no-op.
     ///
     /// # Errors
     ///
@@ -37,7 +42,7 @@ impl TopologyReconciler {
         plan: &TopologyPlan,
         generation: u64,
     ) -> Result<(), TopologyReconcileError> {
-        if self.applied_generation == Some(generation) {
+        if self.is_applied(generation, plan) {
             return Ok(());
         }
 
@@ -64,7 +69,7 @@ impl TopologyReconciler {
             TopologyMode::External => {}
         }
 
-        self.applied_generation = Some(generation);
+        self.applied = Some((generation, plan.clone()));
         Ok(())
     }
 }
