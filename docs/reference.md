@@ -309,7 +309,7 @@ This is a deliberate design decision: PIE is the PHP ecosystem's official extens
 
 ## Reliability
 
-Rabbit RS provides at-least-once delivery. Silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable.
+Rabbit RS provides at-least-once delivery. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable. The guarantee is scoped to the live process: the publisher replay buffer is process memory, and a PHP crash can drop publications the broker never received — see [What the replay buffer is not](#what-the-replay-buffer-is-not).
 
 The documented exception is `safety = blind`: an explicit fire-and-forget mode (silent loss possible), set per connection (`safety` key) or package-wide (env `RABBIT_RS_SAFETY`) as well as in the raw native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](../packages/laravel-queue/docs/reference.md#safety-modes).
 
@@ -317,7 +317,7 @@ The documented exception is `safety = blind`: an explicit fire-and-forget mode (
 
 The delivery contract is:
 
-- **No silent loss** — every published message is either confirmed or the caller is notified of failure
+- **No silent loss** — every publish on the confirmed delivery path (`safe` mode) is either confirmed or the caller is notified of failure
 - **Duplicates permitted** — in failure windows, the same message may be delivered more than once
 - **Duplicates identifiable** — each message carries a stable `message_id` (UUID from Laravel payload)
 - **Duplicates measurable** — metrics track redeliveries and duplicate counts

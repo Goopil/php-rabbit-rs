@@ -1,30 +1,16 @@
 # Rabbit RS
 
-> **Native Rust RabbitMQ transport for high-throughput, long-running PHP/Laravel workers.**
+> **Keep writing PHP. Let Rust handle RabbitMQ.**
 
 [![CI](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml)
 [![Release](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Rabbit RS is a PHP extension written in Rust. It moves the connection pool, publisher confirms, consumer scheduling, and connection recovery out of PHP userspace, behind the standard Laravel queue API.
+Rabbit RS is a native RabbitMQ runtime for PHP and Laravel workers, designed to stay alive. Your application keeps using Laravel's standard queue API; Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption in a native Rust runtime.
 
 The product is built around one feature: the **long-running consumer** — a worker that multiplexes many queues per broker connection, survives broker restarts and network failures, and keeps settling deliveries through recovery without manual intervention. A supervised fan-out command runs one worker per connection to span vhosts and brokers.
 
-Delivery is **at-least-once**: silent loss is unacceptable; duplicates are permitted and must remain measurable.
-
-## What it does
-
-- **Long-running consumer** — one worker multiplexes subscriptions across many queues on its connection and survives broker restarts without manual intervention
-- **At-least-once delivery** — publisher confirms and mandatory routing enabled by default; every publish is tracked to ACK, return, or timeout
-- **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers, in a fixed order
-- **Weighted-fair scheduling** — deficit round-robin across subscriptions with starvation prevention
-- **Connection-generation-aware tokens** — stale ACKs are rejected so RabbitMQ redelivers
-- **Bounded replay buffer** — unconfirmed publications survive connection recovery in bounded memory, replayed with the same `message_id`
-- **Multi-broker fan-out** — a vhost owns a distinct AMQP connection; define one connection per broker/vhost and `rabbit-rs:work` supervises them all
-- **Octane lifecycle** — flush, reload, and stop hooks prevent channel leaks
-- **No unsafe Rust** — `#![forbid(unsafe_code)]` across the entire workspace
-
-> On the curated lab workloads, rabbit-rs consumes **4–6× faster** than php-amqplib on the same session, with 0 losses and 0 duplicates in every reliable-mode run. Harness, methodology, and archived results: [benchmarks/README.md](benchmarks/README.md).
+Delivery is **at-least-once**. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain measurable.
 
 ## Quick start
 
@@ -85,6 +71,20 @@ php artisan rabbit-rs:work
 ```
 
 No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#auto-subscribe)).
+
+## What it does
+
+- **Long-running consumer** — one worker multiplexes subscriptions across many queues on its connection and survives broker restarts without manual intervention
+- **At-least-once delivery** — publisher confirms and mandatory routing enabled by default; every publish is tracked to ACK, return, or timeout
+- **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers, in a fixed order
+- **Weighted-fair scheduling** — deficit round-robin across subscriptions with starvation prevention
+- **Connection-generation-aware tokens** — stale ACKs are rejected so RabbitMQ redelivers
+- **Bounded replay buffer** — unconfirmed publications survive connection recovery in bounded memory, replayed with the same `message_id`
+- **Multi-broker fan-out** — a vhost owns a distinct AMQP connection; define one connection per broker/vhost and `rabbit-rs:work` supervises them all
+- **Octane lifecycle** — flush, reload, and stop hooks prevent channel leaks
+- **No unsafe Rust** — `#![forbid(unsafe_code)]` across the entire workspace
+
+> On the curated lab workloads, rabbit-rs consumes **4–6× faster** than php-amqplib on the same session, with 0 losses and 0 duplicates in every reliable-mode run. Harness, methodology, and archived results: [benchmarks/README.md](benchmarks/README.md).
 
 ## Requirements
 
