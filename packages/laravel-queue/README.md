@@ -17,14 +17,14 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 - **Backpressure events** — `BackpressureDetected` fires during publish and consume operations when the publisher's bounded buffer is full
 - **Octane support** — consumers are flushed per-request and pools reloaded on worker restart
 - **Quorum queues by default** — durable, delivery-limit-aware topology out of the box
-- **Laravel Horizon support** — Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs; coexists with existing Redis queues (see [Laravel Horizon](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/laravel.md#laravel-horizon))
+- **Laravel Horizon support** — Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs; coexists with existing Redis queues (see [Laravel Horizon](docs/usage.md#laravel-horizon))
 
 ## Requirements
 
 - PHP **8.4** or **8.5**
 - Laravel **12** or **13**
 - `ext-rabbit_rs` — the native extension (see [Installation](#installation))
-- `laravel/horizon` — **optional**, only needed for Horizon dashboard integration (see [Laravel Horizon](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/laravel.md#laravel-horizon))
+- `laravel/horizon` — **optional**, only needed for Horizon dashboard integration (see [Laravel Horizon](docs/usage.md#laravel-horizon))
 
 ## Installation
 
@@ -42,6 +42,8 @@ php artisan vendor:publish --tag="rabbit-rs-config"
 Full guide — macOS (Homebrew or manual binary), Docker, multi-PHP, upgrades and rollback: [docs/installation.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/installation.md).
 
 ## Quick Start
+
+The full walkthrough — reliability, scaling, and operations levels — is in [docs/getting-started.md](docs/getting-started.md).
 
 ### Queue connection
 
@@ -87,7 +89,7 @@ Rabbit RS is configured **connection-first**: every broker, its credentials, its
 
 Each connection is compiled lazily, when the queue manager first resolves it. Unknown keys and type errors throw `InvalidArgumentException` with the exact config path — e.g. `queue.connections.orders.prefetch` — so a typo only fails the driver's use, never the whole application.
 
-The full reference — every connection key, multiple brokers, the `subscriptions` escape hatch with adaptive prefetch, safety modes, delay modes, topology, validation rules, and pool-reuse semantics — lives in [docs/configuration.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/configuration.md).
+The full reference — every connection key, multiple brokers, the `subscriptions` escape hatch with adaptive prefetch, safety modes, delay modes, topology, validation rules, and pool-reuse semantics — lives in [docs/configuration.md](docs/configuration.md).
 
 ### Environment variables
 
@@ -129,27 +131,27 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | `php artisan rabbit-rs:doctor` | One-shot health report per connection — `ok`/`warn`/`fail` checks, non-zero exit on failure (CI-friendly) |
 | `php artisan rabbit-rs:topology` | Preflight topology check; `--fix` declares missing topology |
 
-Details — dispatching, worker and queue resolution semantics, status counters, doctor checks, and topology verification: [docs/laravel.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/laravel.md) and [docs/operations.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations.md).
+Details — dispatching, worker and queue resolution semantics, status counters, doctor checks, and topology verification: [docs/usage.md](docs/usage.md) and [docs/operations.md](docs/operations.md).
 
 ## Recipes
 
 Task-oriented guides in the repository docs:
 
-- [Topology patterns](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/recipes/topology-patterns.md) — work queue vs pub-sub vs delayed, dead-letter wiring, gating topology in CI with `rabbit-rs:topology` / `rabbit-rs:doctor`
-- [Broker tuning](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/recipes/broker-tuning.md) — queue types, watermarks, max-length, heartbeat/confirm timeout, prefetch
-- [Capacity planning](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/recipes/capacity-planning.md) — sizing from the Round K soak evidence and the benchmark harness
+- [Topology patterns](docs/recipes/topology-patterns.md) — work queue vs pub-sub vs delayed, dead-letter wiring, gating topology in CI with `rabbit-rs:topology` / `rabbit-rs:doctor`
+- [Broker tuning](docs/recipes/broker-tuning.md) — queue types, watermarks, max-length, heartbeat/confirm timeout, prefetch
+- [Capacity planning](docs/recipes/capacity-planning.md) — sizing from the Round K soak evidence and the benchmark harness
 
 ## Laravel Horizon
 
-Rabbit RS integrates with [Laravel Horizon](https://laravel.com/docs/horizon): set `RABBIT_RS_WORKER=horizon` (or `worker => 'horizon'` on the connection) and Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs, with Redis used for observability only. Full setup, supervisor coexistence, and the `JobPending`/`JobPushed`/`JobReserved`/`JobDeleted` event contract: [docs/laravel.md — Laravel Horizon](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/laravel.md#laravel-horizon).
+Rabbit RS integrates with [Laravel Horizon](https://laravel.com/docs/horizon): set `RABBIT_RS_WORKER=horizon` (or `worker => 'horizon'` on the connection) and Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs, with Redis used for observability only. Full setup, supervisor coexistence, and the `JobPending`/`JobPushed`/`JobReserved`/`JobDeleted` event contract: [docs/usage.md — Laravel Horizon](docs/usage.md#laravel-horizon).
 
 ## Octane
 
-When Laravel Octane is detected, the driver automatically closes cached consumers after each request, flushes all pools on worker reload (re-normalizing config so broker or credential rotation takes effect), and stops all pools on worker shutdown. No configuration needed — the lifecycle hooks are registered by the service provider. See [docs/octane.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/octane.md).
+When Laravel Octane is detected, the driver automatically closes cached consumers after each request, flushes all pools on worker reload (re-normalizing config so broker or credential rotation takes effect), and stops all pools on worker shutdown. No configuration needed — the lifecycle hooks are registered by the service provider. See [docs/octane.md](docs/octane.md).
 
 ## Events
 
-Two native events, drained synchronously on the PHP thread during publish/consume/flush calls (no polling): `BackpressureDetected` (the publisher's bounded buffer is full) and `ConnectionStateChanged` (a broker connection changes state). When `worker=horizon`, Horizon's own lifecycle events are dispatched too. Payloads, listeners, and custom callbacks: [docs/laravel.md — Events](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/laravel.md#events).
+Two native events, drained synchronously on the PHP thread during publish/consume/flush calls (no polling): `BackpressureDetected` (the publisher's bounded buffer is full) and `ConnectionStateChanged` (a broker connection changes state). When `worker=horizon`, Horizon's own lifecycle events are dispatched too. Payloads, listeners, and custom callbacks: [docs/usage.md — Events](docs/usage.md#events).
 
 ## License
 

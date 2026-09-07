@@ -1,8 +1,8 @@
-# Laravel Usage
+# Laravel usage — reference
 
-Rabbit RS provides a standard Laravel queue driver. It integrates with `queue:work`, `queue:listen`, and the full Laravel queue ecosystem without replacing `Illuminate\Queue\Worker`.
+The everyday path is the [getting started](getting-started.md); this page is the reference for the driver's API and runtime behaviour: dispatching, consuming, events, the job class, Horizon, and auto-subscribe.
 
-## Publishing jobs
+## Dispatching jobs
 
 ### Dispatch a job
 
@@ -177,6 +177,19 @@ $purged = Queue::connection('rabbit-rs')->clear('orders.high');
 
 Purges all messages from the queue and returns the number of jobs removed (the pending count measured before the purge; messages racing the purge are counted but may survive). Requires configuration permissions on the broker. The `ClearableQueue` contract makes `php artisan queue:clear rabbit-rs` available.
 
+## Auto subscribe
+
+`auto_subscribe` (opt-in, default `false`) controls how `pop()` resolves plain queue names the connection does not consume — for example `queue:work --queue=emails` when neither the connection's `queue` key nor its `subscriptions` escape hatch references the `emails` queue.
+
+- `false` (default): `pop()` fails with an actionable error telling you to declare the queue on the connection (`queue` key or `subscriptions`) or enable `auto_subscribe`.
+- `true`: `pop()` builds an implicit worker profile on the fly — a single subscription on this connection, weight 1, and the default prefetch. The profile is cached per queue name in process memory and reused on subsequent pops of the same queue; it is requested from the native pool by name (`__auto__.<queue>`).
+
+The native pool resolves worker profiles from its own configuration, so auto-subscribed consumption additionally requires the native side to accept runtime-registered profiles; until then, declare the queue in the connection's `subscriptions` (or its `queue` key) for reliable consumption.
+
+Prefer declared subscriptions in production: they control per-queue weights, prefetch, and priority classes, and they are visible to `rabbit-rs:status`. Use `auto_subscribe` for development convenience or dynamic low-traffic queues.
+
+The value can be set per connection (`auto_subscribe` in `config/queue.php` — takes precedence) or package-wide in `config/rabbit-rs.php`.
+
 ## Events
 
 Rabbit RS dispatches two native events through the Laravel event system:
@@ -238,6 +251,26 @@ $pool->onBackpressure(function (string $broker, int $inFlight, int $capacity): v
     // Custom handling
 });
 ```
+
+## Job class
+
+`RabbitMqJob` extends `Illuminate\Queue\Jobs\Job` and implements:
+
+- `getJobId()` — returns the stable `message_id` (UUID from Laravel payload)
+- `getRawBody()` — returns the raw payload string
+- `attempts()` — returns the delivery attempt count (from `x-acquired-count` / `x-delivery-count` headers)
+- `delete()` — sends `basic.ack` and releases the delivery handle
+- `release($delay)` — sends `basic.reject(requeue=true)` for delay 0, or republicates via the delay mode for delay > 0
+
+The delivery handle is released after a terminal transition (ack, reject, or release) to prevent double-settlement.
+
+## Worker lifecycle
+
+### Graceful shutdown
+
+The worker handles `SIGTERM` and `SIGINT`. In-flight deliveries are not acknowledged during shutdown — RabbitMQ redelivers them after the connection closes.
+
+Sending `SIGTERM` to the supervisor stops all children gracefully — they finish their current jobs — and the supervisor exits with code 0. There is no separate restart signal: the process supervisor (systemd, Supervisor, Kubernetes) is responsible for restarting the stopped worker.
 
 ## Laravel Horizon
 
@@ -311,66 +344,6 @@ Both Redis and Rabbit RS connections can run in the same Horizon instance. Redis
 
 If Horizon is not installed, set `RABBIT_RS_WORKER=default` (the default). The `horizon` mode requires `laravel/horizon` to be installed.
 
-## Job class
-
-`RabbitMqJob` extends `Illuminate\Queue\Jobs\Job` and implements:
-
-- `getJobId()` — returns the stable `message_id` (UUID from Laravel payload)
-- `getRawBody()` — returns the raw payload string
-- `attempts()` — returns the delivery attempt count (from `x-acquired-count` / `x-delivery-count` headers)
-- `delete()` — sends `basic.ack` and releases the delivery handle
-- `release($delay)` — sends `basic.reject(requeue=true)` for delay 0, or republicates via the delay mode for delay > 0
-
-The delivery handle is released after a terminal transition (ack, reject, or release) to prevent double-settlement.
-
-## Laravel queue configuration
-
-Add the connection to `config/queue.php` — one connection = one broker/vhost = one native pool:
-
-```php
-'connections' => [
-    // ...
-    'rabbit-rs' => [
-        'driver' => 'rabbit-rs',
-        'queue' => env('RABBIT_RS_QUEUE', 'default'),
-        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
-        'username' => env('RABBIT_RS_USERNAME', 'guest'),
-        'password' => env('RABBIT_RS_PASSWORD', 'guest'),
-        'after_commit' => false,
-        'auto_subscribe' => (bool) env('RABBIT_RS_AUTO_SUBSCRIBE', false),
-    ],
-],
-```
-
-Every other key falls back to the package defaults in `config/rabbit-rs.php` — see [Configuration](configuration.md) for the full connection reference.
-
-Set the default connection:
-
-```bash
-QUEUE_CONNECTION=rabbit-rs
-```
-
-### Auto subscribe
-
-`auto_subscribe` (opt-in, default `false`) controls how `pop()` resolves plain queue names the connection does not consume — for example `queue:work --queue=emails` when neither the connection's `queue` key nor its `subscriptions` escape hatch references the `emails` queue.
-
-- `false` (default): `pop()` fails with an actionable error telling you to declare the queue on the connection (`queue` key or `subscriptions`) or enable `auto_subscribe`.
-- `true`: `pop()` builds an implicit worker profile on the fly — a single subscription on this connection, weight 1, and the default prefetch. The profile is cached per queue name in process memory and reused on subsequent pops of the same queue; it is requested from the native pool by name (`__auto__.<queue>`).
-
-The native pool resolves worker profiles from its own configuration, so auto-subscribed consumption additionally requires the native side to accept runtime-registered profiles; until then, declare the queue in the connection's `subscriptions` (or its `queue` key) for reliable consumption.
-
-Prefer declared subscriptions in production: they control per-queue weights, prefetch, and priority classes, and they are visible to `rabbit-rs:status`. Use `auto_subscribe` for development convenience or dynamic low-traffic queues.
-
-The value can be set per connection (`auto_subscribe` in `config/queue.php`, as above — takes precedence) or package-wide in `config/rabbit-rs.php`.
-
-## Worker lifecycle
-
-### Graceful shutdown
-
-The worker handles `SIGTERM` and `SIGINT`. In-flight deliveries are not acknowledged during shutdown — RabbitMQ redelivers them after the connection closes.
-
-Sending `SIGTERM` to the supervisor stops all children gracefully — they finish their current jobs — and the supervisor exits with code 0. There is no separate restart signal: the process supervisor (systemd, Supervisor, Kubernetes) is responsible for restarting the stopped worker.
-
-## Octane integration
+## Octane
 
 See [Octane](octane.md) for Octane-specific lifecycle hooks and configuration.
