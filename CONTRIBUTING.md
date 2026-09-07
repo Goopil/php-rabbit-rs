@@ -58,8 +58,8 @@ Dependency flow: `rabbit-rs-core` → `rabbit-rs-php` (compiles to `.so`/`.dylib
 
 - **Architecture and build details**: [docs/development.md](docs/development.md)
 - **Coding conventions and invariants**: [AGENTS.md](AGENTS.md)
-- **Troubleshooting runtime issues**: [docs/troubleshooting.md](docs/troubleshooting.md)
-- **Configuration reference**: [docs/configuration.md](docs/configuration.md)
+- **Troubleshooting runtime issues**: [docs/reference.md — Troubleshooting](docs/reference.md#troubleshooting)
+- **Configuration reference**: [packages/laravel-queue/docs/reference.md — Configuration](packages/laravel-queue/docs/reference.md#configuration)
 
 ## Before opening a PR
 

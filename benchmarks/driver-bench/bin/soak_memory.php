@@ -13,7 +13,7 @@ declare(strict_types=1);
  * Current process RSS in bytes.
  *
  * Linux: /proc/self/status VmRSS (kB). macOS: `ps -o rss= -p <pid>` (KB) —
- * the pattern already used by the suite per docs/performance.md.
+ * the pattern already used by the suite per benchmarks/README.md.
  *
  * Returns null when the platform provides no readable RSS source.
  */
