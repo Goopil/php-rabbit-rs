@@ -14,7 +14,7 @@ pie install goopil/rabbit-rs-native
 composer require goopil/rabbit-rs-laravel
 ```
 
-Details — macOS (Homebrew), Docker, manual binaries: the [installation guide](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/installation.md). Requirements: PHP 8.4/8.5, Laravel 12/13, a reachable RabbitMQ 4.2.9+ broker.
+Details — macOS (Homebrew), Docker, manual binaries: the [installation guide](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#installation). Requirements: PHP 8.4/8.5, Laravel 12/13, a reachable RabbitMQ 4.2.9+ broker.
 
 ## 1. Hello world
 
@@ -60,7 +60,7 @@ The queue is declared on first use (`topology_mode: declare`). `rabbit-rs:work` 
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: silent loss is unacceptable, duplicates are permitted and measurable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md).
+Delivery is **at-least-once**: silent loss is unacceptable, duplicates are permitted and measurable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability).
 
 The `safety` key selects the publisher guarantees (default `safe`: confirms + mandatory routing, derived — never set independently). In `safe` mode every publish is tracked to ACK, return, or timeout; unconfirmed publications survive connection recovery in bounded process memory and are replayed with their original `message_id`. That replay buffer is **process memory, not durability**: it does not survive a PHP crash, and cross-process durability needs an external outbox.
 
@@ -131,7 +131,7 @@ php artisan rabbit-rs:work --connection=orders-eu,billing
 'prefetch' => ['mode' => 'adaptive', 'initial' => 64, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5],
 ```
 
-Full reference — every connection key, `hosts` failover semantics, validation rules: [Configuration](configuration.md).
+Full reference — every connection key, `hosts` failover semantics, validation rules: [Configuration](reference.md#configuration).
 
 ## 4. Operate
 
@@ -142,18 +142,18 @@ Full reference — every connection key, `hosts` failover semantics, validation 
 | `php artisan rabbit-rs:doctor` | One-shot health report — `ok`/`warn`/`fail` checks, non-zero exit on failure (CI-friendly) |
 | `php artisan rabbit-rs:topology` | Preflight topology check; `--fix` declares missing topology |
 
-Details: [Operations](operations.md) (supervision, Kubernetes, metrics), [Laravel usage](usage.md) (dispatch API, events, job class).
+Details: [Operations](reference.md#operations) (supervision, Kubernetes, metrics), [Laravel usage](reference.md#usage) (dispatch API, events, job class).
 
-**Horizon** — set `RABBIT_RS_WORKER=horizon` (or `'worker' => 'horizon'` on the connection) and Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs; Redis stores observability state while RabbitMQ stays the transport. Setup and the event contract: [Laravel usage — Horizon](usage.md#laravel-horizon).
+**Horizon** — set `RABBIT_RS_WORKER=horizon` (or `'worker' => 'horizon'` on the connection) and Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs — configured in `config/horizon.php` exactly like a Redis queue; Redis stores observability state while RabbitMQ stays the transport. Setup and the event contract: [Laravel usage — Horizon](reference.md#laravel-horizon).
 
-**Octane** — detected automatically: consumers are closed after each request, pools are flushed and re-normalized on worker reload, stopped on shutdown. No configuration needed — see [Octane](octane.md).
+**Octane** — detected automatically: consumers are closed after each request, pools are flushed and re-normalized on worker reload, stopped on shutdown. No configuration needed — see [Octane](reference.md#octane-integration).
 
 ## Going further
 
-- [Configuration](configuration.md) — every connection key, subscriptions escape hatch, safety/delay/topology modes, validation
-- [Topology management](topology.md) — declare/verify/external, dead-letter wiring
-- [Operations](operations.md) — systemd/Supervisor/Kubernetes, metrics, backpressure
-- [Recipes](recipes/README.md) — topology patterns, broker tuning, capacity planning
-- [Laravel usage](usage.md) — RabbitMqQueue API, events, job class, Horizon integration
-- [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reliability.md) — the at-least-once contract
+- [Configuration](reference.md#configuration) — every connection key, subscriptions escape hatch, safety/delay/topology modes, validation
+- [Topology management](reference.md#topology) — declare/verify/external, dead-letter wiring
+- [Operations](reference.md#operations) — systemd/Supervisor/Kubernetes, metrics, backpressure
+- [Recipes](reference.md#recipes) — topology patterns, broker tuning, capacity planning
+- [Laravel usage](reference.md#usage) — RabbitMqQueue API, events, job class, Horizon integration
+- [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability) — the at-least-once contract
 - [Native extension getting started](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/getting-started.md) — the engine underneath

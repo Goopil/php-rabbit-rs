@@ -56,7 +56,7 @@ Add a rabbit-rs connection to `config/queue.php` (one connection = one broker = 
 ],
 ```
 
-Configuration is connection-first — broker, credentials, routes, safety mode, and worker profile all live on the queue connection. The full reference (every key, defaults, validation, and the safety modes) is [packages/laravel-queue/docs/configuration.md](packages/laravel-queue/docs/configuration.md). Optionally publish the cross-cutting defaults:
+Configuration is connection-first — broker, credentials, routes, safety mode, and worker profile all live on the queue connection. The full reference (every key, defaults, validation, and the safety modes) is [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#configuration). Optionally publish the cross-cutting defaults:
 
 ```bash
 php artisan vendor:publish --tag="rabbit-rs-config"
@@ -145,30 +145,23 @@ Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from 
 - Composer plugins that install binaries
 - Full PHP images bundling the extension
 
-These are explicitly out of scope for V1. Use PIE to install the extension in your Dockerfile — see [Installation](docs/installation.md).
+These are explicitly out of scope for V1. Use PIE to install the extension in your Dockerfile — see [Installation](docs/reference.md#installation).
 
 ## Limitations
 
 Read before betting a pipeline on this.
 
-1. **At-least-once means duplicates are possible — by contract, and measured.** The broker redelivers any delivery that is not acknowledged (worker crash, channel loss, recovery), so consumers must treat an extra copy as normal: **jobs must be idempotent**. Duplicates are counted per run and become possible after any reconnect. The counters (`duplicates_total`, `messages_redelivered`) and idempotency guidance live in [docs/reliability.md](docs/reliability.md).
-2. **The replay buffer is in-process memory, not durability.** Unconfirmed publications survive *connection* recovery in a bounded in-process buffer (1024 publications / 64 MiB by default) and are replayed with the same `message_id` and original deadline. A **PHP process crash empties it**: the broker may never have received those messages, and nothing redelivers them to you. Broker redelivery after a crash covers the consume side (duplicates, not loss) — it is not publish durability. For cross-process durability you need an **external outbox**, which Rabbit RS does not include ([docs/reliability.md](docs/reliability.md#what-the-replay-buffer-is-not)).
+1. **At-least-once means duplicates are possible — by contract, and measured.** The broker redelivers any delivery that is not acknowledged (worker crash, channel loss, recovery), so consumers must treat an extra copy as normal: **jobs must be idempotent**. Duplicates are counted per run and become possible after any reconnect. The counters (`duplicates_total`, `messages_redelivered`) and idempotency guidance live in [Reliability](docs/reference.md#reliability).
+2. **The replay buffer is in-process memory, not durability.** Unconfirmed publications survive *connection* recovery in a bounded in-process buffer (1024 publications / 64 MiB by default) and are replayed with the same `message_id` and original deadline. A **PHP process crash empties it**: the broker may never have received those messages, and nothing redelivers them to you. Broker redelivery after a crash covers the consume side (duplicates, not loss) — it is not publish durability. For cross-process durability you need an **external outbox**, which Rabbit RS does not include ([What the replay buffer is not](docs/reference.md#what-the-replay-buffer-is-not)).
 
 ## Documentation
 
 | Topic | File |
 |-------|------|
 | Getting started (native extension) | [docs/getting-started.md](docs/getting-started.md) |
-| Installation | [docs/installation.md](docs/installation.md) |
+| Reference — installation, reliability, troubleshooting | [docs/reference.md](docs/reference.md) |
 | Getting started (Laravel driver) | [packages/laravel-queue/docs/getting-started.md](packages/laravel-queue/docs/getting-started.md) |
-| Configuration reference | [packages/laravel-queue/docs/configuration.md](packages/laravel-queue/docs/configuration.md) |
-| Laravel usage | [packages/laravel-queue/docs/usage.md](packages/laravel-queue/docs/usage.md) |
-| Topology management | [packages/laravel-queue/docs/topology.md](packages/laravel-queue/docs/topology.md) |
-| Reliability and delivery | [docs/reliability.md](docs/reliability.md) |
-| Operations | [packages/laravel-queue/docs/operations.md](packages/laravel-queue/docs/operations.md) |
-| Recipes (patterns, tuning, capacity) | [packages/laravel-queue/docs/recipes/](packages/laravel-queue/docs/recipes/) |
-| Octane integration | [packages/laravel-queue/docs/octane.md](packages/laravel-queue/docs/octane.md) |
-| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Reference — configuration, usage, topology, operations, recipes | [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
 | Development guide | [docs/development.md](docs/development.md) |
 

@@ -162,7 +162,7 @@ jobs:
         with:
           # Unified PIE naming convention: every Linux artifact carries an
           # explicit thread-safety suffix (-nts in V1 — the matrix is
-          # NTS-only, see docs/installation.md and scripts/validate-distribution.sh).
+          # NTS-only, see docs/reference.md and scripts/validate-distribution.sh).
           asset-base: php_rabbit_rs-v${{ needs.create-release.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}
           token: ${{ secrets.GITHUB_TOKEN }}
 

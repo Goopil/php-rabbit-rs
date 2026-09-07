@@ -11,7 +11,7 @@ pie install goopil/rabbit-rs-native
 php --ri rabbit_rs   # verify it loads
 ```
 
-Details (macOS, Docker, manual binaries, rollback): [Installation](installation.md).
+Details (macOS, Docker, manual binaries, rollback): [Installation](reference.md#installation).
 
 ## 1. Hello world
 
@@ -77,11 +77,11 @@ while (true) {
 }
 ```
 
-Because `topology_mode` is `declare`, the queue is created on first use. Use `verify` to check an externally provisioned topology, or `external` to never touch it — see [Topology management](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/topology.md).
+Because `topology_mode` is `declare`, the queue is created on first use. Use `verify` to check an externally provisioned topology, or `external` to never touch it — see [Topology management](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#topology).
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: silent loss is unacceptable, duplicates are permitted and measurable. Your processing must be idempotent — the `message_id` you publish is the stable deduplication key. The full contract: [Reliability](reliability.md).
+Delivery is **at-least-once**: silent loss is unacceptable, duplicates are permitted and measurable. Your processing must be idempotent — the `message_id` you publish is the stable deduplication key. The full contract: [Reliability](reference.md#reliability).
 
 **Safety modes** — one key controls the publisher guarantees (`publisher.safety`):
 
@@ -163,7 +163,7 @@ $stats['publish_buffered'];       // publications parked in the replay buffer
 $stats['confirmation_latency_p99']; // ms
 ```
 
-The full field list is in the `stats()` stub docblock; metric semantics (including what counts as a duplicate) are in [Reliability — Measuring duplicates](reliability.md#measuring-duplicates).
+The full field list is in the `stats()` stub docblock; metric semantics (including what counts as a duplicate) are in [Reliability — Measuring duplicates](reference.md#measuring-duplicates).
 
 **Events** are drained synchronously on the PHP thread during publish/consume/flush/stats calls — no polling:
 
@@ -186,8 +186,8 @@ $pool->close();
 
 ## Going further
 
-- [Installation](installation.md) — platforms, PIE/Homebrew/Docker, distribution model, upgrades
-- [Reliability](reliability.md) — the at-least-once contract, recovery, replay buffer semantics
-- [Troubleshooting](troubleshooting.md) — common errors and diagnosis
+- [Installation](reference.md#installation) — platforms, PIE/Homebrew/Docker, distribution model, upgrades
+- [Reliability](reference.md#reliability) — the at-least-once contract, recovery, replay buffer semantics
+- [Troubleshooting](reference.md#troubleshooting) — common errors and diagnosis
 - [Development guide](development.md) — building the extension from source
 - [Laravel queue driver](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/getting-started.md) — the same engine behind Laravel's `Queue` API

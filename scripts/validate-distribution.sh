@@ -31,7 +31,7 @@ LARAVEL_COMPOSER="${ROOT_DIR}/packages/laravel-queue/composer.json"
 CARGO_TOML="${ROOT_DIR}/Cargo.toml"
 PIE_MATRIX="${ROOT_DIR}/release/pie-matrix.json"
 WORKFLOW="${ROOT_DIR}/.github/workflows/release.yml"
-DOCS="${ROOT_DIR}/docs/installation.md"
+DOCS="${ROOT_DIR}/docs/reference.md"
 SPLIT_SCRIPT="${ROOT_DIR}/scripts/split-laravel-package.sh"
 EXPECTED_LINUX_ARCHIVE_COUNT=8
 
@@ -282,8 +282,8 @@ ok "release workflow produces the unified naming pattern"
 
 echo "==> Checking documented convention"
 grep -q 'php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip' "${DOCS}" \
-    || fail "docs/installation.md does not document the unified naming pattern"
-ok "docs/installation.md documents the unified naming pattern"
+    || fail "docs/reference.md does not document the unified naming pattern"
+ok "docs/reference.md documents the unified naming pattern"
 
 # --- Release artifacts (former verify-release-assets.sh) ----------------------
 
