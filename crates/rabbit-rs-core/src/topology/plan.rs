@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
 use crate::{
-    config::{TopologyMode, ValidatedConfig},
+    config::{TopologyMode, ValidatedConfig, WorkerProfile},
     transport::{BindingSpec, ExchangeKind, ExchangeSpec, Headers, QueueKind, QueueSpec},
 };
 
@@ -266,13 +266,31 @@ impl TopologyPlan {
     /// Never panics: the external-mode fallback compiles by construction.
     #[must_use]
     pub fn from_config(config: &ValidatedConfig) -> Self {
+        Self::from_profiles(config, config.worker_profiles().iter())
+    }
+
+    /// Builds the plan from the configured profiles plus runtime-requested
+    /// extras whose names are not in config (the `auto_subscribe` path).
+    ///
+    /// Extras are not filtered by name here: the caller must only pass
+    /// profiles whose names are absent from the configuration (the recovery
+    /// coordinator filters before calling).
+    ///
+    /// # Panics
+    ///
+    /// Never panics: the external-mode fallback compiles by construction.
+    #[must_use]
+    pub fn from_config_and(config: &ValidatedConfig, extra: &[WorkerProfile]) -> Self {
+        Self::from_profiles(config, config.worker_profiles().iter().chain(extra))
+    }
+
+    fn from_profiles<'a>(
+        config: &ValidatedConfig,
+        profiles: impl Iterator<Item = &'a WorkerProfile>,
+    ) -> Self {
         let queue_type = config.queue_type();
         let queue_durable = config.queue_durable();
-        let subscriptions: Vec<_> = config
-            .worker_profiles()
-            .iter()
-            .flat_map(|worker| &worker.subscriptions)
-            .collect();
+        let subscriptions: Vec<_> = profiles.flat_map(|worker| &worker.subscriptions).collect();
         let queues = subscriptions
             .iter()
             .map(|sub| {
@@ -344,3 +362,87 @@ impl fmt::Display for TopologyPlanError {
 }
 
 impl Error for TopologyPlanError {}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::TopologyPlan;
+    use crate::config::{
+        BrokerConfig, Config, ConsumerConfigSection, Credentials, DelayConfig, Endpoint,
+        PrefetchConfig, PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig,
+        TopologyMode, ValidatedConfig, WorkerProfile,
+    };
+    use crate::transport::QueueKind;
+
+    fn worker_profile(name: &str, broker_name: &str, queue: &str) -> WorkerProfile {
+        WorkerProfile {
+            name: name.to_owned(),
+            subscriptions: vec![SubscriptionConfig {
+                name: queue.to_owned(),
+                broker: broker_name.to_owned(),
+                queue: queue.to_owned(),
+                weight: 1,
+                priority_class: 0,
+                prefetch: PrefetchConfig::Fixed(8),
+                starvation_after: Duration::from_secs(30),
+                max_buffered_bytes: 64 * 1024 * 1024,
+                early_ack: false,
+                no_ack: false,
+            }],
+            scheduler: SchedulerConfig::weighted_fair(),
+        }
+    }
+
+    fn declare_mode_config_with_worker(queue: &str) -> ValidatedConfig {
+        Config {
+            brokers: vec![BrokerConfig {
+                name: "default".to_owned(),
+                hosts: vec![Endpoint::new("rabbit.local", 5672)],
+                vhost: "/".to_owned(),
+                credentials: Credentials::new("guest", "super-secret"),
+                tls: TlsConfig::disabled(),
+                heartbeat: Duration::from_secs(30),
+            }],
+            workers: vec![worker_profile("main", "default", queue)],
+            topology_mode: TopologyMode::Declare,
+            delay: DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: ConsumerConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid config")
+    }
+
+    fn auto_worker(name: &str, queue: &str) -> WorkerProfile {
+        worker_profile(name, "default", queue)
+    }
+
+    #[test]
+    fn from_config_and_appends_runtime_queues() {
+        let config = declare_mode_config_with_worker("orders");
+        let extra = auto_worker("__auto__.emails", "emails");
+
+        let plan = TopologyPlan::from_config_and(&config, std::slice::from_ref(&extra));
+
+        let queue_names: Vec<&str> = plan
+            .queues()
+            .iter()
+            .map(|queue| queue.name.as_str())
+            .collect();
+        assert!(queue_names.contains(&"orders"));
+        assert!(queue_names.contains(&"emails"));
+
+        let without_extra = TopologyPlan::from_config(&config);
+        let base_names: Vec<&str> = without_extra
+            .queues()
+            .iter()
+            .map(|queue| queue.name.as_str())
+            .collect();
+        assert!(!base_names.contains(&"emails"));
+    }
+}
