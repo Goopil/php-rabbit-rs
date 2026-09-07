@@ -460,6 +460,14 @@ When Laravel Octane is detected, the driver automatically:
 
 No configuration needed — the lifecycle hooks are registered by the service provider.
 
+## Recipes
+
+Task-oriented guides in the repository docs:
+
+- [Topology patterns](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/recipes/topology-patterns.md) — work queue vs pub-sub vs delayed, dead-letter wiring, gating topology in CI with `rabbit-rs:topology` / `rabbit-rs:doctor`
+- [Broker tuning](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/recipes/broker-tuning.md) — queue types, watermarks, max-length, heartbeat/confirm timeout, prefetch
+- [Capacity planning](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/recipes/capacity-planning.md) — sizing from the Round K soak evidence and the benchmark harness
+
 ## Laravel Horizon
 
 Rabbit RS integrates with [Laravel Horizon](https://laravel.com/docs/horizon) so jobs processed via RabbitMQ appear in the Horizon dashboard alongside Redis jobs. RabbitMQ remains the transport; Redis is used by Horizon for job tracking, metrics, and dashboard state.
