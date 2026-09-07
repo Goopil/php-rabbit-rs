@@ -158,7 +158,9 @@ Read before betting a pipeline on this.
 
 | Topic | File |
 |-------|------|
+| Getting started (native extension) | [docs/getting-started.md](docs/getting-started.md) |
 | Installation | [docs/installation.md](docs/installation.md) |
+| Getting started (Laravel driver) | [packages/laravel-queue/docs/getting-started.md](packages/laravel-queue/docs/getting-started.md) |
 | Configuration reference | [packages/laravel-queue/docs/configuration.md](packages/laravel-queue/docs/configuration.md) |
 | Laravel usage | [packages/laravel-queue/docs/usage.md](packages/laravel-queue/docs/usage.md) |
 | Topology management | [packages/laravel-queue/docs/topology.md](packages/laravel-queue/docs/topology.md) |
