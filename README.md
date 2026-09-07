@@ -166,6 +166,7 @@ Read before betting a pipeline on this.
 | Reliability and delivery | [docs/reliability.md](docs/reliability.md) |
 | Operations | [docs/operations.md](docs/operations.md) |
 | Performance strategy | [docs/performance.md](docs/performance.md) |
+| Recipes (patterns, tuning, capacity) | [docs/recipes/](docs/recipes/) |
 | Octane integration | [docs/octane.md](docs/octane.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
