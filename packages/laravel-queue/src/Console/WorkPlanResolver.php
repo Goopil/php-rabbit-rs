@@ -49,33 +49,11 @@ final class WorkPlanResolver
         $queueNames = self::split($queues);
 
         if ($queueNames === []) {
-            $plan = [];
-            foreach ($targeted as $name => $config) {
-                $plan[] = ['connection' => $name, 'queues' => RabbitRsConnections::definedQueues($config)];
-            }
-
-            return $plan;
+            return self::planAllDefinedQueues($targeted);
         }
 
-        $plan = [];
         $resolved = [];
-        foreach ($targeted as $name => $config) {
-            $queuesForConnection = [];
-            foreach ($queueNames as $queueName) {
-                $queue = self::definedQueueFor($config, $queueName);
-                if ($queue === null) {
-                    continue;
-                }
-                $resolved[$queueName] = true;
-                if (! in_array($queue, $queuesForConnection, true)) {
-                    $queuesForConnection[] = $queue;
-                }
-            }
-
-            if ($queuesForConnection !== []) {
-                $plan[] = ['connection' => $name, 'queues' => $queuesForConnection];
-            }
-        }
+        $plan = self::planByDefinition($targeted, $queueNames, $resolved);
 
         $unknown = array_values(array_unique(array_diff($queueNames, array_keys($resolved))));
         if ($unknown !== []) {
@@ -87,6 +65,71 @@ final class WorkPlanResolver
         }
 
         return $plan;
+    }
+
+    /**
+     * Plan where every targeted connection consumes all its defined queues.
+     *
+     * @param array<string, array<string, mixed>> $targeted
+     * @return list<array{connection: string, queues: list<string>}>
+     */
+    private static function planAllDefinedQueues(array $targeted): array
+    {
+        $plan = [];
+        foreach ($targeted as $name => $config) {
+            $plan[] = ['connection' => $name, 'queues' => RabbitRsConnections::definedQueues($config)];
+        }
+
+        return $plan;
+    }
+
+    /**
+     * Plan where each listed queue name is resolved BY DEFINITION per
+     * targeted connection; entries with no resolved queue are dropped.
+     *
+     * @param array<string, array<string, mixed>> $targeted
+     * @param list<string> $queueNames
+     * @param array<string, bool> $resolved updated in place with every
+     *         queue name resolved on at least one connection
+     * @return list<array{connection: string, queues: list<string>}>
+     */
+    private static function planByDefinition(array $targeted, array $queueNames, array &$resolved): array
+    {
+        $plan = [];
+        foreach ($targeted as $name => $config) {
+            $queuesForConnection = self::resolveQueuesFor($config, $queueNames, $resolved);
+            if ($queuesForConnection !== []) {
+                $plan[] = ['connection' => $name, 'queues' => $queuesForConnection];
+            }
+        }
+
+        return $plan;
+    }
+
+    /**
+     * Resolve each listed queue name against one connection, keeping
+     * first-seen order and dropping duplicates.
+     *
+     * @param array<string, mixed> $config
+     * @param list<string> $queueNames
+     * @param array<string, bool> $resolved
+     * @return list<string>
+     */
+    private static function resolveQueuesFor(array $config, array $queueNames, array &$resolved): array
+    {
+        $queuesForConnection = [];
+        foreach ($queueNames as $queueName) {
+            $queue = self::definedQueueFor($config, $queueName);
+            if ($queue === null) {
+                continue;
+            }
+            $resolved[$queueName] = true;
+            if (! in_array($queue, $queuesForConnection, true)) {
+                $queuesForConnection[] = $queue;
+            }
+        }
+
+        return $queuesForConnection;
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Console;
 
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
+use Goopil\RabbitRs\Laravel\Exceptions\ManagementApiException;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
@@ -156,43 +157,78 @@ final class RabbitMqTopologyCommand extends Command
         }
 
         $ok = true;
-        $expectedType = (string) ($compiled['native']['queue_type'] ?? 'quorum');
 
         foreach ($compiled['native']['workers'][0]['subscriptions'] ?? [] as $subscription) {
-            $queue = (string) $subscription['queue'];
-            $entry = $this->findByName($queues, $queue);
-            if ($entry === null) {
-                $this->emit('warn', "management api: queue '{$queue}' not listed — arguments not verified");
-
-                continue;
-            }
-            $actualType = (string) ($entry['arguments']['x-queue-type'] ?? 'classic');
-            if ($actualType !== $expectedType) {
-                $this->emit('fail', "queue '{$queue}' has x-queue-type={$actualType}, expected {$expectedType}");
-                $this->emit('fail', "check queue.connections.{$name}.queue_type");
-                $ok = false;
-            }
+            $ok = $this->verifyQueueArguments($name, $compiled, $queues, $subscription) && $ok;
         }
 
-        $deadLetter = $compiled['topology']['dead_letter'];
-        if (is_array($deadLetter)) {
-            $exchange = (string) $deadLetter['exchange'];
-            if ($this->findByName($exchanges, $exchange) === null) {
-                $this->emit('fail', "exchange '{$exchange}' is missing");
-                $this->emit('fail', "check queue.connections.{$name}.dead_letter.exchange");
-                $ok = false;
-            } else {
-                $this->emit('ok', "exchange '{$exchange}' declared");
-            }
+        $ok = $this->verifyDeadLetter($name, $compiled, $exchanges, $bindings) && $ok;
 
-            $dlq = (string) $deadLetter['queue'];
-            if (! $this->bindingExists($bindings, $exchange, $dlq)) {
-                $this->emit('fail', "binding '{$exchange}' -> '{$dlq}' is missing");
-                $this->emit('fail', "check queue.connections.{$name}.dead_letter");
-                $ok = false;
-            } else {
-                $this->emit('ok', "dead-letter binding '{$exchange}' -> '{$dlq}' declared");
-            }
+        return $ok;
+    }
+
+    /**
+     * Compares one subscription queue's x-queue-type against the compiled
+     * queue_type.
+     *
+     * @param array<string, mixed> $compiled
+     * @param list<array<string, mixed>> $queues
+     * @param array<string, mixed> $subscription
+     */
+    private function verifyQueueArguments(string $name, array $compiled, array $queues, array $subscription): bool
+    {
+        $queue = (string) $subscription['queue'];
+        $entry = $this->findByName($queues, $queue);
+        if ($entry === null) {
+            $this->emit('warn', "management api: queue '{$queue}' not listed — arguments not verified");
+
+            return true;
+        }
+
+        $expectedType = (string) ($compiled['native']['queue_type'] ?? 'quorum');
+        $actualType = (string) ($entry['arguments']['x-queue-type'] ?? 'classic');
+        if ($actualType !== $expectedType) {
+            $this->emit('fail', "queue '{$queue}' has x-queue-type={$actualType}, expected {$expectedType}");
+            $this->emit('fail', "check queue.connections.{$name}.queue_type");
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Verifies the dead-letter exchange and its binding to the dead-letter
+     * queue when one is configured.
+     *
+     * @param array<string, mixed> $compiled
+     * @param list<array<string, mixed>> $exchanges
+     * @param list<array<string, mixed>> $bindings
+     */
+    private function verifyDeadLetter(string $name, array $compiled, array $exchanges, array $bindings): bool
+    {
+        $deadLetter = $compiled['topology']['dead_letter'];
+        if (! is_array($deadLetter)) {
+            return true;
+        }
+
+        $ok = true;
+        $exchange = (string) $deadLetter['exchange'];
+        if ($this->findByName($exchanges, $exchange) === null) {
+            $this->emit('fail', "exchange '{$exchange}' is missing");
+            $this->emit('fail', "check queue.connections.{$name}.dead_letter.exchange");
+            $ok = false;
+        } else {
+            $this->emit('ok', "exchange '{$exchange}' declared");
+        }
+
+        $dlq = (string) $deadLetter['queue'];
+        if (! $this->bindingExists($bindings, $exchange, $dlq)) {
+            $this->emit('fail', "binding '{$exchange}' -> '{$dlq}' is missing");
+            $this->emit('fail', "check queue.connections.{$name}.dead_letter");
+            $ok = false;
+        } else {
+            $this->emit('ok', "dead-letter binding '{$exchange}' -> '{$dlq}' declared");
         }
 
         return $ok;
@@ -240,7 +276,7 @@ final class RabbitMqTopologyCommand extends Command
             ->get($url);
 
         if (! $response->successful()) {
-            throw new \RuntimeException('management api returned HTTP '.$response->status());
+            throw new ManagementApiException('management api returned HTTP '.$response->status());
         }
 
         $entries = $response->json();

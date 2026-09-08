@@ -124,23 +124,14 @@ final class RabbitMqConnector implements ConnectorInterface
      */
     private function warnOnUnboundedRedeliveryDefaults(array $config, array $compiled): void
     {
-        if (self::$unboundedRedeliveryWarningEmitted) {
-            return;
-        }
+        $shouldWarn = ! self::$unboundedRedeliveryWarningEmitted
+            && $this->inProductionEnvironment !== null
+            && ($this->inProductionEnvironment)()
+            && ($compiled['topology']['queue']['delivery_limit'] ?? null) === null
+            && ($compiled['topology']['dead_letter'] ?? null) === null
+            && (bool) ($config['production_warning'] ?? $this->productionWarningEnabled);
 
-        if ($this->inProductionEnvironment === null || ! ($this->inProductionEnvironment)()) {
-            return;
-        }
-
-        if (($compiled['topology']['queue']['delivery_limit'] ?? null) !== null) {
-            return;
-        }
-
-        if (($compiled['topology']['dead_letter'] ?? null) !== null) {
-            return;
-        }
-
-        if (! (bool) ($config['production_warning'] ?? $this->productionWarningEnabled)) {
+        if (! $shouldWarn) {
             return;
         }
 

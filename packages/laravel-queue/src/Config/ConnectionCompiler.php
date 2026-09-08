@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Config;
 
-use InvalidArgumentException;
-
 /**
  * Compiles one queue.php connection into the native config shape expected by
  * the extension: one broker, one route, and one worker profile named after
@@ -21,6 +19,7 @@ final class ConnectionCompiler
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
     private const PATH_QUEUE = '.queue';
     private const PATH_NO_ACK = '.no_ack';
+    private const PATH_MODE = '.mode';
 
     /**
      * Top-level connection keys the compiler consumes. `driver` is read by
@@ -64,15 +63,15 @@ final class ConnectionCompiler
         $path = 'queue.connections.'.$name;
 
         $config = self::mergeDefaults($config, $defaults);
-        self::rejectUnknownKeys($config, array_merge(self::CONNECTION_KEYS, array_keys($defaults)), $path);
+        Values::rejectUnknownKeys($config, array_merge(self::CONNECTION_KEYS, array_keys($defaults)), $path);
 
-        $queue = self::string($config['queue'] ?? null, $path.self::PATH_QUEUE);
+        $queue = Values::string($config['queue'] ?? null, $path.self::PATH_QUEUE);
         $broker = self::broker($name, $config, $path);
-        $bestEffort = self::boolean($config['best_effort'] ?? false, $path.'.best_effort');
+        $bestEffort = Values::boolean($config['best_effort'] ?? false, $path.'.best_effort');
         $worker = self::worker($name, $queue, $config, $bestEffort, $path);
         $topology = self::topology($config, $path);
         $publisher = self::publisher($config, $path);
-        $autoSubscribe = self::boolean($config['auto_subscribe'] ?? true, $path.'.auto_subscribe');
+        $autoSubscribe = Values::boolean($config['auto_subscribe'] ?? true, $path.'.auto_subscribe');
 
         return [
             'native' => [
@@ -145,19 +144,19 @@ final class ConnectionCompiler
 
         $password = $config['password'] ?? 'guest';
         if (! is_string($password)) {
-            self::invalid($path.'.password', 'must be a string');
+            Values::invalid($path.'.password', 'must be a string');
         }
 
         return [
             'name' => $name,
             'hosts' => self::hosts($config['hosts'] ?? '127.0.0.1:5672', $path.'.hosts'),
-            'vhost' => self::string($config['vhost'] ?? '/', $path.'.vhost'),
+            'vhost' => Values::string($config['vhost'] ?? '/', $path.'.vhost'),
             'credentials' => [
-                'username' => self::string($config['username'] ?? 'guest', $path.'.username'),
+                'username' => Values::string($config['username'] ?? 'guest', $path.'.username'),
                 'password' => $password,
             ],
             'tls' => self::tls($config['tls'] ?? [], $path.'.tls'),
-            'heartbeat' => self::positiveInt($config['heartbeat'] ?? 30, $path.'.heartbeat'),
+            'heartbeat' => Values::positiveInt($config['heartbeat'] ?? 30, $path.'.heartbeat'),
         ];
     }
 
@@ -174,7 +173,7 @@ final class ConnectionCompiler
         }
 
         if (! is_array($hosts) || $hosts === []) {
-            self::invalid($path, 'must contain at least one host');
+            Values::invalid($path, 'must contain at least one host');
         }
 
         $endpoints = [];
@@ -198,7 +197,7 @@ final class ConnectionCompiler
     private static function endpoint(mixed $endpoint, string $path): array
     {
         if (! is_string($endpoint) || trim($endpoint) === '') {
-            self::invalid($path, 'must be a non-empty host or host:port string');
+            Values::invalid($path, 'must be a non-empty host or host:port string');
         }
 
         $endpoint = trim($endpoint);
@@ -207,23 +206,23 @@ final class ConnectionCompiler
 
         if (str_starts_with($endpoint, '[')) {
             if (preg_match('/^\[([^]]+)](?::(\d+))?$/', $endpoint, $matches) !== 1) {
-                self::invalid($path, 'contains an invalid bracketed IPv6 endpoint');
+                Values::invalid($path, 'contains an invalid bracketed IPv6 endpoint');
             }
             $host = $matches[1];
             $port = isset($matches[2]) ? (int) $matches[2] : self::DEFAULT_AMQP_PORT;
         } elseif (substr_count($endpoint, ':') === 1) {
             [$host, $rawPort] = explode(':', $endpoint, 2);
             if ($rawPort === '' || ! ctype_digit($rawPort)) {
-                self::invalid($path, 'contains an invalid port');
+                Values::invalid($path, 'contains an invalid port');
             }
             $port = (int) $rawPort;
         }
 
         if ($host === '') {
-            self::invalid($path, 'contains an empty host');
+            Values::invalid($path, 'contains an empty host');
         }
         if ($port < 1 || $port > 65535) {
-            self::invalid($path, 'port must be between 1 and 65535');
+            Values::invalid($path, 'port must be between 1 and 65535');
         }
 
         return ['host' => $host, 'port' => $port];
@@ -235,27 +234,27 @@ final class ConnectionCompiler
     private static function tls(mixed $tls, string $path): array
     {
         if (! is_array($tls)) {
-            self::invalid($path, self::MSG_MUST_BE_ARRAY);
+            Values::invalid($path, self::MSG_MUST_BE_ARRAY);
         }
-        self::rejectUnknownKeys($tls, ['enabled', 'ca_cert', 'client_cert', 'client_key'], $path);
+        Values::rejectUnknownKeys($tls, ['enabled', 'ca_cert', 'client_cert', 'client_key'], $path);
 
         $caCert = $tls['ca_cert'] ?? null;
         if ($caCert !== null && ! is_string($caCert)) {
-            self::invalid($path.'.ca_cert', self::MSG_MUST_BE_NULL_OR_STRING);
+            Values::invalid($path.'.ca_cert', self::MSG_MUST_BE_NULL_OR_STRING);
         }
 
         $clientCert = $tls['client_cert'] ?? null;
         if ($clientCert !== null && ! is_string($clientCert)) {
-            self::invalid($path.'.client_cert', self::MSG_MUST_BE_NULL_OR_STRING);
+            Values::invalid($path.'.client_cert', self::MSG_MUST_BE_NULL_OR_STRING);
         }
 
         $clientKey = $tls['client_key'] ?? null;
         if ($clientKey !== null && ! is_string($clientKey)) {
-            self::invalid($path.'.client_key', self::MSG_MUST_BE_NULL_OR_STRING);
+            Values::invalid($path.'.client_key', self::MSG_MUST_BE_NULL_OR_STRING);
         }
 
         return [
-            'enabled' => self::boolean($tls['enabled'] ?? false, $path.'.enabled'),
+            'enabled' => Values::boolean($tls['enabled'] ?? false, $path.'.enabled'),
             'ca_cert' => $caCert,
             'client_cert' => $clientCert,
             'client_key' => $clientKey,
@@ -286,7 +285,7 @@ final class ConnectionCompiler
         }
 
         if (! is_array($subscriptions) || $subscriptions === []) {
-            self::invalid($path.'.subscriptions', 'must contain at least one subscription');
+            Values::invalid($path.'.subscriptions', 'must contain at least one subscription');
         }
 
         $seenQueues = [];
@@ -294,17 +293,17 @@ final class ConnectionCompiler
         foreach ($subscriptions as $alias => $entry) {
             $alias = (string) $alias;
             if ($alias === '') {
-                self::invalid($path.'.subscriptions', 'subscription keys must be non-empty strings');
+                Values::invalid($path.'.subscriptions', 'subscription keys must be non-empty strings');
             }
 
             $subscriptionPath = $path.'.subscriptions.'.$alias;
             if (! is_array($entry)) {
-                self::invalid($subscriptionPath, self::MSG_MUST_BE_ARRAY);
+                Values::invalid($subscriptionPath, self::MSG_MUST_BE_ARRAY);
             }
 
-            $queueName = self::string($entry['queue'] ?? null, $subscriptionPath.self::PATH_QUEUE);
+            $queueName = Values::string($entry['queue'] ?? null, $subscriptionPath.self::PATH_QUEUE);
             if (isset($seenQueues[$queueName])) {
-                self::invalid($subscriptionPath.self::PATH_QUEUE, "duplicates the queue of subscription '{$seenQueues[$queueName]}'");
+                Values::invalid($subscriptionPath.self::PATH_QUEUE, "duplicates the queue of subscription '{$seenQueues[$queueName]}'");
             }
             $seenQueues[$queueName] = $alias;
 
@@ -328,38 +327,38 @@ final class ConnectionCompiler
      */
     private static function subscription(string $name, string $alias, array $subscription, array $config, bool $bestEffort, string $path): array
     {
-        self::rejectUnknownKeys(
+        Values::rejectUnknownKeys(
             $subscription,
             ['queue', 'weight', 'priority_class', 'prefetch', 'starvation_after', 'early_ack', 'no_ack'],
             $path,
         );
 
-        $earlyAck = self::boolean($subscription['early_ack'] ?? false, $path.'.early_ack');
+        $earlyAck = Values::boolean($subscription['early_ack'] ?? false, $path.'.early_ack');
         if ($earlyAck && ! $bestEffort) {
-            self::invalid($path.'.early_ack', 'early_ack is not allowed in reliable mode — set best_effort=true to opt in');
+            Values::invalid($path.'.early_ack', 'early_ack is not allowed in reliable mode — set best_effort=true to opt in');
         }
 
-        $noAck = self::boolean($subscription['no_ack'] ?? false, $path.self::PATH_NO_ACK);
+        $noAck = Values::boolean($subscription['no_ack'] ?? false, $path.self::PATH_NO_ACK);
         if ($noAck && ! $earlyAck) {
-            self::invalid($path.self::PATH_NO_ACK, "no_ack=true requires early_ack=true for subscription '{$alias}'");
+            Values::invalid($path.self::PATH_NO_ACK, "no_ack=true requires early_ack=true for subscription '{$alias}'");
         }
         if ($noAck && ! $bestEffort) {
-            self::invalid($path.self::PATH_NO_ACK, "no_ack=true requires best_effort=true for subscription '{$alias}'");
+            Values::invalid($path.self::PATH_NO_ACK, "no_ack=true requires best_effort=true for subscription '{$alias}'");
         }
 
         return [
             'name' => $alias,
             'broker' => $name,
-            'queue' => self::string($subscription['queue'] ?? null, $path.self::PATH_QUEUE),
-            'weight' => self::positiveInt($subscription['weight'] ?? 1, $path.'.weight', 65535),
-            'priority_class' => self::boundedI16($subscription['priority_class'] ?? 0, $path.'.priority_class'),
+            'queue' => Values::string($subscription['queue'] ?? null, $path.self::PATH_QUEUE),
+            'weight' => Values::positiveInt($subscription['weight'] ?? 1, $path.'.weight', 65535),
+            'priority_class' => Values::boundedI16($subscription['priority_class'] ?? 0, $path.'.priority_class'),
             'prefetch' => self::prefetch(
                 $subscription['prefetch'] ?? ($config['prefetch'] ?? 64),
                 $path.'.prefetch',
                 $earlyAck,
                 $noAck,
             ),
-            'starvation_after' => self::positiveInt($subscription['starvation_after'] ?? 30, $path.'.starvation_after'),
+            'starvation_after' => Values::positiveInt($subscription['starvation_after'] ?? 30, $path.'.starvation_after'),
             'early_ack' => $earlyAck,
             'no_ack' => $noAck,
         ];
@@ -378,33 +377,33 @@ final class ConnectionCompiler
     private static function prefetch(mixed $prefetch, string $path, bool $earlyAck, bool $noAck): int|array
     {
         if (is_int($prefetch) || is_string($prefetch)) {
-            return self::positiveInt($prefetch, $path, 65535);
+            return Values::positiveInt($prefetch, $path, 65535);
         }
         if (! is_array($prefetch)) {
-            self::invalid($path, 'must be an integer or an array with a mode');
+            Values::invalid($path, 'must be an integer or an array with a mode');
         }
 
         $mode = $prefetch['mode'] ?? null;
         if ($mode === 'fixed') {
-            return self::positiveInt($prefetch['value'] ?? null, $path.'.value', 65535);
+            return Values::positiveInt($prefetch['value'] ?? null, $path.'.value', 65535);
         }
         if ($mode === 'adaptive') {
-            $min = self::positiveInt($prefetch['min'] ?? null, $path.'.min', 65535);
-            $max = self::positiveInt($prefetch['max'] ?? null, $path.'.max', 65535);
+            $min = Values::positiveInt($prefetch['min'] ?? null, $path.'.min', 65535);
+            $max = Values::positiveInt($prefetch['max'] ?? null, $path.'.max', 65535);
             if ($max < $min) {
-                self::invalid($path.'.max', 'must be greater than or equal to min');
+                Values::invalid($path.'.max', 'must be greater than or equal to min');
             }
-            $initial = self::positiveInt($prefetch['initial'] ?? null, $path.'.initial', 65535);
+            $initial = Values::positiveInt($prefetch['initial'] ?? null, $path.'.initial', 65535);
             if ($initial < $min || $initial > $max) {
-                self::invalid($path.'.initial', 'must be within [min, max]');
+                Values::invalid($path.'.initial', 'must be within [min, max]');
             }
-            $targetBufferSeconds = self::positiveInt(
+            $targetBufferSeconds = Values::positiveInt(
                 $prefetch['target_buffer_seconds'] ?? null,
                 $path.'.target_buffer_seconds',
             );
             if ($earlyAck || $noAck) {
-                self::invalid(
-                    $path.'.mode',
+                Values::invalid(
+                    $path.self::PATH_MODE,
                     'adaptive prefetch requires consumer acknowledgements: early_ack and no_ack must be false',
                 );
             }
@@ -418,17 +417,7 @@ final class ConnectionCompiler
             ];
         }
 
-        self::invalid($path.'.mode', 'must be fixed or adaptive');
-    }
-
-    private static function boundedI16(mixed $value, string $path): int
-    {
-        $value = self::integer($value, $path);
-        if ($value < -32768 || $value > 32767) {
-            self::invalid($path, 'must be an integer between -32768 and 32767');
-        }
-
-        return $value;
+        Values::invalid($path.self::PATH_MODE, 'must be fixed or adaptive');
     }
 
     /**
@@ -458,7 +447,7 @@ final class ConnectionCompiler
     private static function safetyMode(mixed $mode, string $path): string
     {
         if (! is_string($mode) || ! in_array($mode, ['safe', 'unsafe', 'blind'], true)) {
-            self::invalid($path, 'must be safe, unsafe, or blind');
+            Values::invalid($path, 'must be safe, unsafe, or blind');
         }
 
         return $mode;
@@ -466,9 +455,9 @@ final class ConnectionCompiler
 
     private static function confirmTimeout(mixed $value, string $path): int
     {
-        $value = self::integer($value, $path);
+        $value = Values::integer($value, $path);
         if ($value < 1000) {
-            self::invalid($path, 'must be at least 1000');
+            Values::invalid($path, 'must be at least 1000');
         }
 
         return $value;
@@ -480,14 +469,14 @@ final class ConnectionCompiler
      */
     private static function consumer(array $config, string $path): array
     {
-        $waitTimeout = self::integer($config['wait_timeout'] ?? self::DEFAULT_CONSUMER_WAIT_TIMEOUT_MS, $path.'.wait_timeout');
+        $waitTimeout = Values::integer($config['wait_timeout'] ?? self::DEFAULT_CONSUMER_WAIT_TIMEOUT_MS, $path.'.wait_timeout');
         if ($waitTimeout < 1000 || $waitTimeout > self::MAX_CONSUMER_WAIT_TIMEOUT_MS) {
-            self::invalid($path.'.wait_timeout', 'must be between 1000 and '.self::MAX_CONSUMER_WAIT_TIMEOUT_MS);
+            Values::invalid($path.'.wait_timeout', 'must be between 1000 and '.self::MAX_CONSUMER_WAIT_TIMEOUT_MS);
         }
 
         return [
             'wait_timeout' => $waitTimeout,
-            'max_attempts' => self::positiveInt($config['max_attempts'] ?? self::DEFAULT_MAX_ATTEMPTS, $path.'.max_attempts'),
+            'max_attempts' => Values::positiveInt($config['max_attempts'] ?? self::DEFAULT_MAX_ATTEMPTS, $path.'.max_attempts'),
         ];
     }
 
@@ -497,34 +486,34 @@ final class ConnectionCompiler
     private static function delay(mixed $delay, string $path): array
     {
         if (! is_array($delay)) {
-            self::invalid($path, self::MSG_MUST_BE_ARRAY);
+            Values::invalid($path, self::MSG_MUST_BE_ARRAY);
         }
-        self::rejectUnknownKeys($delay, ['mode', 'buckets', 'max_buckets', 'queue_expiry_margin'], $path);
+        Values::rejectUnknownKeys($delay, ['mode', 'buckets', 'max_buckets', 'queue_expiry_margin'], $path);
 
         $mode = $delay['mode'] ?? 'auto';
         if (! is_string($mode) || ! in_array($mode, ['auto', 'plugin', 'ttl'], true)) {
-            self::invalid($path.'.mode', 'must be auto, plugin, or ttl');
+            Values::invalid($path.self::PATH_MODE, 'must be auto, plugin, or ttl');
         }
 
         $buckets = $delay['buckets'] ?? [1, 5, 30, 120];
         if (! is_array($buckets) || $buckets === []) {
-            self::invalid($path.'.buckets', 'must contain at least one bucket');
+            Values::invalid($path.'.buckets', 'must contain at least one bucket');
         }
         $normalizedBuckets = [];
         foreach ($buckets as $index => $bucket) {
-            $normalizedBuckets[] = self::positiveInt($bucket, $path.'.buckets.'.$index);
+            $normalizedBuckets[] = Values::positiveInt($bucket, $path.'.buckets.'.$index);
         }
 
-        $maxBuckets = self::positiveInt($delay['max_buckets'] ?? 8, $path.'.max_buckets');
+        $maxBuckets = Values::positiveInt($delay['max_buckets'] ?? 8, $path.'.max_buckets');
         if (count($normalizedBuckets) > $maxBuckets) {
-            self::invalid($path.'.buckets', "bucket count exceeds configured maximum {$maxBuckets}");
+            Values::invalid($path.'.buckets', "bucket count exceeds configured maximum {$maxBuckets}");
         }
 
         return [
             'mode' => $mode,
             'buckets' => $normalizedBuckets,
             'max_buckets' => $maxBuckets,
-            'queue_expiry_margin' => self::positiveInt($delay['queue_expiry_margin'] ?? 60, $path.'.queue_expiry_margin'),
+            'queue_expiry_margin' => Values::positiveInt($delay['queue_expiry_margin'] ?? 60, $path.'.queue_expiry_margin'),
         ];
     }
 
@@ -536,18 +525,18 @@ final class ConnectionCompiler
     {
         $type = $config['queue_type'] ?? 'quorum';
         if (! is_string($type) || ! in_array($type, ['quorum', 'classic'], true)) {
-            self::invalid($path.'.queue_type', 'must be quorum or classic');
+            Values::invalid($path.'.queue_type', 'must be quorum or classic');
         }
 
         $deliveryLimit = $config['delivery_limit'] ?? null;
         if ($deliveryLimit !== null) {
-            $deliveryLimit = self::positiveInt($deliveryLimit, $path.'.delivery_limit');
+            $deliveryLimit = Values::positiveInt($deliveryLimit, $path.'.delivery_limit');
         }
 
         $deadLetter = self::deadLetter($config['dead_letter'] ?? null, $path.'.dead_letter');
 
         if ($deliveryLimit !== null && $deadLetter === null) {
-            self::invalid(
+            Values::invalid(
                 $path.'.dead_letter',
                 'dead_letter must be configured when delivery_limit is set — '
                 .'without it, poison messages are silently dropped by the quorum queue',
@@ -557,7 +546,7 @@ final class ConnectionCompiler
         return [
             'queue' => [
                 'type' => $type,
-                'durable' => self::boolean($config['queue_durable'] ?? true, $path.'.queue_durable'),
+                'durable' => Values::boolean($config['queue_durable'] ?? true, $path.'.queue_durable'),
                 'delivery_limit' => $deliveryLimit,
             ],
             'dead_letter' => $deadLetter,
@@ -573,19 +562,19 @@ final class ConnectionCompiler
             return null;
         }
         if (! is_array($deadLetter)) {
-            self::invalid($path, 'must be null or an array');
+            Values::invalid($path, 'must be null or an array');
         }
-        self::rejectUnknownKeys($deadLetter, ['exchange', 'queue', 'routing_key'], $path);
+        Values::rejectUnknownKeys($deadLetter, ['exchange', 'queue', 'routing_key'], $path);
 
         $routingKey = $deadLetter['routing_key'] ?? null;
         if ($routingKey !== null && (! is_string($routingKey) || $routingKey === '')) {
-            self::invalid($path.'.routing_key', 'must be null or a non-empty string');
+            Values::invalid($path.'.routing_key', 'must be null or a non-empty string');
         }
 
         return [
             'enabled' => true,
-            'exchange' => self::string($deadLetter['exchange'] ?? null, $path.'.exchange'),
-            'queue' => self::string($deadLetter['queue'] ?? null, $path.self::PATH_QUEUE),
+            'exchange' => Values::string($deadLetter['exchange'] ?? null, $path.'.exchange'),
+            'queue' => Values::string($deadLetter['queue'] ?? null, $path.self::PATH_QUEUE),
             'routing_key' => $routingKey,
         ];
     }
@@ -603,7 +592,7 @@ final class ConnectionCompiler
             return '';
         }
         if (! is_string($exchange)) {
-            self::invalid($path.'.exchange', 'must be a string or null');
+            Values::invalid($path.'.exchange', 'must be a string or null');
         }
 
         return $exchange;
@@ -621,7 +610,7 @@ final class ConnectionCompiler
             return '';
         }
         if (! is_string($routingKey)) {
-            self::invalid($path.'.routing_key', 'must be a string or null');
+            Values::invalid($path.'.routing_key', 'must be a string or null');
         }
 
         return $routingKey;
@@ -630,7 +619,7 @@ final class ConnectionCompiler
     private static function topologyMode(mixed $mode, string $path): string
     {
         if (! is_string($mode) || ! in_array($mode, ['declare', 'verify', 'external'], true)) {
-            self::invalid($path, 'must be declare, verify, or external');
+            Values::invalid($path, 'must be declare, verify, or external');
         }
 
         return $mode;
@@ -647,80 +636,8 @@ final class ConnectionCompiler
             return;
         }
         if (! is_string($url)) {
-            self::invalid($path, self::MSG_MUST_BE_NULL_OR_STRING);
+            Values::invalid($path, self::MSG_MUST_BE_NULL_OR_STRING);
         }
     }
 
-    private static function string(mixed $value, string $path, bool $allowEmpty = false): string
-    {
-        if (! is_string($value) || (! $allowEmpty && $value === '')) {
-            self::invalid($path, $allowEmpty ? 'must be a string' : 'must be a non-empty string');
-        }
-
-        return $value;
-    }
-
-    private static function boolean(mixed $value, string $path): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        // Laravel env() returns strings for .env flags (e.g. '1', 'true'),
-        // so accept those forms and reject anything else strictly.
-        if (is_string($value)) {
-            $normalized = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
-            if ($normalized !== null) {
-                return $normalized;
-            }
-        }
-
-        self::invalid($path, 'must be a boolean or an env-style boolean string (e.g. "1", "true")');
-    }
-
-    private static function integer(mixed $value, string $path): int
-    {
-        if (is_int($value)) {
-            return $value;
-        }
-
-        // Laravel env() returns strings for .env numbers (e.g. '64'), so
-        // accept signed integer strings and let the caller range-check.
-        if (is_string($value) && preg_match('/^-?\d+$/', $value) === 1) {
-            return (int) $value;
-        }
-
-        self::invalid($path, 'must be an integer or an env-style integer string (e.g. "64")');
-    }
-
-    private static function positiveInt(mixed $value, string $path, ?int $max = null): int
-    {
-        $value = self::integer($value, $path);
-        if ($value < 1) {
-            self::invalid($path, 'must be a positive integer');
-        }
-        if ($max !== null && $value > $max) {
-            self::invalid($path, 'must be at most '.$max);
-        }
-
-        return $value;
-    }
-
-    /**
-     * @param array<mixed> $section
-     * @param list<string> $known
-     */
-    private static function rejectUnknownKeys(array $section, array $known, string $path): void
-    {
-        foreach (array_keys($section) as $key) {
-            if (! in_array($key, $known, true)) {
-                self::invalid($path.'.'.$key, 'unknown key');
-            }
-        }
-    }
-
-    private static function invalid(string $path, string $message): never
-    {
-        throw new InvalidArgumentException($path.': '.$message);
-    }
 }

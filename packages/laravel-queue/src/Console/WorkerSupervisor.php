@@ -263,36 +263,11 @@ class WorkerSupervisor
                     continue;
                 }
 
-                if ($this->isCleanExit($process)) {
-                    // Planned recycling (e.g. --max-jobs reached): reset the
-                    // crash budget and restart immediately, without backoff.
-                    $restartCounts[$index] = 0;
-                    $processes[$index] = $this->startProcess($index, $children[$index]);
-
-                    continue;
-                }
-
-                if ($restartAt[$index] !== 0.0) {
-                    // A restart is already scheduled for this worker: wait for
-                    // its backoff window to elapse, then restart it. The other
-                    // children keep being supervised in the meantime.
-                    if ($now >= $restartAt[$index]) {
-                        $restartAt[$index] = 0.0;
-                        $processes[$index] = $this->startProcess($index, $children[$index]);
-                    }
-                    continue;
-                }
-
-                if (! $this->shouldRestart($restartCounts[$index])) {
+                if ($this->handleWorkerExit($index, $process, $children, $processes, $restartCounts, $restartAt, $now)) {
                     $this->stopAllProcesses($processes);
 
                     return self::EXIT_MAX_RESTARTS;
                 }
-
-                // Schedule the restart with its backoff; the loop keeps
-                // polling the other children meanwhile (non-blocking backoff).
-                $restartAt[$index] = $now + $this->backoffSeconds($restartCounts[$index]);
-                $restartCounts[$index]++;
             }
             usleep(100_000);
         }
@@ -300,6 +275,60 @@ class WorkerSupervisor
         $this->stopAllProcesses($processes);
 
         return self::EXIT_CLEAN;
+    }
+
+    /**
+     * Handles one exited child: restarts it immediately after a clean exit
+     * (planned recycling), waits out an already-scheduled backoff window, or
+     * schedules the next restart. Returns true when the worker's crash budget
+     * is exhausted and supervision must stop.
+     *
+     * @param list<list<string>> $children One command per child process,
+     *         indexed by worker index.
+     * @param array<int, Process> $processes
+     * @param array<int, int> $restartCounts
+     * @param array<int, float> $restartAt
+     */
+    private function handleWorkerExit(
+        int $index,
+        Process $process,
+        array $children,
+        array &$processes,
+        array &$restartCounts,
+        array &$restartAt,
+        float $now,
+    ): bool {
+        if ($this->isCleanExit($process)) {
+            // Planned recycling (e.g. --max-jobs reached): reset the crash
+            // budget and restart immediately, without backoff.
+            $restartCounts[$index] = 0;
+            $processes[$index] = $this->startProcess($index, $children[$index]);
+
+            return false;
+        }
+
+        if ($restartAt[$index] !== 0.0) {
+            // A restart is already scheduled for this worker: wait for its
+            // backoff window to elapse, then restart it. The other children
+            // keep being supervised in the meantime.
+            if ($now >= $restartAt[$index]) {
+                $restartAt[$index] = 0.0;
+                $processes[$index] = $this->startProcess($index, $children[$index]);
+            }
+
+            return false;
+        }
+
+        if (! $this->shouldRestart($restartCounts[$index])) {
+            return true;
+        }
+
+        // Schedule the restart with its backoff; the loop keeps polling the
+        // other children meanwhile (non-blocking backoff).
+        $restartAt[$index] = $now + $this->backoffSeconds($restartCounts[$index]);
+        $restartCounts[$index]++;
+
+        return false;
     }
 
     /**

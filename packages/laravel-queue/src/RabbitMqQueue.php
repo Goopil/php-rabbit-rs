@@ -29,7 +29,7 @@ use InvalidArgumentException;
  * Method count is dictated by the Illuminate\Contracts\Queue\Queue interface
  * and Laravel's Queue base class. Splitting would add indirection on the hot path.
  */
-class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue
+class RabbitMqQueue extends Queue implements QueueContract, ClearableQueue // NOSONAR
 {
     protected const CONTENT_TYPE_JSON = 'application/json';
 

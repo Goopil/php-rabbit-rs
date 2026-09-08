@@ -76,9 +76,9 @@ final class OctaneLifecycle
         try {
             $manager = $this->container->make('queue');
             $property = new \ReflectionProperty($manager, 'connections');
-            $value = $property->getValue($manager);
+            $value = $property->getValue($manager); // NOSONAR
             if (is_array($value)) {
-                $property->setValue($manager, []);
+                $property->setValue($manager, []); // NOSONAR
             }
         } catch (\ReflectionException) {
             // Property gone (future Laravel core change): no-op.

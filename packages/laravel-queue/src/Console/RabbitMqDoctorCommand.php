@@ -39,17 +39,30 @@ final class RabbitMqDoctorCommand extends Command
         try {
             $connections = RabbitRsConnections::targeted((array) $this->option('connection'));
         } catch (InvalidArgumentException $e) {
-            $this->error($e->getMessage());
-
-            return self::FAILURE;
+            return $this->abort($e->getMessage());
         }
 
         if ($connections === []) {
-            $this->error('No rabbit-rs queue connection is configured in queue.connections.');
-
-            return self::FAILURE;
+            return $this->abort('No rabbit-rs queue connection is configured in queue.connections.');
         }
 
+        $this->doctorAll($connections, $probe);
+
+        return $this->failures > 0 ? self::FAILURE : self::SUCCESS;
+    }
+
+    private function abort(string $message): int
+    {
+        $this->error($message);
+
+        return self::FAILURE;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $connections
+     */
+    private function doctorAll(array $connections, DoctorProbe $probe): void
+    {
         $this->line('Rabbit RS Doctor');
         $this->line('');
 
@@ -61,11 +74,9 @@ final class RabbitMqDoctorCommand extends Command
         if ($this->failures > 0) {
             $this->error($summary);
 
-            return self::FAILURE;
+            return;
         }
         $this->line($summary);
-
-        return self::SUCCESS;
     }
 
     /**
@@ -90,7 +101,7 @@ final class RabbitMqDoctorCommand extends Command
         $this->checkManagement($config);
         $this->checkTopology($compiled, $brokerError);
         $this->checkSafety($compiled);
-        $this->checkHorizon($name, $workerClass, $compiled);
+        $this->checkHorizon($workerClass, $compiled);
         $this->checkEvents();
         $this->line('');
     }
@@ -283,7 +294,7 @@ final class RabbitMqDoctorCommand extends Command
     /**
      * @param array<string, mixed> $compiled
      */
-    private function checkHorizon(string $name, string $workerClass, array $compiled): void
+    private function checkHorizon(string $workerClass, array $compiled): void
     {
         $horizonConfig = config('horizon');
         $installed = class_exists(\Laravel\Horizon\Horizon::class);
@@ -315,41 +326,12 @@ final class RabbitMqDoctorCommand extends Command
             if (! is_array($supervisor)) {
                 continue;
             }
-            $supervisorQueues = $supervisor['queue'] ?? [];
-            $supervisorQueues = is_string($supervisorQueues)
-                ? array_map('trim', explode(',', $supervisorQueues))
-                : (array) $supervisorQueues;
+            $supervisorQueues = $this->supervisorQueues($supervisor);
             if (array_intersect($supervisorQueues, $queues) === []) {
                 continue;
             }
             $matched = true;
-            $label = is_string($supervisor['name'] ?? null) ? $supervisor['name'] : '(unnamed)';
-
-            $unknownQueues = array_diff($supervisorQueues, $queues);
-            if ($unknownQueues !== []) {
-                $ok = false;
-                $this->emit(
-                    'warn',
-                    sprintf(
-                        "supervisor %s lists queue(s) %s that are not subscriptions of this connection — jobs for them will never be consumed by its worker profiles",
-                        $label,
-                        implode(', ', $unknownQueues),
-                    ),
-                );
-            }
-
-            $balance = $supervisor['balance'] ?? false;
-            if (in_array($balance, ['auto', 'container'], true)) {
-                $ok = false;
-                $this->emit(
-                    'warn',
-                    sprintf(
-                        'supervisor %s uses balance=%s: auto-scaling samples readyNow() on the queue connection, available since rabbit-rs-laravel 0.1.2',
-                        $label,
-                        $balance,
-                    ),
-                );
-            }
+            $ok = $this->auditSupervisor($supervisor, $supervisorQueues, $queues) && $ok;
         }
 
         if (! $matched) {
@@ -360,6 +342,65 @@ final class RabbitMqDoctorCommand extends Command
         if ($ok) {
             $this->emit('ok', 'horizon supervisors aligned with the connection subscriptions');
         }
+    }
+
+    /**
+     * Per-supervisor audit: warns when the supervisor lists queues the
+     * connection does not subscribe to, and when auto-balancing would sample
+     * the queue connection. Returns false when a warning was emitted.
+     *
+     * @param array<string, mixed> $supervisor
+     * @param list<string> $supervisorQueues
+     * @param list<string> $queues
+     */
+    private function auditSupervisor(array $supervisor, array $supervisorQueues, array $queues): bool
+    {
+        $label = is_string($supervisor['name'] ?? null) ? $supervisor['name'] : '(unnamed)';
+        $ok = true;
+
+        $unknownQueues = array_diff($supervisorQueues, $queues);
+        if ($unknownQueues !== []) {
+            $ok = false;
+            $this->emit(
+                'warn',
+                sprintf(
+                    "supervisor %s lists queue(s) %s that are not subscriptions of this connection — jobs for them will never be consumed by its worker profiles",
+                    $label,
+                    implode(', ', $unknownQueues),
+                ),
+            );
+        }
+
+        $balance = $supervisor['balance'] ?? false;
+        if (in_array($balance, ['auto', 'container'], true)) {
+            $ok = false;
+            $this->emit(
+                'warn',
+                sprintf(
+                    'supervisor %s uses balance=%s: auto-scaling samples readyNow() on the queue connection, available since rabbit-rs-laravel 0.1.2',
+                    $label,
+                    $balance,
+                ),
+            );
+        }
+
+        return $ok;
+    }
+
+    /**
+     * Normalizes a supervisor's `queue` setting (comma-separated string or
+     * array) into a flat list.
+     *
+     * @param array<string, mixed> $supervisor
+     * @return list<string>
+     */
+    private function supervisorQueues(array $supervisor): array
+    {
+        $configured = $supervisor['queue'] ?? [];
+
+        return is_string($configured)
+            ? array_map('trim', explode(',', $configured))
+            : array_values((array) $configured);
     }
 
     private function checkEvents(): void
