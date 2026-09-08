@@ -14,12 +14,19 @@ use InvalidArgumentException;
 final class ConnectionCompiler
 {
     private const DEFAULT_AMQP_PORT = 5672;
+
     private const DEFAULT_CONSUMER_WAIT_TIMEOUT_MS = 30_000;
+
     private const MAX_CONSUMER_WAIT_TIMEOUT_MS = 86_400_000;
+
     private const DEFAULT_MAX_ATTEMPTS = 20;
+
     private const MSG_MUST_BE_ARRAY = 'must be an array';
+
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
+
     private const PATH_QUEUE = '.queue';
+
     private const PATH_NO_ACK = '.no_ack';
 
     /**
@@ -48,8 +55,8 @@ final class ConnectionCompiler
     private const MERGED_SECTIONS = ['tls', 'delay', 'dead_letter'];
 
     /**
-     * @param array<string, mixed> $config
-     * @param array<string, mixed> $defaults package defaults merged under $config: every key the connection omits falls back to these (per sub-key for tls, delay, and dead_letter), and unknown top-level connection keys are only tolerated when a default covers them
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $defaults  package defaults merged under $config: every key the connection omits falls back to these (per sub-key for tls, delay, and dead_letter), and unknown top-level connection keys are only tolerated when a default covers them
      * @return array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
@@ -108,8 +115,8 @@ final class ConnectionCompiler
      * Keys unknown to the compiler may ride in through $defaults (e.g.
      * worker, production_warning) and are ignored downstream.
      *
-     * @param array<string, mixed> $config
-     * @param array<string, mixed> $defaults
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $defaults
      * @return array<string, mixed>
      */
     private static function mergeDefaults(array $config, array $defaults): array
@@ -117,6 +124,7 @@ final class ConnectionCompiler
         foreach ($defaults as $key => $default) {
             if (! array_key_exists($key, $config)) {
                 $config[$key] = $default;
+
                 continue;
             }
             if (! in_array($key, self::MERGED_SECTIONS, true)
@@ -136,7 +144,7 @@ final class ConnectionCompiler
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return array<string, mixed>
      */
     private static function broker(string $name, array $config, string $path): array
@@ -268,7 +276,7 @@ final class ConnectionCompiler
      * replaces the derivation: the alias is the array key and the broker is
      * always this connection.
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return array{name: string, subscriptions: list<array<string, mixed>>, scheduler: array{strategy: string}}
      */
     private static function worker(string $name, string $queue, array $config, bool $bestEffort, string $path): array
@@ -322,8 +330,8 @@ final class ConnectionCompiler
      * Ack flags follow the reliable-mode rules: early_ack and no_ack both
      * require best_effort, and no_ack additionally requires early_ack.
      *
-     * @param array<string, mixed> $subscription
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $subscription
+     * @param  array<string, mixed>  $config
      * @return array{name: string, broker: string, queue: string, weight: int, priority_class: int, prefetch: int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}, starvation_after: int, early_ack: bool, no_ack: bool}
      */
     private static function subscription(string $name, string $alias, array $subscription, array $config, bool $bestEffort, string $path): array
@@ -343,9 +351,8 @@ final class ConnectionCompiler
         if ($noAck && ! $earlyAck) {
             self::invalid($path.self::PATH_NO_ACK, "no_ack=true requires early_ack=true for subscription '{$alias}'");
         }
-        if ($noAck && ! $bestEffort) {
-            self::invalid($path.self::PATH_NO_ACK, "no_ack=true requires best_effort=true for subscription '{$alias}'");
-        }
+        // no_ack => best_effort holds transitively: no_ack implies early_ack
+        // (checked above) and early_ack implies best_effort (checked above).
 
         return [
             'name' => $alias,
@@ -440,7 +447,7 @@ final class ConnectionCompiler
      * (Round G #78) and the publisher actor branches on the safety mode,
      * never on these flags.
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int}
      */
     private static function publisher(array $config, string $path): array
@@ -475,7 +482,7 @@ final class ConnectionCompiler
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return array{wait_timeout: int, max_attempts: int}
      */
     private static function consumer(array $config, string $path): array
@@ -529,7 +536,7 @@ final class ConnectionCompiler
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return array{queue: array{type: string, durable: bool, delivery_limit: ?int}, dead_letter: ?array<string, mixed>}
      */
     private static function topology(array $config, string $path): array
@@ -594,7 +601,7 @@ final class ConnectionCompiler
      * null publishes through the default exchange (direct-to-queue); an
      * explicit value must be a string (empty string is the default exchange).
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private static function exchange(array $config, string $path): string
     {
@@ -612,7 +619,7 @@ final class ConnectionCompiler
     /**
      * null means "no routing key" (default-exchange and fanout usage).
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private static function routingKey(array $config, string $path): string
     {
@@ -707,8 +714,8 @@ final class ConnectionCompiler
     }
 
     /**
-     * @param array<mixed> $section
-     * @param list<string> $known
+     * @param  array<mixed>  $section
+     * @param  list<string>  $known
      */
     private static function rejectUnknownKeys(array $section, array $known, string $path): void
     {

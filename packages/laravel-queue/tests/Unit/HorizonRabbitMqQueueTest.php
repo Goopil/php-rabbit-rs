@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqJob as HorizonRabbitMqJob;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
@@ -108,7 +109,7 @@ it('dispatches JobPending then JobPushed on later', function (): void {
 
 it('dispatches JobReserved on pop when a job is returned', function (): void {
     $pool = new Pool(['workers' => horizonWorkers()]);
-    $delivery = new Goopil\RabbitRs\Delivery(
+    $delivery = new Delivery(
         json_encode(['uuid' => 'test-uuid', 'job' => 'TestJob', 'data' => []]),
         ['message_id' => 'test-uuid', 'subscription' => 'default', 'attempts' => 1, 'state' => 'pending', 'headers' => []],
     );
@@ -137,7 +138,9 @@ it('does not dispatch any event on pop when no job is available', function (): v
     $queue = horizonQueue();
     $dispatchCount = 0;
     $this->events->method('dispatch')->willReturnCallback(
-        static function () use (&$dispatchCount): void { $dispatchCount++; }
+        static function () use (&$dispatchCount): void {
+            $dispatchCount++;
+        }
     );
 
     $result = $queue->pop('default');
@@ -170,7 +173,7 @@ it('dispatches JobDeleted on deleteReserved', function (): void {
 
 it('marshalJob creates a HorizonRabbitMqJob', function (): void {
     $queue = horizonQueue();
-    $delivery = new Goopil\RabbitRs\Delivery(
+    $delivery = new Delivery(
         json_encode(['uuid' => 'test-uuid', 'job' => 'TestJob', 'data' => []]),
         ['message_id' => 'test-uuid', 'subscription' => 'default', 'attempts' => 1, 'state' => 'pending', 'headers' => []],
     );

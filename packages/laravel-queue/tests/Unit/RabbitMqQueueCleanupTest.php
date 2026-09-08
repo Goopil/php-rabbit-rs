@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
+use Illuminate\Container\Container;
 
 /**
  * @return list<array<string, mixed>>
@@ -55,7 +56,7 @@ function makeCleanupQueue(string $defaultQueue = 'default'): array
         $defaultQueue,
         workerProfiles: $resolver,
     );
-    $queue->setContainer(new \Illuminate\Container\Container());
+    $queue->setContainer(new Container);
 
     return [$queue, $pool];
 }

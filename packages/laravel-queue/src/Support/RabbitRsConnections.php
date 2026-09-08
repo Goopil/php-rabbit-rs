@@ -41,7 +41,7 @@ final class RabbitRsConnections
      * (comma-separated values allowed), in config order; all of them when
      * the option is absent.
      *
-     * @param list<string> $names raw option values
+     * @param  list<string>  $names  raw option values
      * @return array<string, array<string, mixed>>
      */
     public static function targeted(array $names): array
@@ -92,7 +92,7 @@ final class RabbitRsConnections
      * Queues a connection consumes: its `queue` key first, then every
      * `subscriptions.*.queue` not already listed.
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return list<string>
      */
     public static function definedQueues(array $config): array

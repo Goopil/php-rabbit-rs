@@ -7,7 +7,7 @@ use Goopil\RabbitRs\Pool;
 
 describe('flush', function (): void {
     it('closes all cached pools before clearing', function (): void {
-        $pool = new Pool();
+        $pool = new Pool;
 
         $factory = new NativePoolFactory(
             createPool: static fn (array $config): Pool => $pool,
@@ -25,8 +25,8 @@ describe('flush', function (): void {
     });
 
     it('closes every pool when multiple are cached', function (): void {
-        $poolA = new Pool();
-        $poolB = new Pool();
+        $poolA = new Pool;
+        $poolB = new Pool;
 
         $pools = ['a' => $poolA, 'b' => $poolB];
         $factory = new NativePoolFactory(
@@ -43,7 +43,7 @@ describe('flush', function (): void {
     });
 
     it('is safe to flush when no pools are cached', function (): void {
-        $factory = new NativePoolFactory();
+        $factory = new NativePoolFactory;
 
         $factory->flush();
 
@@ -51,7 +51,7 @@ describe('flush', function (): void {
     });
 
     it('does not throw when a pool close raises', function (): void {
-        $pool = new Pool();
+        $pool = new Pool;
         $pool->throwOnNextClose(new RuntimeException('already disconnected'));
 
         $factory = new NativePoolFactory(
@@ -66,7 +66,7 @@ describe('flush', function (): void {
     });
 
     it('creates a fresh pool after flush', function (): void {
-        $pool = new Pool();
+        $pool = new Pool;
         $factory = new NativePoolFactory(
             createPool: static fn (array $config): Pool => $pool,
         );
@@ -82,7 +82,7 @@ describe('flush', function (): void {
 describe('resetAfterFork', function (): void {
     it('closes inherited pools when the process id changes', function (): void {
         $processId = 100;
-        $pool = new Pool();
+        $pool = new Pool;
 
         $factory = new NativePoolFactory(
             createPool: static fn (array $config): Pool => $pool,
@@ -104,7 +104,7 @@ describe('resetAfterFork', function (): void {
 
     it('does not close pools when the process id is unchanged', function (): void {
         $processId = 100;
-        $pool = new Pool();
+        $pool = new Pool;
 
         $factory = new NativePoolFactory(
             createPool: static fn (array $config): Pool => $pool,
@@ -121,7 +121,7 @@ describe('resetAfterFork', function (): void {
 
     it('does not throw when an inherited pool close raises', function (): void {
         $processId = 100;
-        $pool = new Pool();
+        $pool = new Pool;
         $pool->throwOnNextClose(new RuntimeException('already disconnected'));
 
         $factory = new NativePoolFactory(
@@ -141,8 +141,8 @@ describe('resetAfterFork', function (): void {
 
     it('creates a fresh pool after fork detection', function (): void {
         $processId = 100;
-        $parentPool = new Pool();
-        $childPool = new Pool();
+        $parentPool = new Pool;
+        $childPool = new Pool;
         $createCount = 0;
 
         $factory = new NativePoolFactory(

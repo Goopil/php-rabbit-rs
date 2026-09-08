@@ -10,15 +10,13 @@ use InvalidArgumentException;
 final class MessageMapper
 {
     /**
-     * @param array{confirm_timeout?: int} $publisherConfig
+     * @param  array{confirm_timeout?: int}  $publisherConfig
      */
-    public function __construct(private readonly array $publisherConfig = [])
-    {
-    }
+    public function __construct(private readonly array $publisherConfig = []) {}
 
     /**
-     * @param array{broker: string, exchange: string, routing_key: string} $route
-     * @param array<string, mixed> $options
+     * @param  array{broker: string, exchange: string, routing_key: string}  $route
+     * @param  array<string, mixed>  $options
      * @return array<string, mixed>
      */
     public function map(

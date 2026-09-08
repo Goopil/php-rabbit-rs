@@ -15,12 +15,16 @@ use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Illuminate\Support\Arr;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Octane\Events\WorkerReload;
+use Laravel\Octane\Events\WorkerStopping;
+use Laravel\Octane\Octane;
 
 class RabbitMqServiceProvider extends ServiceProvider
 {
     /**
-     * Version constraint of the required ext-rabbit_rs extension. Must stay in
-     * sync with the `ext-rabbit_rs` requirement in composer.json.
+     * Version constraint of the native ext-rabbit_rs extension, enforced at
+     * connection resolution. The `ext-rabbit_rs` suggest entry in
+     * composer.json must reference this constraint.
      */
     public const EXTENSION_CONSTRAINT = '^0.1';
 
@@ -97,7 +101,7 @@ class RabbitMqServiceProvider extends ServiceProvider
     {
         throw new MissingExtensionException(
             sprintf(
-                'The Rabbit RS Laravel driver requires ext-rabbit_rs %s to be loaded.',
+                'The Rabbit RS Laravel driver requires ext-rabbit_rs %s to be loaded. Install it with `pie install goopil/rabbit-rs-native` (macOS: `brew install goopil/rabbit-rs/rabbit-rs`), then retry.',
                 self::EXTENSION_CONSTRAINT,
             ),
         );
@@ -110,7 +114,7 @@ class RabbitMqServiceProvider extends ServiceProvider
 
     private function registerOctaneLifecycle(): void
     {
-        if (! class_exists(\Laravel\Octane\Octane::class)) {
+        if (! class_exists(Octane::class)) {
             return;
         }
 
@@ -120,7 +124,7 @@ class RabbitMqServiceProvider extends ServiceProvider
         $app->terminating(static fn () => $lifecycle->flush());
 
         $events = $app->make('events');
-        $events->listen(\Laravel\Octane\Events\WorkerReload::class, static fn () => $lifecycle->reload());
-        $events->listen(\Laravel\Octane\Events\WorkerStopping::class, static fn () => $lifecycle->stop());
+        $events->listen(WorkerReload::class, static fn () => $lifecycle->reload());
+        $events->listen(WorkerStopping::class, static fn () => $lifecycle->stop());
     }
 }

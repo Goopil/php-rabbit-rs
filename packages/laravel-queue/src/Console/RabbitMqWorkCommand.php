@@ -47,14 +47,14 @@ class RabbitMqWorkCommand extends Command
      * Extracted as a protected method so tests can substitute a supervisor
      * that does not spawn real child processes.
      *
-     * @param list<array{connection: string, queues: list<string>}> $plan
+     * @param  list<array{connection: string, queues: list<string>}>  $plan
      */
     protected function createSupervisor(array $plan): WorkerSupervisor
     {
         $options = [
-            'timeout'  => (int) $this->option('timeout'),
-            'tries'    => $this->option('tries') !== null ? (int) $this->option('tries') : null,
-            'memory'   => (int) $this->option('memory'),
+            'timeout' => (int) $this->option('timeout'),
+            'tries' => $this->option('tries') !== null ? (int) $this->option('tries') : null,
+            'memory' => (int) $this->option('memory'),
             'max-jobs' => $this->option('max-jobs') !== null ? (int) $this->option('max-jobs') : null,
             'max-time' => $this->option('max-time') !== null ? (int) $this->option('max-time') : null,
         ];
@@ -71,7 +71,7 @@ class RabbitMqWorkCommand extends Command
     /**
      * One-line plan description, e.g. "eu[orders, billing], us[orders]".
      *
-     * @param list<array{connection: string, queues: list<string>}> $plan
+     * @param  list<array{connection: string, queues: list<string>}>  $plan
      */
     private function describePlan(array $plan): string
     {

@@ -73,7 +73,7 @@ function makeAutoSubscribeQueue(bool $autoSubscribe): array
         autoSubscribe: $autoSubscribe,
         workerProfiles: new WorkerProfileResolver(autoSubscribeWorkers()),
     );
-    $queue->setContainer(new Container());
+    $queue->setContainer(new Container);
     $queue->setConnectionName('rabbit-rs');
 
     return [$queue, $pool];
@@ -158,7 +158,7 @@ describe('auto_subscribe connector wiring', function () {
             'queue' => 'default',
             'auto_subscribe' => true,
         ]);
-        $queue->setContainer(new Container());
+        $queue->setContainer(new Container);
         $queue->setConnectionName('rabbit-rs');
         $pool->pushDelivery('__auto__.emails', new Delivery(
             '{"job":"ProcessEmail","data":{}}',
@@ -174,7 +174,7 @@ describe('auto_subscribe connector wiring', function () {
         $pool = autoSubscribeSeededPool();
 
         $queue = autoSubscribeConnector($pool)->connect(['queue' => 'default']);
-        $queue->setContainer(new Container());
+        $queue->setContainer(new Container);
         $queue->setConnectionName('rabbit-rs');
         $pool->pushDelivery('__auto__.emails', new Delivery(
             '{"job":"ProcessEmail","data":{"to":"dev@example.com"}}',
@@ -193,7 +193,7 @@ describe('auto_subscribe connector wiring', function () {
             'queue' => 'default',
             'auto_subscribe' => false,
         ]);
-        $queue->setContainer(new Container());
+        $queue->setContainer(new Container);
 
         expect(fn () => $queue->pop('emails'))
             ->toThrow(InvalidArgumentException::class, 'enable auto_subscribe');

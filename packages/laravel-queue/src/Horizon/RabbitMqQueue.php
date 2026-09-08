@@ -86,6 +86,10 @@ class RabbitMqQueue extends BaseRabbitMqQueue
         });
     }
 
+    /**
+     * @param  string|null  $queue
+     * @param  int  $index
+     */
     public function pop($queue = null, $index = 0)
     {
         return tap(parent::pop($queue, $index), function (mixed $result) use ($queue): void {
@@ -95,6 +99,9 @@ class RabbitMqQueue extends BaseRabbitMqQueue
         });
     }
 
+    /**
+     * @param  string|null  $queue
+     */
     public function marshalJob(Delivery $delivery, $queue = null): BaseRabbitMqJob
     {
         return new RabbitMqJob(
@@ -115,8 +122,10 @@ class RabbitMqQueue extends BaseRabbitMqQueue
      * Backlog depth sampled by Horizon's AutoScaler each scaling pass. AMQP
      * has no separate ready-now list, so the standard queue size contract
      * answers it.
+     *
+     * @param  string|null  $queue
      */
-    public function readyNow($queue = null)
+    public function readyNow($queue = null): int
     {
         return $this->size($queue);
     }
@@ -136,7 +145,7 @@ class RabbitMqQueue extends BaseRabbitMqQueue
 
     protected function event(string $queue, object $event): void
     {
-        if ($this->container && $this->container->bound(Dispatcher::class)) {
+        if ($this->container->bound(Dispatcher::class)) {
             $this->container->make(Dispatcher::class)->dispatch(
                 $event->connection($this->connectionName)->queue($queue)
             );

@@ -126,6 +126,38 @@ jobs:
       - name: Run Pest tests
         run: ./scripts/test-laravel.sh
 
+  php-analysis:
+    name: Pint + PHPStan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            packages/laravel-queue/vendor
+            ~/.cache/composer
+          key: composer-analysis-${{ hashFiles('packages/laravel-queue/composer.lock') }}
+          restore-keys: |
+            composer-analysis-
+
+      - name: Install dependencies
+        run: cd packages/laravel-queue && composer install --quiet --ignore-platform-reqs
+
+      - name: Pint (style)
+        run: cd packages/laravel-queue && composer lint
+
+      - name: PHPStan (level 6)
+        run: cd packages/laravel-queue && composer analyse
+
   phpt:
     name: PHPT (${{ matrix.php }})
     runs-on: ubuntu-latest

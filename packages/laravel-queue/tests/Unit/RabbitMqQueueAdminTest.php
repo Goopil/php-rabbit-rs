@@ -27,7 +27,7 @@ function adminRoutes(): array
 }
 
 /**
- * @param array<string, array<string, string>> $routes
+ * @param  array<string, array<string, string>>  $routes
  */
 function newAdminQueue(
     Pool $pool,
@@ -94,7 +94,7 @@ describe('size', function (): void {
             'orders' => adminRoutes()['orders'],
         ], 'missing');
 
-        $this->expectException(\InvalidArgumentException::class);
+        $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('routes.missing');
 
         $queue->size();

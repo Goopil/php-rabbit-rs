@@ -18,7 +18,7 @@ namespace {
             @mkdir($stateDir, 0o777, true);
         }
 
-        $counterFile = $stateDir . WORKER_PREFIX . $worker . '-count.txt';
+        $counterFile = $stateDir.WORKER_PREFIX.$worker.'-count.txt';
         $current = 0;
         if (is_file($counterFile)) {
             $content = file_get_contents($counterFile);
@@ -43,7 +43,7 @@ namespace {
             @mkdir($stateDir, 0o777, true);
         }
 
-        $markerFile = $stateDir . WORKER_PREFIX . $worker . '-started.txt';
+        $markerFile = $stateDir.WORKER_PREFIX.$worker.'-started.txt';
         file_put_contents(
             $markerFile,
             json_encode([
@@ -67,7 +67,7 @@ namespace {
             @mkdir($stateDir, 0o777, true);
         }
 
-        $exitFile = $stateDir . WORKER_PREFIX . $worker . '-exited.txt';
+        $exitFile = $stateDir.WORKER_PREFIX.$worker.'-exited.txt';
         file_put_contents(
             $exitFile,
             json_encode([

@@ -18,7 +18,7 @@ final class WorkerProfileResolver
     private array $profiles = [];
 
     /**
-     * @param list<array<string, mixed>> $workers
+     * @param  list<array<string, mixed>>  $workers
      */
     public function __construct(array $workers)
     {

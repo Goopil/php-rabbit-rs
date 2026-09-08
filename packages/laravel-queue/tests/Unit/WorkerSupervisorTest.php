@@ -44,16 +44,12 @@ function expectOptionPropagation(string $option, int $value): void
 /**
  * Runs a fork-less supervisor and asserts the ext-pcntl SupervisorException.
  *
- * @param list<array{connection: string, queues: list<string>}> $plan
+ * @param  list<array{connection: string, queues: list<string>}>  $plan
  */
 function expectPcntlMissingException(array $plan, int $workers): void
 {
-    $supervisor = new class(
-        plan: $plan,
-        workers: $workers,
-        maxRestarts: 1,
-        baseBackoffSeconds: 0,
-    ) extends WorkerSupervisor {
+    $supervisor = new class(plan: $plan, workers: $workers, maxRestarts: 1, baseBackoffSeconds: 0) extends WorkerSupervisor
+    {
         protected function canFork(): bool
         {
             return false;
@@ -202,9 +198,9 @@ describe('buildChildCommands option propagation', function (): void {
             maxRestarts: 1,
             baseBackoffSeconds: 0,
             options: [
-                'timeout'  => 60,
-                'tries'    => 3,
-                'memory'   => 128,
+                'timeout' => 60,
+                'tries' => 3,
+                'memory' => 128,
                 'max-jobs' => 500,
                 'max-time' => 1800,
             ],
@@ -226,9 +222,9 @@ describe('buildChildCommands option propagation', function (): void {
             maxRestarts: 1,
             baseBackoffSeconds: 0,
             options: [
-                'timeout'  => 30,
-                'tries'    => null,
-                'memory'   => 128,
+                'timeout' => 30,
+                'tries' => null,
+                'memory' => 128,
                 'max-jobs' => null,
                 'max-time' => null,
             ],

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Goopil\RabbitRs\Pool;
 
 const FAILED_TO_COLLECT_STATS = 'Failed to collect stats';
 
@@ -12,7 +13,7 @@ const FAILED_TO_COLLECT_STATS = 'Failed to collect stats';
 function bindFailingPoolFactory($app): void
 {
     $app->instance(NativePoolFactory::class, new NativePoolFactory(
-        createPool: static function (): \Goopil\RabbitRs\Pool {
+        createPool: static function (): Pool {
             throw new TestException('broker unreachable');
         },
     ));

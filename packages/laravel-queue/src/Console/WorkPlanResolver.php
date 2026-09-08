@@ -24,17 +24,16 @@ use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 final class WorkPlanResolver
 {
     /**
-     * @param string|null $connections Comma-separated connection names
-     *         (null or empty: every rabbit-rs connection).
-     * @param string|null $queues Comma-separated queue names resolved by
-     *         definition (null or empty: every defined queue).
-     *
+     * @param  string|null  $connections  Comma-separated connection names
+     *                                    (null or empty: every rabbit-rs connection).
+     * @param  string|null  $queues  Comma-separated queue names resolved by
+     *                               definition (null or empty: every defined queue).
      * @return list<array{connection: string, queues: list<string>}> one entry
-     *         per targeted connection, in config order
+     *                                                               per targeted connection, in config order
      *
      * @throws \InvalidArgumentException when no rabbit-rs connection is
-     *         configured, when a listed connection is unknown, or when a
-     *         listed queue is not defined by any targeted connection
+     *                                   configured, when a listed connection is unknown, or when a
+     *                                   listed queue is not defined by any targeted connection
      */
     public static function resolve(?string $connections, ?string $queues): array
     {
@@ -93,7 +92,7 @@ final class WorkPlanResolver
      * Filter the rabbit-rs connections down to the listed names (config
      * order preserved, duplicates collapsed).
      *
-     * @param array<string, array<string, mixed>> $rabbitRs
+     * @param  array<string, array<string, mixed>>  $rabbitRs
      * @return array<string, array<string, mixed>>
      */
     private static function targetedConnections(?string $connections, array $rabbitRs): array
@@ -121,7 +120,7 @@ final class WorkPlanResolver
      * or a `subscriptions` alias key (resolving to that subscription's
      * queue). Returns null when the connection does not define the name.
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private static function definedQueueFor(array $config, string $name): ?string
     {
@@ -147,7 +146,7 @@ final class WorkPlanResolver
      * Union of the defined queue names across the given connections,
      * first-seen order preserved.
      *
-     * @param array<string, array<string, mixed>> $configs
+     * @param  array<string, array<string, mixed>>  $configs
      * @return list<string>
      */
     private static function definedQueuesAcross(array $configs): array
@@ -165,7 +164,7 @@ final class WorkPlanResolver
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      * @return array<string, mixed>
      */
     private static function subscriptions(array $config): array

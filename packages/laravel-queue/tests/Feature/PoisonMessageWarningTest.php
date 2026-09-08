@@ -18,7 +18,7 @@ function resetUnboundedRedeliveryWarningFlag(): void
 /**
  * Connection config for the warning tests: production-shaped unless overridden.
  *
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array<string, mixed>
  */
 function poisonConnectionConfig(array $overrides = []): array

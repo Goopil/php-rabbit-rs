@@ -11,6 +11,12 @@ else
 fi
 composer validate --strict
 
+if [[ -f packages/laravel-queue/vendor/bin/pint && -f packages/laravel-queue/vendor/bin/phpstan ]]; then
+    (cd packages/laravel-queue && composer lint && composer analyse)
+else
+    echo "::warning::packages/laravel-queue vendor not installed, skipping Pint + PHPStan" >&2
+fi
+
 if command -v cargo-deny >/dev/null 2>&1; then
     cargo deny check
 else

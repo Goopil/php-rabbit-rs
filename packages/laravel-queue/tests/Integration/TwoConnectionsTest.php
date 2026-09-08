@@ -22,7 +22,7 @@ function twoClosePool(?Pool $pool): void
         if (! $pool->stats()['closed']) {
             $pool->close();
         }
-    } catch (\Throwable) {
+    } catch (Throwable) {
         // best-effort cleanup
     }
 }

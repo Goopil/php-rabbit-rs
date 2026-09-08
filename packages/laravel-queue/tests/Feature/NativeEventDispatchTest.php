@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Event;
 
 function makeQueueWithPool($app): array
 {
-    $pool = new Pool();
+    $pool = new Pool;
     $queue = new RabbitMqQueue($pool, makeRoutes(), 'default');
     $queue->setContainer($app);
 
@@ -90,7 +90,7 @@ describe('callback registration', function () {
     it('does not accumulate duplicate default callbacks when a pool is reused', function () {
         Event::fake();
 
-        $pool = new Pool();
+        $pool = new Pool;
         $first = new RabbitMqQueue($pool, makeRoutes(), 'default');
         $first->setContainer($this->app);
         $second = new RabbitMqQueue($pool, makeRoutes(), 'other');
@@ -106,7 +106,7 @@ describe('custom callbacks', function () {
     it('custom connection state callback overrides default event dispatch', function () {
         Event::fake();
 
-        $pool = new Pool();
+        $pool = new Pool;
         $queue = new RabbitMqQueue($pool, makeRoutes(), 'default');
         $queue->setContainer($this->app);
 
@@ -128,7 +128,7 @@ describe('custom callbacks', function () {
     it('custom backpressure callback overrides default event dispatch', function () {
         Event::fake();
 
-        $pool = new Pool();
+        $pool = new Pool;
         $queue = new RabbitMqQueue($pool, makeRoutes(), 'default');
         $queue->setContainer($this->app);
 

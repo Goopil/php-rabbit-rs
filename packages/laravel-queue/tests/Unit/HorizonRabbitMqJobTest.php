@@ -43,7 +43,7 @@ function horizonJob(Delivery $delivery, HorizonRabbitMqQueue $queue): HorizonRab
 
 function horizonQueueForJob(): HorizonRabbitMqQueue
 {
-    $queue = new HorizonRabbitMqQueue(new Pool(), [
+    $queue = new HorizonRabbitMqQueue(new Pool, [
         'default' => [
             'broker' => 'default-broker',
             'exchange' => 'jobs',
@@ -87,7 +87,9 @@ it('does not call deleteReserved when already deleted', function (): void {
     $dispatchCount = 0;
     $events = $this->createStub(Dispatcher::class);
     $events->method('dispatch')->willReturnCallback(
-        static function () use (&$dispatchCount): void { $dispatchCount++; }
+        static function () use (&$dispatchCount): void {
+            $dispatchCount++;
+        }
     );
     $this->app->instance(Dispatcher::class, $events);
 
@@ -136,7 +138,7 @@ it('dispatches the Horizon JobFailed event when the job fails', function (): voi
 
     // The framework's Job::failed() resolves the payload job class from the
     // container; in production the class exists, mirror that here.
-    $this->app->bind('TestJob', static fn (): object => new stdClass());
+    $this->app->bind('TestJob', static fn (): object => new stdClass);
 
     $events = [];
     $recorder = $this->createStub(Dispatcher::class);
@@ -157,7 +159,7 @@ it('dispatches the Horizon JobFailed event when the job fails', function (): voi
         ->and($events[1]->exception)->toBe($exception)
         ->and($events[1]->job)->toBe($job)
         ->and($events[1]->payload->decoded['uuid'] ?? null)
-            ->toBe(HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID)
+        ->toBe(HORIZON_RABBIT_MQ_JOB_TEST_MESSAGE_ID)
         ->and($events[1]->queue)->toBe('orders.high')
         ->and($events[1]->connectionName)->toBe('rabbit-rs');
 });

@@ -16,7 +16,7 @@ require_once __DIR__.'/../Fixture/horizon_jobs.php';
 beforeEach(function (): void {
     $this->app['config']->set('database.connections.sqlite.database', ':memory:');
 
-    $this->pool = new Pool();
+    $this->pool = new Pool;
     $this->app->singleton(NativePoolFactory::class, fn (): NativePoolFactory => new NativePoolFactory(
         createPool: fn (): Pool => $this->pool,
     ));
@@ -36,7 +36,7 @@ it('defers Horizon job publication until the transaction commits', function () {
 
     $pool = $this->pool;
 
-    DB::transaction(function () use ($queue, $pool) {
+    DB::transaction(function () use ($pool) {
         dispatch(new CommitJob)->onConnection('rabbit-rs-horizon');
         expect($pool->published)->toBeEmpty('job must not be published inside the transaction');
     });

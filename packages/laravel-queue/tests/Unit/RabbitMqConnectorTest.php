@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
@@ -85,7 +86,7 @@ it('does not reuse inherited pools after a fork', function (): void {
             return $processId;
         },
     );
-    $compiled = \Goopil\RabbitRs\Laravel\Config\ConnectionCompiler::compile(
+    $compiled = ConnectionCompiler::compile(
         'rabbit-rs-primary',
         ['queue' => 'default'],
     );
@@ -98,11 +99,11 @@ it('does not reuse inherited pools after a fork', function (): void {
 
 it('rejects an invalid default queue', function (): void {
     $connector = new RabbitMqConnector(
-        new NativePoolFactory(),
+        new NativePoolFactory,
     );
 
     $this->expectException(InvalidArgumentException::class);
     $this->expectExceptionMessage('queue');
 
-    $connector->connect(['queue' => new stdClass()]);
+    $connector->connect(['queue' => new stdClass]);
 });

@@ -9,7 +9,7 @@ const WORKER_STUB_PATH = '/Fixture/worker_stub.php';
 
 describe('WorkerSupervisor integration', function () {
     beforeEach(function () {
-        $this->stateDir = sys_get_temp_dir() . '/rabbit-rs-supervisor-' . uniqid('', true);
+        $this->stateDir = sys_get_temp_dir().'/rabbit-rs-supervisor-'.uniqid('', true);
         @mkdir($this->stateDir, 0o777, true);
     });
 
@@ -79,7 +79,7 @@ describe('WorkerSupervisor integration', function () {
 
     it('clean exits do not burn the restart budget', function () {
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
 
         // Five clean cycles (more than maxRestarts=3) followed by crashes:
         // clean recycling must reset the budget each time, then crash
@@ -91,8 +91,8 @@ describe('WorkerSupervisor integration', function () {
             $calls++;
 
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER_INDEX'   => '0',
-                'RABBIT_RS_STUB_MODE'      => $mode,
+                'RABBIT_RS_WORKER_INDEX' => '0',
+                'RABBIT_RS_STUB_MODE' => $mode,
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
         };
@@ -145,7 +145,7 @@ describe('WorkerSupervisor integration', function () {
 
     it('recycles clean exits inline without pcntl and without burning the budget', function () {
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
 
         $modes = ['exit-clean', 'exit-clean', 'exit-clean', 'exit-clean', 'exit-clean', 'crash', 'crash'];
         $calls = 0;
@@ -154,20 +154,15 @@ describe('WorkerSupervisor integration', function () {
             $calls++;
 
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER_INDEX'   => '0',
-                'RABBIT_RS_STUB_MODE'      => $mode,
+                'RABBIT_RS_WORKER_INDEX' => '0',
+                'RABBIT_RS_STUB_MODE' => $mode,
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
         };
 
         // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
-        $supervisor = new class(
-            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            processFactory: $factory,
-        ) extends WorkerSupervisor {
+        $supervisor = new class(plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: 1, baseBackoffSeconds: 0, processFactory: $factory) extends WorkerSupervisor
+        {
             protected function canFork(): bool
             {
                 return false;
@@ -183,7 +178,7 @@ describe('WorkerSupervisor integration', function () {
 
     it('clean-exiting worker keeps recycling while another worker crash-loops', function () {
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
 
         $starts = [0 => 0, 1 => 0];
         $factory = static function (int $workerIndex) use (&$starts, $stubPath, $stateDir): Process {
@@ -192,14 +187,14 @@ describe('WorkerSupervisor integration', function () {
             if ($workerIndex === 0) {
                 // Crash-loops: each run dies non-zero after ~1.2s.
                 return new Process([PHP_BINARY, '-r', 'usleep(1200000); exit(1);'], null, [
-                    'RABBIT_RS_WORKER_INDEX'   => '0',
+                    'RABBIT_RS_WORKER_INDEX' => '0',
                 ]);
             }
 
             // Recycles cleanly every few hundred milliseconds.
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER_INDEX'   => '1',
-                'RABBIT_RS_STUB_MODE'      => 'exit-clean',
+                'RABBIT_RS_WORKER_INDEX' => '1',
+                'RABBIT_RS_STUB_MODE' => 'exit-clean',
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
         };
@@ -227,15 +222,15 @@ describe('WorkerSupervisor integration', function () {
         // Worker 1 runs until signaled ("run" mode).
         // The supervisor must stop worker 1 before returning EXIT_MAX_RESTARTS.
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
 
         $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
             $cmd = [PHP_BINARY, $stubPath];
             $mode = $workerIndex === 0 ? 'crash' : 'run';
             $envForChild = [
-                'RABBIT_RS_WORKER_INDEX'   => (string) $workerIndex,
-                'RABBIT_RS_STUB_MODE'        => $mode,
-                'RABBIT_RS_STUB_STATE_DIR'   => $stateDir,
+                'RABBIT_RS_WORKER_INDEX' => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE' => $mode,
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ];
 
             return new Process($cmd, null, $envForChild);
@@ -261,7 +256,7 @@ describe('WorkerSupervisor integration', function () {
         $marker = supervisorWaitForMarker(1, timeoutMs: 1000);
         expect($marker)->not->toBeNull('Worker 1 should have started');
 
-        $exitFile = $stateDir . '/worker-1-exited.txt';
+        $exitFile = $stateDir.'/worker-1-exited.txt';
         $deadline = microtime(true) + 2.0;
         while (microtime(true) < $deadline) {
             if (is_file($exitFile)) {
@@ -274,24 +269,19 @@ describe('WorkerSupervisor integration', function () {
 
     it('runs a single worker inline without pcntl', function () {
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
 
         $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
             return new Process([PHP_BINARY, $stubPath], null, [
-                'RABBIT_RS_WORKER_INDEX'   => (string) $workerIndex,
-                'RABBIT_RS_STUB_MODE'      => 'crash',
+                'RABBIT_RS_WORKER_INDEX' => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE' => 'crash',
                 'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
             ]);
         };
 
         // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
-        $supervisor = new class(
-            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
-            workers: 1,
-            maxRestarts: 1,
-            baseBackoffSeconds: 0,
-            processFactory: $factory,
-        ) extends WorkerSupervisor {
+        $supervisor = new class(plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: 1, baseBackoffSeconds: 0, processFactory: $factory) extends WorkerSupervisor
+        {
             protected function canFork(): bool
             {
                 return false;
@@ -313,7 +303,7 @@ describe('WorkerSupervisor integration', function () {
 
     it('keeps supervising other children while one is in backoff', function () {
         $stateDir = test()->stateDir;
-        $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
 
         $starts = [0 => [], 1 => []];
         $factory = static function (int $workerIndex) use (&$starts, $stubPath, $stateDir): Process {
@@ -322,8 +312,8 @@ describe('WorkerSupervisor integration', function () {
             if ($workerIndex === 0) {
                 // Crashes immediately on every start.
                 return new Process([PHP_BINARY, $stubPath], null, [
-                    'RABBIT_RS_WORKER_INDEX'   => '0',
-                    'RABBIT_RS_STUB_MODE'      => 'crash',
+                    'RABBIT_RS_WORKER_INDEX' => '0',
+                    'RABBIT_RS_STUB_MODE' => 'crash',
                     'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
                 ]);
             }
@@ -331,7 +321,7 @@ describe('WorkerSupervisor integration', function () {
             // Stays up for a moment, then exits non-zero: its crash lands well
             // inside worker 0's backoff window.
             return new Process([PHP_BINARY, '-r', 'usleep(500000); exit(1);'], null, [
-                'RABBIT_RS_WORKER_INDEX'   => '1',
+                'RABBIT_RS_WORKER_INDEX' => '1',
             ]);
         };
 
@@ -389,7 +379,7 @@ describe('WorkerSupervisor integration', function () {
 /**
  * Build a supervisor that spawns the worker stub instead of queue:work.
  *
- * @param array<string, string> $extraEnv Additional env vars for the child.
+ * @param  array<string, string>  $extraEnv  Additional env vars for the child.
  */
 function makeSupervisor(
     int $workers,
@@ -398,7 +388,7 @@ function makeSupervisor(
     array $extraEnv = [],
 ): WorkerSupervisor {
     $stateDir = test()->stateDir;
-    $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
+    $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
     $env = array_merge([
         'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
     ], $extraEnv);
@@ -408,7 +398,7 @@ function makeSupervisor(
             PHP_BINARY,
             $stubPath,
         ];
-        $envForChild = array_merge($env, ['RABBIT_RS_WORKER_INDEX'   => (string) $workerIndex]);
+        $envForChild = array_merge($env, ['RABBIT_RS_WORKER_INDEX' => (string) $workerIndex]);
 
         return new Process($cmd, null, $envForChild);
     };
@@ -424,7 +414,7 @@ function makeSupervisor(
 
 function supervisorWaitForMarker(int $worker, int $timeoutMs = 5000): ?array
 {
-    $marker = test()->stateDir . '/worker-' . $worker . '-started.txt';
+    $marker = test()->stateDir.'/worker-'.$worker.'-started.txt';
     $deadline = microtime(true) + ($timeoutMs / 1000);
     while (microtime(true) < $deadline) {
         if (is_file($marker)) {
@@ -443,7 +433,7 @@ function supervisorWaitForMarker(int $worker, int $timeoutMs = 5000): ?array
 
 function supervisorInvocationCount(int $worker): int
 {
-    $file = test()->stateDir . '/worker-' . $worker . '-count.txt';
+    $file = test()->stateDir.'/worker-'.$worker.'-count.txt';
     if (! is_file($file)) {
         return 0;
     }
@@ -457,7 +447,7 @@ function supervisorCleanupStateDir(string $dir): void
     if (! is_dir($dir)) {
         return;
     }
-    $items = glob($dir . '/*');
+    $items = glob($dir.'/*');
     if (is_array($items)) {
         foreach ($items as $item) {
             if (is_file($item)) {
@@ -480,17 +470,17 @@ function writeSupervisorScript(
     int $maxRestarts = 1,
     int $baseBackoffSeconds = 0,
 ): string {
-    $stubPath = dirname(__DIR__) . WORKER_STUB_PATH;
-    $autoloadPath = dirname(__DIR__, 2) . '/vendor/autoload.php';
+    $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
+    $autoloadPath = dirname(__DIR__, 2).'/vendor/autoload.php';
 
     // Build a self-contained script that constructs the supervisor and runs it.
     $code = "<?php\n";
     $code .= "declare(strict_types=1);\n";
-    $code .= "require " . var_export($autoloadPath, true) . ";\n";
-    $code .= "\$stubPath = " . var_export($stubPath, true) . ";\n";
+    $code .= 'require '.var_export($autoloadPath, true).";\n";
+    $code .= '$stubPath = '.var_export($stubPath, true).";\n";
     $code .= "\$stateDir = \$argv[1];\n";
     $code .= "\$factory = static function (int \$workerIndex) use (\$stubPath, \$stateDir): \\Symfony\\Component\\Process\\Process {\n";
-    $code .= "    \$env = ['RABBIT_RS_WORKER_INDEX'   => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => " . var_export($mode, true) . ", 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
+    $code .= "    \$env = ['RABBIT_RS_WORKER_INDEX'   => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => ".var_export($mode, true).", 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
     $code .= "    return new \\Symfony\\Component\\Process\\Process([PHP_BINARY, \$stubPath], null, \$env);\n";
     $code .= "};\n";
     $code .= "\$supervisor = new \\Goopil\\RabbitRs\\Laravel\\Console\\WorkerSupervisor(\n";
@@ -499,7 +489,7 @@ function writeSupervisorScript(
     $code .= ");\n";
     $code .= "exit(\$supervisor->run());\n";
 
-    $scriptFile = test()->stateDir . '/run-supervisor.php';
+    $scriptFile = test()->stateDir.'/run-supervisor.php';
     file_put_contents($scriptFile, $code);
 
     return $scriptFile;

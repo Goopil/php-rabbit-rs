@@ -9,6 +9,7 @@ use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\JobReleasedAfterException;
+use Illuminate\Queue\Events\WorkerIdle;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -139,16 +140,16 @@ final class RabbitMqWorkCommandExtension
             ]);
         });
 
-        if (class_exists(\Illuminate\Queue\Events\WorkerIdle::class)) {
+        if (class_exists(WorkerIdle::class)) {
             $events->listen(
-                \Illuminate\Queue\Events\WorkerIdle::class,
+                WorkerIdle::class,
                 /**
                  * The listener signature requires the event parameter, but the
                  * WorkerIdle event carries no data relevant to the log line.
                  *
                  * @noinspection PhpUnusedParameterInspection
                  */
-                static function (\Illuminate\Queue\Events\WorkerIdle $event) use ($logger, $prefix): void {
+                static function (WorkerIdle $event) use ($logger, $prefix): void {
                     $logger('debug', [
                         'worker' => $prefix,
                         'status' => 'idle',

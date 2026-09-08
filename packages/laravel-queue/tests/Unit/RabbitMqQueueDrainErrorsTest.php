@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\ConnectionException;
+use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
@@ -185,7 +186,7 @@ it('drainSettlementErrors throws QueueException for a returned publish', functio
     ]);
 
     expect(fn () => $queue->drainSettlementErrors())
-        ->toThrow(\Goopil\RabbitRs\Laravel\Exceptions\QueueException::class);
+        ->toThrow(QueueException::class);
 });
 
 it('drainSettlementErrors clears pipelined publish errors after draining', function (): void {
@@ -198,7 +199,7 @@ it('drainSettlementErrors clears pipelined publish errors after draining', funct
 
     try {
         $queue->drainSettlementErrors();
-    } catch (\Throwable) {
+    } catch (Throwable) {
         // Expected: the returned publish surfaces as an exception.
     }
 
@@ -214,5 +215,5 @@ it('pop surfaces a pipelined publish failure before fetching deliveries', functi
     ]);
 
     expect(fn () => $queue->pop('orders-eu'))
-        ->toThrow(\Goopil\RabbitRs\Laravel\Exceptions\QueueException::class);
+        ->toThrow(QueueException::class);
 });

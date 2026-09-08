@@ -625,7 +625,7 @@ describe('adaptive prefetch', function (): void {
  * A valid adaptive prefetch config; $overrides patches individual keys
  * (e.g. to make it invalid for rejection tests).
  *
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}
  */
 function adaptivePrefetch(array $overrides = []): array
@@ -682,7 +682,7 @@ function hostEndpoint(string $host, int $port): array
  * Asserts the compiler rejects a connection overriding the given keys with
  * the exact argument-exception path.
  *
- * @param array<string, mixed> $override
+ * @param  array<string, mixed>  $override
  */
 function expectCompileRejected(array $override, string $path, ?array $defaults = null): void
 {
@@ -694,8 +694,8 @@ function expectCompileRejected(array $override, string $path, ?array $defaults =
  * Asserts a bounded integer setting: valid values land in the compiled config
  * at the given path, invalid ones throw with the exact compiler path.
  *
- * @param callable(): array $compile
- * @param callable(array): int $read
+ * @param  callable(): array  $compile
+ * @param  callable(array): int  $read
  */
 function expectBounded(callable $compile, callable $read, int $value, bool $valid, string $path): void
 {
@@ -709,7 +709,7 @@ function expectBounded(callable $compile, callable $read, int $value, bool $vali
 /**
  * A compiled subscription row for the reference 'orders' broker.
  *
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array<string, mixed>
  */
 function subscription(string $name, array $overrides = []): array
@@ -717,7 +717,7 @@ function subscription(string $name, array $overrides = []): array
     return array_merge([
         'name' => $name,
         'broker' => 'orders',
-        'queue' => 'orders.' . $name,
+        'queue' => 'orders.'.$name,
         'weight' => 1,
         'priority_class' => 0,
         'prefetch' => 64,

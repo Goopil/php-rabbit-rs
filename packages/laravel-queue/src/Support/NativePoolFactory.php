@@ -22,8 +22,8 @@ final class NativePoolFactory
     private readonly Closure $resolveProcessId;
 
     /**
-     * @param (Closure(array<string, mixed>): Pool)|null $createPool
-     * @param (Closure(): int)|null $resolveProcessId
+     * @param  (Closure(array<string, mixed>): Pool)|null  $createPool
+     * @param  (Closure(): int)|null  $resolveProcessId
      */
     public function __construct(
         ?Closure $createPool = null,
@@ -42,7 +42,7 @@ final class NativePoolFactory
     }
 
     /**
-     * @param array<string, mixed> $nativeConfig
+     * @param  array<string, mixed>  $nativeConfig
      */
     public function make(array $nativeConfig): Pool
     {

@@ -25,7 +25,7 @@ declare(strict_types=1);
  */
 
 namespace {
-    require_once __DIR__ . '/worker_stub_functions.php';
+    require_once __DIR__.'/worker_stub_functions.php';
 
     if (isset($_ENV['RABBIT_RS_WORKER_INDEX'])) {
         $worker = (string) $_ENV['RABBIT_RS_WORKER_INDEX'];

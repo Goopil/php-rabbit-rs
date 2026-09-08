@@ -120,6 +120,7 @@ final class RabbitMqStatusCommand extends Command
     }
 
     /**
+     * @param  array<string, mixed>  $connection
      * @return array<string, mixed>
      */
     private function fetchQueueStats(string $baseUrl, array $connection, string $connectionName, string $queue): array
@@ -163,7 +164,7 @@ final class RabbitMqStatusCommand extends Command
     }
 
     /**
-     * @param array<string, mixed>|null $body
+     * @param  array<string, mixed>|null  $body
      */
     private static function counter(?array $body, string $key): int
     {
@@ -173,8 +174,8 @@ final class RabbitMqStatusCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $stats pools keyed by connection name
-     * @param array{management_url_configured: bool, queues: list<array<string, mixed>>} $queueStats
+     * @param  array<string, mixed>  $stats  pools keyed by connection name
+     * @param  array{management_url_configured: bool, queues: list<array<string, mixed>>}  $queueStats
      */
     private function displayHuman(array $stats, array $queueStats): void
     {
@@ -185,7 +186,7 @@ final class RabbitMqStatusCommand extends Command
             $this->line("  Connection:       {$name}");
             $this->line("  Handle:          {$poolStats['handle']}");
             $this->line("  PID:             {$poolStats['pid']}");
-            $this->line("  Closed:          " . ($poolStats['closed'] ? 'yes' : 'no'));
+            $this->line('  Closed:          '.($poolStats['closed'] ? 'yes' : 'no'));
             $this->line('');
             $this->line('  Native Pool Metrics (same-process only):');
             $this->line('  Publisher Metrics:');
