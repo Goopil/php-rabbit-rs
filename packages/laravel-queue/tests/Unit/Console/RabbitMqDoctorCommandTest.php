@@ -60,7 +60,7 @@ beforeEach(function () {
 });
 
 describe('rabbit-rs:doctor worker class resolution', function () {
-    it('warns when worker=horizon is only set in the package defaults', function () {
+    it('reports the inherited worker without warning when it comes from the package defaults', function () {
         doctorConnection();
         config()->set('rabbit-rs.worker', 'horizon');
 
@@ -68,8 +68,8 @@ describe('rabbit-rs:doctor worker class resolution', function () {
         $output = Artisan::output();
 
         expect($output)->toContain(HORIZON_QUEUE_CLASS)
-            ->and($output)->toContain('inheritance trap')
-            ->and($output)->toContain('queue.connections.rabbitmq.worker')
+            ->and($output)->toContain('worker class:')
+            ->and($output)->not->toContain('inheritance trap')
             ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
     });
 
@@ -138,14 +138,38 @@ describe('rabbit-rs:doctor horizon check', function () {
             ->assertExitCode(0);
     });
 
+    it('does not warn no supervisors when the running environment configures one for this connection', function () {
+        doctorConnection(overrides: ['worker' => 'horizon']);
+        config()->set('horizon', [
+            'environments' => [
+                'testing' => [
+                    'supervisor-1' => [
+                        'connection' => 'rabbitmq',
+                        'queue' => ['orders'],
+                    ],
+                ],
+            ],
+        ]);
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain('horizon supervisors aligned')
+            ->and($output)->not->toContain('no supervisors configured')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
     it('flags supervisor queues outside the connection subscriptions', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
         config()->set('horizon', [
-            'supervisors' => [[
-                'name' => 'supervisor-1',
-                'connection' => 'rabbitmq',
-                'queue' => ['orders', 'ghost-queue'],
-            ]],
+            'environments' => [
+                'testing' => [
+                    'supervisor-1' => [
+                        'connection' => 'rabbitmq',
+                        'queue' => ['orders', 'ghost-queue'],
+                    ],
+                ],
+            ],
         ]);
 
         $this->artisan('rabbit-rs:doctor')
@@ -156,16 +180,57 @@ describe('rabbit-rs:doctor horizon check', function () {
     it('reminds about readyNow for auto-balancing supervisors', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
         config()->set('horizon', [
-            'supervisors' => [[
-                'name' => 'supervisor-1',
-                'connection' => 'rabbitmq',
-                'queue' => ['orders'],
-                'balance' => 'auto',
-            ]],
+            'environments' => [
+                'testing' => [
+                    'supervisor-1' => [
+                        'connection' => 'rabbitmq',
+                        'queue' => ['orders'],
+                        'balance' => 'auto',
+                    ],
+                ],
+            ],
         ]);
 
         $this->artisan('rabbit-rs:doctor')
             ->expectsOutputToContain('readyNow')
+            ->assertExitCode(0);
+    });
+
+    it('does not count a supervisor on another connection as consuming this one', function () {
+        doctorConnection(overrides: ['worker' => 'horizon']);
+        config()->set('horizon', [
+            'environments' => [
+                'testing' => [
+                    'supervisor-1' => [
+                        'connection' => 'redis',
+                        'queue' => ['orders'],
+                    ],
+                ],
+            ],
+        ]);
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain("no Horizon supervisor consumes this connection's queues")
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
+    it('names the supervisor by its config key', function () {
+        doctorConnection(overrides: ['worker' => 'horizon']);
+        config()->set('horizon', [
+            'environments' => [
+                'testing' => [
+                    'supervisor-orders' => [
+                        'connection' => 'rabbitmq',
+                        'queue' => ['orders', 'ghost-queue'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->artisan('rabbit-rs:doctor')
+            ->expectsOutputToContain('supervisor-orders')
             ->assertExitCode(0);
     });
 });
