@@ -374,6 +374,102 @@ describe('WorkerSupervisor integration', function () {
 
         expect($exitCode)->toBe(WorkerSupervisor::EXIT_CLEAN);
     });
+
+    it('stop-when-empty exits once children terminate, without restarting them', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
+
+        $modes = [0 => 'exit-clean', 1 => 'exit-clean'];
+        $calls = [0 => 0, 1 => 0];
+        $factory = static function (int $workerIndex) use (&$calls, $modes, $stubPath, $stateDir): Process {
+            $calls[$workerIndex]++;
+
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER_INDEX' => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE' => $modes[$workerIndex],
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 2,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            options: ['stop-when-empty' => true],
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($calls[0])->toBe(1)
+            ->and($calls[1])->toBe(1);
+    });
+
+    it('stop-when-empty propagates a crashed child exit status without restarts', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
+
+        $modes = [0 => 'crash', 1 => 'exit-clean'];
+        $calls = [0 => 0, 1 => 0];
+        $factory = static function (int $workerIndex) use (&$calls, $modes, $stubPath, $stateDir): Process {
+            $calls[$workerIndex]++;
+
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER_INDEX' => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE' => $modes[$workerIndex],
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 2,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            options: ['stop-when-empty' => true],
+        );
+
+        $exit = $supervisor->run();
+
+        // The crash is terminal in once mode: the supervisor exits with the
+        // child's exit status instead of entering the restart budget.
+        expect($exit)->toBe(1)
+            ->and($calls[0])->toBe(1)
+            ->and($calls[1])->toBe(1);
+    });
+
+    it('stop-when-empty runs inline without pcntl and returns the child exit code', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
+
+        $calls = 0;
+        $factory = static function () use (&$calls, $stubPath, $stateDir): Process {
+            $calls++;
+
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER_INDEX' => '0',
+                'RABBIT_RS_STUB_MODE' => 'crash',
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
+        $supervisor = new class(plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: 1, baseBackoffSeconds: 0, processFactory: $factory, options: ['stop-when-empty' => true]) extends WorkerSupervisor
+        {
+            protected function canFork(): bool
+            {
+                return false;
+            }
+        };
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(1)
+            ->and($calls)->toBe(1);
+    });
 });
 
 /**

@@ -10,7 +10,7 @@ use Symfony\Component\Process\Process;
 /**
  * @phpstan-type ProcessFactory \Closure(int): Process
  * @phpstan-type WorkPlanEntry array{connection: string, queues: list<string>}
- * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null}
+ * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null, stop-when-empty?: bool}
  */
 class WorkerSupervisor
 {
@@ -106,6 +106,10 @@ class WorkerSupervisor
             }
         }
 
+        if ($this->stopsWhenEmpty()) {
+            $cmd[] = '--stop-when-empty';
+        }
+
         return $cmd;
     }
 
@@ -115,6 +119,17 @@ class WorkerSupervisor
     public static function workerEnv(): string
     {
         return self::WORKER_ENV;
+    }
+
+    /**
+     * Whether the once mode (stop-when-empty) is active: children run once
+     * with `--stop-when-empty` and are never recycled or restarted; the
+     * supervisor exits once every child has terminated, propagating the
+     * highest child exit status.
+     */
+    private function stopsWhenEmpty(): bool
+    {
+        return (bool) ($this->options['stop-when-empty'] ?? false);
     }
 
     /**
@@ -166,7 +181,7 @@ class WorkerSupervisor
             throw new SupervisorException('ext-pcntl is required to supervise multiple workers. Install ext-pcntl or target a single connection.');
         }
 
-        return $this->runInternal($children);
+        return $this->stopsWhenEmpty() ? $this->runOnce($children) : $this->runInternal($children);
     }
 
     /**
@@ -199,6 +214,12 @@ class WorkerSupervisor
         while (true) {
             $process->wait();
 
+            if ($this->stopsWhenEmpty()) {
+                // Once mode: the child's exit is terminal, its status is the
+                // supervisor's.
+                return $process->getExitCode() ?? self::EXIT_CLEAN;
+            }
+
             if ($this->isCleanExit($process)) {
                 // Planned recycling (e.g. --max-jobs reached): reset the
                 // crash budget and restart immediately, without backoff.
@@ -227,6 +248,61 @@ class WorkerSupervisor
     private function isCleanExit(Process $process): bool
     {
         return $process->getExitCode() === self::EXIT_CLEAN;
+    }
+
+    /**
+     * Once mode (stop-when-empty): every child runs exactly once and is
+     * never restarted. The supervisor returns once every child has
+     * terminated, propagating the highest child exit status (a crashed
+     * child therefore fails the command instead of recycling). On
+     * SIGTERM/SIGINT, children are stopped gracefully and the command
+     * exits clean.
+     *
+     * @param  list<list<string>>  $children  One command per child process,
+     *                                        indexed by worker index.
+     */
+    private function runOnce(array $children): int
+    {
+        $shutdown = false;
+        pcntl_async_signals(true);
+        pcntl_signal(SIGTERM, static function () use (&$shutdown): void {
+            $shutdown = true;
+        });
+        pcntl_signal(SIGINT, static function () use (&$shutdown): void {
+            $shutdown = true;
+        });
+
+        $processes = [];
+        foreach ($children as $index => $command) {
+            $processes[$index] = $this->startProcess($index, $command);
+        }
+
+        do {
+            $pending = false;
+            foreach ($processes as $process) {
+                if ($process->isRunning()) {
+                    $pending = true;
+
+                    break;
+                }
+            }
+            if ($pending && ! $shutdown) {
+                usleep(100_000);
+            }
+        } while ($pending && ! $shutdown);
+
+        if ($shutdown) {
+            $this->stopAllProcesses($processes);
+
+            return self::EXIT_CLEAN;
+        }
+
+        $exitCodes = [];
+        foreach ($processes as $process) {
+            $exitCodes[] = $process->getExitCode() ?? self::EXIT_CLEAN;
+        }
+
+        return $exitCodes === [] ? self::EXIT_CLEAN : max($exitCodes);
     }
 
     /**

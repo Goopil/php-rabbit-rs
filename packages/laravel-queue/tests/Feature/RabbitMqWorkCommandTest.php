@@ -48,6 +48,13 @@ describe('rabbit-rs:work command', function () {
             ->and($definition->hasOption('max-time'))->toBeTrue();
     });
 
+    it('command signature accepts the stop-when-empty termination flag', function () {
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
+        $command = $commands['rabbit-rs:work'];
+
+        expect($command->getDefinition()->hasOption('stop-when-empty'))->toBeTrue();
+    });
+
     it('worker propagation options have expected defaults', function () {
         $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
@@ -288,6 +295,26 @@ describe('rabbit-rs:work plan fan-out wiring', function () {
             ['connection' => 'us', 'queues' => ['orders']],
         ]);
     });
+
+    it('wires --stop-when-empty into the supervisor and its child commands', function () {
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command', ['--stop-when-empty' => true])
+            ->assertSuccessful();
+
+        expect($command->capturedSupervisor)->not->toBeNull()
+            ->and($command->capturedSupervisor->buildChildCommands()[0])->toContain('--stop-when-empty');
+    });
+
+    it('does not propagate --stop-when-empty when the flag is absent', function () {
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command')->assertSuccessful();
+
+        foreach ($command->capturedSupervisor->buildChildCommands()[0] as $arg) {
+            expect($arg)->not->toContain('--stop-when-empty');
+        }
+    });
 });
 
 /**
@@ -309,6 +336,8 @@ function registerTestWorkCommand($app): RabbitMqWorkCommand
     {
         public ?array $capturedPlan = null;
 
+        public ?WorkerSupervisor $capturedSupervisor = null;
+
         protected $signature = 'test:work-command
             {--connection= : Comma-separated queue connections}
             {--queue= : Comma-separated queue names}
@@ -320,6 +349,7 @@ function registerTestWorkCommand($app): RabbitMqWorkCommand
             {--memory=128 : The memory limit in megabytes}
             {--max-jobs= : The number of jobs to process before stopping}
             {--max-time= : The maximum number of seconds the worker should run}
+            {--stop-when-empty : Process pending jobs then exit when the queues are empty}
             {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
         protected $description = 'Test command';
@@ -333,6 +363,7 @@ function registerTestWorkCommand($app): RabbitMqWorkCommand
         protected function createSupervisor(array $plan): WorkerSupervisor
         {
             $this->capturedPlan = $plan;
+            $this->capturedSupervisor = parent::createSupervisor($plan);
 
             return $this->supervisor;
         }
