@@ -14,6 +14,7 @@ use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\Support\MessageMapper;
+use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Contracts\Queue\ClearableQueue;
@@ -95,6 +96,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function onConnectionState(string $broker, string $state, int $generation): void
     {
+        $this->probeStatefile()?->recordConnectionState($broker, $state);
         app('events')->dispatch(new ConnectionStateChanged($broker, $state, $generation));
     }
 
@@ -428,6 +430,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function pop($queue = null, $index = 0)
     {
+        $probe = $this->probeTurn();
         $this->drainSettlementErrors();
 
         if ($queue === null) {
@@ -464,6 +467,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             unset($this->consumers[$profile]);
             throw QueueException::fromNative($exception);
         }
+        $probe?->markRunning();
         if ($delivery === null) {
             return null;
         }
@@ -517,6 +521,45 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
                 'action' => $action,
             ]);
         }
+    }
+
+    /**
+     * Resolves the process-wide probe statefile writer; null when the
+     * runtime cannot provide one (no container, or the singleton not bound
+     * outside the service provider).
+     */
+    private function probeStatefile(): ?ProbeStatefile
+    {
+        // Same typed-property initialization check as drainSettlementErrors:
+        // unit tests construct the queue without a container.
+        if (! isset($this->container) || ! $this->container->bound(ProbeStatefile::class)) { // @phpstan-ignore-line
+            return null;
+        }
+
+        return $this->container->make(ProbeStatefile::class);
+    }
+
+    /**
+     * Refreshes the worker probe statefile at the start of each consume-loop
+     * turn (throttled to the heartbeat window): the pool stats fetch happens
+     * only when a write is due. A pending pipelined publish failure surfaced
+     * by stats() propagates like any other pool operation in pop().
+     */
+    private function probeTurn(): ?ProbeStatefile
+    {
+        $probe = $this->probeStatefile();
+        if ($probe === null || ! $probe->due()) {
+            return $probe;
+        }
+
+        $stats = $this->pool->stats();
+        $probe->heartbeat(
+            (int) ($stats['deliveries_total'] ?? 0),
+            (int) ($stats['acks_total'] ?? 0),
+            (int) ($stats['rejects_total'] ?? 0),
+        );
+
+        return $probe;
     }
 
     /**
