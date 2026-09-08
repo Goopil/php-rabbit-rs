@@ -303,11 +303,7 @@ class WorkerSupervisor
             // budget and restart immediately, without backoff.
             $restartCounts[$index] = 0;
             $processes[$index] = $this->startProcess($index, $children[$index]);
-
-            return false;
-        }
-
-        if ($restartAt[$index] !== 0.0) {
+        } elseif ($restartAt[$index] !== 0.0) {
             // A restart is already scheduled for this worker: wait for its
             // backoff window to elapse, then restart it. The other children
             // keep being supervised in the meantime.
@@ -315,18 +311,14 @@ class WorkerSupervisor
                 $restartAt[$index] = 0.0;
                 $processes[$index] = $this->startProcess($index, $children[$index]);
             }
-
-            return false;
-        }
-
-        if (! $this->shouldRestart($restartCounts[$index])) {
+        } elseif (! $this->shouldRestart($restartCounts[$index])) {
             return true;
+        } else {
+            // Schedule the restart with its backoff; the loop keeps polling
+            // the other children meanwhile (non-blocking backoff).
+            $restartAt[$index] = $now + $this->backoffSeconds($restartCounts[$index]);
+            $restartCounts[$index]++;
         }
-
-        // Schedule the restart with its backoff; the loop keeps polling the
-        // other children meanwhile (non-blocking backoff).
-        $restartAt[$index] = $now + $this->backoffSeconds($restartCounts[$index]);
-        $restartCounts[$index]++;
 
         return false;
     }
