@@ -86,7 +86,7 @@ final class RabbitMqDoctorCommand extends Command
         }
 
         $extensionUsable = $this->checkExtension($probe);
-        $workerClass = $this->checkWorker($name, $config);
+        $workerClass = $this->checkWorker($config);
         $brokerError = $this->checkBroker($compiled, $probe, $extensionUsable);
         $this->checkManagement($config);
         $this->checkTopology($compiled, $brokerError);
@@ -120,18 +120,13 @@ final class RabbitMqDoctorCommand extends Command
     /**
      * @param  array<string, mixed>  $config
      */
-    private function checkWorker(string $name, array $config): string
+    private function checkWorker(array $config): string
     {
         $defaults = RabbitRsConnections::packageDefaults();
         $class = RabbitMqConnector::workerClass($config, $defaults);
 
         if (($config['worker'] ?? null) === null && ($defaults['worker'] ?? 'default') !== 'default') {
-            $this->emit(
-                'warn',
-                "worker resolves to {$class} through the package defaults (config/rabbit-rs.php), not the "
-                ."connection — inheritance trap: set worker => 'horizon' explicitly on "
-                ."queue.connections.{$name}.worker so the Horizon worker is pinned to this connection",
-            );
+            $this->emit('ok', "worker class: {$class} (resolved through the package defaults)");
         } else {
             $this->emit('ok', "worker class: {$class}");
         }
@@ -301,9 +296,11 @@ final class RabbitMqDoctorCommand extends Command
             $this->emit('warn', 'worker=horizon but laravel/horizon is not installed — composer require laravel/horizon');
         }
 
-        $supervisors = is_array($horizonConfig) ? ($horizonConfig['supervisors'] ?? []) : [];
-        if (! is_array($supervisors) || $supervisors === []) {
-            $this->emit('warn', 'no supervisors configured in config/horizon.php');
+        $environment = $this->laravel->environment();
+        $environments = is_array($horizonConfig) ? ($horizonConfig['environments'] ?? []) : [];
+        $envSupervisors = is_array($environments) ? ($environments[$environment] ?? []) : [];
+        if (! is_array($envSupervisors) || $envSupervisors === []) {
+            $this->emit('warn', "no supervisors configured for the {$environment} environment in config/horizon.php");
 
             return;
         }
@@ -312,8 +309,8 @@ final class RabbitMqDoctorCommand extends Command
         $matched = false;
         $ok = true;
 
-        foreach ($supervisors as $supervisor) {
-            if (! is_array($supervisor)) {
+        foreach ($envSupervisors as $supervisorName => $supervisor) {
+            if (! is_array($supervisor) || ($supervisor['connection'] ?? null) !== $name) {
                 continue;
             }
             $supervisorQueues = $supervisor['queue'] ?? [];
@@ -324,7 +321,7 @@ final class RabbitMqDoctorCommand extends Command
                 continue;
             }
             $matched = true;
-            $label = is_string($supervisor['name'] ?? null) ? $supervisor['name'] : '(unnamed)';
+            $label = is_string($supervisorName) ? $supervisorName : '(unnamed)';
 
             $unknownQueues = array_diff($supervisorQueues, $queues);
             if ($unknownQueues !== []) {
