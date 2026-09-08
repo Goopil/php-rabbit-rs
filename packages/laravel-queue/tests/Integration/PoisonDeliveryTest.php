@@ -159,7 +159,17 @@ it('dead-letters an unmarshable delivery when a dead-letter exchange is configur
     // The unmarshable delivery must be settled terminally, not returned.
     expect($this->queue->pop())->toBeNull();
     expect($this->queue->size($source))->toBe(0);
-    expect($this->queue->size($dlq))->toBe(1);
+
+    // Dead-letter routing is asynchronous on the broker: under CI load it
+    // can land well after the reject is processed (issue #191). Poll with a
+    // generous deadline instead of asserting immediately.
+    $dlqSize = 0;
+    $deadline = microtime(true) + 10;
+    while (microtime(true) < $deadline && ($dlqSize = $this->queue->size($dlq)) < 1) {
+        usleep(100_000);
+    }
+    expect($dlqSize)->toBe(1);
+
     expect($this->queue->pop())->toBeNull();
 
     Log::shouldHaveReceived('error');
