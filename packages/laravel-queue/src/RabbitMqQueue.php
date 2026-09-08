@@ -234,8 +234,13 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             : $this->publishBatch($this->prepareBatch($immediate, $data, $queue), $queue);
 
         if ($afterCommit !== []) {
-            foreach ($afterCommit as $job) {
-                $this->registerRollbackCallbacksForJobsThatDispatchAfterCommit($job);
+            // The parent method only exists since Laravel 13; the driver still
+            // supports Laravel 12, where this registration is simply absent.
+            // @phpstan-ignore function.alreadyNarrowedType (parent method is absent in Laravel 12)
+            if (method_exists($this, 'registerRollbackCallbacksForJobsThatDispatchAfterCommit')) {
+                foreach ($afterCommit as $job) {
+                    $this->registerRollbackCallbacksForJobsThatDispatchAfterCommit($job);
+                }
             }
 
             $messages = $this->prepareBatch($afterCommit, $data, $queue);
