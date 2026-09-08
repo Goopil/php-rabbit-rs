@@ -8,20 +8,23 @@ describe('pipelined auto-flush', function () {
 
         $start = hrtime(true);
         for ($i = 0; $i < 64; $i++) {
-            $pool->publish(pubMessage("m{$i}", timeoutMs: 1000));
+            // The per-message deadline is generous (issue #189): on a loaded
+            // Docker CI runner the confirmations can take over a second to
+            // drain. Only the publish-loop assertion below is under test.
+            $pool->publish(pubMessage("m{$i}", timeoutMs: 5000));
         }
         $loopMs = (hrtime(true) - $start) / 1e6;
 
         // The threshold auto-flush spawns on the runtime: the PHP thread must
         // not park for the confirm window (a blocking flush would hold the
-        // batch until the 1 s per-message deadline expires and throw).
+        // batch until the 5 s per-message deadline expires and throw).
         expect($loopMs)->toBeLessThan(500.0);
 
         // An explicit flush quiesces the spawned drain and stays bounded.
         $start = hrtime(true);
         $pool->flush();
         $flushMs = (hrtime(true) - $start) / 1e6;
-        expect($flushMs)->toBeLessThan(2000.0);
+        expect($flushMs)->toBeLessThan(10000.0);
 
         expect($pool->stats()['publishes_total'])->toBe(64);
         expect($pool->stats()['dropped_publications_total'])->toBe(0);

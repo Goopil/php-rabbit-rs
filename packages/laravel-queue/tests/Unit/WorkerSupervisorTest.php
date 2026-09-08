@@ -191,6 +191,31 @@ describe('buildChildCommands option propagation', function (): void {
         expectOptionPropagation('max-time', 3600);
     });
 
+    it('propagates the stop-when-empty flag to child commands', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            options: ['stop-when-empty' => true],
+        );
+
+        expect($supervisor->buildChildCommands()[0])->toContain('--stop-when-empty');
+    });
+
+    it('omits the stop-when-empty flag by default', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+        );
+
+        foreach ($supervisor->buildChildCommands()[0] as $arg) {
+            expect($arg)->not->toContain('--stop-when-empty');
+        }
+    });
+
     it('propagates all worker options together', function (): void {
         $supervisor = new WorkerSupervisor(
             plan: singlePlan(),

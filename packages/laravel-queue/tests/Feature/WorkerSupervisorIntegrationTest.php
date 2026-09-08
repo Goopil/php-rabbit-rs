@@ -374,18 +374,89 @@ describe('WorkerSupervisor integration', function () {
 
         expect($exitCode)->toBe(WorkerSupervisor::EXIT_CLEAN);
     });
+
+    it('stop-when-empty exits once children terminate, without restarting them', function () {
+        $calls = [0 => 0, 1 => 0];
+        $supervisor = makeSupervisor(
+            workers: 2,
+            maxRestarts: 3,
+            modes: [0 => 'exit-clean', 1 => 'exit-clean'],
+            options: ['stop-when-empty' => true],
+            calls: $calls,
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($calls[0])->toBe(1)
+            ->and($calls[1])->toBe(1);
+    });
+
+    it('stop-when-empty propagates a crashed child exit status without restarts', function () {
+        $calls = [0 => 0, 1 => 0];
+        $supervisor = makeSupervisor(
+            workers: 2,
+            maxRestarts: 3,
+            modes: [0 => 'crash', 1 => 'exit-clean'],
+            options: ['stop-when-empty' => true],
+            calls: $calls,
+        );
+
+        $exit = $supervisor->run();
+
+        // The crash is terminal in once mode: the supervisor exits with the
+        // child's exit status instead of entering the restart budget.
+        expect($exit)->toBe(1)
+            ->and($calls[0])->toBe(1)
+            ->and($calls[1])->toBe(1);
+    });
+
+    it('stop-when-empty runs inline without pcntl and returns the child exit code', function () {
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
+
+        $calls = 0;
+        $factory = static function () use (&$calls, $stubPath, $stateDir): Process {
+            $calls++;
+
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER_INDEX' => '0',
+                'RABBIT_RS_STUB_MODE' => 'crash',
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        // Simulate a PHP build without ext-pcntl (the class exposes the hook for tests).
+        $supervisor = new class(plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: 1, baseBackoffSeconds: 0, processFactory: $factory, options: ['stop-when-empty' => true]) extends WorkerSupervisor
+        {
+            protected function canFork(): bool
+            {
+                return false;
+            }
+        };
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(1)
+            ->and($calls)->toBe(1);
+    });
 });
 
 /**
  * Build a supervisor that spawns the worker stub instead of queue:work.
  *
  * @param  array<string, string>  $extraEnv  Additional env vars for the child.
+ * @param  array<int, string>  $modes  Per-worker stub modes, overriding extraEnv.
+ * @param  array<int, int>|null  $calls  Receives the spawn count per worker.
  */
 function makeSupervisor(
     int $workers,
     int $maxRestarts,
     int $baseBackoffSeconds = 0,
     array $extraEnv = [],
+    array $options = [],
+    array $modes = [],
+    ?array &$calls = null,
 ): WorkerSupervisor {
     $stateDir = test()->stateDir;
     $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
@@ -393,14 +464,17 @@ function makeSupervisor(
         'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
     ], $extraEnv);
 
-    $factory = static function (int $workerIndex) use ($stubPath, $env): Process {
-        $cmd = [
-            PHP_BINARY,
-            $stubPath,
-        ];
-        $envForChild = array_merge($env, ['RABBIT_RS_WORKER_INDEX' => (string) $workerIndex]);
+    $factory = static function (int $workerIndex) use ($stubPath, $env, $modes, &$calls): Process {
+        if ($calls !== null) {
+            $calls[$workerIndex] = ($calls[$workerIndex] ?? 0) + 1;
+        }
 
-        return new Process($cmd, null, $envForChild);
+        $envForChild = array_merge($env, ['RABBIT_RS_WORKER_INDEX' => (string) $workerIndex]);
+        if (array_key_exists($workerIndex, $modes)) {
+            $envForChild['RABBIT_RS_STUB_MODE'] = $modes[$workerIndex];
+        }
+
+        return new Process([PHP_BINARY, $stubPath], null, $envForChild);
     };
 
     return new WorkerSupervisor(
@@ -409,6 +483,7 @@ function makeSupervisor(
         maxRestarts: $maxRestarts,
         baseBackoffSeconds: $baseBackoffSeconds,
         processFactory: $factory,
+        options: $options,
     );
 }
 

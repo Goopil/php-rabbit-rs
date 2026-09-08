@@ -101,6 +101,7 @@ Options:
 | `--workers` | Children spawned per connection | `1` |
 | `--max-restarts` | Max restarts per worker | `3` |
 | `--backoff` | Base backoff in seconds | `1` |
+| `--stop-when-empty` | Once mode: children get `--stop-when-empty`, are never recycled, and the supervisor exits with the highest child exit status once every child has terminated (CI smoke tests) | disabled |
 
 Unknown connection or queue names fail with a typed error listing what is available. A queue defined on two targeted connections is consumed on both — see [Worker fan-out](#worker-fan-out) for the full semantics.
 
@@ -111,7 +112,7 @@ Exit codes:
 | Code | Meaning |
 |------|---------|
 | `0` | Clean shutdown (including `SIGTERM`/`SIGINT`) |
-| `1` | Max restarts exceeded |
+| `1` | Max restarts exceeded, or a child crash in `--stop-when-empty` mode (the highest child exit status is propagated) |
 
 #### Status command
 
@@ -455,7 +456,7 @@ The minimal connection is therefore:
 | `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (no confirms, no mandatory — synchronous socket write), `blind` (fire-and-forget) |
 | `confirm_timeout` | int (ms) | `30000` | Publisher confirm timeout, minimum `1000`; during a recovery, a publish parked in replay is retried once with a fresh deadline, while a confirm timeout on a live connection stays terminal |
 | `prefetch` | int | `64` | QoS prefetch per consumer channel, 1–65535 |
-| `wait_timeout` | int (ms) | `30000` | Consumer acquisition deadline, 1000–86400000 |
+| `wait_timeout` | int (ms) | `30000` | Transport (broker connection) acquisition deadline, 1000–86400000 — **not** the `pop()` wait; use `block_for` to make `pop()` block for work |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
 | `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names via an implicit `__auto__.{queue}` profile synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe) |
@@ -719,6 +720,7 @@ same as every Laravel driver.
 | `--workers=N` | `1` | Children spawned **per connection** (N connections × N workers total) |
 | `--max-restarts`, `--backoff` | `3`, `1` | Supervisor crash-loop protection |
 | `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | `60`, `—`, `128`, `—`, `—` | Propagated to each `queue:work` child |
+| `--stop-when-empty` | disabled | Once mode: children run once with `--stop-when-empty` and are never restarted; the supervisor exits with the highest child exit status once all children have terminated |
 
 ```bash
 php artisan rabbit-rs:work
@@ -1150,6 +1152,7 @@ php artisan rabbit-rs:work --workers=4
 | `--max-restarts` | Max restarts per worker before giving up | `3` |
 | `--backoff` | Base backoff in seconds (doubles on each restart, max 60) | `1` |
 | `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | Propagated to each `queue:work` child | `60`, `—`, `128`, `—`, `—` |
+| `--stop-when-empty` | Once mode: children run once (with `--stop-when-empty`) and are never recycled; the supervisor exits with the highest child exit status once all children have terminated | disabled |
 | `--rabbit-rs-worker` | Worker index (set by the supervisor, not by users) | — |
 
 #### Signal handling
@@ -1164,14 +1167,14 @@ php artisan rabbit-rs:work --workers=4
 | Code | Meaning |
 |------|---------|
 | `0` | Clean shutdown (including `SIGTERM`/`SIGINT`) |
-| `1` | Max restarts exceeded |
+| `1` | Max restarts exceeded, or a child crash in `--stop-when-empty` mode (the highest child exit status is propagated) |
 
 #### How it works
 
 1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work <name> --queue=<q1,q2>` (the connection is `queue:work`'s positional argument)
 2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER_INDEX={i}` environment variable
 3. The supervisor monitors child processes every 100ms
-4. If a child exits with a non-zero code (a crash), the supervisor waits (backoff seconds) and restarts it; a clean exit (0, e.g. `--max-jobs` recycling) restarts the child immediately and resets its crash budget
+4. If a child exits with a non-zero code (a crash), the supervisor waits (backoff seconds) and restarts it; a clean exit (0, e.g. `--max-jobs` recycling) restarts the child immediately and resets its crash budget. With `--stop-when-empty`, neither happens: children run once and the supervisor exits with the highest child exit status once all children have terminated (CI smoke-test mode)
 5. On `SIGTERM`/`SIGINT`, the supervisor sends `SIGTERM` to each child and waits up to 10 seconds
 
 ### Supervisor (systemd) configuration
