@@ -456,7 +456,7 @@ The minimal connection is therefore:
 | `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (no confirms, no mandatory — synchronous socket write), `blind` (fire-and-forget) |
 | `confirm_timeout` | int (ms) | `30000` | Publisher confirm timeout, minimum `1000`; during a recovery, a publish parked in replay is retried once with a fresh deadline, while a confirm timeout on a live connection stays terminal |
 | `prefetch` | int | `64` | QoS prefetch per consumer channel, 1–65535 |
-| `wait_timeout` | int (ms) | `30000` | Consumer acquisition deadline, 1000–86400000 |
+| `wait_timeout` | int (ms) | `30000` | Transport (broker connection) acquisition deadline, 1000–86400000 — **not** the `pop()` wait; use `block_for` to make `pop()` block for work |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
 | `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names via an implicit `__auto__.{queue}` profile synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe) |
