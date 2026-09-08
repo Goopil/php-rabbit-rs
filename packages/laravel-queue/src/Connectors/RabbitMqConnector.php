@@ -20,8 +20,8 @@ final class RabbitMqConnector implements ConnectorInterface
     private static bool $unboundedRedeliveryWarningEmitted = false;
 
     /**
-     * @param array<string, mixed> $defaults package defaults (config('rabbit-rs')) merged under every connection config
-     * @param (Closure(): bool)|null $inProductionEnvironment
+     * @param  array<string, mixed>  $defaults  package defaults (config('rabbit-rs')) merged under every connection config
+     * @param  (Closure(): bool)|null  $inProductionEnvironment
      */
     public function __construct(
         private readonly NativePoolFactory $pools,
@@ -36,7 +36,7 @@ final class RabbitMqConnector implements ConnectorInterface
      * from the raw connection config; `worker` also falls back to the package
      * defaults so RABBIT_RS_WORKER applies without a per-connection key.
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     public function connect(array $config): RabbitMqQueue
     {
@@ -82,8 +82,8 @@ final class RabbitMqConnector implements ConnectorInterface
      * implementation. Shared by the connector and rabbit-rs:doctor so both
      * instantiate and report the same class.
      *
-     * @param array<string, mixed> $config raw connection config
-     * @param array<string, mixed> $defaults package defaults (config('rabbit-rs'))
+     * @param  array<string, mixed>  $config  raw connection config
+     * @param  array<string, mixed>  $defaults  package defaults (config('rabbit-rs'))
      */
     public static function workerClass(array $config, array $defaults): string
     {
@@ -102,7 +102,7 @@ final class RabbitMqConnector implements ConnectorInterface
      * Falls back to 'default' when the config is not registered (direct
      * connector use).
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private function connectionName(array $config): string
     {
@@ -119,8 +119,8 @@ final class RabbitMqConnector implements ConnectorInterface
      * silenced with production_warning => false on the connection or in the
      * package config.
      *
-     * @param array<string, mixed> $config
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $compiled
      */
     private function warnOnUnboundedRedeliveryDefaults(array $config, array $compiled): void
     {

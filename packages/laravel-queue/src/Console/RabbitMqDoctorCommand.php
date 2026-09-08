@@ -14,6 +14,7 @@ use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use Laravel\Horizon\Horizon;
 
 /**
  * One-shot integration diagnostics: per rabbit-rs connection, runs the
@@ -69,7 +70,7 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private function doctorConnection(string $name, array $config, DoctorProbe $probe): void
     {
@@ -117,7 +118,7 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private function checkWorker(string $name, array $config): string
     {
@@ -139,7 +140,7 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $compiled
      * @return string|null null when the broker is reachable, the probe error,
      *                     or the BROKER_SKIPPED sentinel
      */
@@ -173,7 +174,7 @@ final class RabbitMqDoctorCommand extends Command
      * Optional management API check: reachable when configured, advisory
      * only (the API is not needed by the driver itself).
      *
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private function checkManagement(array $config): void
     {
@@ -206,7 +207,7 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $compiled
      */
     private function checkTopology(array $compiled, ?string $brokerError): void
     {
@@ -254,7 +255,7 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $compiled
      */
     private function checkSafety(array $compiled): void
     {
@@ -281,12 +282,12 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $compiled
      */
     private function checkHorizon(string $name, string $workerClass, array $compiled): void
     {
         $horizonConfig = config('horizon');
-        $installed = class_exists(\Laravel\Horizon\Horizon::class);
+        $installed = class_exists(Horizon::class);
 
         if ($workerClass !== HorizonRabbitMqQueue::class
             && ! ($installed && is_array($horizonConfig))
@@ -331,7 +332,7 @@ final class RabbitMqDoctorCommand extends Command
                 $this->emit(
                     'warn',
                     sprintf(
-                        "supervisor %s lists queue(s) %s that are not subscriptions of this connection — jobs for them will never be consumed by its worker profiles",
+                        'supervisor %s lists queue(s) %s that are not subscriptions of this connection — jobs for them will never be consumed by its worker profiles',
                         $label,
                         implode(', ', $unknownQueues),
                     ),
@@ -400,7 +401,7 @@ final class RabbitMqDoctorCommand extends Command
     }
 
     /**
-     * @param 'ok'|'warn'|'fail' $status
+     * @param  'ok'|'warn'|'fail'  $status
      */
     private function emit(string $status, string $message): void
     {

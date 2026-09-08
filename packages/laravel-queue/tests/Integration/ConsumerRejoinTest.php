@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\ConnectionException;
-use Goopil\RabbitRs\Pool;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
+use Goopil\RabbitRs\Pool;
 
 const REJOIN_MGMT_API = 'http://localhost:15672';
 
@@ -69,6 +69,7 @@ function killBillingConnections(): int
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         if ($status < 200 || $status >= 300) {
             fwrite(STDERR, "\nDEBUG kill $connection[name] -> HTTP $status\n");
+
             continue;
         }
         $killed++;
@@ -88,7 +89,7 @@ function rejoinClosePool(?Pool $pool): void
     }
     try {
         $pool->close();
-    } catch (\Throwable) {
+    } catch (Throwable) {
         // best-effort cleanup
     }
 }
@@ -163,7 +164,7 @@ it('rejoins a recovered broker after the cached consumer retires', function () {
                 $job->delete();
                 break;
             }
-        } catch (QueueException | ConnectionException) {
+        } catch (QueueException|ConnectionException) {
             // Expected while the retired handle's errors surface; a hot loop
             // here means the cache was never evicted.
         }

@@ -19,7 +19,8 @@ const BASE_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\RabbitMqQueue';
  */
 function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.1.3', ?string $brokerError = null): void
 {
-    $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError) extends DoctorProbe {
+    $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError) extends DoctorProbe
+    {
         public function __construct(
             private readonly bool $loaded,
             private readonly ?string $version,

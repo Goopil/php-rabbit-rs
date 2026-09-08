@@ -21,13 +21,13 @@ final class DelayedPublishTestJob
  */
 function publishQueue(): array
 {
-    $pool = new Pool();
+    $pool = new Pool;
 
     return [publishNewQueue($pool, publishRoutes(), 'default'), $pool];
 }
 
 /**
- * @param array<string, array<string, string>> $routes
+ * @param  array<string, array<string, string>>  $routes
  */
 function publishNewQueue(
     Pool $pool,
@@ -112,7 +112,7 @@ it('falls back to the default route for an unknown named route', function (): vo
 });
 
 it('fails when neither the named nor default route exists', function (): void {
-    $queue = publishNewQueue(new Pool(), [
+    $queue = publishNewQueue(new Pool, [
         'orders' => publishRoutes()['orders'],
     ], 'missing');
 
@@ -171,7 +171,7 @@ it('maps per-job delay without splitting the native batch on bulk', function ():
     [$queue, $pool] = publishQueue();
 
     $queue->bulk([
-        new DelayedPublishTestJob(),
+        new DelayedPublishTestJob,
         'App\\Jobs\\Immediate',
     ]);
 
@@ -181,7 +181,7 @@ it('maps per-job delay without splitting the native batch on bulk', function ():
 });
 
 it('defers one native batch when the connection uses after commit', function (): void {
-    $pool = new Pool();
+    $pool = new Pool;
     $queue = publishNewQueue($pool, publishRoutes(), 'default', true);
     $transactions = new class
     {
@@ -238,7 +238,7 @@ it('keeps backpressure as a recognizable dedicated exception', function (): void
 });
 
 it('keeps after-commit publishing managed by the Laravel queue', function (): void {
-    $pool = new Pool();
+    $pool = new Pool;
     $factory = new NativePoolFactory(
         createPool: static fn (array $config): Pool => $pool,
     );

@@ -29,7 +29,7 @@ class RabbitMqJob extends Job implements JobContract
         $metadata = $delivery->metadata();
 
         $messageId = $metadata['message_id'] ?? null;
-        if (!is_string($messageId) || $messageId === '') {
+        if (! is_string($messageId) || $messageId === '') {
             throw new InvalidArgumentException(
                 "Delivery is missing required 'message_id' metadata — cannot create job"
             );
@@ -39,7 +39,7 @@ class RabbitMqJob extends Job implements JobContract
         json_decode($rawBody, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new InvalidArgumentException(
-                "Delivery payload is not valid JSON: " . json_last_error_msg()
+                'Delivery payload is not valid JSON: '.json_last_error_msg()
             );
         }
 

@@ -6,15 +6,16 @@
     "license": "MIT",
     "require": {
         "php": "^8.4",
-        "ext-rabbit_rs": "^0.1",
         "illuminate/queue": "^12.0 || ^13.0",
         "illuminate/support": "^12.0 || ^13.0",
         "symfony/process": "^7.2 || ^8.0"
     },
     "require-dev": {
+        "laravel/pint": "^1.24",
         "orchestra/testbench": "^10.0 || ^11.0",
         "pestphp/pest": "^4.0",
-        "pestphp/pest-plugin-laravel": "^4.1"
+        "pestphp/pest-plugin-laravel": "^4.1",
+        "phpstan/phpstan": "^2.1"
     },
     "autoload": {
         "psr-4": {
@@ -34,9 +35,12 @@
         }
     },
     "suggest": {
+        "ext-rabbit_rs": "Required to dispatch and consume jobs (^0.1). composer install succeeds without it; connections fail at resolution time until the native extension is loaded (pie install goopil/rabbit-rs-native).",
         "laravel/horizon": "Required to use the Horizon dashboard integration (worker=horizon)"
     },
     "scripts": {
+        "analyse": "phpstan --no-progress",
+        "lint": "pint --test",
         "test": "pest"
     },
     "config": {

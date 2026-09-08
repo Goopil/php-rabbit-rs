@@ -33,11 +33,11 @@ class DoctorProbe
      * The pool construction is lazy, so size() is the call that actually
      * touches the broker; the probe pool is closed immediately afterwards.
      *
-     * @param array<string, mixed> $nativeConfig
+     * @param  array<string, mixed>  $nativeConfig
      */
     public function broker(array $nativeConfig): ?string
     {
-        return $this->probePool($nativeConfig, function (Pool $pool): void {
+        return $this->probePool($nativeConfig, function (Pool $pool) use ($nativeConfig): void {
             $pool->size(self::brokerName($nativeConfig), self::queueName($nativeConfig));
         });
     }
@@ -47,7 +47,7 @@ class DoctorProbe
      * the native error message when the queue is missing (AMQP NOT-FOUND) or
      * the broker cannot be reached, and null when it exists.
      *
-     * @param array<string, mixed> $nativeConfig
+     * @param  array<string, mixed>  $nativeConfig
      */
     public function queueSize(array $nativeConfig, string $broker, string $queue): ?string
     {
@@ -63,7 +63,7 @@ class DoctorProbe
      * which in declare mode creates anything missing. Returns the error
      * message, or null when the declaration succeeded.
      *
-     * @param array<string, mixed> $nativeConfig
+     * @param  array<string, mixed>  $nativeConfig
      */
     public function declareTopology(array $nativeConfig, string $workerProfile): ?string
     {
@@ -77,8 +77,8 @@ class DoctorProbe
      * Runs one probe against a transient pool and reports the native error
      * message, or null when the probe succeeded. The pool is always closed.
      *
-     * @param array<string, mixed> $nativeConfig
-     * @param callable(Pool): void $probe
+     * @param  array<string, mixed>  $nativeConfig
+     * @param  callable(Pool): void  $probe
      */
     private function probePool(array $nativeConfig, callable $probe): ?string
     {
@@ -97,7 +97,7 @@ class DoctorProbe
     }
 
     /**
-     * @param array<string, mixed> $nativeConfig
+     * @param  array<string, mixed>  $nativeConfig
      */
     private static function brokerName(array $nativeConfig): string
     {
@@ -105,7 +105,7 @@ class DoctorProbe
     }
 
     /**
-     * @param array<string, mixed> $nativeConfig
+     * @param  array<string, mixed>  $nativeConfig
      */
     private static function queueName(array $nativeConfig): string
     {

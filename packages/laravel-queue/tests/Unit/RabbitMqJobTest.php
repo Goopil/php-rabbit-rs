@@ -17,7 +17,7 @@ final class RabbitMqFailedJobHandler
     public function __construct(private readonly Closure $callback) {}
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
      */
     public function failed(array $data, ?Throwable $exception, string $uuid, mixed $job): void
     {
@@ -65,7 +65,7 @@ it('exposes the native payload identifier and attempts', function (): void {
 });
 
 it('marshals a delivery with its Laravel context', function (): void {
-    $queue = new RabbitMqQueue(new Pool(), [
+    $queue = new RabbitMqQueue(new Pool, [
         'default' => [
             'broker' => 'default-broker',
             'exchange' => 'jobs',
@@ -196,7 +196,7 @@ it('throws InvalidArgumentException when message_id is missing', function (): vo
         ['attempts' => 0],
     );
 
-    expect(fn() => job($delivery))
+    expect(fn () => job($delivery))
         ->toThrow(InvalidArgumentException::class, 'message_id');
 });
 
@@ -206,7 +206,7 @@ it('throws InvalidArgumentException when message_id is empty', function (): void
         ['message_id' => '', 'attempts' => 0],
     );
 
-    expect(fn() => job($delivery))
+    expect(fn () => job($delivery))
         ->toThrow(InvalidArgumentException::class, 'message_id');
 });
 
@@ -216,6 +216,6 @@ it('throws InvalidArgumentException when payload is invalid JSON', function (): 
         ['message_id' => 'abc', 'attempts' => 0],
     );
 
-    expect(fn() => job($delivery))
+    expect(fn () => job($delivery))
         ->toThrow(InvalidArgumentException::class, 'not valid JSON');
 });

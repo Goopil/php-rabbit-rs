@@ -57,7 +57,7 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $config
+     * @param  array<string, mixed>  $config
      */
     private function checkConnection(string $name, array $config, DoctorProbe $probe): bool
     {
@@ -95,7 +95,7 @@ final class RabbitMqTopologyCommand extends Command
      * Passive queue-existence probe per subscription queue; a NOT-FOUND error
      * is a missing topology item, anything else is a broker failure.
      *
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $compiled
      */
     private function verifyQueues(string $name, array $compiled, DoctorProbe $probe): bool
     {
@@ -128,8 +128,8 @@ final class RabbitMqTopologyCommand extends Command
      * subscription-queue arguments. Advisory when the API is unreachable —
      * only actual mismatches fail the command.
      *
-     * @param array<string, mixed> $config
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $compiled
      */
     private function verifyManagement(string $name, array $config, array $compiled): bool
     {
@@ -199,7 +199,7 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $compiled
+     * @param  array<string, mixed>  $compiled
      */
     private function applyFix(string $name, array $compiled, DoctorProbe $probe): bool
     {
@@ -249,7 +249,8 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
-     * @param list<array<string, mixed>> $entries
+     * @param  list<array<string, mixed>>  $entries
+     * @return array<string, mixed>|null
      */
     private function findByName(array $entries, string $name): ?array
     {
@@ -263,7 +264,7 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
-     * @param list<array<string, mixed>> $bindings
+     * @param  list<array<string, mixed>>  $bindings
      */
     private function bindingExists(array $bindings, string $source, string $destination): bool
     {
@@ -280,7 +281,7 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
-     * @param 'ok'|'warn'|'fail' $status
+     * @param  'ok'|'warn'|'fail'  $status
      */
     private function emit(string $status, string $message): void
     {

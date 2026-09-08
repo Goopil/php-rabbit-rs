@@ -13,7 +13,8 @@ use Illuminate\Container\Container;
  */
 function bootedProviderWithFakeExtension(Container $app): RabbitMqServiceProvider
 {
-    $provider = new class($app) extends RabbitMqServiceProvider {
+    $provider = new class($app) extends RabbitMqServiceProvider
+    {
         protected function nativeExtensionLoaded(): bool
         {
             return true;

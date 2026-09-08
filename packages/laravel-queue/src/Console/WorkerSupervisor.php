@@ -15,6 +15,7 @@ use Symfony\Component\Process\Process;
 class WorkerSupervisor
 {
     public const EXIT_CLEAN = 0;
+
     public const EXIT_MAX_RESTARTS = 1;
 
     /**
@@ -32,15 +33,15 @@ class WorkerSupervisor
     private const PROPAGATED_OPTIONS = ['timeout', 'tries', 'memory', 'max-jobs', 'max-time'];
 
     /**
-     * @param list<WorkPlanEntry> $plan One entry per targeted connection; each
-     *         child consumes one entry's queues via
-     *         `queue:work <connection> --queue=<q1,q2>` (the connection is
-     *         the positional argument of Laravel's WorkCommand).
-     * @param int $workers Children spawned per plan entry.
-     * @param ?ProcessFactory $processFactory Optional override used by tests
-     *         to spawn a stub process instead of `queue:work`.
-     * @param WorkerOptions $options Worker options to propagate to child processes.
-     *         Keys: timeout, tries, memory, max-jobs, max-time. Null values are omitted.
+     * @param  list<WorkPlanEntry>  $plan  One entry per targeted connection; each
+     *                                     child consumes one entry's queues via
+     *                                     `queue:work <connection> --queue=<q1,q2>` (the connection is
+     *                                     the positional argument of Laravel's WorkCommand).
+     * @param  int  $workers  Children spawned per plan entry.
+     * @param  ?ProcessFactory  $processFactory  Optional override used by tests
+     *                                           to spawn a stub process instead of `queue:work`.
+     * @param  WorkerOptions  $options  Worker options to propagate to child processes.
+     *                                  Keys: timeout, tries, memory, max-jobs, max-time. Null values are omitted.
      */
     public function __construct(
         private readonly array $plan,
@@ -81,7 +82,7 @@ class WorkerSupervisor
     }
 
     /**
-     * @param WorkPlanEntry $entry
+     * @param  WorkPlanEntry  $entry
      * @return list<string>
      */
     private function childCommand(int $workerIndex, array $entry): array
@@ -151,7 +152,7 @@ class WorkerSupervisor
      * pcntl function is needed on that path.
      *
      * @throws SupervisorException when ext-pcntl is not available and more
-     *         than one child is configured
+     *                             than one child is configured
      */
     public function run(): int
     {
@@ -188,7 +189,7 @@ class WorkerSupervisor
      * disposition terminates the supervisor, leaving the child to stop on
      * its own.
      *
-     * @param list<list<string>> $children Exactly one child command.
+     * @param  list<list<string>>  $children  Exactly one child command.
      */
     private function runInline(array $children): int
     {
@@ -229,8 +230,8 @@ class WorkerSupervisor
     }
 
     /**
-     * @param list<list<string>> $children One command per child process,
-     *         indexed by worker index.
+     * @param  list<list<string>>  $children  One command per child process,
+     *                                        indexed by worker index.
      */
     private function runInternal(array $children): int
     {
@@ -280,6 +281,7 @@ class WorkerSupervisor
                         $restartAt[$index] = 0.0;
                         $processes[$index] = $this->startProcess($index, $children[$index]);
                     }
+
                     continue;
                 }
 
@@ -305,7 +307,7 @@ class WorkerSupervisor
     /**
      * Stop all running child processes gracefully.
      *
-     * @param array<int, Process> $processes
+     * @param  array<int, Process>  $processes
      */
     private function stopAllProcesses(array $processes): void
     {
@@ -317,7 +319,7 @@ class WorkerSupervisor
     }
 
     /**
-     * @param list<string> $command The child command for this worker index.
+     * @param  list<string>  $command  The child command for this worker index.
      */
     private function startProcess(int $workerIndex, array $command): Process
     {

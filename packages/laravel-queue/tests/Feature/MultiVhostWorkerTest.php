@@ -126,7 +126,7 @@ describe('multi-subscription worker', function () {
     });
 
     it('block_for must be a non-negative integer', function () {
-        $connector = new RabbitMqConnector(new NativePoolFactory());
+        $connector = new RabbitMqConnector(new NativePoolFactory);
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('block_for');

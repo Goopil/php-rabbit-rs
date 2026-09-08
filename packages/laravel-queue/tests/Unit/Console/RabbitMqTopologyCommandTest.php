@@ -13,7 +13,8 @@ use Illuminate\Support\Facades\Http;
  */
 function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null): object
 {
-    $probe = new class($missingQueues, $declareError) extends DoctorProbe {
+    $probe = new class($missingQueues, $declareError) extends DoctorProbe
+    {
         public int $declareCalls = 0;
 
         /** @param list<string> $missingQueues */
@@ -73,7 +74,7 @@ function topologyConnection(string $name = 'rabbitmq', array $overrides = []): v
  * Registers a connection carrying the management url and the dead-letter
  * wiring the management-API checks read.
  *
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function topologyConnectionWithManagement(string $name = 'rabbitmq', array $overrides = []): void
 {
@@ -86,9 +87,9 @@ function topologyConnectionWithManagement(string $name = 'rabbitmq', array $over
 /**
  * Fakes the three management-API collections the topology command reads.
  *
- * @param list<array<string, mixed>> $exchanges
- * @param list<array<string, mixed>> $queues
- * @param list<array<string, mixed>> $bindings
+ * @param  list<array<string, mixed>>  $exchanges
+ * @param  list<array<string, mixed>>  $queues
+ * @param  list<array<string, mixed>>  $bindings
  */
 function fakeManagementApi(array $exchanges = [], array $queues = [], array $bindings = []): void
 {
@@ -156,7 +157,8 @@ describe('rabbit-rs:topology verify', function () {
         $probe = bindFakeTopologyProbe($this->app);
         $reflection = new ReflectionClass($probe);
         // The fake reports loaded; rebind a probe whose extension check fails.
-        $failing = new class extends DoctorProbe {
+        $failing = new class extends DoctorProbe
+        {
             public function extensionLoaded(): bool
             {
                 return false;

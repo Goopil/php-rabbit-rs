@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\Consumer;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
@@ -10,11 +11,12 @@ use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Event;
+use Laravel\Octane\Events\WorkerReload;
 
 if (! function_exists('lifecycleCompiledNativeConfig')) {
     function lifecycleCompiledNativeConfig($app): array
     {
-        $compiled = \Goopil\RabbitRs\Laravel\Config\ConnectionCompiler::compile(
+        $compiled = ConnectionCompiler::compile(
             'rabbit-rs',
             ['queue' => 'default'],
             is_array($app['config']->get('rabbit-rs')) ? $app['config']->get('rabbit-rs') : [],
@@ -61,7 +63,7 @@ function resolveQueueWithConsumer($app): array
 
     // Register the resolved connection so the manager returns our queue.
     $manager = $app->make('queue');
-    $reflection = new \ReflectionClass($manager);
+    $reflection = new ReflectionClass($manager);
     $connectionsProperty = $reflection->getProperty('connections');
     // @phpstan-ignore-next-line — intentionally accessing private property for test verification.
     $connectionsProperty->setValue($manager, ['rabbit-rs' => $queue]);
@@ -88,16 +90,16 @@ describe('pool reuse', function () {
         $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool = $factory->make($config);
-        $reflection = new \ReflectionClass($pool);
-        $properties = array_map(fn (\ReflectionProperty $p): string => $p->getName(), $reflection->getProperties());
+        $reflection = new ReflectionClass($pool);
+        $properties = array_map(fn (ReflectionProperty $p): string => $p->getName(), $reflection->getProperties());
 
         expect($properties)->not->toContain('request')
             ->and($properties)->not->toContain('requestId');
     });
 
     it('pool is independent per worker', function () {
-        $factory1 = new NativePoolFactory();
-        $factory2 = new NativePoolFactory();
+        $factory1 = new NativePoolFactory;
+        $factory2 = new NativePoolFactory;
         $config = lifecycleCompiledNativeConfig($this->app);
 
         $pool1 = $factory1->make($config);
@@ -186,10 +188,10 @@ describe('lifecycle operations', function () {
     });
 
     it('flush without queue manager does not throw', function () {
-        $container = new Container();
+        $container = new Container;
         $lifecycle = new OctaneLifecycle($container);
 
-    // Should not throw even though 'queue' is not bound.
+        // Should not throw even though 'queue' is not bound.
         $lifecycle->flush();
 
         expect(true)->toBeTrue();
@@ -247,7 +249,7 @@ function octaneQueuePool(object $queue): Pool
  */
 function trackedPoolFactory($app): array
 {
-    $pool = new Pool();
+    $pool = new Pool;
     $factory = new NativePoolFactory(
         createPool: static fn (array $config): Pool => $pool,
     );
@@ -270,7 +272,7 @@ function resolveRotateAndReload($app, string $connection): array
     expect($pool->config['brokers'][0]['hosts'][0]['host'])->toBe('127.0.0.1');
 
     $app['config']->set("queue.connections.{$connection}.hosts", 'rotated:5672');
-    Event::dispatch(new \Laravel\Octane\Events\WorkerReload());
+    Event::dispatch(new WorkerReload);
 
     return [$pool, octaneQueuePool($app['queue']->connection($connection))];
 }

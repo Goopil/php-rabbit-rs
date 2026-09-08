@@ -13,7 +13,7 @@ require_once __DIR__.'/bootstrap.php';
 
 uses(TestCase::class)->in(__DIR__);
 
-class TestException extends \Exception {}
+class TestException extends Exception {}
 
 /** Default test connection name: brokers and worker profiles compile under it. */
 const INTEGRATION_CONNECTION = 'rabbit-rs-integration';
@@ -28,7 +28,8 @@ const ORDERS_VHOST = '/orders-eu';
  */
 function bootFakeNativeExtension(mixed $app): void
 {
-    (new class($app) extends RabbitMqServiceProvider {
+    (new class($app) extends RabbitMqServiceProvider
+    {
         protected function nativeExtensionLoaded(): bool
         {
             return true;
@@ -144,4 +145,3 @@ function integrationPoolAndQueue(
 
     return [$pool, $queue];
 }
-

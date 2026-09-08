@@ -7,7 +7,7 @@ namespace Goopil\RabbitRs\Laravel\Octane;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
-use Illuminate\Container\Container;
+use Illuminate\Contracts\Container\Container;
 
 final class OctaneLifecycle
 {

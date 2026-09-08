@@ -9,6 +9,7 @@ use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
+use Illuminate\Container\Container;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -53,7 +54,7 @@ function popRoutes(): array
 function makePopQueue(
     string $defaultQueue = 'default',
     bool $hasDeadLetter = false,
-    ?\Illuminate\Contracts\Container\Container $container = null,
+    ?Illuminate\Contracts\Container\Container $container = null,
 ): array {
     $pool = new Pool(['workers' => popWorkers()]);
     $resolver = new WorkerProfileResolver(popWorkers());
@@ -64,7 +65,7 @@ function makePopQueue(
         workerProfiles: $resolver,
         hasDeadLetter: $hasDeadLetter,
     );
-    $queue->setContainer($container ?? new \Illuminate\Container\Container());
+    $queue->setContainer($container ?? new Container);
     $queue->setConnectionName('rabbit-main');
 
     return [$queue, $pool];
@@ -89,7 +90,7 @@ it('resolves a different queue to a different profile on pop', function (): void
 it('rejects an unknown queue on pop', function (): void {
     [$queue] = makePopQueue();
 
-    $this->expectException(\InvalidArgumentException::class);
+    $this->expectException(InvalidArgumentException::class);
     $this->expectExceptionMessage('No worker profile subscribes to queue');
 
     $queue->pop('unknown-queue');

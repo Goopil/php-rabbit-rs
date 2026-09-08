@@ -9,6 +9,7 @@ use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Pool;
+use PHPUnit\Framework\Assert;
 
 /*
  * Toxiproxy is a lab-owned service (lab/rabbitmq/compose.yaml), bound to a
@@ -45,7 +46,7 @@ function toxiproxyApi(): string
  */
 function toxiproxyRequest(string $method, string $path, ?string $payload = null): array
 {
-    $ch = curl_init(toxiproxyApi() . $path);
+    $ch = curl_init(toxiproxyApi().$path);
     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
@@ -66,10 +67,10 @@ function toxiproxyRequest(string $method, string $path, ?string $payload = null)
  */
 function assertLabToxiproxy(): void
 {
-    [$status, $body] = toxiproxyRequest('GET', TOXIPROXY_PROXIES_PATH . '/' . LAB_FINGERPRINT_PROXY);
+    [$status, $body] = toxiproxyRequest('GET', TOXIPROXY_PROXIES_PATH.'/'.LAB_FINGERPRINT_PROXY);
 
     if ($status === 404) {
-        \PHPUnit\Framework\Assert::fail(sprintf(
+        Assert::fail(sprintf(
             '%s answers but has no lab fingerprint proxy "%s" (upstream %s): this is not the lab Toxiproxy. '
                 .'A foreign instance must never receive toxics meant for RabbitMQ. '
                 .'Start the lab with ./scripts/lab-up.sh',
@@ -80,7 +81,7 @@ function assertLabToxiproxy(): void
     }
 
     if ($status !== 200) {
-        \PHPUnit\Framework\Assert::fail(sprintf(
+        Assert::fail(sprintf(
             'the lab Toxiproxy is not reachable at %s (HTTP %d); chaos scenarios refuse to run without '
                 .'a lab-owned instance because injecting toxics elsewhere proves nothing. '
                 .'Start the lab with ./scripts/lab-up.sh',
@@ -91,7 +92,7 @@ function assertLabToxiproxy(): void
 
     $upstream = json_decode($body, true)['upstream'] ?? '';
     if ($upstream !== LAB_FINGERPRINT_UPSTREAM) {
-        \PHPUnit\Framework\Assert::fail(sprintf(
+        Assert::fail(sprintf(
             '%s is answered by a foreign Toxiproxy (%s upstream is "%s", expected "%s"); '
                 .'refusing to inject toxics into infrastructure this suite does not own',
             toxiproxyApi(),
@@ -127,7 +128,7 @@ function createChaosProxy(): array
         }
     }
 
-    \PHPUnit\Framework\Assert::fail(sprintf(
+    Assert::fail(sprintf(
         'could not create chaos proxy %s on %s (all candidate listen ports busy): HTTP %s',
         $name,
         toxiproxyApi(),
@@ -188,7 +189,7 @@ function addToxic(string $proxy, string $name, string $type, string $stream, flo
     // A toxic that fails to apply would turn the scenario into a vacuous
     // pass; fail loudly instead.
     if ($status !== 200) {
-        \PHPUnit\Framework\Assert::fail(sprintf(
+        Assert::fail(sprintf(
             'toxic %s was not applied to proxy %s (HTTP %d): %s',
             $name,
             $proxy,
@@ -280,7 +281,7 @@ function restoreConfigurePermission(): void
         usleep(1000000);
     } while (microtime(true) < $deadline);
 
-    \PHPUnit\Framework\Assert::fail(
+    Assert::fail(
         'the lab management API never restored the rabbit-rs configure permission after the node restart',
     );
 }
@@ -289,6 +290,7 @@ function nodeToContainer(string $node): string
 {
     $parts = explode('@', $node);
     $suffix = end($parts);
+
     return "rabbitrs-{$suffix}-1";
 }
 
@@ -313,7 +315,7 @@ function poolCounters(?Pool $pool): array
 
     try {
         $stats = $pool->stats();
-    } catch (\Throwable) {
+    } catch (Throwable) {
         return [null, null];
     }
 
@@ -335,7 +337,7 @@ function popDelivery($test, int $timeoutSec = 30): ?object
             if ($job !== null) {
                 return $job;
             }
-        } catch (QueueException | ConnectionException) {
+        } catch (QueueException|ConnectionException) {
             // expected while the retired handle's error surfaces
         }
         usleep(100000);
@@ -368,9 +370,9 @@ function consumeDeliveredMessage($test, string $expectedMessage, string $descrip
  * job's broker attempts counter recorded, so callers can count duplicates
  * and prove redeliveries.
  *
- * @param array<string> $expected payload messages that must arrive
+ * @param  array<string>  $expected  payload messages that must arrive
  * @return array<string, array{count: int, attempts: int}> received count and
- *         maximum broker attempts observed per payload message
+ *                                                         maximum broker attempts observed per payload message
  */
 function drainUntilAllReceived($test, array $expected, int $quietMs = 3000): array
 {
@@ -385,12 +387,14 @@ function drainUntilAllReceived($test, array $expected, int $quietMs = 3000): arr
         }
         try {
             $job = $test->queue->pop();
-        } catch (QueueException | ConnectionException) {
+        } catch (QueueException|ConnectionException) {
             usleep(100000);
+
             continue;
         }
         if ($job === null) {
             usleep(50000);
+
             continue;
         }
         $body = json_decode($job->getRawBody(), true);
@@ -415,7 +419,7 @@ function pushAllowingFailure($queue, string $msg, ?string &$lastError = null): b
         $queue->push('stdClass', ['msg' => $msg]);
 
         return true;
-    } catch (\Throwable $e) {
+    } catch (Throwable $e) {
         $lastError = $e->getMessage();
 
         return false; // publish may fail during the outage
@@ -445,7 +449,7 @@ function putOnWire($test, $app, string $msg): void
         if ($onWire) {
             try {
                 $test->pool->flush();
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 $lastError = 'flush: '.$e->getMessage();
                 $onWire = false; // pool still recovering
             }
@@ -479,7 +483,7 @@ function fireConnectionKill(string $proxy, string $name, int $timeoutMs): void
  * duplicates are counted (permitted, never silent) from the per-message
  * receive counts. Returns the receive counts keyed by payload message.
  *
- * @param array<string> $messages published payload messages
+ * @param  array<string>  $messages  published payload messages
  * @return array<string, int> received count per payload message
  */
 function assertAllDelivered($test, array $messages, string $label): array
@@ -510,7 +514,7 @@ function closePoolQuietly(?Pool $pool): void
 
     try {
         $pool->close();
-    } catch (\Throwable) {
+    } catch (Throwable) {
         // best-effort cleanup
     }
 }
@@ -570,7 +574,7 @@ it('recovers from TCP reset before publisher confirm', function () {
     if ($published) {
         try {
             $this->pool->flush();
-        } catch (\Throwable) {
+        } catch (Throwable) {
             $published = false; // the reset killed the connection mid-confirm
         }
     }
@@ -802,7 +806,7 @@ it('rejects bad credentials and delivers with good credentials', function () {
     try {
         $badQueue = $badConnector->connect($connectConfig);
         $badQueue->push('stdClass', ['msg' => 'should-fail']);
-    } catch (\Throwable $e) {
+    } catch (Throwable $e) {
         $threw = true;
     } finally {
         closePoolQuietly($badPool);
@@ -900,7 +904,7 @@ it('recovers when killed mid-consume, rejects stale acks, and redelivers unacked
     foreach ($staleJobs as $job) {
         try {
             $job->delete();
-        } catch (\Throwable) {
+        } catch (Throwable) {
             $staleAckThrew++;
         }
     }
