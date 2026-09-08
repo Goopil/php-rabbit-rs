@@ -55,6 +55,15 @@ function doctorConnection(string $name = 'rabbitmq', array $overrides = []): voi
     ], $overrides));
 }
 
+/**
+ * Registers one Horizon supervisor in the real config shape, under the
+ * environment the doctor reads (phpunit.xml sets APP_ENV=testing).
+ */
+function horizonSupervisor(array $supervisor, string $key = 'supervisor-1'): void
+{
+    config()->set('horizon', ['environments' => ['testing' => [$key => $supervisor]]]);
+}
+
 beforeEach(function () {
     bindFakeProbe($this->app);
 });
@@ -140,16 +149,7 @@ describe('rabbit-rs:doctor horizon check', function () {
 
     it('does not warn no supervisors when the running environment configures one for this connection', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
-        config()->set('horizon', [
-            'environments' => [
-                'testing' => [
-                    'supervisor-1' => [
-                        'connection' => 'rabbitmq',
-                        'queue' => ['orders'],
-                    ],
-                ],
-            ],
-        ]);
+        horizonSupervisor(['connection' => 'rabbitmq', 'queue' => ['orders']]);
 
         Artisan::call('rabbit-rs:doctor');
         $output = Artisan::output();
@@ -161,16 +161,7 @@ describe('rabbit-rs:doctor horizon check', function () {
 
     it('flags supervisor queues outside the connection subscriptions', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
-        config()->set('horizon', [
-            'environments' => [
-                'testing' => [
-                    'supervisor-1' => [
-                        'connection' => 'rabbitmq',
-                        'queue' => ['orders', 'ghost-queue'],
-                    ],
-                ],
-            ],
-        ]);
+        horizonSupervisor(['connection' => 'rabbitmq', 'queue' => ['orders', 'ghost-queue']]);
 
         $this->artisan('rabbit-rs:doctor')
             ->expectsOutputToContain('ghost-queue')
@@ -179,17 +170,7 @@ describe('rabbit-rs:doctor horizon check', function () {
 
     it('reminds about readyNow for auto-balancing supervisors', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
-        config()->set('horizon', [
-            'environments' => [
-                'testing' => [
-                    'supervisor-1' => [
-                        'connection' => 'rabbitmq',
-                        'queue' => ['orders'],
-                        'balance' => 'auto',
-                    ],
-                ],
-            ],
-        ]);
+        horizonSupervisor(['connection' => 'rabbitmq', 'queue' => ['orders'], 'balance' => 'auto']);
 
         $this->artisan('rabbit-rs:doctor')
             ->expectsOutputToContain('readyNow')
@@ -198,16 +179,7 @@ describe('rabbit-rs:doctor horizon check', function () {
 
     it('does not count a supervisor on another connection as consuming this one', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
-        config()->set('horizon', [
-            'environments' => [
-                'testing' => [
-                    'supervisor-1' => [
-                        'connection' => 'redis',
-                        'queue' => ['orders'],
-                    ],
-                ],
-            ],
-        ]);
+        horizonSupervisor(['connection' => 'redis', 'queue' => ['orders']]);
 
         Artisan::call('rabbit-rs:doctor');
         $output = Artisan::output();
@@ -218,16 +190,7 @@ describe('rabbit-rs:doctor horizon check', function () {
 
     it('names the supervisor by its config key', function () {
         doctorConnection(overrides: ['worker' => 'horizon']);
-        config()->set('horizon', [
-            'environments' => [
-                'testing' => [
-                    'supervisor-orders' => [
-                        'connection' => 'rabbitmq',
-                        'queue' => ['orders', 'ghost-queue'],
-                    ],
-                ],
-            ],
-        ]);
+        horizonSupervisor(['connection' => 'rabbitmq', 'queue' => ['orders', 'ghost-queue']], 'supervisor-orders');
 
         $this->artisan('rabbit-rs:doctor')
             ->expectsOutputToContain('supervisor-orders')
