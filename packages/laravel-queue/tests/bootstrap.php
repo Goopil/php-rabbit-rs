@@ -336,6 +336,11 @@ namespace Goopil\RabbitRs {
 
             public int $closeCalls = 0;
 
+            public int $flushCalls = 0;
+
+            /** @var list<string> */
+            public array $callOrder = [];
+
             private bool $closed = false;
 
             private ?\Throwable $nextPublishException = null;
@@ -410,6 +415,7 @@ namespace Goopil\RabbitRs {
              */
             public function publish(array $message): string
             {
+                $this->callOrder[] = 'publish';
                 $this->published[] = $message;
                 $this->throwPendingException();
 
@@ -422,10 +428,17 @@ namespace Goopil\RabbitRs {
              */
             public function publishBatch(array $messages): array
             {
+                $this->callOrder[] = 'publishBatch';
                 $this->publishedBatches[] = $messages;
                 $this->throwPendingException();
 
                 return array_column($messages, 'message_id');
+            }
+
+            public function flush(): void
+            {
+                $this->callOrder[] = 'flush';
+                $this->flushCalls++;
             }
 
             public function pushDelivery(string $profile, Delivery $delivery): void
@@ -447,6 +460,7 @@ namespace Goopil\RabbitRs {
 
             public function size(string $broker, string $queue): int
             {
+                $this->callOrder[] = 'size';
                 $this->sizeCalls[] = ['broker' => $broker, 'queue' => $queue];
 
                 if ($this->nextSizeException !== null) {
@@ -463,6 +477,7 @@ namespace Goopil\RabbitRs {
 
             public function clear(string $broker, string $queue): void
             {
+                $this->callOrder[] = 'clear';
                 $this->clearCalls[] = ['broker' => $broker, 'queue' => $queue];
 
                 if ($this->nextClearException !== null) {

@@ -85,7 +85,10 @@ final class RabbitMqTopologyCommand extends Command
         $ok = $this->verifyManagement($name, $config, $compiled) && $ok;
 
         if ((bool) $this->option('fix')) {
-            $ok = $this->applyFix($name, $compiled, $probe) && $ok;
+            // A successful declare resolves the missing items verify reported:
+            // report the connection as fixed instead of carrying pre-fix
+            // failures (the bootstrap scenario --fix exists for, issue #195).
+            return $this->applyFix($name, $compiled, $probe);
         }
 
         return $ok;
@@ -214,16 +217,36 @@ final class RabbitMqTopologyCommand extends Command
 
         $workerProfile = (string) ($compiled['native']['workers'][0]['name'] ?? $name);
         $error = $probe->declareTopology($compiled['native'], $workerProfile);
-        if ($error !== null) {
+        if ($error !== null && ! $this->isConsumerReadinessTimeout($error)) {
             $this->error('declaration failed');
             $this->error($error);
 
             return false;
         }
 
-        $this->info("topology declared (worker profile '{$workerProfile}')");
+        if ($error !== null) {
+            // The declare probe rides a transient consumer: the recovery
+            // generation declares the topology before consumer channels
+            // start, so a readiness timeout (e.g. no worker running for the
+            // profile) leaves the declaration successful with readiness
+            // unconfirmed. Warn instead of failing the bootstrap scenario.
+            $this->warn("topology declared (worker profile '{$workerProfile}'); consumer readiness not confirmed: {$error}");
+        } else {
+            $this->info("topology declared (worker profile '{$workerProfile}')");
+        }
 
         return true;
+    }
+
+    /**
+     * The declare probe only opens a consumer, so the native readiness
+     * timeout ("consumer profile '...' did not become ready within ...") is
+     * the one error that means declared-but-readiness-unconfirmed rather
+     * than a declaration failure.
+     */
+    private function isConsumerReadinessTimeout(string $error): bool
+    {
+        return str_contains($error, 'did not become ready within');
     }
 
     /**

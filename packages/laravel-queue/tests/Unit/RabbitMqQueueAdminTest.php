@@ -150,3 +150,25 @@ describe('clear', function (): void {
         expect(0)->toBe($queue->clear());
     });
 });
+
+describe('publish buffer flush on read', function (): void {
+    it('flushes the publish buffer before size() reads the depth', function (): void {
+        [$queue, $pool] = adminQueue();
+        $queue->pushRaw('payload');
+
+        $queue->size();
+
+        expect($pool->flushCalls)->toBe(1)
+            ->and($pool->callOrder)->toBe(['publish', 'flush', 'size']);
+    });
+
+    it('flushes the publish buffer before clear() measures and purges', function (): void {
+        [$queue, $pool] = adminQueue();
+        $queue->pushRaw('payload');
+
+        $queue->clear();
+
+        expect($pool->flushCalls)->toBe(1)
+            ->and($pool->callOrder)->toBe(['publish', 'flush', 'size', 'clear']);
+    });
+});

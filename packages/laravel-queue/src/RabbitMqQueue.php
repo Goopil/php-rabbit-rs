@@ -119,6 +119,10 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         $route = $this->route($queueName);
 
         try {
+            // Force-flush the publish buffer before reading so a size() right
+            // after a same-process dispatch sees the real depth (issue #194).
+            $this->pool->flush();
+
             return $this->pool->size($route['broker'], $queueName);
         } catch (BackpressureException|ConnectionException $exception) {
             throw $exception;
@@ -153,6 +157,11 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         $route = $this->route($queueName);
 
         try {
+            // Force-flush the publish buffer first (issue #194) so the
+            // measured count and the purge see publications buffered by
+            // same-process dispatches.
+            $this->pool->flush();
+
             // The native purge does not surface the AMQP message count, so the
             // pending count is measured before purging: this is the number of
             // jobs the purge removes (messages racing the purge are counted

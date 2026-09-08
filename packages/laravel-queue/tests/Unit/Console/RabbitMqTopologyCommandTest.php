@@ -326,4 +326,34 @@ describe('rabbit-rs:topology fix', function () {
             ->expectsOutputToContain('access refused')
             ->assertExitCode(1);
     });
+
+    it('reports declaration success with a readiness warning when no worker is running', function () {
+        // Bootstrap scenario (issue #195): the recovery generation declares
+        // the topology, then the consumer readiness wait times out because
+        // no worker consumes the profile — the declare step still succeeded.
+        bindFakeTopologyProbe(
+            $this->app,
+            declareError: "consumer profile 'orders' did not become ready within 30s",
+        );
+        topologyConnection();
+
+        // Artisan::output() empties the buffer on each fetch: capture once.
+        Artisan::call('rabbit-rs:topology', ['--fix' => true]);
+        $output = Artisan::output();
+
+        expect($output)->toContain('topology declared')
+            ->and($output)->toContain('did not become ready')
+            ->and(Artisan::call('rabbit-rs:topology', ['--fix' => true]))->toBe(0);
+    });
+
+    it('exits 0 when --fix declares a queue that was missing at verify time', function () {
+        $probe = bindFakeTopologyProbe($this->app, missingQueues: ['orders']);
+        topologyConnection();
+
+        $this->artisan('rabbit-rs:topology', ['--fix' => true])
+            ->expectsOutputToContain('topology declared')
+            ->assertExitCode(0);
+
+        expect($probe->declareCalls)->toBe(1);
+    });
 });
