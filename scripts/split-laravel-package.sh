@@ -77,9 +77,11 @@ need_cmd grep
 
 echo "==> Checking ext-rabbit_rs major version compatibility"
 
-ext_req="$(jq -r '.require."ext-rabbit_rs"' "${LARAVEL_COMPOSER}")"
+# The single source of truth for the constraint is EXTENSION_CONSTRAINT in the
+# service provider; composer.json carries it as a suggest description (#187).
+ext_req="$(sed -n "s/.*EXTENSION_CONSTRAINT = '\([^']*\)'.*/\1/p" "${LARAVEL_PKG_DIR}/src/RabbitMqServiceProvider.php")"
 if [[ ! "${ext_req}" =~ \^([0-9]+) ]]; then
-    fail "Laravel composer.json ext-rabbit_rs constraint '${ext_req}' does not pin a major version"
+    fail "EXTENSION_CONSTRAINT '${ext_req}' does not pin a major version"
 fi
 laravel_major="${BASH_REMATCH[1]}"
 
@@ -172,7 +174,7 @@ split_name="$(jq -r '.name' "${OUTPUT_DIR}/composer.json")"
 [[ "${split_name}" == "goopil/rabbit-rs-laravel" ]] \
     || fail "split composer.json name is '${split_name}', expected 'goopil/rabbit-rs-laravel'"
 
-split_ext_req="$(jq -r '.require."ext-rabbit_rs"' "${OUTPUT_DIR}/composer.json")"
+split_ext_req="$(sed -n "s/.*EXTENSION_CONSTRAINT = '\([^']*\)'.*/\1/p" "${OUTPUT_DIR}/src/RabbitMqServiceProvider.php")"
 [[ "${split_ext_req}" == "${ext_req}" ]] \
     || fail "split ext-rabbit_rs constraint changed: '${split_ext_req}' != '${ext_req}'"
 ok "split composer.json is valid"
