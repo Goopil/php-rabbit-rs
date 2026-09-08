@@ -7,6 +7,7 @@ use Goopil\RabbitRs\Delivery;
 use Goopil\RabbitRs\Exception as NativeException;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
+use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Container\Container;
@@ -202,4 +203,70 @@ it('evicts the cached consumer so the next pop re-fetches after the consumer clo
 
     $queue->pop('orders-eu');
     expect($pool->consumerProfiles)->toHaveCount(2);
+});
+
+/**
+ * Binds a probe statefile writer with a fixed pid so statefile assertions
+ * are deterministic.
+ */
+function withProbeContainer(string $dir, int $pid = 777): Illuminate\Contracts\Container\Container
+{
+    $container = new Container;
+    $container->instance(ProbeStatefile::class, new ProbeStatefile($dir, $pid));
+
+    return $container;
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function readProbeState(string $dir, int $pid = 777): array
+{
+    return json_decode((string) file_get_contents($dir.'/'.$pid.'.json'), true) ?? [];
+}
+
+describe('probe statefile heartbeat', function () {
+    it('writes a running statefile with pool stats counters after a pop', function (): void {
+        $dir = probeTempDir();
+        [$queue, $pool] = makePopQueue(container: withProbeContainer($dir));
+        $pool->statsResult = ['deliveries_total' => 50, 'acks_total' => 48, 'rejects_total' => 2];
+
+        $queue->pop('orders-eu');
+
+        expect(readProbeState($dir))->toMatchArray([
+            'pid' => 777,
+            'state' => 'running',
+            'connected' => true,
+            'consumed' => 50,
+            'acked' => 48,
+            'nacked' => 2,
+        ]);
+    });
+
+    it('skips the pool stats fetch between heartbeat windows', function (): void {
+        $dir = probeTempDir();
+        [$queue, $pool] = makePopQueue(container: withProbeContainer($dir));
+
+        $queue->pop('orders-eu');
+        expect($pool->statsCalls)->toBe(1);
+
+        $queue->pop('orders-eu');
+        expect($pool->statsCalls)->toBe(1);
+    });
+
+    it('records connection state transitions into the statefile', function (): void {
+        $dir = probeTempDir();
+        [$queue, $pool] = makePopQueue(container: withProbeContainer($dir));
+
+        $queue->pop('orders-eu');
+        $pool->simulateConnectionState('default-broker', 'recovering', 1);
+
+        expect(readProbeState($dir)['connected'])->toBeFalse();
+    });
+
+    it('does not write a statefile when no writer is bound', function (): void {
+        [$queue] = makePopQueue();
+
+        expect($queue->pop('orders-eu'))->toBeNull();
+    });
 });

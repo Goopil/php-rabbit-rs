@@ -6,6 +6,7 @@ namespace Goopil\RabbitRs\Laravel;
 
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqDoctorCommand;
+use Goopil\RabbitRs\Laravel\Console\RabbitMqProbeCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqStatusCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqTopologyCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
@@ -13,6 +14,8 @@ use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Exceptions\MissingExtensionException;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
+use Illuminate\Queue\Events\WorkerStopping as QueueWorkerStopping;
 use Illuminate\Support\Arr;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Octane\Events\WorkerReload;
@@ -32,13 +35,20 @@ class RabbitMqServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(self::configPath(), 'rabbit-rs');
         $this->app->singleton(NativePoolFactory::class);
+        $this->app->singleton(ProbeStatefile::class, static function ($app): ProbeStatefile {
+            $path = $app->make('config')->get('rabbit-rs.probes.path')
+                ?? storage_path('framework/rabbit-rs/probes');
+
+            return new ProbeStatefile((string) $path, (int) getmypid());
+        });
     }
 
     public function boot(): void
     {
         $this->registerQueueConnector();
-        $this->commands([RabbitMqStatusCommand::class, RabbitMqWorkCommand::class, RabbitMqDoctorCommand::class, RabbitMqTopologyCommand::class]);
+        $this->commands([RabbitMqStatusCommand::class, RabbitMqWorkCommand::class, RabbitMqDoctorCommand::class, RabbitMqTopologyCommand::class, RabbitMqProbeCommand::class]);
         $this->registerWorkCommandExtension();
+        $this->registerWorkerStoppingProbe();
         $this->registerOctaneLifecycle();
 
         $this->publishes([
@@ -95,6 +105,20 @@ class RabbitMqServiceProvider extends ServiceProvider
     {
         RabbitMqWorkCommandExtension::fromEnvironment()
             ->registerWithLog($this->app->make('events'));
+    }
+
+    /**
+     * Flip the worker's probe statefile to draining when a queue worker stops
+     * (SIGTERM handled by queue:work, or --max-jobs recycling), so that
+     * `rabbit-rs:probe prestop` sees the drain.
+     */
+    private function registerWorkerStoppingProbe(): void
+    {
+        $this->app->make('events')->listen(QueueWorkerStopping::class, static function (): void {
+            if (app()->bound(ProbeStatefile::class)) {
+                app(ProbeStatefile::class)->draining();
+            }
+        });
     }
 
     private static function throwMissingNativeExtension(): never

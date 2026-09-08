@@ -332,6 +332,8 @@ namespace Goopil\RabbitRs {
             /** @var array<string, mixed>|null */
             public ?array $statsResult = null;
 
+            public int $statsCalls = 0;
+
             public int $closeCalls = 0;
 
             private bool $closed = false;
@@ -536,6 +538,8 @@ namespace Goopil\RabbitRs {
              */
             public function stats(): array
             {
+                $this->statsCalls++;
+
                 return $this->statsResult ?? [
                     'closed' => $this->closed,
                     'pid' => 12345,

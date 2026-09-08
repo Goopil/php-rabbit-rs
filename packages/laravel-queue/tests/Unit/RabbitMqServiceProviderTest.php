@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
+use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
 use Illuminate\Container\Container;
+use Illuminate\Queue\Events\WorkerStopping;
 
 /**
  * Boots an additional provider instance with the native extension reported as
@@ -94,5 +96,14 @@ describe('RabbitMqServiceProvider', function () {
         $pool = (new ReflectionProperty($queue, 'pool'))->getValue($queue);
 
         expect($pool->config['workers'][0]['subscriptions'][0]['prefetch'])->toBe(128);
+    });
+
+    it('writes a draining statefile when the queue worker stops', function () {
+        $dir = probeTempDir();
+        $this->app->instance(ProbeStatefile::class, new ProbeStatefile($dir, 777));
+
+        event(new WorkerStopping);
+
+        expect(json_decode((string) file_get_contents($dir.'/777.json'), true)['state'])->toBe('draining');
     });
 });

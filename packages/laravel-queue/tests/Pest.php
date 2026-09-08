@@ -60,6 +60,31 @@ function uniqueQueue(string $prefix = 'rabbit-rs-it'): string
 }
 
 /**
+ * Fresh temp directory for worker probe statefile tests.
+ */
+function probeTempDir(): string
+{
+    $dir = sys_get_temp_dir().'/rabbit-rs-probe-tests-'.uniqid('', true);
+    mkdir($dir, 0777, true);
+
+    return $dir;
+}
+
+/**
+ * Recursively removes a probe test directory.
+ */
+function probeRmDir(string $dir): void
+{
+    if (! is_dir($dir)) {
+        return;
+    }
+    foreach (glob($dir.'/*') ?: [] as $entry) {
+        is_dir($entry) ? probeRmDir($entry) : @unlink($entry);
+    }
+    @rmdir($dir);
+}
+
+/**
  * Single call to the lab's RabbitMQ management API (admin credentials).
  * Returns the response body ('' on transport failure); callers that only
  * fire-and-forget (declare/delete) ignore it.

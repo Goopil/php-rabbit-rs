@@ -51,4 +51,8 @@ return [
     'auto_subscribe' => env('RABBIT_RS_AUTO_SUBSCRIBE', false),
     'production_warning' => env('RABBIT_RS_PRODUCTION_WARNING', true),
     'best_effort' => env('RABBIT_RS_BEST_EFFORT', false),
+    // Worker health statefiles read by `rabbit-rs:probe` (one JSON file per worker PID)
+    'probes' => [
+        'path' => env('RABBIT_RS_PROBES_PATH', storage_path('framework/rabbit-rs/probes')),
+    ],
 ];
