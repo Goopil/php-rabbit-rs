@@ -53,7 +53,7 @@ jobs:
 
       - name: Verify Laravel package ext-rabbit_rs constraint matches version policy
         run: |
-          CONSTRAINT=$(sed -n 's/.*"ext-rabbit_rs": *"\([^"]*\)".*/\1/p' packages/laravel-queue/composer.json)
+          CONSTRAINT=$(sed -n "s/.*EXTENSION_CONSTRAINT = '\([^']*\)'.*/\1/p" packages/laravel-queue/src/RabbitMqServiceProvider.php)
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
           if [[ "$CARGO_VERSION" == 0.0.* ]]; then
             EXPECTED="^0.0"
