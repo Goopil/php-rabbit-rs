@@ -141,6 +141,7 @@ Full reference — every connection key, `hosts` failover semantics, validation 
 | `php artisan rabbit-rs:status` | Per-connection pool metrics and counters; `--format=json` for monitoring |
 | `php artisan rabbit-rs:doctor` | One-shot health report — `ok`/`warn`/`fail` checks, non-zero exit on failure (CI-friendly) |
 | `php artisan rabbit-rs:topology` | Preflight topology check; `--fix` declares missing topology |
+| `php artisan rabbit-rs:probe` | Kubernetes probes (`startup`/`ready`/`alive`/`prestop`) over the worker statefiles; liveness never touches the broker |
 
 Details: [Operations](reference.md#operations) (supervision, Kubernetes, metrics), [Laravel usage](reference.md#usage) (dispatch API, events, job class).
 
