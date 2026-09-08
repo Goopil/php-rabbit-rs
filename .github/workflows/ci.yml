@@ -145,12 +145,12 @@ jobs:
           path: |
             packages/laravel-queue/vendor
             ~/.cache/composer
-          key: composer-analysis-${{ hashFiles('packages/laravel-queue/composer.json') }}
+          key: composer-analysis-${{ hashFiles('packages/laravel-queue/composer.lock') }}
           restore-keys: |
             composer-analysis-
 
       - name: Install dependencies
-        run: cd packages/laravel-queue && composer update --quiet --ignore-platform-reqs
+        run: cd packages/laravel-queue && composer install --quiet --ignore-platform-reqs
 
       - name: Pint (style)
         run: cd packages/laravel-queue && composer lint
