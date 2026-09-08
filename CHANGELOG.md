@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.1.6] - 2026-09-08
+
+Feature release: Kubernetes probes, an optional native extension at install time, and worker termination control — plus fixes for the early-adopter lab findings.
+
+### Added
+
+- Kubernetes probes (#85): the worker writes a per-PID JSON statefile (atomic
+  write + rename, ~1s heartbeat, state transitions), and
+  `rabbit-rs:probe {startup|ready|alive|prestop}` evaluates it with dumb
+  read-and-compare semantics — liveness never inspects broker reachability.
+  The `RabbitRsProbeEvaluated` event lets synchronous listeners force a
+  verdict, and the Laravel reference carries the K8s manifest guidance.
+- `rabbit-rs:work --stop-when-empty` (#185): children run exactly once and are
+  never recycled; the supervisor exits with the highest child exit status —
+  for CI pipelines and pop-once tooling. Without the flag, behavior is
+  unchanged.
+
+### Changed
+
+- `ext-rabbit_rs` moves from `require` to `suggest` (#58): `composer install`
+  no longer hard-fails without the native extension; resolving a rabbit-rs
+  connection raises a precise runtime error with install instructions instead.
+  Pint and PHPStan (level 6) join the quality gates and CI.
+- `consumers.wait_timeout` is documented as the transport acquisition
+  deadline, not the pop wait (#184): the pop wait is the standard `block_for`
+  connection key, honored end-to-end.
+
+### Fixed
+
+- Doctor: the broker probe closure now captures the native config (previously
+  every healthy broker reported "Undefined variable $nativeConfig"), and the
+  Horizon alignment check reads the real `environments.<env>.supervisor-<name>`
+  config shape, names supervisors by their config key, and only counts
+  supervisors bound to the checked connection. The contradictory
+  "inheritance trap" warning is dropped (#186).
+- `rabbit-rs:topology --fix` reports success on the declare step itself;
+  consumer-profile readiness downgrades to a warning instead of failing the
+  bootstrap scenario, and a successful fix resets pre-fix verify failures
+  (#195).
+- `size()` and `clear()` force-flush the publish buffer before reading,
+  restoring the 0.0.9 read-after-dispatch contract (#194).
+
 ## [0.1.5] - 2026-09-07
 
 Feature release: synthesized auto worker profiles for `auto_subscribe`, plus a documentation restructure.
@@ -325,7 +367,8 @@ pipeline end to end after fixing the issues below.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/Goopil/rabbit-rs/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Goopil/rabbit-rs/compare/v0.1.4...v0.1.5
 [0.1.0]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
