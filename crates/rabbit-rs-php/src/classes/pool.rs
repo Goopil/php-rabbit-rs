@@ -54,6 +54,15 @@ impl Pool {
     /// 30000, bounded 1000..86400000) caps how long `consumer()` blocks while
     /// a broker connection becomes ready before failing with a
     /// ConnectionException.
+    ///
+    /// The optional `publisher.flush_interval` key (integer milliseconds,
+    /// default 1, bounded 0..3600000) sets the publish buffer's age-flush
+    /// trigger: a batch is flushed once it is older than this interval at the
+    /// next publish call (or other buffer-touching operation), even if it
+    /// never reaches the size threshold. `0` flushes on every triggering
+    /// operation. The interval only batches boundary crossings — it never
+    /// affects connections, so pools differing only in this value share one
+    /// connection.
     pub fn __construct(config: &ZendHashTable) -> PhpResult<Self> {
         let config =
             Arc::new(conversion::validated_config(config).map_err(rabbit_exception_message)?);
@@ -65,7 +74,11 @@ impl Pool {
         let bridge = EventBridge::shared(&client);
 
         Ok(Self {
-            publish_buffer: Arc::new(PublishBuffer::new(Arc::clone(&client), Arc::clone(&handle))),
+            publish_buffer: Arc::new(PublishBuffer::new(
+                Arc::clone(&client),
+                Arc::clone(&handle),
+                config.publisher().flush_interval,
+            )),
             handle,
             client,
             delay_strategy: DelayStrategy::compile(&config),
@@ -121,6 +134,12 @@ impl Pool {
     /// @throws \Goopil\RabbitRs\BackpressureException when the bounded publish
     ///   buffer is full (outage with sustained traffic); retry with the same
     ///   message later. Already-buffered messages are never dropped.
+    /// @throws \Goopil\RabbitRs\ConnectionException on connection-level
+    ///   transport failures (stale generation, source replacement, closed
+    ///   pool); catch it before the broader base exception to keep the
+    ///   dedicated type.
+    /// @throws \Goopil\RabbitRs\Exception for any other native publish
+    ///   failure not covered by the dedicated types above.
     pub fn publish(&self, message: &ZendHashTable) -> PhpResult<String> {
         self.ensure_open("Goopil\\RabbitRs\\Pool::publish")?;
         let publish = conversion::publish(message, "message", &self.delay_strategy)
@@ -466,11 +485,11 @@ impl Pool {
         flush_interval: Option<Duration>,
         flush_threshold: Option<usize>,
     ) -> Self {
-        let publish_buffer = PublishBuffer::new(Arc::clone(&client), Arc::clone(&handle));
-        let publish_buffer = match flush_interval {
-            Some(interval) => publish_buffer.with_flush_interval(interval),
-            None => publish_buffer,
-        };
+        let publish_buffer = PublishBuffer::new(
+            Arc::clone(&client),
+            Arc::clone(&handle),
+            flush_interval.unwrap_or(Duration::from_millis(1)),
+        );
         let publish_buffer = match flush_threshold {
             Some(threshold) => publish_buffer.with_flush_threshold(threshold),
             None => publish_buffer,

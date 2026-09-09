@@ -1238,6 +1238,96 @@ async fn close_resolves_within_deadline_with_pending_confirmations() {
 }
 
 // ---------------------------------------------------------------------------
+// Terminating close quiesce (issue #194): close() must attempt pending
+// publications within a bounded deadline instead of dropping them.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn close_drains_a_pending_publication_within_the_quiesce_window() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    // Park the publication inside the transport: handed off, never attempted.
+    let gate = transport.push_publish_gate();
+    let actor = actor_safety(&transport, config_safety()).await;
+    let waiter = actor
+        .try_publish(request_safety("quiesce", b"payload"))
+        .expect("publish");
+    gate.wait_entered().await;
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "the gated publication must not be on the wire before close"
+    );
+
+    let closer = {
+        let actor = actor.clone();
+        tokio::spawn(async move { actor.close().await })
+    };
+    tokio::task::yield_now().await;
+    // The close quiesce window (the confirm timeout) is open: a publication
+    // that becomes attemptable inside it must still reach the wire.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(gate.release(), "the parked publication must be released");
+
+    tokio::time::timeout(Duration::from_secs(10), closer)
+        .await
+        .expect("close join must not hang")
+        .expect("close task must not panic")
+        .expect("close must succeed");
+    wait_for_publish_count(&transport, 1).await;
+    assert_eq!(
+        find_publish(&transport).properties.message_id.as_deref(),
+        Some("quiesce"),
+        "close must attempt the pending publication on the wire"
+    );
+    assert!(
+        matches!(waiter.wait().await, Ok(PublishOutcome::Confirmed { .. })),
+        "a publication attempted during the close quiesce must resolve confirmed, not dropped"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_with_a_wedged_transport_drops_loudly_at_the_quiesce_deadline() {
+    let transport = MockTransport::default();
+    // Never released: the transport can never complete the attempt, so the
+    // quiesce deadline (the confirm timeout, 5s here) must end close().
+    let gate = transport.push_publish_gate();
+    let actor = actor_safety(&transport, config_safety()).await;
+    let waiter = actor
+        .try_publish(request_safety("wedged", b"payload"))
+        .expect("publish");
+    gate.wait_entered().await;
+
+    let closer = {
+        let actor = actor.clone();
+        tokio::spawn(async move { actor.close().await })
+    };
+    tokio::task::yield_now().await;
+    for _ in 0..8 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        if closer.is_finished() {
+            break;
+        }
+    }
+    assert!(
+        closer.is_finished(),
+        "close must stay bounded by the quiesce deadline, not hang"
+    );
+    tokio::time::timeout(Duration::from_secs(1), closer)
+        .await
+        .expect("close join must not hang")
+        .expect("close task must not panic")
+        .expect("close must succeed");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), waiter.wait())
+            .await
+            .expect("the waiter must resolve once close completes")
+            .expect_err("an unattemptable publication must fail loudly")
+            .kind(),
+        PublishErrorKind::Closed
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Publisher delay tests (from publisher_delay.rs)
 // ---------------------------------------------------------------------------
 

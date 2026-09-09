@@ -99,11 +99,14 @@ namespace Goopil\RabbitRs {
         public function drainErrors(): array {}
 
         /**
-         * Per-subscription prefetch state: mode ("fixed" or "adaptive"),
-         * currently applied prefetch, and EWMA of settlement latency in
-         * milliseconds (0 before any acknowledged job).
+         * Returns per-subscription prefetch state for observability.
          *
-         * @return array<string, array{mode: string, prefetch: int, ewma_ms: int}>
+         * Returns an array keyed by subscription name; each entry contains
+         * `mode` (`"fixed"` or `"adaptive"`), `prefetch` (currently applied
+         * value), and `ewma_ms` (EWMA of acknowledged settlement latency in
+         * milliseconds, 0 before any acknowledged job).
+         *
+         * @return array
          */
         public function getPrefetchStats(): array {}
 
@@ -226,6 +229,15 @@ namespace Goopil\RabbitRs {
          * 30000, bounded 1000..86400000) caps how long `consumer()` blocks while
          * a broker connection becomes ready before failing with a
          * ConnectionException.
+         *
+         * The optional `publisher.flush_interval` key (integer milliseconds,
+         * default 1, bounded 0..3600000) sets the publish buffer's age-flush
+         * trigger: a batch is flushed once it is older than this interval at the
+         * next publish call (or other buffer-touching operation), even if it
+         * never reaches the size threshold. `0` flushes on every triggering
+         * operation. The interval only batches boundary crossings — it never
+         * affects connections, so pools differing only in this value share one
+         * connection.
          *
          * @param array $config
          */

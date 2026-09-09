@@ -458,6 +458,29 @@ pub struct PublisherConfigSection {
     pub mandatory: bool,
     #[serde(deserialize_with = "deserialize_duration_millis")]
     pub confirm_timeout: Duration,
+    /// Maximum age of the oldest publication in the application-side publish
+    /// buffer before its age-flush trigger fires (issue #194).
+    ///
+    /// This knob configures the boundary-crossing publish buffer built on top
+    /// of the core (the PHP extension's `PublishBuffer`): accepted
+    /// publications batch there and are flushed once the size threshold is
+    /// reached or a batch is older than this interval. The triggers are
+    /// evaluated whenever the buffer is touched — a publish call, an explicit
+    /// flush, a read that must observe the buffer (`size`, `clear`, a
+    /// consumer pop) — and the age clock is armed by the first publication of
+    /// each batch, so the interval measures how long the oldest buffered
+    /// publication has been waiting. A publication never touched by a
+    /// triggering operation is still flushed by an explicit `flush`/`close`
+    /// or the bounded teardown flush at buffer disposal.
+    ///
+    /// Bounded to at most one hour so a misconfiguration cannot strand
+    /// publications for a day; `0` flushes on every triggering operation.
+    /// The default of 1 millisecond preserves the pre-knob behavior (flush on
+    /// the next triggering call). The interval never affects connections and
+    /// is excluded from the configuration fingerprint: pools differing only
+    /// in this value share one connection.
+    #[serde(deserialize_with = "deserialize_duration_millis")]
+    pub flush_interval: Duration,
 }
 
 impl PublisherConfigSection {
@@ -487,6 +510,7 @@ impl Default for PublisherConfigSection {
             confirms: true,
             mandatory: true,
             confirm_timeout: Duration::from_secs(30),
+            flush_interval: Duration::from_millis(1),
         }
     }
 }
@@ -637,6 +661,13 @@ impl Config {
             return Err(ConfigError::new(
                 "publisher.confirm_timeout",
                 "confirm_timeout must be at least 1 second",
+            ));
+        }
+
+        if self.publisher.flush_interval > Duration::from_hours(1) {
+            return Err(ConfigError::new(
+                "publisher.flush_interval",
+                "flush_interval must be at most 1 hour",
             ));
         }
 
@@ -2125,6 +2156,79 @@ mod tests {
         assert!(!publisher.confirms);
         assert!(publisher.mandatory);
         assert_eq!(publisher.confirm_timeout, Duration::from_secs(5));
+    }
+
+    fn publisher_candidate(publisher: &serde_json::Value) -> Config {
+        serde_json::from_value(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "priority_class": 0,
+                    "prefetch": 16
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external",
+            "publisher": publisher
+        }))
+        .expect("config with publisher section parses")
+    }
+
+    #[test]
+    fn flush_interval_defaults_to_the_current_age_flush_behavior() {
+        assert_eq!(
+            PublisherConfigSection::default().flush_interval,
+            Duration::from_millis(1),
+            "the default age-flush interval must keep the pre-knob trigger latency"
+        );
+    }
+
+    #[test]
+    fn parses_flush_interval_from_milliseconds() {
+        let candidate = publisher_candidate(&json!({"flush_interval": 250}));
+
+        let validated = candidate.validate().expect("valid config");
+        assert_eq!(
+            validated.publisher().flush_interval,
+            Duration::from_millis(250)
+        );
+    }
+
+    #[test]
+    fn rejects_flush_interval_above_one_hour() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.publisher.flush_interval = Duration::from_hours(1) + Duration::from_millis(1);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "publisher.flush_interval");
+    }
+
+    #[test]
+    fn flush_interval_does_not_split_the_fingerprint() {
+        let base = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        changed.publisher.flush_interval = Duration::from_mins(1);
+
+        assert_eq!(
+            ConfigFingerprint::calculate(&base),
+            ConfigFingerprint::calculate(&changed),
+            "the publish-buffer age-flush interval must not influence the fingerprint: it \
+             never affects a connection, so pools with different batching windows share one \
+             connection"
+        );
     }
 
     #[test]
