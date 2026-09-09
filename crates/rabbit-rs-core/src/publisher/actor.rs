@@ -511,6 +511,16 @@ impl ActorState {
         }
         self.replay = retained;
     }
+
+    /// Returns whether any publication is still held somewhere in the actor:
+    /// queued for (re)attempt, on the wire, or awaiting its confirmation.
+    fn has_pending_publications(&self) -> bool {
+        !self.replay.is_empty()
+            || !self.publishing.is_empty()
+            || !self.ledger.is_empty()
+            || !self.confirmations.is_empty()
+            || !self.publish_in_flight.is_empty()
+    }
 }
 
 async fn run_actor(
@@ -548,25 +558,7 @@ async fn run_actor(
                     let _ = completed.send(result);
                 }
                 Some(Command::Close(completed)) => {
-                    let error = PublishError::new(
-                        PublishErrorKind::Closed,
-                        "publisher actor was explicitly closed",
-                    );
-                    // Drain the publishing registry so pending confirmations
-                    // are resolved with a terminal error before closing.
-                    for (_, retained) in state.publishing.drain() {
-                        state.byte_budget.release(retained.payload_bytes);
-                        complete_error(retained, error.clone());
-                    }
-                    state.fail_all(&error);
-                    state.publish_in_flight = FuturesUnordered::new();
-                    if let Some(channel) = state.channel.take() {
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            channel.close(),
-                        )
-                        .await;
-                    }
+                    quiesce_and_close(&mut state).await;
                     let _ = completed.send(());
                     return;
                 }
@@ -947,5 +939,51 @@ async fn wait_for_deadline(deadline: Option<time::Instant>) {
         time::sleep_until(deadline).await;
     } else {
         future::pending::<()>().await;
+    }
+}
+
+/// Quiesces pending publications, then closes the channel (issue #194).
+///
+/// The terminating close must not silently discard publications the caller
+/// already accepted: while the publisher is `Ready`, everything still held
+/// is attempted on the wire and awaited within a bounded deadline — the
+/// publisher's confirm timeout, the same budget a confirmed publish wait or
+/// a publisher acquisition gets. Publications that resolve within the window
+/// finish with their real outcome; anything that genuinely cannot be
+/// attempted or confirmed before the deadline (wedged transport, expired
+/// publication deadline, a suspension with no channel) is resolved with a
+/// loud [`PublishErrorKind::Closed`] error, never dropped silently —
+/// re-buffering callers count it in their dropped-publications total.
+///
+/// A `Suspended` publisher has no channel, so its replayed publications
+/// cannot be attempted at all: they fail immediately instead of waiting for
+/// a recovery that `close()` is about to terminate. `FailedPermanent` is in
+/// the same situation by definition.
+async fn quiesce_and_close(state: &mut ActorState) {
+    if matches!(state.phase, Phase::Ready) {
+        let deadline = time::Instant::now() + state.config.confirm_timeout;
+        let pending = std::mem::take(&mut state.replay);
+        publish_queue(state, pending).await;
+        while matches!(state.phase, Phase::Ready) && state.has_pending_publications() {
+            tokio::select! {
+                biased;
+                () = time::sleep_until(deadline) => break,
+                confirmation = state.confirmations.next(), if !state.confirmations.is_empty() => {
+                    if let Some((sequence, generation, result)) = confirmation {
+                        resolve_confirmation(state, sequence, generation, result);
+                    }
+                }
+                Some((sequence, result)) = state.publish_in_flight.next(), if !state.publish_in_flight.is_empty() => {
+                    handle_publish_completion(state, sequence, result);
+                }
+            }
+        }
+    }
+    state.fail_all(&PublishError::new(
+        PublishErrorKind::Closed,
+        "publisher actor was closed before the publication could be attempted",
+    ));
+    if let Some(channel) = state.channel.take() {
+        let _ = tokio::time::timeout(Duration::from_secs(2), channel.close()).await;
     }
 }
