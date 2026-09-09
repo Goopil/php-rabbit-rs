@@ -46,6 +46,16 @@ final class WorkerProfileResolver
     }
 
     /**
+     * Whether the profile subscribes to more than one queue: a consumer on a
+     * shared profile round-robins every subscription, so a pop addressed to
+     * a single queue resolves a dedicated implicit profile instead (scoping).
+     */
+    public function isShared(string $profile): bool
+    {
+        return count($this->profiles[$profile] ?? []) > 1;
+    }
+
+    /**
      * Whether the given name is a known worker profile.
      */
     public function hasProfile(string $profile): bool
