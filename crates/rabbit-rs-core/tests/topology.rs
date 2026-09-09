@@ -1218,11 +1218,15 @@ async fn delayed_release_increments_the_application_attempt_header() {
         .open_publisher()
         .await
         .expect("publisher channel");
+    // The production publisher shape (issue #196): the pool always compiles
+    // a delay strategy into the publisher actor, which owns the single
+    // delayed routing and its lazy infrastructure declaration. The
+    // subscription's strategy only validates the release delay.
     let publisher = PublisherActor::spawn_with_delay_strategy_and_metrics(
         Arc::from(publisher_channel),
         PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Safe),
         Metrics::default(),
-        None,
+        Some(rabbit_rs_core::topology::delay::DelayStrategy::Plugin),
     );
     let subscription = Subscription::new(
         "jobs",

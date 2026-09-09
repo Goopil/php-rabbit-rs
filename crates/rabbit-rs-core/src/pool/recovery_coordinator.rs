@@ -51,6 +51,9 @@ pub struct RecoveryCoordinator;
 pub struct RecoveryCoordinatorHandle {
     actor: ConnectionActorHandle,
     publisher: SharedPublisher,
+    /// Fires whenever the shared publisher slot gains a handle, so waiters
+    /// observe the field being set instead of polling it.
+    publisher_ready: watch::Receiver<()>,
     consumers: SharedConsumers,
     context: Arc<CoordinatorContext>,
     establish_lock: EstablishLock,
@@ -156,6 +159,7 @@ impl RecoveryCoordinator {
         let (close_tx, close_rx) = mpsc::channel(1);
 
         let publisher: SharedPublisher = Arc::new(Mutex::new(None));
+        let (publisher_ready_tx, publisher_ready_rx) = watch::channel(());
         let consumers: SharedConsumers = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let establish_lock: EstablishLock = Arc::new(Mutex::new(()));
 
@@ -166,6 +170,7 @@ impl RecoveryCoordinator {
             config: config.config,
             metrics: config.metrics,
             requested_profiles: config.requested_profiles,
+            publisher_ready: publisher_ready_tx,
         });
 
         let join = tokio::spawn(run_coordinator(
@@ -180,6 +185,7 @@ impl RecoveryCoordinator {
         RecoveryCoordinatorHandle {
             actor,
             publisher,
+            publisher_ready: publisher_ready_rx,
             consumers,
             context,
             establish_lock,
@@ -201,6 +207,9 @@ struct CoordinatorContext {
     config: Arc<ValidatedConfig>,
     metrics: Metrics,
     requested_profiles: RequestedProfiles,
+    /// Notifies publisher-acquisition waiters whenever the shared publisher
+    /// slot gains a handle (issue #196: bounded acquisition without polling).
+    publisher_ready: watch::Sender<()>,
 }
 
 impl RecoveryCoordinatorHandle {
@@ -276,6 +285,27 @@ impl RecoveryCoordinatorHandle {
             .await
             .clone()
             .ok_or_else(|| CoordinatorError::internal("publisher is not ready"))
+    }
+
+    /// Waits until a publisher handle becomes available and returns it.
+    ///
+    /// Resolves when the coordinator installs the publisher (which happens
+    /// after the `Ready` transition, with no further state change to watch),
+    /// so callers park here instead of polling the slot or spinning on
+    /// always-true state predicates (issue #196).
+    ///
+    /// Returns `None` when the coordinator task has stopped, so callers can
+    /// surface a clean closed-pool error instead of blocking forever.
+    pub async fn wait_for_publisher(&self) -> Option<PublisherHandle> {
+        let mut ready = self.publisher_ready.clone();
+        loop {
+            if let Ok(publisher) = self.publisher().await {
+                return Some(publisher);
+            }
+            if ready.changed().await.is_err() {
+                return None;
+            }
+        }
     }
 
     /// Returns the per-broker consumer set for the given worker profile.
@@ -554,6 +584,9 @@ async fn recover_generation(
             Some(delay_strategy),
         );
         *pub_guard = Some(handle);
+        // Wake publisher-acquisition waiters: the slot transition is invisible
+        // to connection-state watchers (the state stays Ready across it).
+        context.publisher_ready.send_replace(());
     }
     drop(pub_guard);
 

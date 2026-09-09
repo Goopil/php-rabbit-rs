@@ -1477,3 +1477,73 @@ mod integration {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Publisher acquisition bound (issue #196): a follow-up operation must fail at
+// the publisher confirm timeout when the broker never becomes ready, instead
+// of hanging indefinitely while the coordinator is stuck in Connecting or
+// Recovering.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publisher_acquisition_is_bounded_by_the_confirm_timeout() {
+    let transport = Arc::new(MockTransport::default());
+    // The broker never becomes ready: the connect gate is never released, so
+    // the connection actor alternates between Connecting and Recovering
+    // forever while every publication waits for a publisher handle. A short
+    // confirm timeout keeps the bound observable without a long real wait.
+    let _gate = transport.push_connect_gate();
+    let bounded_config = Config {
+        brokers: vec![BrokerConfig {
+            name: "default".to_owned(),
+            hosts: vec![Endpoint::new("rabbit.local", 5672)],
+            vhost: "/".to_owned(),
+            credentials: Credentials::new("guest", "secret"),
+            tls: TlsConfig::disabled(),
+            heartbeat: Duration::from_secs(30),
+        }],
+        workers: Vec::new(),
+        topology_mode: TopologyMode::External,
+        delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection {
+            confirm_timeout: Duration::from_secs(2),
+            ..PublisherConfigSection::default()
+        },
+        consumer: rabbit_rs_core::config::ConsumerConfigSection::default(),
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+    }
+    .validate()
+    .expect("valid config");
+    let pool = Arc::new(ClientPool::new(Arc::new(bounded_config), transport.clone()));
+
+    let mut properties = MessageProperties::new("m0");
+    properties.delay_ms = Some(5_000);
+    let request = PublishRequest::new(
+        Destination::new("jobs", "default"),
+        Bytes::from_static(b"payload"),
+        properties,
+        tokio::time::Instant::now() + Duration::from_secs(90),
+    );
+
+    // The outer guard is the regression tripwire: the acquisition wait is a
+    // hot spin today and starves a single-threaded runtime, so the publish
+    // runs on the multi-thread runtime and the guard bounds the test.
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        pool.publish_batch(vec![("default".to_owned(), request)]),
+    )
+    .await
+    .expect("publisher acquisition must be bounded by the confirm timeout, not hang forever");
+
+    let error = result.expect_err("an unready broker must fail the publication");
+    assert_eq!(error.kind(), ClientErrorKind::Publish, "got: {error}");
+    assert!(
+        error.to_string().contains("confirm timeout"),
+        "the acquisition error must name the confirm budget, got {error}"
+    );
+
+    pool.close().await.expect("close pool");
+}

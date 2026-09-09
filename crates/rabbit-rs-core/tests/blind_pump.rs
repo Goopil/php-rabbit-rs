@@ -9,8 +9,8 @@ use bytes::Bytes;
 use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
-        SafetyMode, TlsConfig, TopologyMode, ValidatedConfig,
+        BrokerConfig, Config, Credentials, DelayConfig, DelayMode, Endpoint,
+        PublisherConfigSection, SafetyMode, TlsConfig, TopologyMode, ValidatedConfig,
     },
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest, PublisherConfig},
     transport::{
@@ -429,6 +429,135 @@ async fn blind_batch_applies_backpressure_then_completes_without_error() {
         let _ = gate.release();
     }
     wait_for_publishes(&transport, 131).await;
+
+    pool.close().await.expect("close pool");
+}
+
+// ---------------------------------------------------------------------------
+// Blind-mode delay routing (issue #196): a delayed publish handed to the pump
+// must be routed through the compiled delay strategy and its broker-side
+// infrastructure declared lazily, exactly like the confirmed path. A blind
+// delayed publish landing on the original exchange with an `x-delay` header a
+// normal exchange ignores would execute the job immediately.
+// ---------------------------------------------------------------------------
+
+fn config_with_delay_mode(mode: DelayMode) -> Arc<ValidatedConfig> {
+    Arc::new(
+        Config {
+            brokers: vec![BrokerConfig {
+                name: "default".to_owned(),
+                hosts: vec![Endpoint::new("rabbit.local", 5672)],
+                vhost: "/".to_owned(),
+                credentials: Credentials::new("guest", "secret"),
+                tls: TlsConfig::disabled(),
+                heartbeat: Duration::from_secs(30),
+            }],
+            workers: Vec::new(),
+            topology_mode: TopologyMode::External,
+            delay: DelayConfig {
+                mode,
+                ..DelayConfig::default()
+            },
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: rabbit_rs_core::config::ConsumerConfigSection::default(),
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid config"),
+    )
+}
+
+fn delayed_request(message_id: &str, delay_ms: u64) -> PublishRequest {
+    let mut properties = MessageProperties::new(message_id);
+    properties.delay_ms = Some(delay_ms);
+    PublishRequest::new(
+        Destination::new("jobs", "default"),
+        Bytes::from_static(b"payload"),
+        properties,
+        tokio::time::Instant::now() + Duration::from_secs(30),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_routes_delayed_publishes_through_the_plugin_strategy() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new_for_tests(
+        config_with_delay_mode(DelayMode::Plugin),
+        transport.clone(),
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Blind),
+    );
+
+    pool.publish_batch(vec![("default".to_owned(), delayed_request("m0", 5_000))])
+        .await
+        .expect("blind delayed publish accepted");
+    wait_for_publishes(&transport, 1).await;
+
+    let operations = transport.operations();
+    let wire = &publish_requests(&transport)[0];
+    assert_eq!(
+        wire.exchange.as_ref(),
+        "jobs.delayed",
+        "a blind delayed publish must be routed onto the delayed exchange, got {}",
+        wire.exchange
+    );
+    assert_eq!(
+        wire.properties.delay_ms,
+        Some(5_000),
+        "the x-delay header must survive the blind hand-off"
+    );
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            rabbit_rs_core::transport::mock::TransportOperation::DeclareExchange(spec)
+                if spec.name == "jobs.delayed"
+        )),
+        "the delayed exchange must be declared lazily before the first blind delayed publish"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
+#[tokio::test(start_paused = true)]
+async fn blind_mode_routes_delayed_publishes_through_ttl_buckets() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new_for_tests(
+        config_with_delay_mode(DelayMode::Ttl),
+        transport.clone(),
+        PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Blind),
+    );
+
+    pool.publish_batch(vec![("default".to_owned(), delayed_request("m0", 5_000))])
+        .await
+        .expect("blind delayed publish accepted");
+    wait_for_publishes(&transport, 1).await;
+
+    let operations = transport.operations();
+    let wire = &publish_requests(&transport)[0];
+    assert_eq!(
+        wire.exchange.as_ref(),
+        "",
+        "a TTL blind delayed publish must use the default exchange"
+    );
+    assert!(
+        wire.routing_key.starts_with("rabbit-rs.delay."),
+        "a TTL blind delayed publish must target the synthesized delay queue, got {}",
+        wire.routing_key
+    );
+    assert_eq!(
+        wire.properties.delay_ms, None,
+        "TTL routing defers through the queue, not an x-delay header"
+    );
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            rabbit_rs_core::transport::mock::TransportOperation::DeclareQueue(spec)
+                if spec.message_ttl == Some(Duration::from_secs(5))
+        )),
+        "the TTL delay queue must be declared lazily before the first blind delayed publish"
+    );
 
     pool.close().await.expect("close pool");
 }

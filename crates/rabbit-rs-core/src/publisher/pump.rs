@@ -1,16 +1,16 @@
 use std::{
+    collections::HashSet,
     future::Future,
     pin::Pin,
     sync::{Arc, RwLock},
 };
 
-use bytes::Bytes;
 use flume::{Receiver, Sender};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use tokio::sync::oneshot;
 
-use super::{ByteBudget, PublishError, PublishErrorKind};
-use crate::transport::{PublishProperties, PublishRequest as TransportRequest, PublisherChannel};
+use super::{ByteBudget, PublishError, PublishErrorKind, PublishRequest};
+use crate::{topology::delay::DelayStrategy, transport::PublisherChannel};
 
 /// Boxed publish future tracked in the pump's in-flight set.
 type PublishFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -60,7 +60,11 @@ pub struct PublishPump {
 }
 
 struct PumpJob {
-    request: TransportRequest,
+    /// The unrouted application-level request. The pump performs the delay
+    /// routing (and its lazy infrastructure declaration) at publish time —
+    /// the same single routing point the confirmed path uses. `None` marks a
+    /// flush barrier.
+    request: Option<PublishRequest>,
     barrier_tx: Option<oneshot::Sender<()>>,
     /// Byte-budget reservation for this job's payload. Released when the job
     /// leaves the pump — transport exit, silent drop for lack of a channel,
@@ -87,12 +91,18 @@ impl PublishPump {
         channel: Arc<dyn PublisherChannel>,
         buffer_capacity: usize,
         byte_budget: Arc<ByteBudget>,
+        delay_strategy: Option<DelayStrategy>,
     ) -> Self {
         let (tx, rx) = flume::bounded(buffer_capacity.max(1));
         let inflight_cap = buffer_capacity.saturating_mul(2).max(128);
         let channel_slot: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>> =
             Arc::new(RwLock::new(Some(channel)));
-        tokio::spawn(pump_loop(channel_slot.clone(), rx, inflight_cap));
+        tokio::spawn(pump_loop(
+            channel_slot.clone(),
+            rx,
+            inflight_cap,
+            delay_strategy,
+        ));
         Self {
             tx,
             channel: channel_slot,
@@ -128,11 +138,11 @@ impl PublishPump {
     ///
     /// Returns [`PublishErrorKind::Closed`] when the pump is closed (the
     /// reservation is released back to the budget in that case).
-    pub async fn send(&self, request: TransportRequest) -> Result<(), PublishError> {
+    pub async fn send(&self, request: PublishRequest) -> Result<(), PublishError> {
         let bytes = u64::try_from(request.payload.len()).unwrap_or(u64::MAX);
         self.tx
             .send_async(PumpJob {
-                request,
+                request: Some(request),
                 barrier_tx: None,
                 budget: Some(BudgetGuard {
                     budget: Arc::clone(&self.budget),
@@ -154,13 +164,7 @@ impl PublishPump {
         let (barrier_tx, barrier_rx) = oneshot::channel();
         self.tx
             .send_async(PumpJob {
-                request: TransportRequest {
-                    exchange: Arc::<str>::from(""),
-                    routing_key: Arc::<str>::from(""),
-                    payload: Bytes::new(),
-                    mandatory: true,
-                    properties: PublishProperties::default(),
-                },
+                request: None,
                 barrier_tx: Some(barrier_tx),
                 budget: None,
             })
@@ -215,8 +219,13 @@ async fn pump_loop(
     channel: Arc<RwLock<Option<Arc<dyn PublisherChannel>>>>,
     rx: Receiver<PumpJob>,
     inflight_cap: usize,
+    delay_strategy: Option<DelayStrategy>,
 ) {
     let mut inflight: FuturesUnordered<PublishFuture> = FuturesUnordered::new();
+    // Infrastructure declared by this pump for delayed publishes (the
+    // delayed-message exchange or the synthesized TTL delay queues), mirroring
+    // the confirmed path's lazy declaration.
+    let mut declared_delay_topology: HashSet<Arc<str>> = HashSet::new();
     loop {
         tokio::select! {
             biased;
@@ -231,26 +240,74 @@ async fn pump_loop(
                 let Ok(job) = maybe_job else { break };
 
                 let PumpJob { request, barrier_tx, budget } = job;
-                if let Some(barrier_tx) = barrier_tx {
-                    // Flush barrier: every job enqueued before the barrier is
-                    // already in `inflight` (or was dropped for lack of a
-                    // channel) — drain them all, then resolve the barrier.
-                    while inflight.next().await.is_some() {}
-                    let _ = barrier_tx.send(());
+                let Some(request) = request else {
+                    if let Some(barrier_tx) = barrier_tx {
+                        // Flush barrier: every job enqueued before the barrier is
+                        // already in `inflight` (or was dropped for lack of a
+                        // channel) — drain them all, then resolve the barrier.
+                        while inflight.next().await.is_some() {}
+                        let _ = barrier_tx.send(());
+                    }
                     continue;
-                }
+                };
 
                 // With a channel, the publish error is a silent loss (blind
                 // semantics); without one (recovery in progress) the job is
                 // dropped silently. Either way the budget reservation is
                 // released when the job leaves the pump.
-                if let Some(ch) = channel
+                let channel = channel
                     .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-                {
+                    .clone();
+                if let Some(ch) = channel {
+                    // Route the delay before the wire — the single routing
+                    // point shared with the confirmed path, including the
+                    // lazy infrastructure declaration. A delay the compiled
+                    // strategy cannot route is dropped loudly (blind
+                    // semantics): never published to the original exchange
+                    // with an `x-delay` header it would ignore (issue #196).
+                    let transport_request = match super::delay::route_transport_request(
+                        &request,
+                        delay_strategy.as_ref(),
+                        false,
+                    ) {
+                        Ok(transport_request) => transport_request,
+                        Err(error) => {
+                            crate::log::warn(
+                                "publisher_pump",
+                                format!(
+                                    "blind delayed publish {} dropped: {error}",
+                                    request.properties.message_id,
+                                ),
+                            );
+                            continue;
+                        }
+                    };
+                    // A positive delay on the original request declares its
+                    // infrastructure first — the delayed exchange (plugin) or
+                    // the synthesized TTL delay queue.
+                    if request.properties.delay_ms.is_some_and(|delay| delay > 0)
+                        && let Some(strategy) = &delay_strategy
+                        && let Err(error) = super::delay::ensure_delay_topology(
+                            &ch,
+                            strategy,
+                            &request.destination,
+                            request.properties.delay_ms.unwrap_or_default(),
+                            &mut declared_delay_topology,
+                        )
+                        .await
+                    {
+                        crate::log::warn(
+                            "publisher_pump",
+                            format!(
+                                "blind delayed publish {} dropped: {error}",
+                                request.properties.message_id,
+                            ),
+                        );
+                        continue;
+                    }
                     inflight.push(Box::pin(async move {
-                        let _ = ch.publish(request).await;
+                        let _ = ch.publish(transport_request).await;
                         drop(budget);
                     }));
                 }
@@ -280,8 +337,9 @@ mod tests {
 
     use super::*;
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig};
+    use crate::publisher::{Destination, MessageProperties};
     use crate::transport::{
-        PublishProperties, Transport,
+        PublishRequest as TransportRequest, Transport,
         mock::{MockOperationGate, MockTransport, TransportOperation},
     };
 
@@ -312,16 +370,12 @@ mod tests {
         Arc::new(ByteBudget::new(u64::MAX))
     }
 
-    fn request(message_id: &str) -> TransportRequest {
-        TransportRequest {
-            exchange: Arc::from("jobs"),
-            routing_key: Arc::from("high"),
+    fn request(message_id: &str) -> PublishRequest {
+        PublishRequest {
+            destination: Destination::new("jobs", "high"),
             payload: Bytes::from_static(b"payload"),
-            mandatory: false,
-            properties: PublishProperties {
-                message_id: Some(message_id.to_owned()),
-                ..PublishProperties::default()
-            },
+            properties: MessageProperties::new(message_id),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(30),
         }
     }
 
@@ -367,7 +421,7 @@ mod tests {
         // Intake queue of 4, in-flight cap well above 8: all eight sends must
         // be accepted while every publish is held pending by its gate.
         let gates: Vec<MockOperationGate> = (0..8).map(|_| transport.push_publish_gate()).collect();
-        let pump = PublishPump::spawn(channel, 4, test_budget());
+        let pump = PublishPump::spawn(channel, 4, test_budget(), None);
 
         for index in 0..8 {
             let send = pump.send(request(&index.to_string()));
@@ -395,7 +449,7 @@ mod tests {
         // buffer_capacity = 2 → intake queue of 2, in-flight cap 128.
         let gates: Vec<MockOperationGate> =
             (0..131).map(|_| transport.push_publish_gate()).collect();
-        let pump = PublishPump::spawn(channel, 2, test_budget());
+        let pump = PublishPump::spawn(channel, 2, test_budget(), None);
 
         // Fill the in-flight cap while every publish is gated.
         for index in 0..128 {
@@ -438,7 +492,7 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         let gate = transport.push_publish_gate();
-        let pump = PublishPump::spawn(channel, 4, test_budget());
+        let pump = PublishPump::spawn(channel, 4, test_budget(), None);
 
         pump.send(request("gated")).await.expect("send accepted");
         // Anchor: the transport worker entered the publish gate, proving the
@@ -471,7 +525,7 @@ mod tests {
     async fn flush_without_channel_resolves_after_drain_without_error() {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
-        let pump = PublishPump::spawn(channel, 4, test_budget());
+        let pump = PublishPump::spawn(channel, 4, test_budget(), None);
 
         pump.clear_channel();
         pump.send(request("dropped")).await.expect("send accepted");
@@ -487,7 +541,7 @@ mod tests {
     async fn cleared_channel_drops_jobs_and_updated_channel_resumes_publishing() {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
-        let pump = PublishPump::spawn(channel, 4, test_budget());
+        let pump = PublishPump::spawn(channel, 4, test_budget(), None);
 
         pump.clear_channel();
         pump.send(request("lost"))
@@ -552,12 +606,12 @@ mod tests {
         let gate = transport.push_publish_gate();
         let slot = Arc::new(RwLock::new(Some(channel)));
         let (tx, rx) = flume::bounded::<PumpJob>(4);
-        let task = tokio::spawn(pump_loop(slot, rx, 128));
+        let task = tokio::spawn(pump_loop(slot, rx, 128, None));
 
         // A live pump accepts hand-offs; the publish parks in its gate so
         // nothing reaches the transport during this test.
         tx.send_async(PumpJob {
-            request: request("before"),
+            request: Some(request("before")),
             barrier_tx: None,
             budget: None,
         })
@@ -579,7 +633,7 @@ mod tests {
         let outcome = timeout(
             Duration::from_secs(1),
             tx.send_async(PumpJob {
-                request: request("after"),
+                request: Some(request("after")),
                 barrier_tx: None,
                 budget: None,
             }),
@@ -606,11 +660,11 @@ mod tests {
         let channel = mock_channel(&transport).await;
         let slot = Arc::new(RwLock::new(Some(channel)));
         let (tx, rx) = flume::bounded::<PumpJob>(4);
-        let task = tokio::spawn(pump_loop(slot, rx, 128));
+        let task = tokio::spawn(pump_loop(slot, rx, 128, None));
 
         let gate = transport.push_publish_gate();
         tx.send_async(PumpJob {
-            request: request("pending"),
+            request: Some(request("pending")),
             barrier_tx: None,
             budget: None,
         })
@@ -620,7 +674,7 @@ mod tests {
 
         let (barrier_tx, barrier_rx) = oneshot::channel();
         tx.send_async(PumpJob {
-            request: request(""),
+            request: None,
             barrier_tx: Some(barrier_tx),
             budget: None,
         })
@@ -647,7 +701,7 @@ mod tests {
         let transport = MockTransport::default();
         let channel = mock_channel(&transport).await;
         let gate = transport.push_publish_gate();
-        let pump = PublishPump::spawn(channel, 4, test_budget());
+        let pump = PublishPump::spawn(channel, 4, test_budget(), None);
 
         pump.send(request("drained")).await.expect("send accepted");
         gate.wait_entered().await;
