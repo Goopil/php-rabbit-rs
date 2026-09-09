@@ -4,7 +4,7 @@ use std::{
     num::NonZeroU32,
     pin::Pin,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use futures_util::StreamExt;
@@ -286,7 +286,7 @@ impl ActorState {
                 self.source_errors.pop_front();
                 continue;
             }
-            let Some(subscription) = self.scheduler.next(Instant::now()) else {
+            let Some(subscription) = self.scheduler.pick() else {
                 break;
             };
             let Some(delivery) = self

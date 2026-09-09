@@ -24,7 +24,6 @@ $config = [
             'broker' => 'default',
             'queue' => 'jobs',
             'weight' => 1,
-            'priority_class' => 0,
             'prefetch' => 1,
         ]],
         'scheduler' => [

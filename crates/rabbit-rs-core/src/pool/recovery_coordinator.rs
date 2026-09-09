@@ -697,11 +697,7 @@ async fn establish_requested_profile(
         .generation(generation)
         .prefetch_config(sub_config.prefetch)
         .channel_id(channel_id)
-        .policy(SubscriptionPolicy::new(
-            sub_config.weight,
-            sub_config.priority_class,
-            sub_config.starvation_after,
-        ))
+        .policy(SubscriptionPolicy::new(sub_config.weight))
         .early_ack(sub_config.early_ack)
         .no_ack(sub_config.no_ack)
         .max_buffered_bytes(sub_config.max_buffered_bytes)

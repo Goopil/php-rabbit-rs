@@ -1,10 +1,6 @@
 mod common;
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
@@ -65,9 +61,7 @@ mod helper {
                     broker: "default".to_owned(),
                     queue: "jobs".to_owned(),
                     weight: 1,
-                    priority_class: 0,
                     prefetch: PrefetchConfig::Fixed(8),
-                    starvation_after: Duration::from_secs(30),
                     max_buffered_bytes: 64 * 1024 * 1024,
                     early_ack: false,
                     no_ack: false,
@@ -135,9 +129,7 @@ mod helper {
                         broker: "first".to_owned(),
                         queue: "jobs-first".to_owned(),
                         weight: 1,
-                        priority_class: 0,
                         prefetch: PrefetchConfig::Fixed(8),
-                        starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
                         early_ack: false,
                         no_ack: false,
@@ -147,9 +139,7 @@ mod helper {
                         broker: "second".to_owned(),
                         queue: "jobs-second".to_owned(),
                         weight: 1,
-                        priority_class: 0,
                         prefetch: PrefetchConfig::Fixed(8),
-                        starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
                         early_ack: false,
                         no_ack: false,
@@ -183,8 +173,8 @@ mod helper {
         SubscriptionId::new(value)
     }
 
-    pub fn policy(weight: u16, priority_class: i16) -> SubscriptionPolicy {
-        SubscriptionPolicy::new(weight, priority_class, Duration::from_secs(1))
+    pub fn policy(weight: u16) -> SubscriptionPolicy {
+        SubscriptionPolicy::new(weight)
     }
 }
 
@@ -196,26 +186,24 @@ use helper::*;
 
 #[test]
 fn selects_the_only_ready_subscription() {
-    let now = Instant::now();
     let mut scheduler = WeightedFairScheduler::default();
-    scheduler.register(sched_id("only"), policy(1, 0));
+    scheduler.register(sched_id("only"), policy(1));
     scheduler.mark_ready(&sched_id("only"));
 
-    assert_eq!(scheduler.next(now), Some(sched_id("only")));
+    assert_eq!(scheduler.pick(), Some(sched_id("only")));
 }
 
 #[test]
 fn follows_configured_weight_ratio() {
-    let now = Instant::now();
     let mut scheduler = WeightedFairScheduler::default();
-    scheduler.register(sched_id("high-weight"), policy(8, 0));
-    scheduler.register(sched_id("low-weight"), policy(2, 0));
+    scheduler.register(sched_id("high-weight"), policy(8));
+    scheduler.register(sched_id("low-weight"), policy(2));
     scheduler.mark_ready(&sched_id("high-weight"));
     scheduler.mark_ready(&sched_id("low-weight"));
 
     let mut counts = BTreeMap::new();
     for _ in 0..10_000 {
-        *counts.entry(scheduler.next(now).unwrap()).or_insert(0_u32) += 1;
+        *counts.entry(scheduler.pick().unwrap()).or_insert(0_u32) += 1;
     }
 
     assert_eq!(counts[&sched_id("high-weight")], 8_000);
@@ -224,21 +212,20 @@ fn follows_configured_weight_ratio() {
 
 #[test]
 fn empty_subscription_does_not_accumulate_credit() {
-    let now = Instant::now();
     let mut scheduler = WeightedFairScheduler::default();
-    scheduler.register(sched_id("temporarily-empty"), policy(1, 0));
-    scheduler.register(sched_id("always-ready"), policy(1, 0));
+    scheduler.register(sched_id("temporarily-empty"), policy(1));
+    scheduler.register(sched_id("always-ready"), policy(1));
     scheduler.mark_ready(&sched_id("temporarily-empty"));
     scheduler.mark_ready(&sched_id("always-ready"));
 
-    let first = scheduler.next(now).unwrap();
+    let first = scheduler.pick().unwrap();
     scheduler.mark_empty(&sched_id("temporarily-empty"));
     for _ in 0..100 {
-        assert_eq!(scheduler.next(now), Some(sched_id("always-ready")));
+        assert_eq!(scheduler.pick(), Some(sched_id("always-ready")));
     }
 
     scheduler.mark_ready(&sched_id("temporarily-empty"));
-    let resumed = [scheduler.next(now).unwrap(), scheduler.next(now).unwrap()];
+    let resumed = [scheduler.pick().unwrap(), scheduler.pick().unwrap()];
 
     assert!(resumed.contains(&sched_id("temporarily-empty")));
     assert!(resumed.contains(&sched_id("always-ready")));
@@ -247,61 +234,63 @@ fn empty_subscription_does_not_accumulate_credit() {
 
 #[test]
 fn subscription_can_return_after_being_empty() {
-    let now = Instant::now();
     let mut scheduler = WeightedFairScheduler::default();
-    scheduler.register(sched_id("queue"), policy(1, 0));
+    scheduler.register(sched_id("queue"), policy(1));
     scheduler.mark_ready(&sched_id("queue"));
     scheduler.mark_empty(&sched_id("queue"));
 
-    assert_eq!(scheduler.next(now), None);
+    assert_eq!(scheduler.pick(), None);
 
     scheduler.mark_ready(&sched_id("queue"));
 
-    assert_eq!(scheduler.next(now), Some(sched_id("queue")));
+    assert_eq!(scheduler.pick(), Some(sched_id("queue")));
 }
 
 #[test]
-fn aging_prevents_lower_priority_starvation() {
-    let start = Instant::now();
+fn equal_weight_ready_subscriptions_alternate_without_starvation() {
     let mut scheduler = WeightedFairScheduler::default();
-    scheduler.register(sched_id("high"), policy(1, 3));
-    scheduler.register(sched_id("low"), policy(1, 0));
-    scheduler.mark_ready(&sched_id("high"));
-    scheduler.mark_ready(&sched_id("low"));
+    scheduler.register(sched_id("first"), policy(1));
+    scheduler.register(sched_id("second"), policy(1));
+    scheduler.mark_ready(&sched_id("first"));
+    scheduler.mark_ready(&sched_id("second"));
 
-    let selected = (0..=6)
-        .map(|seconds| {
-            scheduler
-                .next(start + Duration::from_secs(seconds))
-                .unwrap()
-        })
-        .collect::<Vec<_>>();
+    let selected: Vec<_> = (0..6).map(|_| scheduler.pick().unwrap()).collect();
 
-    assert_eq!(selected[0], sched_id("high"));
-    assert!(selected.contains(&sched_id("low")));
+    for pair in selected.chunks(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+    assert_eq!(
+        selected
+            .iter()
+            .filter(|id| **id == sched_id("first"))
+            .count(),
+        3
+    );
+    assert_eq!(
+        selected
+            .iter()
+            .filter(|id| **id == sched_id("second"))
+            .count(),
+        3
+    );
 }
 
 #[test]
 fn produces_a_deterministic_sequence() {
-    let start = Instant::now();
     let mut first = WeightedFairScheduler::default();
     let mut second = WeightedFairScheduler::default();
 
     for scheduler in [&mut first, &mut second] {
-        scheduler.register(sched_id("a"), policy(5, 0));
-        scheduler.register(sched_id("b"), policy(3, 0));
-        scheduler.register(sched_id("c"), policy(1, 0));
+        scheduler.register(sched_id("a"), policy(5));
+        scheduler.register(sched_id("b"), policy(3));
+        scheduler.register(sched_id("c"), policy(1));
         scheduler.mark_ready(&sched_id("a"));
         scheduler.mark_ready(&sched_id("b"));
         scheduler.mark_ready(&sched_id("c"));
     }
 
-    let first_sequence = (0..100)
-        .map(|tick| first.next(start + Duration::from_millis(tick)).unwrap())
-        .collect::<Vec<_>>();
-    let second_sequence = (0..100)
-        .map(|tick| second.next(start + Duration::from_millis(tick)).unwrap())
-        .collect::<Vec<_>>();
+    let first_sequence = (0..100).map(|_| first.pick().unwrap()).collect::<Vec<_>>();
+    let second_sequence = (0..100).map(|_| second.pick().unwrap()).collect::<Vec<_>>();
 
     assert_eq!(first_sequence, second_sequence);
 }
@@ -920,9 +909,7 @@ mod integration {
                         broker: "primary".to_owned(),
                         queue: queue.to_owned(),
                         weight: 1,
-                        priority_class: 0,
                         prefetch: PrefetchConfig::Fixed(8),
-                        starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
                         early_ack: false,
                         no_ack: false,
@@ -967,9 +954,7 @@ mod integration {
                             broker: "orders".to_owned(),
                             queue: "rabbit-rs-it-orders".to_owned(),
                             weight: 1,
-                            priority_class: 0,
                             prefetch: PrefetchConfig::Fixed(8),
-                            starvation_after: Duration::from_secs(30),
                             max_buffered_bytes: 64 * 1024 * 1024,
                             early_ack: false,
                             no_ack: false,
@@ -979,9 +964,7 @@ mod integration {
                             broker: "billing".to_owned(),
                             queue: "rabbit-rs-it-billing".to_owned(),
                             weight: 1,
-                            priority_class: 0,
                             prefetch: PrefetchConfig::Fixed(8),
-                            starvation_after: Duration::from_secs(30),
                             max_buffered_bytes: 64 * 1024 * 1024,
                             early_ack: false,
                             no_ack: false,

@@ -93,7 +93,7 @@ mod helper {
         Subscription::new(id, key, format!("queue.{id}"), Arc::from(channel))
             .prefetch(4)
             .channel_id(1)
-            .policy(SubscriptionPolicy::new(1, 0, Duration::from_secs(1)))
+            .policy(SubscriptionPolicy::new(1))
     }
 
     pub async fn publisher(transport: &MockTransport) -> PublisherHandle {
@@ -538,9 +538,7 @@ mod real_broker {
                         broker: "primary".to_owned(),
                         queue: queue.to_owned(),
                         weight: 1,
-                        priority_class: 0,
                         prefetch: PrefetchConfig::Fixed(8),
-                        starvation_after: Duration::from_secs(30),
                         max_buffered_bytes: 64 * 1024 * 1024,
                         early_ack: false,
                         no_ack: false,
@@ -797,9 +795,7 @@ mod real_broker {
             broker: "primary".to_owned(),
             queue,
             weight: 1,
-            priority_class: 0,
             prefetch: PrefetchConfig::Fixed(8),
-            starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,
             no_ack: false,
