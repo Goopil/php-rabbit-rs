@@ -58,7 +58,6 @@ class RabbitRsDriver extends AbstractBenchmark
                     'broker' => 'default',
                     'queue' => self::QUEUE,
                     'weight' => 1,
-                    'priority_class' => 0,
                     'prefetch' => match ($this->scenarioMode) {
                         ScenarioMode::LARAVEL_WORKER => Config::PREFETCH_LARAVEL,
                         default => Config::PREFETCH_COUNT,

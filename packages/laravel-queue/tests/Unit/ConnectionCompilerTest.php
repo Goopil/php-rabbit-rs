@@ -450,9 +450,7 @@ describe('subscriptions escape hatch', function (): void {
                 'alerts' => [
                     'queue' => 'orders.alerts',
                     'weight' => 3,
-                    'priority_class' => 2,
                     'prefetch' => 8,
-                    'starvation_after' => 10,
                     'early_ack' => true,
                     'no_ack' => false,
                 ],
@@ -463,9 +461,7 @@ describe('subscriptions escape hatch', function (): void {
             subscription('jobs'),
             subscription('alerts', [
                 'weight' => 3,
-                'priority_class' => 2,
                 'prefetch' => 8,
-                'starvation_after' => 10,
                 'early_ack' => true,
             ]),
         ]);
@@ -475,11 +471,11 @@ describe('subscriptions escape hatch', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
             'queue' => 'default',
             'prefetch' => '32',
-            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => '2', 'priority_class' => '1']],
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => '2']],
         ]);
 
         expect($compiled['native']['workers'][0]['subscriptions'][0])->toBe(
-            subscription('jobs', ['weight' => 2, 'priority_class' => 1, 'prefetch' => 32]),
+            subscription('jobs', ['weight' => 2, 'prefetch' => 32]),
         );
     });
 
@@ -559,23 +555,19 @@ describe('subscriptions escape hatch', function (): void {
         'beyond the maximum' => [65_536, false],
     ]);
 
-    it('bounds priority_class to i16', function (int $value, bool $valid): void {
-        expectBounded(
-            fn (): array => ConnectionCompiler::compile('orders', [
-                'queue' => 'default',
-                'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'priority_class' => $value]],
-            ]),
-            fn (array $compiled): int => $compiled['native']['workers'][0]['subscriptions'][0]['priority_class'],
-            $value,
-            $valid,
-            'queue.connections.orders.subscriptions.jobs.priority_class',
+    it('rejects the removed priority_class knob (weight-only scheduling)', function (): void {
+        expectCompileRejected(
+            ['subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'priority_class' => 1]]],
+            'queue.connections.orders.subscriptions.jobs.priority_class: unknown key',
         );
-    })->with([
-        'at the minimum' => [-32_768, true],
-        'at the maximum' => [32_767, true],
-        'below the minimum' => [-32_769, false],
-        'beyond the maximum' => [32_768, false],
-    ]);
+    });
+
+    it('rejects the removed starvation_after knob (weight-only scheduling)', function (): void {
+        expectCompileRejected(
+            ['subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'starvation_after' => 30]]],
+            'queue.connections.orders.subscriptions.jobs.starvation_after: unknown key',
+        );
+    });
 
     it('rejects two subscriptions sharing the same queue', function (): void {
         expectCompileRejected(
@@ -748,9 +740,7 @@ function subscription(string $name, array $overrides = []): array
         'broker' => 'orders',
         'queue' => 'orders.'.$name,
         'weight' => 1,
-        'priority_class' => 0,
         'prefetch' => 64,
-        'starvation_after' => 30,
         'early_ack' => false,
         'no_ack' => false,
     ], $overrides);
@@ -810,9 +800,7 @@ function referenceCompiled(string $name): array
                     'broker' => $name,
                     'queue' => 'default',
                     'weight' => 1,
-                    'priority_class' => 0,
                     'prefetch' => 64,
-                    'starvation_after' => 30,
                     'early_ack' => false,
                     'no_ack' => false,
                 ]],

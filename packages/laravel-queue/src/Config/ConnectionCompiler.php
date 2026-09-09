@@ -336,13 +336,13 @@ final class ConnectionCompiler
      *
      * @param  array<string, mixed>  $subscription
      * @param  array<string, mixed>  $config
-     * @return array{name: string, broker: string, queue: string, weight: int, priority_class: int, prefetch: int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}, starvation_after: int, early_ack: bool, no_ack: bool}
+     * @return array{name: string, broker: string, queue: string, weight: int, prefetch: int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}, early_ack: bool, no_ack: bool}
      */
     private static function subscription(string $name, string $alias, array $subscription, array $config, bool $bestEffort, string $path): array
     {
         self::rejectUnknownKeys(
             $subscription,
-            ['queue', 'weight', 'priority_class', 'prefetch', 'starvation_after', 'early_ack', 'no_ack'],
+            ['queue', 'weight', 'prefetch', 'early_ack', 'no_ack'],
             $path,
         );
 
@@ -363,14 +363,12 @@ final class ConnectionCompiler
             'broker' => $name,
             'queue' => self::string($subscription['queue'] ?? null, $path.self::PATH_QUEUE),
             'weight' => self::positiveInt($subscription['weight'] ?? 1, $path.'.weight', 65535),
-            'priority_class' => self::boundedI16($subscription['priority_class'] ?? 0, $path.'.priority_class'),
             'prefetch' => self::prefetch(
                 $subscription['prefetch'] ?? ($config['prefetch'] ?? 64),
                 $path.'.prefetch',
                 $earlyAck,
                 $noAck,
             ),
-            'starvation_after' => self::positiveInt($subscription['starvation_after'] ?? 30, $path.'.starvation_after'),
             'early_ack' => $earlyAck,
             'no_ack' => $noAck,
         ];
@@ -430,16 +428,6 @@ final class ConnectionCompiler
         }
 
         self::invalid($path.'.mode', 'must be fixed or adaptive');
-    }
-
-    private static function boundedI16(mixed $value, string $path): int
-    {
-        $value = self::integer($value, $path);
-        if ($value < -32768 || $value > 32767) {
-            self::invalid($path, 'must be an integer between -32768 and 32767');
-        }
-
-        return $value;
     }
 
     /**

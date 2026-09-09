@@ -20,7 +20,6 @@ function validConfigWithWorkers(): array
                 'broker' => 'default',
                 'queue' => 'jobs',
                 'weight' => 1,
-                'priority_class' => 0,
                 'prefetch' => 16,
             ]],
             'scheduler' => [

@@ -190,13 +190,7 @@ pub struct SubscriptionConfig {
     pub broker: String,
     pub queue: String,
     pub weight: u16,
-    pub priority_class: i16,
     pub prefetch: PrefetchConfig,
-    #[serde(
-        default = "default_starvation_after",
-        deserialize_with = "deserialize_duration_seconds"
-    )]
-    pub starvation_after: Duration,
     #[serde(default = "default_max_buffered_bytes")]
     pub max_buffered_bytes: u64,
     /// Best-effort mode: ACK the delivery to the broker before dispatch to PHP.
@@ -806,12 +800,6 @@ impl Config {
                     }
                 }
             }
-            if subscription.starvation_after.is_zero() {
-                return Err(ConfigError::new(
-                    path + ".starvation_after",
-                    "starvation_after must be greater than zero",
-                ));
-            }
             if subscription.no_ack && !subscription.early_ack {
                 return Err(ConfigError::new(
                     path + ".no_ack",
@@ -925,9 +913,7 @@ impl ValidatedConfig {
                 broker: self.brokers[0].name.clone(),
                 queue: queue.to_owned(),
                 weight: 1,
-                priority_class: 0,
                 prefetch: PrefetchConfig::Fixed(64),
-                starvation_after: Duration::from_secs(30),
                 max_buffered_bytes: default_max_buffered_bytes(),
                 early_ack: false,
                 no_ack: false,
@@ -1015,7 +1001,6 @@ impl ConfigFingerprint {
                 hash_value(&mut digest, &subscription.broker);
                 hash_value(&mut digest, &subscription.queue);
                 digest.update(subscription.weight.to_be_bytes());
-                digest.update(subscription.priority_class.to_be_bytes());
                 match subscription.prefetch {
                     PrefetchConfig::Fixed(value) => {
                         hash_value(&mut digest, "prefetch:fixed");
@@ -1038,7 +1023,6 @@ impl ConfigFingerprint {
                         );
                     }
                 }
-                digest.update(subscription.starvation_after.as_secs().to_be_bytes());
                 digest.update(subscription.max_buffered_bytes.to_be_bytes());
                 hash_value(
                     &mut digest,
@@ -1240,10 +1224,6 @@ where
         .map(|secs| secs.into_iter().map(Duration::from_secs).collect())
 }
 
-fn default_starvation_after() -> Duration {
-    Duration::from_secs(30)
-}
-
 fn default_max_buffered_bytes() -> u64 {
     64 * 1024 * 1024
 }
@@ -1281,9 +1261,7 @@ mod tests {
             broker: "default".to_owned(),
             queue: "jobs".to_owned(),
             weight: 1,
-            priority_class: 0,
             prefetch: PrefetchConfig::Fixed(prefetch),
-            starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,
             no_ack: false,
@@ -1330,8 +1308,8 @@ mod tests {
         assert_eq!(error.path(), "workers.main.subscriptions.default.prefetch");
     }
 
-    fn prefetch_candidate(prefetch: &serde_json::Value) -> Result<Config, serde_json::Error> {
-        serde_json::from_value(json!({
+    fn prefetch_candidate_json() -> serde_json::Value {
+        json!({
             "brokers": [{
                 "name": "default",
                 "hosts": [{"host": "rabbit.local", "port": 5672}],
@@ -1347,13 +1325,18 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
-                    "prefetch": prefetch
+                    "prefetch": 16
                 }],
                 "scheduler": {"strategy": "weighted_fair"}
             }],
             "topology_mode": "external"
-        }))
+        })
+    }
+
+    fn prefetch_candidate(prefetch: &serde_json::Value) -> Result<Config, serde_json::Error> {
+        let mut value = prefetch_candidate_json();
+        value["workers"][0]["subscriptions"][0]["prefetch"] = prefetch.clone();
+        serde_json::from_value(value)
     }
 
     #[test]
@@ -1364,6 +1347,24 @@ mod tests {
             candidate.workers[0].subscriptions[0].prefetch,
             PrefetchConfig::Fixed(16)
         ));
+    }
+
+    #[test]
+    fn subscription_rejects_legacy_scheduler_knobs() {
+        for knob in ["priority_class", "starvation_after"] {
+            let mut value = prefetch_candidate_json();
+            value["workers"][0]["subscriptions"][0][knob] = json!(0);
+
+            let error = serde_json::from_value::<Config>(value)
+                .expect_err("weight-only scheduling rejects legacy scheduler knobs");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{knob}`")),
+                "expected unknown field `{knob}`, got: {error}"
+            );
+        }
     }
 
     #[test]
@@ -1422,9 +1423,7 @@ mod tests {
             broker: "default".to_owned(),
             queue: "jobs".to_owned(),
             weight: 1,
-            priority_class: 0,
             prefetch,
-            starvation_after: Duration::from_secs(30),
             max_buffered_bytes: 64 * 1024 * 1024,
             early_ack: false,
             no_ack: false,
@@ -1590,7 +1589,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -1624,7 +1622,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -1639,21 +1636,6 @@ mod tests {
         candidate
             .validate()
             .expect("max_in_flight below prefetch must not be validated");
-    }
-
-    #[test]
-    fn rejects_zero_starvation_after_with_the_subscription_path() {
-        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
-        let mut profile = worker(16);
-        profile.subscriptions[0].starvation_after = Duration::ZERO;
-        candidate.workers = vec![profile];
-
-        let error = candidate.validate().unwrap_err();
-
-        assert_eq!(
-            error.path(),
-            "workers.main.subscriptions.default.starvation_after"
-        );
     }
 
     #[test]
@@ -1674,7 +1656,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -1691,10 +1672,6 @@ mod tests {
             .expect("canonical worker configuration");
         let worker = validated.worker("main").expect("worker");
         assert_eq!(worker.scheduler.strategy, SchedulerStrategy::WeightedFair);
-        assert_eq!(
-            worker.subscriptions[0].starvation_after,
-            Duration::from_secs(30)
-        );
     }
 
     #[test]
@@ -1715,7 +1692,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "max_in_flight": 64,
@@ -1794,16 +1770,16 @@ mod tests {
     }
 
     #[test]
-    fn starvation_is_part_of_the_fingerprint() {
+    fn weight_is_part_of_the_fingerprint() {
         let mut base = config(vec![Endpoint::new("rabbit.local", 5672)]);
         base.workers = vec![worker(16)];
-        let mut starvation_changed = base.clone();
-        starvation_changed.workers[0].subscriptions[0].starvation_after = Duration::from_secs(31);
+        let mut weight_changed = base.clone();
+        weight_changed.workers[0].subscriptions[0].weight = 2;
 
         let base = base.validate().unwrap();
-        let starvation_changed = starvation_changed.validate().unwrap();
+        let weight_changed = weight_changed.validate().unwrap();
 
-        assert_ne!(base.fingerprint(), starvation_changed.fingerprint());
+        assert_ne!(base.fingerprint(), weight_changed.fingerprint());
     }
 
     #[test]
@@ -1920,7 +1896,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -1998,7 +1973,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -2134,7 +2108,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -2249,7 +2222,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -2385,9 +2357,7 @@ mod tests {
                     "broker": "primary",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 8,
-                    "starvation_after": 30
                 }],
                 "scheduler": {"strategy": "weighted_fair", "max_in_flight": 16}
             }],
@@ -2415,9 +2385,7 @@ mod tests {
                     "broker": "primary",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 8,
-                    "starvation_after": 30
                 }],
                 "scheduler": {"strategy": "weighted_fair", "max_in_flight": 16}
             }],
@@ -2568,7 +2536,6 @@ mod tests {
                     "broker": "default",
                     "queue": "jobs",
                     "weight": 1,
-                    "priority_class": 0,
                     "prefetch": 16
                 }],
                 "scheduler": {
@@ -2635,9 +2602,7 @@ mod tests {
         assert_eq!(subscription.queue, "emails");
         assert_eq!(subscription.broker, "main");
         assert_eq!(subscription.weight, 1);
-        assert_eq!(subscription.priority_class, 0);
         assert_eq!(subscription.prefetch, PrefetchConfig::Fixed(64));
-        assert_eq!(subscription.starvation_after, Duration::from_secs(30));
         assert!(!subscription.early_ack);
         assert!(!subscription.no_ack);
     }

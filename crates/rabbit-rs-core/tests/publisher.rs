@@ -1658,7 +1658,6 @@ fn delay_config_is_validated_and_deserialized_from_config() {
                 "broker": "default",
                 "queue": "jobs",
                 "weight": 1,
-                "priority_class": 0,
                 "prefetch": 16
             }],
             "scheduler": {
@@ -1710,7 +1709,6 @@ fn delay_config_rejects_empty_buckets() {
                 "broker": "default",
                 "queue": "jobs",
                 "weight": 1,
-                "priority_class": 0,
                 "prefetch": 16
             }],
             "scheduler": {

@@ -191,7 +191,6 @@ function multiVhostConfig(): array
             'orders_high' => [
                 'queue' => 'orders.high',
                 'weight' => 8,
-                'priority_class' => 1,
                 'prefetch' => 8,
             ],
             'orders_low' => [

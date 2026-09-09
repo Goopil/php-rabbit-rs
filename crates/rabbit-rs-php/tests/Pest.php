@@ -51,7 +51,6 @@ function defaultConfigWithWorkers(): array
                 'broker' => 'default',
                 'queue' => 'jobs',
                 'weight' => 1,
-                'priority_class' => 0,
                 'prefetch' => 512,
             ]],
             'scheduler' => [

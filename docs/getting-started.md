@@ -36,7 +36,6 @@ $config = [
             'broker' => 'default',
             'queue' => 'hello',
             'weight' => 1,
-            'priority_class' => 0,
             'prefetch' => 16,
         ]],
         'scheduler' => ['strategy' => 'weighted_fair'],
@@ -129,22 +128,22 @@ One worker profile multiplexes several subscriptions through a weighted-fair sch
     'name' => 'default',
     'subscriptions' => [
         [
-            'name' => 'critical', 'broker' => 'default', 'queue' => 'payments',
-            'weight' => 8, 'priority_class' => 1, 'prefetch' => 8,
+            'name' => 'critical', 'queue' => 'payments',
+            'weight' => 8, 'prefetch' => 8,
         ],
         [
-            'name' => 'bulk', 'broker' => 'default', 'queue' => 'emails',
-            'weight' => 2, 'priority_class' => 0, 'prefetch' => 64,
+            'name' => 'bulk', 'queue' => 'emails',
+            'weight' => 2, 'prefetch' => 64,
         ],
     ],
     'scheduler' => ['strategy' => 'weighted_fair'],
 ]],
 ```
 
-- `priority_class` — higher numbers are served first (client-side scheduler state, nothing sent to the broker); `starvation_after` (seconds, default 30) raises an aged subscription's effective priority so it cannot be starved forever.
+- `weight` — proportional share of the worker's capacity (weighted-fair cannot starve by construction; the legacy `priority_class`/`starvation_after` knobs were removed in 0.2.0).
 - `prefetch` accepts a plain integer, `['mode' => 'fixed', 'value' => N]`, or an adaptive controller that keeps a time-bounded buffer of ready work and adjusts with hysteresis: `['mode' => 'adaptive', 'initial' => 64, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5]`. Adaptive prefetch requires acknowledgements (`early_ack`/`no_ack` must stay off).
 
-Several worker profiles can live on the same pool; open one consumer per profile. Several brokers can be declared in `brokers` — each subscription pins its `broker` by name, and each broker recovers independently.
+Several worker profiles can live on the same pool; open one consumer per profile. Several brokers can be declared in `brokers` — each subscription pins its `broker` by name (omitted pins default to the sole broker when exactly one is declared), and each broker recovers independently.
 
 ## 4. Operate
 

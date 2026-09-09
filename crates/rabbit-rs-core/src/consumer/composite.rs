@@ -486,7 +486,7 @@ mod tests {
         Subscription::new(id, key, format!("queue.{id}"), Arc::from(channel))
             .prefetch(8)
             .channel_id(1)
-            .policy(SubscriptionPolicy::new(1, 0, Duration::from_secs(1)))
+            .policy(SubscriptionPolicy::new(1))
     }
 
     /// Spawns one source per transport so each delivery lands in a

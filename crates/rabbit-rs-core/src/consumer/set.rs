@@ -4,7 +4,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -65,7 +64,7 @@ impl Subscription {
             channel_id: 1,
             queue: queue.into(),
             prefetch: PrefetchConfig::Fixed(16),
-            policy: SubscriptionPolicy::new(1, 0, Duration::from_secs(30)),
+            policy: SubscriptionPolicy::new(1),
             early_ack: false,
             no_ack: false,
             max_buffered_bytes: 64 * 1024 * 1024,

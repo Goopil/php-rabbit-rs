@@ -82,10 +82,48 @@ pub(crate) struct NativePublish {
 
 pub(crate) fn validated_config(table: &ZendHashTable) -> Result<ValidatedConfig, String> {
     let mut active_arrays = HashSet::new();
-    let value = array_value(table, "config", 0, &mut active_arrays)?;
+    let mut value = array_value(table, "config", 0, &mut active_arrays)?;
+    pin_single_broker(&mut value);
     let config: Config = serde_json::from_value(value)
         .map_err(|error| format!("config: invalid structure: {error}"))?;
     config.validate().map_err(|error| error.to_string())
+}
+
+/// Pins subscriptions to the sole broker when the pool declares exactly one
+/// and the subscription omits the pin: hand-written single-broker configs
+/// should not have to repeat the broker name on every subscription. Nothing
+/// is injected when the key is present, when there is no sole broker, or
+/// when a worker/subscriptions section is malformed (the deserializer
+/// reports those with its own actionable path).
+fn pin_single_broker(config: &mut Value) {
+    let Some(name) = config
+        .get("brokers")
+        .and_then(Value::as_array)
+        .filter(|brokers| brokers.len() == 1)
+        .and_then(|brokers| brokers[0].get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let Some(workers) = config.get_mut("workers").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for worker in workers.iter_mut() {
+        let Some(subscriptions) = worker
+            .get_mut("subscriptions")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for subscription in subscriptions.iter_mut() {
+            if let Some(object) = subscription.as_object_mut()
+                && !object.contains_key("broker")
+            {
+                object.insert("broker".to_owned(), Value::String(name.clone()));
+            }
+        }
+    }
 }
 
 pub(crate) fn publish(
@@ -467,4 +505,54 @@ pub(crate) fn reject_unknown_keys(
         }
     }
     Ok(())
+}
+#[cfg(test)]
+mod pin_tests {
+    use serde_json::json;
+
+    use super::pin_single_broker;
+
+    #[test]
+    fn pins_subscriptions_to_the_sole_broker_when_omitted() {
+        let mut config = json!({
+            "brokers": [{"name": "main", "hosts": []}],
+            "workers": [{
+                "name": "worker",
+                "subscriptions": [
+                    {"name": "jobs", "queue": "jobs", "weight": 1, "prefetch": 16},
+                    {"name": "pinned", "broker": "main", "queue": "other", "weight": 1, "prefetch": 16}
+                ]
+            }]
+        });
+
+        pin_single_broker(&mut config);
+
+        assert_eq!(
+            config["workers"][0]["subscriptions"][0]["broker"],
+            json!("main")
+        );
+        assert_eq!(
+            config["workers"][0]["subscriptions"][1]["broker"],
+            json!("main")
+        );
+    }
+
+    #[test]
+    fn leaves_multi_broker_configs_unpinned() {
+        let mut config = json!({
+            "brokers": [{"name": "main", "hosts": []}, {"name": "other", "hosts": []}],
+            "workers": [{
+                "name": "worker",
+                "subscriptions": [{"name": "jobs", "queue": "jobs", "weight": 1, "prefetch": 16}]
+            }]
+        });
+
+        pin_single_broker(&mut config);
+
+        assert!(
+            config["workers"][0]["subscriptions"][0]
+                .get("broker")
+                .is_none()
+        );
+    }
 }
