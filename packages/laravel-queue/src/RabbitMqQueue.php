@@ -442,23 +442,27 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         $probe = $this->probeTurn();
         $this->drainSettlementErrors();
 
-        if ($queue === null) {
-            $profile = $this->workerProfiles->profileForQueue($this->defaultQueue)
-                ?? $this->defaultQueue;
-        } else {
-            $queueName = $this->queueName($queue);
-            $profile = $this->workerProfiles->profileForQueue($queueName)
-                ?? ($this->workerProfiles->hasProfile($queueName) ? $queueName : null);
-            if ($profile === null) {
-                if (! $this->autoSubscribe) {
-                    throw new InvalidArgumentException(
-                        "No worker profile subscribes to queue '{$queueName}': define it in "
-                        .'queue.connections.<name> (queue key or subscriptions) or enable auto_subscribe.',
-                    );
-                }
-
+        $queueName = $queue === null ? $this->defaultQueue : $this->queueName($queue);
+        $profile = $this->workerProfiles->profileForQueue($queueName);
+        if ($profile !== null) {
+            // A profile covering several queues round-robins them all, so a
+            // pop addressed to one queue must not draw from the others:
+            // resolve a dedicated single-queue implicit profile instead. The
+            // compiled profile remains for topology, doctor, and publishing.
+            if ($this->autoSubscribe && $this->workerProfiles->isShared($profile)) {
                 $profile = $this->workerProfiles->registerAutoProfile($queueName);
             }
+        } elseif ($queue === null) {
+            $profile = $queueName;
+        } elseif ($this->workerProfiles->hasProfile($queueName)) {
+            $profile = $queueName;
+        } elseif ($this->autoSubscribe) {
+            $profile = $this->workerProfiles->registerAutoProfile($queueName);
+        } else {
+            throw new InvalidArgumentException(
+                "No worker profile subscribes to queue '{$queueName}': define it in "
+                .'queue.connections.<name> (queue key or subscriptions) or enable auto_subscribe.',
+            );
         }
         try {
             $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);
