@@ -21,6 +21,10 @@ final class ConnectionCompiler
 
     private const DEFAULT_MAX_ATTEMPTS = 20;
 
+    private const DEFAULT_PUBLISH_FLUSH_INTERVAL_MS = 1;
+
+    private const MAX_PUBLISH_FLUSH_INTERVAL_MS = 3_600_000;
+
     private const MSG_MUST_BE_ARRAY = 'must be an array';
 
     private const MSG_MUST_BE_NULL_OR_STRING = 'must be null or a string';
@@ -39,7 +43,7 @@ final class ConnectionCompiler
         'driver', 'queue', 'subscriptions', 'management_url',
         'hosts', 'vhost', 'username', 'password', 'tls', 'heartbeat',
         'exchange', 'routing_key',
-        'safety', 'confirm_timeout',
+        'safety', 'confirm_timeout', 'flush_interval',
         'prefetch', 'wait_timeout', 'max_attempts',
         'best_effort', 'auto_subscribe',
         'topology_mode',
@@ -60,7 +64,7 @@ final class ConnectionCompiler
      * @return array{
      *     native: array<string, mixed>,
      *     routes: array<string, array<string, mixed>>,
-     *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int},
+     *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int, flush_interval: int},
      *     topology: array<string, mixed>,
      *     best_effort: bool,
      *     auto_subscribe: bool
@@ -445,10 +449,12 @@ final class ConnectionCompiler
      * tracking). The confirms/mandatory fields below are deprecated wire
      * fields the core ignores: the core config rejects mandatory=false
      * (Round G #78) and the publisher actor branches on the safety mode,
-     * never on these flags.
+     * never on these flags. flush_interval is the publish buffer's age-flush
+     * trigger (issue #194): it only batches PHP-to-transport boundary
+     * crossings and never affects connections.
      *
      * @param  array<string, mixed>  $config
-     * @return array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int}
+     * @return array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int, flush_interval: int}
      */
     private static function publisher(array $config, string $path): array
     {
@@ -459,6 +465,7 @@ final class ConnectionCompiler
             'confirms' => $safety !== 'blind',
             'mandatory' => true,
             'confirm_timeout' => self::confirmTimeout($config['confirm_timeout'] ?? 30_000, $path.'.confirm_timeout'),
+            'flush_interval' => self::flushInterval($config['flush_interval'] ?? self::DEFAULT_PUBLISH_FLUSH_INTERVAL_MS, $path.'.flush_interval'),
         ];
     }
 
@@ -476,6 +483,20 @@ final class ConnectionCompiler
         $value = self::integer($value, $path);
         if ($value < 1000) {
             self::invalid($path, 'must be at least 1000');
+        }
+
+        return $value;
+    }
+
+    /**
+     * Publish buffer age-flush trigger, mirrored from the core bound
+     * (`publisher.flush_interval`): 0..3600000 ms, default 1 ms.
+     */
+    private static function flushInterval(mixed $value, string $path): int
+    {
+        $value = self::integer($value, $path);
+        if ($value < 0 || $value > self::MAX_PUBLISH_FLUSH_INTERVAL_MS) {
+            self::invalid($path, 'must be between 0 and '.self::MAX_PUBLISH_FLUSH_INTERVAL_MS);
         }
 
         return $value;

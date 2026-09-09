@@ -204,6 +204,35 @@ describe('bounds', function (): void {
         'below the minimum' => [999, false],
         'at the minimum' => [1000, true],
     ]);
+
+    it('defaults flush_interval to the 1ms age-flush behavior', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default']);
+
+        expect($compiled['publisher']['flush_interval'])->toBe(1)
+            ->and($compiled['native']['publisher']['flush_interval'])->toBe(1);
+    });
+
+    it('casts an env-style flush_interval string and mirrors it into the native config', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'flush_interval' => '250']);
+
+        expect($compiled['publisher']['flush_interval'])->toBe(250)
+            ->and($compiled['native']['publisher']['flush_interval'])->toBe(250);
+    });
+
+    it('bounds flush_interval between 0 and 3600000', function (int $value, bool $valid): void {
+        expectBounded(
+            fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'flush_interval' => $value]),
+            fn (array $compiled): int => $compiled['publisher']['flush_interval'],
+            $value,
+            $valid,
+            'queue.connections.orders.flush_interval',
+        );
+    })->with([
+        'zero is valid (flush on every triggering operation)' => [0, true],
+        'at the maximum' => [3_600_000, true],
+        'beyond the maximum' => [3_600_001, false],
+        'negative' => [-1, false],
+    ]);
 });
 
 describe('management url', function (): void {
@@ -793,13 +822,13 @@ function referenceCompiled(string $name): array
             'delay' => ['mode' => 'auto', 'buckets' => [1, 5, 30, 120], 'max_buckets' => 8, 'queue_expiry_margin' => 60],
             'dead_letter' => null,
             'delivery_limit' => null,
-            'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000],
+            'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000, 'flush_interval' => 1],
             'consumer' => ['wait_timeout' => 30000, 'max_attempts' => 20],
             'queue_type' => 'quorum',
             'queue_durable' => true,
         ],
         'routes' => ['default' => ['broker' => $name, 'exchange' => 'laravel.jobs', 'routing_key' => '{queue}']],
-        'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000],
+        'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000, 'flush_interval' => 1],
         'topology' => ['queue' => ['type' => 'quorum', 'durable' => true, 'delivery_limit' => null], 'dead_letter' => null],
         'best_effort' => false,
         'auto_subscribe' => true,

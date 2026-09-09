@@ -36,8 +36,6 @@ use crate::conversion::NativePublish;
 
 /// Buffer threshold: flush when this many messages are buffered.
 pub(crate) const BUFFER_THRESHOLD: usize = 64;
-/// Maximum time to wait before flushing the buffer.
-pub(crate) const BUFFER_FLUSH_INTERVAL: Duration = Duration::from_millis(1);
 /// Maximum number of buffered publish requests before flushing is forced.
 pub(crate) const PUBLISH_BUFFER_MAX_MESSAGES: usize = 4096;
 /// Maximum cumulative buffered payload bytes before flushing is forced.
@@ -107,10 +105,11 @@ pub(crate) struct PublishBuffer {
     /// count their publications as dropped instead of re-buffering them
     /// into a buffer nobody will flush again.
     tearing_down: AtomicBool,
-    /// Time-based flush trigger interval. Defaults to
-    /// [`BUFFER_FLUSH_INTERVAL`]; the test surface overrides it so tests
-    /// can fill the buffer past the message ceiling without a flush
-    /// trigger stealing the publications mid-fill.
+    /// Time-based flush trigger interval. Wired from the validated
+    /// configuration (`publisher.flush_interval`, default 1 millisecond —
+    /// issue #194); the test surface overrides it so tests can fill the
+    /// buffer past the message ceiling without a flush trigger stealing the
+    /// publications mid-fill.
     flush_interval: Duration,
     /// Message-count flush trigger. Defaults to [`BUFFER_THRESHOLD`]; the
     /// test surface overrides it (above the message ceiling) so tests can
@@ -121,7 +120,11 @@ pub(crate) struct PublishBuffer {
 }
 
 impl PublishBuffer {
-    pub(crate) fn new(client: Arc<ClientPool>, handle: Arc<ConnectionHandle>) -> Self {
+    pub(crate) fn new(
+        client: Arc<ClientPool>,
+        handle: Arc<ConnectionHandle>,
+        flush_interval: Duration,
+    ) -> Self {
         Self {
             client,
             handle,
@@ -133,18 +136,9 @@ impl PublishBuffer {
             drain_handles: std::sync::Mutex::new(Vec::new()),
             drain_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DRAINS)),
             tearing_down: AtomicBool::new(false),
-            flush_interval: BUFFER_FLUSH_INTERVAL,
+            flush_interval,
             flush_threshold: BUFFER_THRESHOLD,
         }
-    }
-
-    /// Overrides the time-based flush trigger interval (test surface only:
-    /// a huge interval fills the buffer past the message ceiling
-    /// deterministically, whatever the host scheduling).
-    #[cfg(feature = "extension-tests")]
-    pub(crate) fn with_flush_interval(mut self, interval: Duration) -> Self {
-        self.flush_interval = interval;
-        self
     }
 
     /// Overrides the message-count flush trigger (test surface only: a
