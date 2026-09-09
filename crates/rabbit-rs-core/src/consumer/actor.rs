@@ -23,9 +23,7 @@ use super::{
 use crate::{
     config::PrefetchConfig,
     metrics::Metrics,
-    publisher::{
-        Destination, MessageProperties, PublishOutcome, PublishRequest, delay::DelayRouter,
-    },
+    publisher::{MessageProperties, PublishOutcome, PublishRequest, delay::DelayRouter},
     topology::delay::DelayStrategy,
     transport::{Delivery as TransportDelivery, TransportResult},
 };
@@ -1238,7 +1236,13 @@ async fn delayed_release(
     let delay_ms = i64::try_from(delay.as_millis()).map_err(|_| {
         ConsumerError::new(ConsumerErrorKind::Publish, "delay exceeds supported range")
     })?;
-    let route = DelayRouter::route(strategy, destination, delay_ms).map_err(|error| {
+    // Validation only: the publication carries the ORIGINAL destination and
+    // the raw delay, and the publisher actor performs the (single) delayed
+    // routing plus its lazy infrastructure declaration. Pre-routing here and
+    // publishing to the delayed exchange made the actor route a second time
+    // (`{exchange}.delayed.delayed`, never declared or bound), and bypassed
+    // the TTL delay-queue declaration entirely (issue #196).
+    DelayRouter::route(strategy, destination, delay_ms).map_err(|error| {
         // A delay no compiled strategy can honor (e.g. beyond the largest
         // TTL bucket) is permanent: the caller must settle the original
         // delivery terminally instead of leaving it pending in a redelivery
@@ -1250,11 +1254,9 @@ async fn delayed_release(
     properties.headers = AttemptsResolver::default()
         .delayed_headers(&token.headers, token.attempts)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
-    if route.queue.is_none() {
-        properties.delay_ms = Some(route.delay_ms);
-    }
+    properties.delay_ms = Some(u64::try_from(delay_ms).unwrap_or(u64::MAX));
     let request = PublishRequest::new(
-        Destination::new(route.exchange.as_ref(), route.routing_key.as_ref()),
+        destination.clone(),
         token.payload.clone(),
         properties,
         tokio::time::Instant::now() + publisher.confirm_timeout(),

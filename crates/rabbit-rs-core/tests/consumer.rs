@@ -8,8 +8,9 @@ use bytes::Bytes;
 use rabbit_rs_core::{
     client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, PrefetchConfig, PublisherConfigSection,
-        SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode, WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, DelayConfig, PrefetchConfig,
+        PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig, TopologyMode,
+        WorkerProfile,
     },
     consumer::{
         ConsumerErrorKind, ConsumerSet, DeliveryState, Subscription, SubscriptionId,
@@ -18,7 +19,7 @@ use rabbit_rs_core::{
     metrics::Metrics,
     pool::ConnectionKey,
     publisher::{Destination, MessageProperties, PublishRequest, PublisherActor, PublisherConfig},
-    topology::delay::DelayStrategy,
+    topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
         Delivery as TransportDelivery, PublishConfirmation, QueueKind, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
@@ -121,8 +122,11 @@ mod helper {
             .policy(SubscriptionPolicy::new(1, priority, Duration::from_secs(1)))
     }
 
-    pub async fn publisher(
+    /// The production publisher shape: the pool always compiles a delay
+    /// strategy, so delayed-release tests must exercise the routing actor.
+    pub async fn publisher_with_strategy(
         transport: &MockTransport,
+        delay_strategy: Option<rabbit_rs_core::topology::delay::DelayStrategy>,
     ) -> rabbit_rs_core::publisher::PublisherHandle {
         let channel = transport
             .connect(&broker("publisher", "/"))
@@ -135,7 +139,7 @@ mod helper {
             Arc::from(channel),
             PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe),
             Metrics::default(),
-            None,
+            delay_strategy,
         )
     }
 
@@ -593,7 +597,10 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
         "trace-id",
     )));
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
-    let publisher = publisher(&transport).await;
+    // The production publisher always carries the compiled delay strategy:
+    // the release request carries the ORIGINAL destination and the raw delay,
+    // and the publisher actor performs the (single) delayed routing.
+    let publisher = publisher_with_strategy(&transport, Some(DelayStrategy::Plugin)).await;
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
         .await
         .delayed_publisher(publisher, Destination::new("jobs", "high"))
@@ -636,6 +643,18 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
         .expect("ACK original");
     assert!(publish < ack);
     assert_eq!(transport_request.exchange.as_ref(), "jobs.delayed");
+    assert_ne!(
+        transport_request.exchange.as_ref(),
+        "jobs.delayed.delayed",
+        "the delayed exchange must be routed exactly once, not re-routed onto a nested name"
+    );
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            TransportOperation::DeclareExchange(spec) if spec.name == "jobs.delayed"
+        )),
+        "the delayed exchange must be declared before the first delayed release"
+    );
     assert_eq!(
         transport_request.properties.message_id.as_deref(),
         Some("broker-message-id")
@@ -644,7 +663,78 @@ async fn delayed_release_publishes_confirms_then_acks_original() {
         transport_request.properties.correlation_id.as_deref(),
         Some("trace-id")
     );
-    assert_eq!(transport_request.properties.delay_ms, Some(5_000));
+    assert_eq!(
+        transport_request.properties.delay_ms,
+        Some(5_000),
+        "the x-delay header must carry the release delay"
+    );
+}
+
+/// A delayed release under TTL mode must declare the synthesized delay queue
+/// before publishing to it: the release request carries the original
+/// destination and raw delay, and the publisher actor lazily declares the
+/// queue its routing selects (a publish to a never-declared queue would close
+/// the channel with 404 and loop the redelivery).
+#[tokio::test(start_paused = true)]
+async fn delayed_release_ttl_declares_the_delay_queue_before_publishing() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(13, b"job")));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let plan = TtlBucketPlan::compile(&DelayConfig::default()).expect("TTL plan");
+    let publisher =
+        publisher_with_strategy(&transport, Some(DelayStrategy::TtlBuckets(plan.clone()))).await;
+    let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
+        .await
+        .delayed_publisher(publisher, Destination::new("jobs", "high"))
+        .delay_strategy(DelayStrategy::TtlBuckets(plan));
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
+        .await
+        .expect("consumer set");
+    let item = consumer.next().await.expect("delivery");
+
+    item.release(Duration::from_secs(5))
+        .await
+        .expect("delayed release enqueued");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+
+    let operations = transport.operations();
+    let publish_position = operations
+        .iter()
+        .position(|operation| matches!(operation, TransportOperation::Publish(_)))
+        .expect("republish");
+    assert!(
+        operations[..publish_position]
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                TransportOperation::DeclareQueue(spec)
+                    if spec.message_ttl == Some(Duration::from_secs(5))
+                        && spec.dead_letter_exchange.as_deref() == Some("jobs")
+            )),
+        "the TTL delay queue must be declared before the delayed release publish"
+    );
+
+    let transport_request = operations
+        .iter()
+        .find_map(|operation| match operation {
+            TransportOperation::Publish(request) => Some(request),
+            _ => None,
+        })
+        .expect("published request");
+    assert_eq!(transport_request.exchange.as_ref(), "");
+    assert!(
+        transport_request
+            .routing_key
+            .starts_with("rabbit-rs.delay."),
+        "the release must publish to the synthesized delay queue, got {}",
+        transport_request.routing_key
+    );
+    assert_eq!(
+        transport_request.properties.delay_ms, None,
+        "TTL deferral goes through the queue TTL, not an x-delay header"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -652,7 +742,7 @@ async fn failed_delayed_publish_does_not_ack_the_original() {
     let transport = MockTransport::default();
     transport.push_delivery(Ok(delivery(12, b"job")));
     transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
-    let publisher = publisher(&transport).await;
+    let publisher = publisher_with_strategy(&transport, Some(DelayStrategy::Plugin)).await;
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
         .await
         .delayed_publisher(publisher, Destination::new("jobs", "high"))
@@ -691,7 +781,7 @@ async fn retryable_settlement_failure_preserves_ledger_and_allows_retry() {
     // The delayed release will fail with a Nack confirmation (retryable:
     // ConsumerErrorKind::Publish, NOT StaleGeneration/Transport).
     transport.push_confirmation(Ok(PublishConfirmation::Nack(None)));
-    let publisher = publisher(&transport).await;
+    let publisher = publisher_with_strategy(&transport, Some(DelayStrategy::Plugin)).await;
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4, 0)
         .await
         .delayed_publisher(publisher, Destination::new("jobs", "high"))

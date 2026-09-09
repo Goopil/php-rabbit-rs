@@ -713,48 +713,67 @@ impl ClientPool {
         }
 
         let coordinator = self.coordinator(broker).await?;
-        let publisher = loop {
-            if self.is_closed() {
-                return Err(ClientError::closed());
-            }
-            if let Ok(publisher) = coordinator.publisher().await {
-                break publisher;
-            }
-            coordinator
-                .wait_for_state(|state| {
-                    matches!(
-                        state,
-                        crate::recovery::ConnectionState::Ready { .. }
-                            | crate::recovery::ConnectionState::Recovering { .. }
-                            | crate::recovery::ConnectionState::Connecting { .. }
-                            | crate::recovery::ConnectionState::FailedPermanent { .. }
-                            | crate::recovery::ConnectionState::Closed
-                    )
-                })
-                .await;
-            if self.is_closed() {
-                return Err(ClientError::closed());
-            }
-            if matches!(
-                coordinator.state(),
-                crate::recovery::ConnectionState::FailedPermanent { .. }
-            ) {
-                return Err(ClientError::transport(&TransportError::connection(
-                    "broker connection failed permanently",
-                )));
-            }
-            if matches!(
-                coordinator.state(),
-                crate::recovery::ConnectionState::Closed
-            ) {
-                return Err(ClientError::closed());
+        let confirm_timeout = self.publisher_config.confirm_timeout;
+        let acquisition = async {
+            let publisher = loop {
+                if self.is_closed() {
+                    return Err(ClientError::closed());
+                }
+                if let Ok(publisher) = coordinator.publisher().await {
+                    break publisher;
+                }
+                // Park on a real signal, never a spin: the previous
+                // `wait_for_state` predicate matched the current
+                // Connecting/Recovering state instantly, burning the caller
+                // hot until the broker became reachable (issue #196). The
+                // publisher slot is installed AFTER the `Ready` transition
+                // with no further state change, so the wait selects on both
+                // the slot's own readiness signal and any state transition
+                // (terminal failures must fail fast, not at the timeout).
+                let observed = coordinator.state();
+                if matches!(
+                    observed,
+                    crate::recovery::ConnectionState::FailedPermanent { .. }
+                ) {
+                    return Err(ClientError::transport(&TransportError::connection(
+                        "broker connection failed permanently",
+                    )));
+                }
+                if matches!(observed, crate::recovery::ConnectionState::Closed) {
+                    return Err(ClientError::closed());
+                }
+                let wake = tokio::select! {
+                    publisher = coordinator.wait_for_publisher() => publisher.map(Some),
+                    next = coordinator.wait_for_transition(&observed) => next.map(|_| None),
+                };
+                match wake {
+                    Some(Some(publisher)) => break publisher,
+                    Some(None) => {}
+                    None => return Err(ClientError::closed()),
+                }
+                if self.is_closed() {
+                    return Err(ClientError::closed());
+                }
+            };
+            if self.commit(generation, &self.publishers, broker, publisher.clone()) {
+                Ok(publisher)
+            } else {
+                let _ = publisher.close().await;
+                Err(ClientError::closed())
             }
         };
-        if self.commit(generation, &self.publishers, broker, publisher.clone()) {
-            Ok(publisher)
-        } else {
-            let _ = publisher.close().await;
-            Err(ClientError::closed())
+        // The publisher acquisition shares the publication's own confirm
+        // budget: a publication that cannot even reach an actor must fail at
+        // the same timeout the confirmed wait would (bounded, loud — issue
+        // #196). Re-buffering callers retry with the same request.
+        match tokio::time::timeout(confirm_timeout, acquisition).await {
+            Ok(result) => result,
+            Err(_) => Err(ClientError::new(
+                ClientErrorKind::Publish,
+                format!(
+                    "broker '{broker}': publisher acquisition timed out after {confirm_timeout:?} (confirm timeout)"
+                ),
+            )),
         }
     }
 

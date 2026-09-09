@@ -16,14 +16,13 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     topology::delay::DelayStrategy,
     transport::{
-        PublishConfirmation, PublishProperties as TransportProperties, PublishReceipt,
-        PublishRequest as TransportRequest, PublisherChannel, TransportError, TransportResult,
+        PublishConfirmation, PublishReceipt, PublisherChannel, TransportError, TransportResult,
     },
 };
 
 use super::{
     ByteBudget, PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
-    PublisherConfig, PublisherConnectionEvent, ReturnInfo, delay::DelayRouter,
+    PublisherConfig, PublisherConnectionEvent, ReturnInfo, delay,
 };
 
 pub struct PublisherActor;
@@ -74,6 +73,7 @@ impl PublisherActor {
                 channel.clone(),
                 config.buffer_capacity,
                 byte_budget.clone(),
+                delay_strategy.clone(),
             )))
         } else {
             None
@@ -236,11 +236,14 @@ impl PublisherHandle {
             ));
         }
         let message_id = Arc::clone(&request.properties.message_id);
-        let transport_request = into_transport_request(&request, None, false);
+        // The pump performs the delay routing and its lazy infrastructure
+        // declaration at publish time — the same single routing point the
+        // confirmed path uses, so a blind delayed publish can never land on
+        // the original exchange with an ignored `x-delay` header.
         // The reservation travels with the job: the pump releases it when the
         // job leaves the pump (transport exit, silent drop for lack of a
         // channel, or a failed hand-off on a closed pump).
-        pump.send(transport_request).await?;
+        pump.send(request).await?;
         self.metrics.record_publish();
         Ok(PublishWaiter::resolved(PublishOutcome::Confirmed {
             message_id,
@@ -705,11 +708,22 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         let sequence = state.sequence;
         retained.sequence = sequence;
 
-        let request = into_transport_request(
+        let request = match delay::route_transport_request(
             &retained.request,
             state.delay_strategy.as_ref(),
             state.config.mandatory_flag(),
-        );
+        ) {
+            Ok(request) => request,
+            // A delay the compiled strategy cannot route must fail the
+            // publication terminally here: publishing it to the original
+            // exchange with an `x-delay` header a normal exchange ignores
+            // would execute the job immediately.
+            Err(error) => {
+                state.byte_budget.release(retained.payload_bytes);
+                complete_error(retained, error);
+                continue;
+            }
+        };
 
         state.publishing.insert(sequence, retained);
 
@@ -786,71 +800,39 @@ fn handle_publish_completion(
     }
 }
 
-fn into_transport_request(
-    request: &PublishRequest,
-    delay_strategy: Option<&DelayStrategy>,
-    mandatory: bool,
-) -> TransportRequest {
-    let requested_delay = request.properties.delay_ms.unwrap_or(0);
-    let routed = (requested_delay > 0)
-        .then_some(delay_strategy)
-        .flatten()
-        .and_then(|strategy| {
-            DelayRouter::route(
-                strategy,
-                &request.destination,
-                i64::try_from(requested_delay).unwrap_or(i64::MAX),
-            )
-            .ok()
-            .map(|route| {
-                (
-                    route.exchange,
-                    route.routing_key,
-                    route.queue.is_none().then_some(route.delay_ms),
-                )
-            })
-        });
+enum DelayTopologyOutcome {
+    Ready,
+    Failed(PublishError),
+}
 
-    let (exchange, routing_key, delay_ms, mandatory) = match routed {
-        // The delayed-message plugin defers routing and cannot honour the
-        // mandatory flag: every mandatory publish carrying an `x-delay` header
-        // comes back as unroutable. Delayed publishes keep publisher confirms
-        // — the documented confirms-without-mandatory case (issue #97).
-        Some((exchange, routing_key, delay_ms)) => (
-            exchange,
-            routing_key,
-            delay_ms,
-            mandatory && delay_ms.is_none(),
-        ),
-        None => (
-            request.destination.exchange.clone(),
-            request.destination.routing_key.clone(),
-            request.properties.delay_ms,
-            mandatory,
-        ),
+/// Declares the delay infrastructure the actor's strategy routes this
+/// publication through, lazily before the first delayed publish.
+async fn ensure_delay_topology(
+    state: &mut ActorState,
+    channel: &Arc<dyn PublisherChannel>,
+    retained: &RetainedPublish,
+) -> DelayTopologyOutcome {
+    let Some(strategy) = &state.delay_strategy else {
+        return DelayTopologyOutcome::Ready;
     };
+    let Some(delay_ms) = retained.request.properties.delay_ms else {
+        return DelayTopologyOutcome::Ready;
+    };
+    if delay_ms == 0 {
+        return DelayTopologyOutcome::Ready;
+    }
 
-    TransportRequest {
-        exchange,
-        routing_key,
-        payload: request.payload.clone(),
-        mandatory,
-        properties: TransportProperties {
-            content_type: request
-                .properties
-                .content_type
-                .as_ref()
-                .map(|ct| ct.as_ref().to_owned()),
-            correlation_id: request
-                .properties
-                .correlation_id
-                .as_ref()
-                .map(|ci| ci.as_ref().to_owned()),
-            message_id: Some(request.properties.message_id.as_ref().to_owned()),
-            delay_ms,
-            headers: request.properties.headers.clone(),
-            persistent: true,
-        },
+    match delay::ensure_delay_topology(
+        channel,
+        strategy,
+        &retained.request.destination,
+        delay_ms,
+        &mut state.declared_ttl_queues,
+    )
+    .await
+    {
+        Ok(()) => DelayTopologyOutcome::Ready,
+        Err(error) => DelayTopologyOutcome::Failed(error),
     }
 }
 
@@ -958,81 +940,6 @@ fn complete_error(retained: RetainedPublish, error: PublishError) {
 
 fn transport_publish_error(error: &TransportError) -> PublishError {
     PublishError::new(PublishErrorKind::Transport, error.to_string())
-}
-
-enum DelayTopologyOutcome {
-    Ready,
-    Failed(PublishError),
-}
-
-/// Lazily declares delayed exchanges (plugin mode) or TTL delay queues (TTL mode)
-/// before the first delayed publish. Idempotent via the `declared_ttl_queues` cache.
-async fn ensure_delay_topology(
-    state: &mut ActorState,
-    channel: &Arc<dyn PublisherChannel>,
-    retained: &RetainedPublish,
-) -> DelayTopologyOutcome {
-    let Some(strategy) = &state.delay_strategy else {
-        return DelayTopologyOutcome::Ready;
-    };
-    let Some(delay_ms) = retained.request.properties.delay_ms else {
-        return DelayTopologyOutcome::Ready;
-    };
-    if delay_ms == 0 {
-        return DelayTopologyOutcome::Ready;
-    }
-
-    // A delay the compiled strategy cannot route (e.g. beyond the largest
-    // TTL bucket) must fail the publication terminally here: publishing it
-    // to the original exchange with an `x-delay` header a normal exchange
-    // ignores would execute the job immediately.
-    let route = match DelayRouter::route(
-        strategy,
-        &retained.request.destination,
-        i64::try_from(delay_ms).unwrap_or(i64::MAX),
-    ) {
-        Ok(route) => route,
-        Err(error) => {
-            return DelayTopologyOutcome::Failed(PublishError::new(
-                PublishErrorKind::InvalidRequest,
-                error.to_string(),
-            ));
-        }
-    };
-
-    if route.queue.is_none() && !state.declared_ttl_queues.contains(&route.exchange) {
-        let spec = crate::topology::delay::delayed_exchange_spec(&route.exchange);
-        match channel.declare_exchange(&spec).await {
-            Ok(()) => {
-                state.declared_ttl_queues.insert(route.exchange.clone());
-            }
-            // A topology failure for this message (e.g. 540 when the
-            // delayed-message plugin is absent in `auto` mode) is never a
-            // reason to suspend the publisher: fail the single message
-            // terminally so the actor stays ready.
-            Err(error) => {
-                return DelayTopologyOutcome::Failed(transport_publish_error(&error));
-            }
-        }
-    }
-
-    if let Some(queue_spec) = &route.queue
-        && !state.declared_ttl_queues.contains(queue_spec.name.as_str())
-    {
-        match channel.declare_queue(queue_spec).await {
-            Ok(()) => {
-                state
-                    .declared_ttl_queues
-                    .insert(Arc::from(queue_spec.name.as_str()));
-            }
-            // Same contract as the delayed-exchange declare above.
-            Err(error) => {
-                return DelayTopologyOutcome::Failed(transport_publish_error(&error));
-            }
-        }
-    }
-
-    DelayTopologyOutcome::Ready
 }
 
 async fn wait_for_deadline(deadline: Option<time::Instant>) {
