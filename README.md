@@ -70,14 +70,14 @@ php artisan queue:work rabbit-rs
 php artisan rabbit-rs:work
 ```
 
-No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#auto-subscribe)).
+No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch. With `auto_subscribe`, queue names nothing declares just work: each pop gets a dedicated single-queue consumer (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#auto-subscribe)).
 
 ## What it does
 
 - **Long-running consumer** — one worker multiplexes subscriptions across many queues on its connection and survives broker restarts without manual intervention
 - **At-least-once delivery** — publisher confirms and mandatory routing enabled by default; every publish is tracked to ACK, return, or timeout
 - **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers, in a fixed order
-- **Weighted-fair scheduling** — deficit round-robin across subscriptions with starvation prevention
+- **Weighted-fair scheduling** — proportional delivery shares across subscriptions by weight
 - **Connection-generation-aware tokens** — stale ACKs are rejected so RabbitMQ redelivers
 - **Bounded replay buffer** — unconfirmed publications survive connection recovery in bounded memory, replayed with the same `message_id`
 - **Multi-broker fan-out** — a vhost owns a distinct AMQP connection; define one connection per broker/vhost and `rabbit-rs:work` supervises them all

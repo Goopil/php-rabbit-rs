@@ -82,7 +82,7 @@ The `--queue` value is resolved in this order:
 
 1. A queue consumed by the connection (its `queue` key or a `subscriptions` entry's `queue`) — the connection's profile is used.
 2. The connection name (the profile name) — the connection's whole profile, all subscriptions included, is used.
-3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled, an implicit profile dedicated to the queue is synthesized at first pop (see [Auto subscribe](#auto-subscribe)); without it, `pop()` fails with an actionable error telling you to declare the queue in the connection's `queue` key or `subscriptions`.
+3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled, an implicit profile dedicated to the queue is synthesized at first pop (see [Auto subscribe](#auto-subscribe)) — including scoping pops away from a multi-queue profile; without it, `pop()` fails with an actionable error telling you to declare the queue in the connection's `queue` key or `subscriptions`.
 
 #### Multi-process supervisor
 
@@ -173,7 +173,7 @@ if ($job !== null) {
 }
 ```
 
-`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`), the connection name (its whole profile), or — when `auto_subscribe` is enabled — an implicit profile dedicated to the requested queue. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
+`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`), the connection name (its whole profile), or — when `auto_subscribe` is enabled — an implicit profile dedicated to the requested queue, which also keeps multi-queue pops scoped to the queue they name. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
 #### size
 
@@ -477,7 +477,7 @@ The minimal connection is therefore:
 | `wait_timeout` | int (ms) | `30000` | Transport (broker connection) acquisition deadline, 1000–86400000 — **not** the `pop()` wait; use `block_for` to make `pop()` block for work |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
-| `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names via an implicit `__auto__.{queue}` profile synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe) |
+| `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names and scope multi-queue pops via dedicated `__auto__.{queue}` profiles synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe) |
 | `topology_mode` | string | `declare` | `declare`, `verify`, `external` — see [Topology](#topology) |
 | `queue_type` | string | `quorum` | `quorum` or `classic` |
 | `queue_durable` | bool | `true` | Queue durability |
@@ -653,14 +653,12 @@ tuning. The alias is the array key; the broker is always this connection
         'critical' => [
             'queue' => 'orders.critical',
             'weight' => 8,
-            'priority_class' => 1,
             'prefetch' => 8,
         ],
         'bulk' => [
             'queue' => 'orders.bulk',
             'weight' => 2,
             'prefetch' => 32,
-            'starvation_after' => 60,
         ],
     ],
 ],
@@ -670,9 +668,7 @@ tuning. The alias is the array key; the broker is always this connection
 |-------|---------|-------------|
 | `queue` | — (required) | Broker queue to consume |
 | `weight` | `1` | Delivery share vs other subscriptions (1–65535) |
-| `priority_class` | `0` | Inter-queue priority (-32768..32767) |
 | `prefetch` | connection `prefetch` | QoS prefetch for this subscription |
-| `starvation_after` | `30` | Seconds before aging kicks in to prevent starvation |
 | `early_ack` | `false` | Requires `best_effort` |
 | `no_ack` | `false` | Requires `early_ack` **and** `best_effort` |
 
@@ -687,20 +683,27 @@ plain queue names the connection does not consume — for example
 `queue:work --queue=emails` when neither the connection's `queue` key nor
 its `subscriptions` escape hatch references the `emails` queue.
 
-- `false` (default): `pop()` fails with an actionable error telling you to
-  declare the queue on the connection (`queue` key or `subscriptions`) or
-  enable `auto_subscribe`.
-- `true`: unknown queues pop with zero configuration. At the first pop the
+- `false` (default): `pop()` resolves queues through the compiled profile
+  exactly as declared — a pop addressed to one queue of a multi-queue
+  connection is served by that connection's shared profile (its consumer
+  round-robins every subscription) — and unknown queues fail with an
+  actionable error telling you to declare the queue on the connection
+  (`queue` key or `subscriptions`) or enable `auto_subscribe`.
+- `true`: pops stay scoped to the queue they name. At the first pop the
   core synthesizes a default worker profile named `__auto__.{queue}` (for
   `emails`: `__auto__.emails`): one subscription named `auto` on the
   connection's broker, weight 1, fixed prefetch 64, acknowledgements on.
   The implicit name is cached in process memory and reused on subsequent
-  pops of the same queue.
+  pops of the same queue. This applies both to queues the connection does
+  not consume at all (zero-configuration pop) and to queues that belong to
+  a multi-queue profile: `pop('orders.critical')` resolves a dedicated
+  `__auto__.orders.critical` consumer instead of the shared profile, so
+  its prefetch and deliveries are not pooled with the other subscriptions.
 
 The synthesized default is a floor, not a ceiling: to tune a queue (weight,
-prefetch, priority class, starvation), declare it on the connection — the
-`queue` key or the `subscriptions` escape hatch — and the declared profile
-wins over the synthesized one.
+prefetch), declare it on the connection — the `queue` key or the
+`subscriptions` escape hatch — and the declared profile wins over the
+synthesized one (single-queue connections keep their compiled profile).
 
 Caveats:
 
@@ -715,10 +718,9 @@ Caveats:
   true for this driver (one connection = one broker). Core configurations
   with several brokers must declare every auto-consumed queue explicitly.
 
-Prefer declared subscriptions in production: they control per-queue weights,
-prefetch, and priority classes, and they are visible to `rabbit-rs:status`.
-Use `auto_subscribe` for development convenience or dynamic low-traffic
-queues.
+Prefer declared subscriptions in production: they control per-queue weights
+and prefetch, and they are visible to `rabbit-rs:status`. Use
+`auto_subscribe` for development convenience or dynamic low-traffic queues.
 
 The value can be set per connection (`auto_subscribe` in `config/queue.php` —
 takes precedence) or package-wide in `config/rabbit-rs.php`
@@ -871,8 +873,7 @@ and only when the affected connection is resolved:
   segments (e.g. `"host1:5672,,host2"`) are rejected. Ports must be 1–65535.
 - `safety` must be `safe`, `unsafe`, or `blind`; `confirm_timeout` ≥ 1000;
   `wait_timeout` 1000–86400000; `prefetch` and `weight` 1–65535;
-  `heartbeat`, `starvation_after`, `max_attempts`, and delay buckets are
-  positive integers.
+  `heartbeat`, `max_attempts`, and delay buckets are positive integers.
 - `dead_letter` is **required** when `delivery_limit` is set — without a DLX,
   poison messages are silently dropped after the limit is reached.
 - `early_ack` requires `best_effort`; `no_ack` requires `early_ack` and
@@ -1657,7 +1658,7 @@ mechanics (modes, declarations, recovery order) live in
 | Pattern | Use when | Rabbit RS wiring |
 |---|---|---|
 | Work queue (competing consumers) | Background jobs of one kind | The default: one connection, one `queue` key, `--workers=N` |
-| Weighted multi-queue | Job classes with different latency needs | `subscriptions` with `weight` / `priority_class` / per-subscription `prefetch` |
+| Weighted multi-queue | Job classes with different latency needs | `subscriptions` with `weight` / per-subscription `prefetch` |
 | Pub/sub (fan-out) | One event, several independent consumer groups | A topic exchange plus one subscription queue per group, each bound with its own routing key |
 | Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — plugin exchange when available, TTL buckets otherwise |
 | Request/reply (RPC) | Service-to-service call/answer | Not yet built — milestone M3, see the [ROADMAP](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/plans/ROADMAP.md) |
