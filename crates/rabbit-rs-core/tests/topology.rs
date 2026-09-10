@@ -661,17 +661,6 @@ fn validated_config_preserves_delivery_limit() {
 }
 
 #[test]
-fn classic_queues_do_not_carry_the_delivery_limit() {
-    let mut config = config_with_delivery_limit("jobs.high", 20);
-    config.queue_type = QueueKind::Classic;
-    let validated = config.validate().expect("valid config");
-    let plan = build_plan_from_config(&validated);
-
-    assert_eq!(plan.queues()[0].kind, QueueKind::Classic);
-    assert_eq!(plan.queues()[0].delivery_limit, None);
-}
-
-#[test]
 fn quorum_rejects_the_nondurable_combination() {
     let config = config_with_queue_durable("jobs.high", false);
 
@@ -1117,6 +1106,8 @@ fn queue_type_quorum_from_config() {
 #[test]
 fn queue_durable_false_from_config() {
     let mut config = config_with_queue_durable("jobs.high", false);
+    // quorum queues are always durable (config validation); classic queues
+    // carry the non-durable case through the plan.
     config.queue_type = QueueKind::Classic;
     let validated = config.validate().expect("valid config");
     let plan = build_plan_from_config(&validated);

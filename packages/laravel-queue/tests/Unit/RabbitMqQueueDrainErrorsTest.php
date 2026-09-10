@@ -42,7 +42,7 @@ function warmConsumerCache(RabbitMqQueue $queue, string $queueName = 'orders-eu'
 it('drainSettlementErrors throws ConnectionException on StaleGeneration error', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'StaleGeneration',
         'message' => 'stale generation detected',
@@ -55,7 +55,7 @@ it('drainSettlementErrors throws ConnectionException on StaleGeneration error', 
 it('drainSettlementErrors throws ConnectionException on Transport error', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'Transport',
         'message' => 'transport error',
@@ -68,7 +68,7 @@ it('drainSettlementErrors throws ConnectionException on Transport error', functi
 it('drainSettlementErrors does not throw on non-connection errors', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'AlreadySettled',
         'message' => 'delivery already settled',
@@ -82,7 +82,7 @@ it('drainSettlementErrors does not throw on non-connection errors', function ():
 it('drainSettlementErrors clears errors after draining', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'AlreadySettled',
         'message' => 'delivery already settled',
@@ -96,7 +96,7 @@ it('drainSettlementErrors clears errors after draining', function (): void {
 it('drainSettlementErrors logs non-connection errors at warning level', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'AlreadySettled',
         'message' => 'delivery already settled',
@@ -111,7 +111,7 @@ it('drainSettlementErrors logs non-connection errors at warning level', function
 it('drainSettlementErrors logs MaxAttempts errors at error level', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'MaxAttempts',
         'message' => 'delivery attempts 25 exceed the configured maximum of 20 — acknowledged and dropped (no dead-letter exchange configured)',
@@ -130,7 +130,7 @@ it('drainSettlementErrors logs MaxAttempts errors at error level', function (): 
 it('drainSettlementErrors logs a refused delayed release at error level without throwing', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'InvalidDelay',
         'message' => 'delay exceeds the largest configured TTL bucket (30000 ms); message msg-late rejected with requeue=false toward the dead-letter exchange',
@@ -155,7 +155,7 @@ it('drainSettlementErrors is a no-op when there are no errors', function (): voi
 it('pop calls drainSettlementErrors before getting deliveries', function (): void {
     [$queue, $pool] = makeDrainQueue();
     warmConsumerCache($queue);
-    $consumer = $pool->consumerFor('default');
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
         'error_kind' => 'StaleGeneration',
         'message' => 'stale generation on pop',

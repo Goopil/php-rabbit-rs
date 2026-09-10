@@ -69,7 +69,7 @@ describe('closeConsumers', function (): void {
         $queue->pop('orders-eu');
         $queue->pop('urgent-eu');
 
-        $consumer1 = $pool->consumerFor('default');
+        $consumer1 = $pool->consumerFor('__auto__.orders-eu');
         $consumer2 = $pool->consumerFor('high-priority');
 
         expect(0)->toBe($consumer1->closeCalls)
@@ -85,21 +85,21 @@ describe('closeConsumers', function (): void {
         [$queue, $pool] = makeCleanupQueue();
 
         $queue->pop('orders-eu');
-        expect(['default'])->toBe($pool->consumerProfiles);
+        expect(['__auto__.orders-eu'])->toBe($pool->consumerProfiles);
 
         $queue->closeConsumers();
 
         // After closeConsumers, calling pop again must create a new consumer.
         $pool->consumerProfiles = [];
         $queue->pop('orders-eu');
-        expect(['default'])->toBe($pool->consumerProfiles);
+        expect(['__auto__.orders-eu'])->toBe($pool->consumerProfiles);
     });
 
     it('is idempotent', function (): void {
         [$queue, $pool] = makeCleanupQueue();
 
         $queue->pop('orders-eu');
-        $consumer = $pool->consumerFor('default');
+        $consumer = $pool->consumerFor('__auto__.orders-eu');
 
         $queue->closeConsumers();
         $queue->closeConsumers();
@@ -120,12 +120,12 @@ describe('closeConsumers', function (): void {
         [$queue, $pool] = makeCleanupQueue();
 
         $queue->pop('orders-eu');
-        $firstConsumer = $pool->consumerFor('default');
+        $firstConsumer = $pool->consumerFor('__auto__.orders-eu');
 
         $queue->closeConsumers();
         $pool->consumerProfiles = [];
         $queue->pop('orders-eu');
-        $secondConsumer = $pool->consumerFor('default');
+        $secondConsumer = $pool->consumerFor('__auto__.orders-eu');
 
         expect($firstConsumer)->not->toBe($secondConsumer);
     });
@@ -136,7 +136,7 @@ describe('destruct', function (): void {
         [$queue, $pool] = makeCleanupQueue();
 
         $queue->pop('orders-eu');
-        $consumer = $pool->consumerFor('default');
+        $consumer = $pool->consumerFor('__auto__.orders-eu');
 
         expect(0)->toBe($consumer->closeCalls);
 

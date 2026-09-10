@@ -77,7 +77,7 @@ it('resolves queue name to worker profile on pop', function (): void {
 
     $queue->pop('orders-eu');
 
-    expect(['default'])->toBe($pool->consumerProfiles);
+    expect(['__auto__.orders-eu'])->toBe($pool->consumerProfiles);
 });
 
 it('resolves a different queue to a different profile on pop', function (): void {
@@ -110,7 +110,7 @@ it('resolves the default queue to its profile when it is a queue name and pop is
 
     $queue->pop();
 
-    expect(['default'])->toBe($pool->consumerProfiles);
+    expect(['__auto__.orders-eu'])->toBe($pool->consumerProfiles);
 });
 
 it('rejects an unmarshable delivery toward the dead-letter exchange and returns null on pop', function (): void {
@@ -119,11 +119,11 @@ it('rejects an unmarshable delivery toward the dead-letter exchange and returns 
 
     $delivery = new Delivery('not-json', [
         'message_id' => '018f8f1a-unmarshable',
-        'subscription' => 'orders',
+        'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
     ]);
-    $pool->pushDelivery('default', $delivery);
+    $pool->pushDelivery('__auto__.orders-eu', $delivery);
 
     expect($queue->pop('orders-eu'))->toBeNull()
         ->and($delivery->rejectRequeues)->toBe([false])
@@ -136,11 +136,11 @@ it('acknowledges an unmarshable delivery with a loud log when no dead-letter exc
 
     $delivery = new Delivery('not-json', [
         'message_id' => '018f8f1a-unmarshable',
-        'subscription' => 'orders',
+        'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
     ]);
-    $pool->pushDelivery('default', $delivery);
+    $pool->pushDelivery('__auto__.orders-eu', $delivery);
 
     expect($queue->pop('orders-eu'))->toBeNull()
         ->and($delivery->ackCalls)->toBe(1)
@@ -156,11 +156,11 @@ it('does not settle a marshable delivery on pop', function (): void {
         'data' => [],
     ], JSON_THROW_ON_ERROR), [
         'message_id' => '018f8f1a-marshable',
-        'subscription' => 'orders',
+        'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
     ]);
-    $pool->pushDelivery('default', $delivery);
+    $pool->pushDelivery('__auto__.orders-eu', $delivery);
 
     $job = $queue->pop('orders-eu');
 
@@ -177,7 +177,7 @@ it('evicts the cached consumer so the next pop re-fetches after a connection err
 
     // A connection-level error carries SourceReplaced ("re-fetch consumer"),
     // StaleGeneration and Transport: the retired handle must not be reused.
-    $pool->consumerFor('default')->throwOnNext(
+    $pool->consumerFor('__auto__.orders-eu')->throwOnNext(
         new ConnectionException('broker source replaced by recovery; re-fetch consumer'),
     );
     expect(fn () => $queue->pop('orders-eu'))->toThrow(ConnectionException::class);
@@ -196,7 +196,7 @@ it('evicts the cached consumer so the next pop re-fetches after the consumer clo
 
     // The Closed kind surfaces as the base native exception and is wrapped
     // in QueueException: every source retired, the handle is terminal.
-    $pool->consumerFor('default')->throwOnNext(
+    $pool->consumerFor('__auto__.orders-eu')->throwOnNext(
         new NativeException('consumer is closed'),
     );
     expect(fn () => $queue->pop('orders-eu'))->toThrow(QueueException::class);

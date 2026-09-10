@@ -80,9 +80,9 @@ The connection compiles to a single worker profile (named after the connection) 
 
 The `--queue` value is resolved in this order:
 
-1. A queue consumed by the connection (its `queue` key or a `subscriptions` entry's `queue`) — the connection's profile is used.
+1. A queue consumed by the connection (its `queue` key or a `subscriptions` entry's `queue`) — a pop addressed to one queue of a multi-queue connection resolves a dedicated single-queue implicit profile (see [Auto subscribe](#auto-subscribe)), so it never draws from the connection's other queues; a pop addressed to a single-queue connection or to the profile name uses the compiled profile.
 2. The connection name (the profile name) — the connection's whole profile, all subscriptions included, is used.
-3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled, an implicit profile dedicated to the queue is synthesized at first pop (see [Auto subscribe](#auto-subscribe)) — including scoping pops away from a multi-queue profile; without it, `pop()` fails with an actionable error telling you to declare the queue in the connection's `queue` key or `subscriptions`.
+3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled, an implicit profile dedicated to the queue is synthesized at first pop (see [Auto subscribe](#auto-subscribe)); without it, `pop()` fails with an actionable error telling you to declare the queue in the connection's `queue` key or `subscriptions`.
 
 #### Multi-process supervisor
 
@@ -173,7 +173,7 @@ if ($job !== null) {
 }
 ```
 
-`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`), the connection name (its whole profile), or — when `auto_subscribe` is enabled — an implicit profile dedicated to the requested queue, which also keeps multi-queue pops scoped to the queue they name. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
+`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`) — scoped to a dedicated single-queue implicit profile when the connection consumes several queues — the connection name (its whole profile), or, for unknown queues, an implicit profile synthesized at first pop when `auto_subscribe` is enabled. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
 #### size
 
@@ -477,7 +477,7 @@ The minimal connection is therefore:
 | `wait_timeout` | int (ms) | `30000` | Transport (broker connection) acquisition deadline, 1000–86400000 — **not** the `pop()` wait; use `block_for` to make `pop()` block for work |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
-| `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names and scope multi-queue pops via dedicated `__auto__.{queue}` profiles synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe) |
+| `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names not declared on the connection via dedicated `__auto__.{queue}` profiles synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe). Multi-queue pop scoping no longer depends on this flag |
 | `topology_mode` | string | `declare` | `declare`, `verify`, `external` — see [Topology](#topology) |
 | `queue_type` | string | `quorum` | `quorum` or `classic` |
 | `queue_durable` | bool | `true` | Queue durability |
@@ -496,6 +496,30 @@ total is the **sum of the subscriptions' prefetch values** (for the default
 single derived subscription, that is the connection's `prefetch`). N
 concurrent workers multiply that per-process total. This is standard AMQP
 behavior; size your workers accordingly.
+
+#### `block_for` — the pop wait
+
+`block_for` is a framework key, accepted since 0.1.0 and read by the connector
+from the raw connection config (it is not part of the native compilation). It
+is an integer number of **seconds**, or `null`; the default `null` resolves to
+0 — a **non-blocking pop** that returns immediately when no delivery is ready.
+
+When set, `pop()` blocks up to that window waiting for a delivery:
+
+```php
+'rabbit-rs' => [
+    // ...
+    'block_for' => 3, // seconds; pop() waits up to 3s for work
+],
+```
+
+Pop-once consumers and tests should set it (1–5 s is a sensible range): with a
+non-blocking pop, a `pop()` issued right after a publish can silently miss the
+job while the publish is still in flight (buffered or not yet routed), and the
+caller reports an empty queue. The value must be a non-negative integer or
+`null`; anything else fails with the exact `queue.connections.<name>.block_for`
+path. `wait_timeout` is a different knob — the broker-connection acquisition
+deadline, not the pop wait.
 
 ### Environment strings
 
@@ -684,21 +708,22 @@ plain queue names the connection does not consume — for example
 its `subscriptions` escape hatch references the `emails` queue.
 
 - `false` (default): `pop()` resolves queues through the compiled profile
-  exactly as declared — a pop addressed to one queue of a multi-queue
-  connection is served by that connection's shared profile (its consumer
-  round-robins every subscription) — and unknown queues fail with an
-  actionable error telling you to declare the queue on the connection
-  (`queue` key or `subscriptions`) or enable `auto_subscribe`.
-- `true`: pops stay scoped to the queue they name. At the first pop the
-  core synthesizes a default worker profile named `__auto__.{queue}` (for
-  `emails`: `__auto__.emails`): one subscription named `auto` on the
-  connection's broker, weight 1, fixed prefetch 64, acknowledgements on.
-  The implicit name is cached in process memory and reused on subsequent
-  pops of the same queue. This applies both to queues the connection does
-  not consume at all (zero-configuration pop) and to queues that belong to
-  a multi-queue profile: `pop('orders.critical')` resolves a dedicated
-  `__auto__.orders.critical` consumer instead of the shared profile, so
-  its prefetch and deliveries are not pooled with the other subscriptions.
+  exactly as declared, and unknown queues fail with an actionable error
+  telling you to declare the queue on the connection (`queue` key or
+  `subscriptions`) or enable `auto_subscribe`.
+- `true`: unknown queues work at the first pop — the core synthesizes a
+  default worker profile named `__auto__.{queue}` (for `emails`:
+  `__auto__.emails`): one subscription named `auto` on the connection's
+  broker, weight 1, fixed prefetch 64, acknowledgements on. The implicit
+  name is cached in process memory and reused on subsequent pops of the
+  same queue.
+
+Scoping is unconditional and independent of `auto_subscribe`: a pop
+addressed to one queue of a multi-queue connection always resolves a
+dedicated `__auto__.{queue}` consumer instead of the shared profile, so
+its prefetch and deliveries are not pooled with the other subscriptions —
+`pop('orders.critical')` never draws from the connection's other queues
+(and Horizon supervisors popping named queues inherit the same guarantee).
 
 The synthesized default is a floor, not a ceiling: to tune a queue (weight,
 prefetch), declare it on the connection — the `queue` key or the
@@ -1090,6 +1115,39 @@ For example, with buckets `[1, 5, 30, 120]`:
 - A 3-second delay → bucket `5` (5-second TTL queue)
 - A 10-second delay → bucket `30` (30-second TTL queue)
 - A 45-second delay → bucket `120` (120-second TTL queue)
+
+#### Release semantics (TTL mode)
+
+TTL mode does not arm a per-message timer. The delayed job is published into a
+synthesized **durable quorum bucket queue** named
+`rabbit-rs.delay.<hash>.<fingerprint>.<bucket_ms>` — a hash of the destination
+plus a fingerprint of the declaring arguments (`x-message-ttl`, `x-expires`,
+the dead-letter target) and the bucket. The bucket queue carries
+`x-message-ttl` equal to the **bucket size**, so the job is released when that
+TTL expires and dead-letters through the connection exchange back to the main
+queue, where it is consumed like any other job.
+
+What this means for timing:
+
+- **The actual release time is the quantized bucket, not the requested
+  delay.** The job is routed to the smallest bucket that is at least the
+  requested delay (a job is never released early), and it waits for that
+  bucket's full TTL: with the default buckets `[1, 5, 30, 120]`, a `later(10)`
+  releases at ~t+30 s.
+- **The bucket is a floor, not a ceiling.** Quorum queues expire TTL messages
+  lazily: on an idle broker the message can sit in the bucket queue past its
+  TTL until the queue turns again, so the release delay can exceed the bucket
+  by an unbounded amount. Only `delay.mode=plugin` — which requires the
+  `rabbitmq_delayed_message_exchange` broker plugin — routes each message
+  through the `x-delayed-message` exchange at the exact requested delay.
+- **Bucket granularity is the tuning knob** (`delay.buckets`): add
+  intermediate buckets to tighten quantization, at the cost of one more
+  declared queue per bucket.
+- **The dead-letter return requires the publish-side binding.** The bucket
+  queue dead-letters into the connection exchange with the destination routing
+  key — the same (exchange, routing key) pair an immediate publish uses — so
+  the main queue must be bound to that exchange with that routing key. The
+  delayed-route binding work (issue #205, in flight) covers this path.
 
 ### Topology and recovery
 

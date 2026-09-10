@@ -134,6 +134,13 @@ impl TtlBucketPlan {
         &self.buckets
     }
 
+    /// Returns the clamped expiry margin the plan stamps into `x-expires`
+    /// (`bucket + margin`); the keep-alive period derives from it.
+    #[must_use]
+    pub const fn expiry_margin(&self) -> Duration {
+        self.expiry_margin
+    }
+
     /// Builds the durable delay queue for a destination and rounded bucket.
     ///
     /// The queue name binds the destination **and** a fingerprint of every

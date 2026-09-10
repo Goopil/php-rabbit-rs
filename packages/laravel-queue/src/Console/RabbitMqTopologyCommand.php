@@ -96,7 +96,8 @@ final class RabbitMqTopologyCommand extends Command
 
     /**
      * Passive queue-existence probe per subscription queue; a NOT-FOUND error
-     * is a missing topology item, anything else is a broker failure.
+     * is a missing topology item, anything else leaves existence unverifiable
+     * (broker unreachable) and only warns.
      *
      * @param  array<string, mixed>  $compiled
      */
@@ -117,10 +118,10 @@ final class RabbitMqTopologyCommand extends Command
             if (str_contains($error, 'NOT-FOUND')) {
                 $this->emit('fail', "queue '{$queue}' is missing");
                 $this->emit('fail', "check queue.connections.{$name}.queue");
+                $ok = false;
             } else {
-                $this->emit('fail', "queue '{$queue}' probe failed: {$error}");
+                $this->emit('warn', "queue '{$queue}' probe failed: {$error}");
             }
-            $ok = false;
         }
 
         return $ok;

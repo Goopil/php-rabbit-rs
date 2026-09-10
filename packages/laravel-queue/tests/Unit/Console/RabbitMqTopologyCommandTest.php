@@ -11,16 +11,20 @@ use Illuminate\Support\Facades\Http;
  * and without a broker, so the topology command's extension, queue, and
  * declare probes are substituted with configurable fakes.
  */
-function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null): object
+function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null, ?string $queueProbeError = null): object
 {
-    $probe = new class($missingQueues, $declareError) extends DoctorProbe
+    $probe = new class($missingQueues, $declareError, $queueProbeError) extends DoctorProbe
     {
         public int $declareCalls = 0;
+
+        /** @var array<string, mixed>|null config declareTopology received */
+        public ?array $declareConfig = null;
 
         /** @param list<string> $missingQueues */
         public function __construct(
             private readonly array $missingQueues,
             private readonly ?string $declareError,
+            private readonly ?string $queueProbeError,
         ) {}
 
         public function extensionLoaded(): bool
@@ -35,6 +39,10 @@ function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declare
 
         public function queueSize(array $nativeConfig, string $broker, string $queue): ?string
         {
+            if ($this->queueProbeError !== null) {
+                return $this->queueProbeError;
+            }
+
             if (! in_array($queue, $this->missingQueues, true)) {
                 return null;
             }
@@ -49,6 +57,9 @@ function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declare
         public function declareTopology(array $nativeConfig, string $workerProfile): ?string
         {
             $this->declareCalls++;
+            // Runs the real bounding so the captured config is the one a
+            // genuine probe pool would use.
+            $this->declareConfig = DoctorProbe::declareConfig($nativeConfig);
 
             return $this->declareError;
         }
@@ -258,6 +269,30 @@ describe('rabbit-rs:topology management api checks', function () {
             ->assertExitCode(0);
     });
 
+    it('verifies queue existence with the passive probe when no management url is set', function () {
+        // Issue #208: the queue exists on the broker (AMQP), so verify must
+        // not depend on the management api reporting it.
+        bindFakeTopologyProbe($this->app);
+        topologyConnection();
+
+        Artisan::call('rabbit-rs:topology');
+        $output = Artisan::output();
+
+        expect($output)->toContain("[ok  ] queue 'orders' exists")
+            ->and(Artisan::call('rabbit-rs:topology'))->toBe(0);
+    });
+
+    it('warns instead of failing when the passive queue probe hits a transport error', function () {
+        // Issue #208: an unreachable broker leaves existence unverifiable —
+        // a warn, not a missing-topology fail.
+        bindFakeTopologyProbe($this->app, queueProbeError: 'connection refused');
+        topologyConnection();
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("queue 'orders' probe failed: connection refused")
+            ->assertExitCode(0);
+    });
+
     it('warns when the management api is unreachable', function () {
         bindFakeTopologyProbe($this->app);
         topologyConnectionWithManagement();
@@ -355,5 +390,25 @@ describe('rabbit-rs:topology fix', function () {
             ->assertExitCode(0);
 
         expect($probe->declareCalls)->toBe(1);
+    });
+
+    it('bounds the declare probe readiness wait to two seconds', function () {
+        // Bootstrap scenario (issue #208): --fix runs before any worker
+        // exists, so the probe's transient consumer must not sit through
+        // the connection's full wait_timeout before the soft warning.
+        $probe = bindFakeTopologyProbe(
+            $this->app,
+            declareError: "consumer profile 'orders' did not become ready within 2s",
+        );
+        topologyConnection(overrides: ['wait_timeout' => 30_000, 'max_attempts' => 5]);
+
+        Artisan::call('rabbit-rs:topology', ['--fix' => true]);
+        $output = Artisan::output();
+
+        expect($output)->toContain('topology declared')
+            ->and($output)->toContain('did not become ready')
+            ->and(Artisan::call('rabbit-rs:topology', ['--fix' => true]))->toBe(0)
+            ->and($probe->declareConfig['consumer']['wait_timeout'])
+            ->toBe(DoctorProbe::DECLARE_READINESS_TIMEOUT_MS);
     });
 });

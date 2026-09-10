@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -8,7 +9,10 @@ use bytes::Bytes;
 use rabbit_rs_core::metrics::Metrics;
 use rabbit_rs_core::{
     client::ClientPool,
-    config::SafetyMode,
+    config::{
+        Config, ConsumerConfigSection, DelayConfig, DelayMode, PublisherConfigSection, RouteConfig,
+        SafetyMode, TopologyMode,
+    },
     pool::connection_actor::ConnectionActor,
     pool::recovery_coordinator::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
@@ -21,8 +25,9 @@ use rabbit_rs_core::{
         Clock, ConnectionState, EqualJitter, IdentityJitter, JitterSource, RecoveryPolicy,
         TokioClock,
     },
+    topology::delay::TtlBucketPlan,
     transport::{
-        PublishConfirmation, Transport, TransportError, TransportErrorKind,
+        PublishConfirmation, QueueKind, QueueSpec, Transport, TransportError, TransportErrorKind,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -75,6 +80,78 @@ mod helper {
 
     pub fn dyn_transport(transport: &Arc<MockTransport>) -> Arc<dyn Transport> {
         transport.clone() as Arc<dyn Transport>
+    }
+
+    /// A validated configuration with a custom delay strategy and publish
+    /// routes, one worker ("main") on queue "jobs".
+    pub fn config_with_delay(
+        delay: DelayConfig,
+        routes: BTreeMap<String, RouteConfig>,
+    ) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
+        Arc::new(
+            Config {
+                brokers: vec![broker("primary", "/", "guest")],
+                workers: vec![worker_profile("main", "primary", "jobs", 4)],
+                topology_mode: TopologyMode::Declare,
+                routes,
+                delay,
+                dead_letter: None,
+                delivery_limit: None,
+                publisher: PublisherConfigSection::default(),
+                consumer: ConsumerConfigSection::default(),
+                queue_type: QueueKind::Quorum,
+                queue_durable: true,
+            }
+            .validate()
+            .expect("valid config"),
+        )
+    }
+
+    /// TTL delay configuration with a single 1 s bucket and the given expiry
+    /// margin (the keep-alive period is the margin divided by two).
+    pub fn ttl_delay(margin: Duration) -> DelayConfig {
+        DelayConfig {
+            mode: DelayMode::Ttl,
+            buckets: vec![Duration::from_secs(1)],
+            max_buckets: 8,
+            queue_expiry_margin: margin,
+        }
+    }
+
+    /// Queue specs passively redeclared on the mock transport, in call order.
+    pub fn verify_queue_specs(transport: &MockTransport) -> Vec<QueueSpec> {
+        transport
+            .operations()
+            .into_iter()
+            .filter_map(|operation| match operation {
+                TransportOperation::VerifyQueue(spec) => Some(spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Advances paused time until the keep-alive passively redeclared
+    /// `queue` at least `minimum` times.
+    pub async fn wait_for_keep_alive_redeclares(
+        transport: &MockTransport,
+        queue: &str,
+        minimum: usize,
+    ) {
+        for _ in 0..200 {
+            if verify_queue_specs(transport)
+                .iter()
+                .filter(|spec| spec.name == queue)
+                .count()
+                >= minimum
+            {
+                return;
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "keep-alive did not redeclare '{queue}' {minimum} time(s) within the advanced window"
+        );
     }
 
     pub async fn wait_for_state(
@@ -1130,4 +1207,224 @@ async fn admin_operations_fail_fast_when_the_connection_failed_permanently() {
     );
 
     pool.close().await.expect("close pool");
+}
+
+// ---------------------------------------------------------------------------
+// Delay bucket queue keep-alive (issue #211): RabbitMQ deletes a queue after
+// `x-expires` of idleness, and publishing does not count as use — only
+// consumers, redeclares, and `basic.get` do. A bucket queue whose lazy quorum
+// TTL expiry outlasts `bucket + queue_expiry_margin` of idleness would be
+// deleted with the delayed job inside. The pool therefore passively
+// redeclares the current plan's live bucket queues every
+// `queue_expiry_margin / 2`; orphaned queues (rotated configuration, older
+// fingerprint) are not redeclared by anyone and keep self-cleaning through
+// their own `x-expires`.
+// ---------------------------------------------------------------------------
+
+/// The keep-alive redeclares the live bucket queue of every known
+/// destination on a `margin / 2` schedule, with the declaring arguments of
+/// the current plan.
+#[tokio::test(start_paused = true)]
+async fn keep_alive_passively_redeclares_live_bucket_queues_on_schedule() {
+    let transport = Arc::new(MockTransport::default());
+    // Margin 2 s → keep-alive period 1 s; one bucket → one live queue.
+    let delay = ttl_delay(Duration::from_secs(2));
+    let config = config_with_delay(delay.clone(), BTreeMap::new());
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    let plan = TtlBucketPlan::compile(&delay).expect("bucket plan");
+    // The retry destination of the "jobs" subscription is (jobs, jobs): the
+    // same destination the coordinator hands to the subscription's delayed
+    // publisher.
+    let live_spec = plan
+        .queue_for(&Destination::new("jobs", "jobs"), Duration::from_secs(1))
+        .expect("live bucket queue spec");
+
+    wait_for_keep_alive_redeclares(&transport, &live_spec.name, 1).await;
+    assert!(
+        verify_queue_specs(&transport).contains(&live_spec),
+        "the keep-alive must passively redeclare the live bucket queue with \
+         the declaring arguments of the current plan, got {:?}",
+        verify_queue_specs(&transport)
+    );
+
+    let first_tick = verify_queue_specs(&transport)
+        .iter()
+        .filter(|spec| spec.name == live_spec.name)
+        .count();
+    wait_for_keep_alive_redeclares(&transport, &live_spec.name, first_tick + 1).await;
+
+    coordinator.close().await.expect("close");
+}
+
+/// Configured publish routes (issue #205) are destinations too: their
+/// bucket queues hold the delayed jobs publishers enqueue, so the keep-alive
+/// must cover them as well.
+#[tokio::test(start_paused = true)]
+async fn keep_alive_covers_bucket_queues_of_configured_publish_routes() {
+    let transport = Arc::new(MockTransport::default());
+    let delay = ttl_delay(Duration::from_secs(2));
+    let config = config_with_delay(
+        delay.clone(),
+        BTreeMap::from([(
+            "default".to_owned(),
+            RouteConfig {
+                broker: "primary".to_owned(),
+                exchange: "laravel.jobs".to_owned(),
+                routing_key: "orders".to_owned(),
+            },
+        )]),
+    );
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    let plan = TtlBucketPlan::compile(&delay).expect("bucket plan");
+    let publish_spec = plan
+        .queue_for(
+            &Destination::new("laravel.jobs", "orders"),
+            Duration::from_secs(1),
+        )
+        .expect("publish destination bucket queue spec");
+
+    wait_for_keep_alive_redeclares(&transport, &publish_spec.name, 1).await;
+
+    coordinator.close().await.expect("close");
+}
+
+/// Plugin and auto modes have no bucket queues: the keep-alive must stay
+/// idle so those pools issue no extra topology traffic.
+#[tokio::test(start_paused = true)]
+async fn keep_alive_stays_idle_without_the_ttl_bucket_strategy() {
+    for mode in [DelayMode::Plugin, DelayMode::Auto] {
+        let transport = Arc::new(MockTransport::default());
+        let delay = DelayConfig {
+            mode,
+            ..ttl_delay(Duration::from_secs(2))
+        };
+        let config = config_with_delay(delay, BTreeMap::new());
+
+        let coordinator =
+            RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+        wait_for_state(&coordinator, |s| {
+            matches!(s, ConnectionState::Ready { generation: 1 })
+        })
+        .await;
+
+        // Several keep-alive periods' worth of idle time.
+        tokio::time::advance(Duration::from_secs(5)).await;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            verify_queue_specs(&transport).is_empty(),
+            "no passive queue redeclare may run without the TTL bucket strategy \
+             (mode {mode:?}), got {:?}",
+            verify_queue_specs(&transport)
+        );
+
+        coordinator.close().await.expect("close");
+    }
+}
+
+/// An orphaned bucket queue — produced by an older fingerprint (a margin or
+/// bucket list since rotated away) — is not part of the current plan: the
+/// keep-alive must never redeclare it, so its own `x-expires` keeps cleaning
+/// it up.
+#[tokio::test(start_paused = true)]
+async fn keep_alive_never_redeclares_orphaned_bucket_queues() {
+    let transport = Arc::new(MockTransport::default());
+    let delay = ttl_delay(Duration::from_secs(2));
+    let config = config_with_delay(delay.clone(), BTreeMap::new());
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    let destination = Destination::new("jobs", "jobs");
+    let orphan_queue = TtlBucketPlan::compile(&DelayConfig {
+        queue_expiry_margin: Duration::from_secs(30),
+        ..delay.clone()
+    })
+    .expect("orphan plan")
+    .expected_queue_names(&destination)
+    .pop()
+    .expect("orphan bucket queue name");
+    let live_queue = TtlBucketPlan::compile(&delay)
+        .expect("current plan")
+        .expected_queue_names(&destination)
+        .pop()
+        .expect("live bucket queue name");
+    assert_ne!(orphan_queue, live_queue, "the fingerprint must differ");
+
+    wait_for_keep_alive_redeclares(&transport, &live_queue, 1).await;
+    // More keep-alive periods: the orphan must stay untouched throughout.
+    tokio::time::advance(Duration::from_secs(3)).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        !verify_queue_specs(&transport)
+            .iter()
+            .any(|spec| spec.name == orphan_queue),
+        "an orphaned bucket queue must never be redeclared, got {:?}",
+        verify_queue_specs(&transport)
+    );
+
+    coordinator.close().await.expect("close");
+}
+
+/// After a connection recovery the keep-alive rides the fresh connection:
+/// each tick opens its admin channel on the actor's current generation, so
+/// redeclares resume without any timer reset — no bucket queue idles past
+/// the margin because of a reconnect.
+#[tokio::test(start_paused = true)]
+async fn keep_alive_resumes_on_the_recovered_connection() {
+    let transport = Arc::new(MockTransport::default());
+    let delay = ttl_delay(Duration::from_secs(2));
+    let config = config_with_delay(delay.clone(), BTreeMap::new());
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    let live_queue = TtlBucketPlan::compile(&delay)
+        .expect("current plan")
+        .expected_queue_names(&Destination::new("jobs", "jobs"))
+        .pop()
+        .expect("live bucket queue name");
+
+    transport.push_connect_result(Ok(()));
+    coordinator
+        .connection_lost(TransportError::connection("socket reset"))
+        .await
+        .expect("loss reported");
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 2 })
+    })
+    .await;
+
+    // No paused time has passed yet: every redeclare recorded from here on
+    // belongs to the recovered generation.
+    wait_for_keep_alive_redeclares(&transport, &live_queue, 1).await;
+
+    coordinator.close().await.expect("close");
 }

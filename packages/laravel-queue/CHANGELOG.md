@@ -9,6 +9,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Require `ext-rabbit_rs ^0.1` (was `^0.0`): the 0.1.0 extension no longer satisfies a caret constraint pinned to 0.0.x, which made the package uninstallable (`composer check-platform-reqs` failure) wherever the current extension was loaded. The constraint, the `RabbitMqServiceProvider::EXTENSION_CONSTRAINT` message constant, and `docs/troubleshooting.md` are aligned, and a unit test now fails when the workspace crate version moves without the requirement following.
+- The topology compiler declares the connection's publish route (#205): the compiled `routes` map (mirrored inside `native`) has `rabbit-rs:topology --fix` and declare-mode boot declare the exchange and its per-subscription `{queue}` bindings, so queues are reachable for publishers and delay-bucket and dead-letter republishing reach the main queue. Connections publishing through the default exchange (`exchange => null`) need no declaration.
+- Pops on multi-queue profiles are scoped regardless of `auto_subscribe` (#207): a `pop()` addressed to one queue of a multi-queue connection always resolves a dedicated `__auto__.{queue}` consumer, so default multi-queue connections (and Horizon supervisors popping named queues) no longer draw jobs from other queues. `auto_subscribe` keeps its remaining meaning: allowing pops on queues not defined in any profile.
+- Rejected `delivery_limit` on classic queues and non-durable quorum queues at compile time (#204): both combinations fail broker-side with `precondition_failed`, so `ConnectionCompiler` now throws with the exact `queue.connections.<name>.<key>` path before the extension is ever loaded.
+- `rabbit-rs:topology --fix` no longer blocks on the consumer readiness gate when no worker is running (#208, #214): the declare probe runs on a copy of the native config whose consumer readiness wait is bounded to 2 s (`DoctorProbe::declareConfig`), surfacing the bootstrap soft warning instead of stalling ~30 s.
+- `rabbit-rs:topology` verify treats an unreachable broker as unverifiable instead of failing queues as missing (#208): the passive queue probe reports a warn; NOT-FOUND still fails with the config path.
+
+## [0.2.0] - 2026-09-10
+
+Breaking release — upgrade the package and the native extension together.
+
+### Changed
+
+- **Breaking** — subscriptions are weight-only: `priority_class` strict preemption and its `starvation_after` aging compensation are removed; carrying either key is rejected with the exact config path.
+- **Breaking** — the connection-level `delay_mode` scalar is gone: delay configuration now lives in the package config as `delay` (`mode`, `buckets`, `max_buckets`, `queue_expiry_margin`), merged per sub-key under every connection and overridable per connection.
+- **Breaking** — the native extension requirement moves to `^0.2` (was `^0.1`): upgrade the package and the extension together. Running this package on a 0.1.x extension fails with `unknown field 'flush_interval'` — a native config field the 0.1.x extension does not know.
+- Pops on multi-queue profiles are scoped (#183): with `auto_subscribe` enabled, a `pop()` addressed to one queue of a multi-queue connection resolves a dedicated `__auto__.{queue}` consumer instead of the shared profile — prefetch and deliveries are no longer pooled across queues.
+- `Pool::close()` drains before dropping (#194): pending buffered publications are attempted on the wire and awaited within the publisher confirm timeout before channels close; only what genuinely cannot be attempted fails loudly (counted in `dropped_publications_total`).
+
+### Added
+
+- `publisher.flush_interval` (#194): the publish buffer's age-flush latency knob (integer ms, default `1`, bounded 0..3,600,000).
+
+### Fixed
+
+- Delayed delivery is honest across every publish path (#196): a delay the compiled strategy cannot route fails terminally instead of publishing to the original exchange, where the ignored `x-delay` header would run the job immediately.
+
+## [0.1.6] - 2026-09-08
+
+### Added
+
+- Kubernetes probes (#85): the worker writes a per-PID JSON statefile and `rabbit-rs:probe {startup|ready|alive|prestop}` evaluates it; the `RabbitRsProbeEvaluated` event lets synchronous listeners force a verdict.
+- `rabbit-rs:work --stop-when-empty` (#185): children run once and are never recycled; the supervisor exits with the highest child exit status (CI pipelines, pop-once tooling).
+
+### Changed
+
+- `ext-rabbit_rs` moves from `require` to `suggest` (#58): `composer install` no longer hard-fails without the native extension; resolving a rabbit-rs connection raises a precise runtime error with install instructions instead.
+- `wait_timeout` is documented as the transport acquisition deadline, not the pop wait (#184): the pop wait is the standard `block_for` connection key, honored end-to-end.
+
+### Fixed
+
+- Doctor: the broker probe no longer reports "Undefined variable $nativeConfig" on healthy brokers; the Horizon alignment check reads the real `environments.<env>.supervisor-<name>` config shape and only counts supervisors bound to the checked connection; the contradictory worker "inheritance trap" warning is dropped (#186).
+- `rabbit-rs:topology --fix` reports success on the declare step itself, and consumer-profile readiness downgrades to a warning instead of failing the bootstrap scenario (#195).
+- `size()` and `clear()` force-flush the publish buffer before reading, restoring the read-after-dispatch contract (#194).
+
+## [0.1.5] - 2026-09-07
+
+### Added
+
+- Core synthesizes default worker profiles for `__auto__.{queue}` names at first pop: the `auto_subscribe` path works after pool creation without config mutation.
+
+### Changed
+
+- Documentation restructured into getting-started tracks plus one `reference.md` per track; the Laravel driver reference now lives under `packages/laravel-queue/docs/`.
+
+## [0.1.4] - 2026-09-06
+
+### Fixed
+
+- `rabbit-rs:status` always reported zeros for the management-API queue counters: the command now reads the nested `message_stats` object (`deliver_get`/`ack`/`redeliver`) and additionally exposes the current queue depth as `messages_ready`.
+
+## [0.1.3] - 2026-09-06
+
+### Added
+
+- `rabbit-rs:doctor` (#155): one-shot integration diagnostics per connection; exits non-zero when a check fails.
+- `rabbit-rs:topology` (#84, #165): preflight topology check for CI/deploy pipelines; `--fix` declares the missing topology.
+- Adaptive prefetch per subscription (#42, #162): a `min`/`target buffer`/`max` policy adjusted at runtime by the native pool, observable via `getPrefetchStats()`.
+- Native: the transport enforces TLS certificate verification and sends the SNI `server_name` to the broker.
+
+### Fixed
+
+- Child workers receive their index through the dedicated `RABBIT_RS_WORKER_INDEX` environment variable (#163) instead of reusing the worker-mode variable.
+
+## [0.1.2] - 2026-09-06
+
+Packaging/CI release: no Laravel driver changes since 0.1.1.
+
+## [0.1.1] - 2026-09-05
+
+### Added
+
+- Native: safe-mode publishes are pipelined — `publish` no longer blocks on the batch flush barrier; confirmations, returns, and failures surface at the next pool operation (safe publish ×3.64 in the fresh-lab benchmark).
+
+### Fixed
+
+- `Horizon\RabbitMqQueue` implements `readyNow()`: Horizon's AutoScaler calls it unconditionally on every scaling pass, so any supervisor pointed at a rabbit-rs connection crash-looped with `Call to undefined method ... readyNow()` (#152).
+- The `worker` cross-cutting default from `config/rabbit-rs.php` is inherited by connections that do not declare their own `worker` key (#152).
+- Exhausted rabbit-rs jobs are recorded as failed in Horizon: the queue dispatches Horizon's `JobFailed` itself, which Horizon only bridges for the Redis job class (#152).
+- A publication whose deadline expired while parked during a connection recovery suspension is re-armed exactly once with a fresh deadline and replayed with the same `message_id` — the first publish after an idle no longer fails with "publish deadline expired" (#151).
+- `ext-rabbit_rs` requirement raised to `^0.1` (#146): the 0.1.0 extension no longer satisfied the caret constraint pinned to 0.0.x, which made the package uninstallable wherever the current extension was loaded.
+- Native: a concurrent `take()` could panic with `attempt to subtract with overflow` and abort the process — the publish buffer's message list and byte accounting now mutate under one mutex.
 
 ## [0.1.0] - 2026-09-02
 
@@ -108,7 +199,14 @@ Packaging-only release: Laravel mirror split sequenced after native release publ
 - Pools are closed before clearing the cache in `flush` and `resetAfterFork`.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Goopil/rabbit-rs/compare/v0.1.6...v0.2.0
+[0.1.6]: https://github.com/Goopil/rabbit-rs/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Goopil/rabbit-rs/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/Goopil/rabbit-rs/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/Goopil/rabbit-rs/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/Goopil/rabbit-rs/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/Goopil/rabbit-rs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8

@@ -576,6 +576,17 @@ final class ConnectionCompiler
 
         $deadLetter = self::deadLetter($config['dead_letter'] ?? null, $path.'.dead_letter');
 
+        // RabbitMQ 4.x accepts `x-delivery-limit` only on quorum queues; reject
+        // the classic combination here (before the dead_letter coupling) so the
+        // misconfiguration surfaces without the extension loaded.
+        if ($type === 'classic' && $deliveryLimit !== null) {
+            self::invalid(
+                $path.'.delivery_limit',
+                'delivery_limit is only supported on quorum queues — '
+                .'remove it or set queue_type=quorum',
+            );
+        }
+
         if ($deliveryLimit !== null && $deadLetter === null) {
             self::invalid(
                 $path.'.dead_letter',
