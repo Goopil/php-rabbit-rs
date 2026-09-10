@@ -87,9 +87,9 @@ describe('env booleans', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
             'queue' => 'default',
             'auto_subscribe' => 'off',
+            'queue_type' => 'classic',
             'queue_durable' => 'no',
             'tls' => ['enabled' => 'yes'],
-            'queue_type' => 'classic',
         ]);
 
         expect($compiled['auto_subscribe'])->toBeFalse()
@@ -293,6 +293,32 @@ describe('topology', function (): void {
 
     it('rejects an unknown queue_type with the exact path', function (): void {
         expectCompileRejected(['queue_type' => 'lazy'], 'queue.connections.orders.queue_type');
+    });
+
+    it('rejects delivery_limit on classic queues with the exact path', function (): void {
+        expectCompileRejected(
+            ['queue_type' => 'classic', 'delivery_limit' => 20],
+            'queue.connections.orders.delivery_limit',
+        );
+    });
+
+    it('compiles classic queues without delivery_limit', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'queue_type' => 'classic']);
+
+        expect($compiled['native']['queue_type'])->toBe('classic')
+            ->and($compiled['native']['delivery_limit'])->toBeNull();
+    });
+
+    it('compiles durable quorum queues with delivery_limit', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'delivery_limit' => 20,
+            'dead_letter' => ['exchange' => 'dlx', 'queue' => 'dlq'],
+        ]);
+
+        expect($compiled['native']['queue_type'])->toBe('quorum')
+            ->and($compiled['native']['queue_durable'])->toBeTrue()
+            ->and($compiled['native']['delivery_limit'])->toBe(20);
     });
 });
 

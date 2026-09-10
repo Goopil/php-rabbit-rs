@@ -631,6 +631,12 @@ impl Config {
                 "quorum queues are always durable: set queue_durable=true or queue_type=classic",
             ));
         }
+        if self.queue_type == QueueKind::Classic && self.delivery_limit.is_some() {
+            return Err(ConfigError::new(
+                "delivery_limit",
+                "delivery_limit is only supported on quorum queues: remove it or set queue_type=quorum",
+            ));
+        }
         for broker in &mut self.brokers {
             if broker.hosts.is_empty() {
                 return Err(ConfigError::new(
@@ -2816,5 +2822,40 @@ mod tests {
             .expect_err("multi-broker synthesis must fail");
 
         assert!(error.to_string().contains("single configured broker"));
+    }
+
+    #[test]
+    fn rejects_delivery_limit_on_classic_queues() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.queue_type = QueueKind::Classic;
+        candidate.delivery_limit = Some(20);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "delivery_limit");
+        assert!(
+            error.to_string().contains("quorum queues"),
+            "error must name the supported queue type, got: {error}"
+        );
+    }
+
+    #[test]
+    fn accepts_classic_queues_without_delivery_limit() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.queue_type = QueueKind::Classic;
+
+        candidate
+            .validate()
+            .expect("classic queue without delivery_limit is valid");
+    }
+
+    #[test]
+    fn accepts_durable_quorum_queue_with_delivery_limit() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.delivery_limit = Some(20);
+
+        candidate
+            .validate()
+            .expect("durable quorum queue with delivery_limit is valid");
     }
 }
