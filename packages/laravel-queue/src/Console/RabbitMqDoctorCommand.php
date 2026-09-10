@@ -37,17 +37,8 @@ final class RabbitMqDoctorCommand extends Command
 
     public function handle(DoctorProbe $probe): int
     {
-        try {
-            $connections = RabbitRsConnections::targeted((array) $this->option('connection'));
-        } catch (InvalidArgumentException $e) {
-            $this->error($e->getMessage());
-
-            return self::FAILURE;
-        }
-
-        if ($connections === []) {
-            $this->error('No rabbit-rs queue connection is configured in queue.connections.');
-
+        $connections = $this->resolveConnections();
+        if ($connections === null) {
             return self::FAILURE;
         }
 
@@ -67,6 +58,32 @@ final class RabbitMqDoctorCommand extends Command
         $this->line($summary);
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Resolves the targeted connections, reporting an error and returning
+     * null when none apply: a listed connection is unknown, or no
+     * rabbit-rs connection is configured.
+     *
+     * @return array<string, array<string, mixed>>|null
+     */
+    private function resolveConnections(): ?array
+    {
+        try {
+            $connections = RabbitRsConnections::targeted((array) $this->option('connection'));
+        } catch (InvalidArgumentException $e) {
+            $this->error($e->getMessage());
+
+            return null;
+        }
+
+        if ($connections === []) {
+            $this->error('No rabbit-rs queue connection is configured in queue.connections.');
+
+            return null;
+        }
+
+        return $connections;
     }
 
     /**
@@ -306,6 +323,30 @@ final class RabbitMqDoctorCommand extends Command
         }
 
         $queues = array_column($compiled['native']['workers'][0]['subscriptions'] ?? [], 'queue');
+        ['matched' => $matched, 'ok' => $ok] = $this->auditSupervisors($name, $envSupervisors, $queues);
+
+        if (! $matched) {
+            $this->emit('warn', sprintf("no Horizon supervisor consumes this connection's queues (%s)", implode(', ', $queues)));
+
+            return;
+        }
+        if ($ok) {
+            $this->emit('ok', 'horizon supervisors aligned with the connection subscriptions');
+        }
+    }
+
+    /**
+     * Audits the Horizon supervisors of the current environment against the
+     * connection's subscription queues: a supervisor counts as consuming
+     * this connection when it targets it and shares at least one queue.
+     *
+     * @param  array<array-key, mixed>  $envSupervisors
+     * @param  list<string>  $queues
+     * @return array{matched: bool, ok: bool} whether a supervisor consumes
+     *                                        the connection and whether the wiring is aligned
+     */
+    private function auditSupervisors(string $name, array $envSupervisors, array $queues): array
+    {
         $matched = false;
         $ok = true;
 
@@ -323,41 +364,52 @@ final class RabbitMqDoctorCommand extends Command
             $matched = true;
             $label = is_string($supervisorName) ? $supervisorName : '(unnamed)';
 
-            $unknownQueues = array_diff($supervisorQueues, $queues);
-            if ($unknownQueues !== []) {
-                $ok = false;
-                $this->emit(
-                    'warn',
-                    sprintf(
-                        'supervisor %s lists queue(s) %s that are not subscriptions of this connection — jobs for them will never be consumed by its worker profiles',
-                        $label,
-                        implode(', ', $unknownQueues),
-                    ),
-                );
-            }
-
-            $balance = $supervisor['balance'] ?? false;
-            if (in_array($balance, ['auto', 'container'], true)) {
-                $ok = false;
-                $this->emit(
-                    'warn',
-                    sprintf(
-                        'supervisor %s uses balance=%s: auto-scaling samples readyNow() on the queue connection, available since rabbit-rs-laravel 0.1.2',
-                        $label,
-                        $balance,
-                    ),
-                );
-            }
+            $ok = $this->auditSupervisor($supervisor, $supervisorQueues, $label, $queues) && $ok;
         }
 
-        if (! $matched) {
-            $this->emit('warn', sprintf("no Horizon supervisor consumes this connection's queues (%s)", implode(', ', $queues)));
+        return ['matched' => $matched, 'ok' => $ok];
+    }
 
-            return;
+    /**
+     * Audits one consuming supervisor: queues it lists beyond the
+     * connection's subscriptions, and auto-scaling modes that sample the
+     * native connection.
+     *
+     * @param  array<string, mixed>  $supervisor
+     * @param  list<string>  $supervisorQueues
+     * @param  list<string>  $queues
+     */
+    private function auditSupervisor(array $supervisor, array $supervisorQueues, string $label, array $queues): bool
+    {
+        $ok = true;
+
+        $unknownQueues = array_diff($supervisorQueues, $queues);
+        if ($unknownQueues !== []) {
+            $ok = false;
+            $this->emit(
+                'warn',
+                sprintf(
+                    'supervisor %s lists queue(s) %s that are not subscriptions of this connection — jobs for them will never be consumed by its worker profiles',
+                    $label,
+                    implode(', ', $unknownQueues),
+                ),
+            );
         }
-        if ($ok) {
-            $this->emit('ok', 'horizon supervisors aligned with the connection subscriptions');
+
+        $balance = $supervisor['balance'] ?? false;
+        if (in_array($balance, ['auto', 'container'], true)) {
+            $ok = false;
+            $this->emit(
+                'warn',
+                sprintf(
+                    'supervisor %s uses balance=%s: auto-scaling samples readyNow() on the queue connection, available since rabbit-rs-laravel 0.1.2',
+                    $label,
+                    $balance,
+                ),
+            );
         }
+
+        return $ok;
     }
 
     private function checkEvents(): void

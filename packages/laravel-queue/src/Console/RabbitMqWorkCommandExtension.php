@@ -141,15 +141,11 @@ final class RabbitMqWorkCommandExtension
         });
 
         if (class_exists(WorkerIdle::class)) {
+            // The dispatcher passes the WorkerIdle event to the listener; the
+            // idle log line has no use for it, so the closure ignores it.
             $events->listen(
                 WorkerIdle::class,
-                /**
-                 * The listener signature requires the event parameter, but the
-                 * WorkerIdle event carries no data relevant to the log line.
-                 *
-                 * @noinspection PhpUnusedParameterInspection
-                 */
-                static function (WorkerIdle $event) use ($logger, $prefix): void {
+                static function () use ($logger, $prefix): void {
                     $logger('debug', [
                         'worker' => $prefix,
                         'status' => 'idle',

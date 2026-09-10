@@ -59,17 +59,7 @@ final class WorkPlanResolver
         $plan = [];
         $resolved = [];
         foreach ($targeted as $name => $config) {
-            $queuesForConnection = [];
-            foreach ($queueNames as $queueName) {
-                $queue = self::definedQueueFor($config, $queueName);
-                if ($queue === null) {
-                    continue;
-                }
-                $resolved[$queueName] = true;
-                if (! in_array($queue, $queuesForConnection, true)) {
-                    $queuesForConnection[] = $queue;
-                }
-            }
+            $queuesForConnection = self::resolveQueuesForConnection($config, $queueNames, $resolved);
 
             if ($queuesForConnection !== []) {
                 $plan[] = ['connection' => $name, 'queues' => $queuesForConnection];
@@ -113,6 +103,33 @@ final class WorkPlanResolver
         }
 
         return array_intersect_key($rabbitRs, array_flip($names));
+    }
+
+    /**
+     * Resolves the requested queue names by definition on one connection:
+     * every name the connection defines is marked resolved in $resolved and
+     * appended (deduplicated, first-seen order) to the returned list.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  list<string>  $queueNames
+     * @param  array<string, bool>  $resolved
+     * @return list<string>
+     */
+    private static function resolveQueuesForConnection(array $config, array $queueNames, array &$resolved): array
+    {
+        $queuesForConnection = [];
+        foreach ($queueNames as $queueName) {
+            $queue = self::definedQueueFor($config, $queueName);
+            if ($queue === null) {
+                continue;
+            }
+            $resolved[$queueName] = true;
+            if (! in_array($queue, $queuesForConnection, true)) {
+                $queuesForConnection[] = $queue;
+            }
+        }
+
+        return $queuesForConnection;
     }
 
     /**

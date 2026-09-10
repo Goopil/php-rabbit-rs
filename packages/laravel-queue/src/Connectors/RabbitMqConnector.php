@@ -124,23 +124,7 @@ final class RabbitMqConnector implements ConnectorInterface
      */
     private function warnOnUnboundedRedeliveryDefaults(array $config, array $compiled): void
     {
-        if (self::$unboundedRedeliveryWarningEmitted) {
-            return;
-        }
-
-        if ($this->inProductionEnvironment === null || ! ($this->inProductionEnvironment)()) {
-            return;
-        }
-
-        if (($compiled['topology']['queue']['delivery_limit'] ?? null) !== null) {
-            return;
-        }
-
-        if (($compiled['topology']['dead_letter'] ?? null) !== null) {
-            return;
-        }
-
-        if (! (bool) ($config['production_warning'] ?? $this->productionWarningEnabled)) {
+        if (! $this->shouldWarnOnUnboundedRedelivery($config, $compiled)) {
             return;
         }
 
@@ -152,5 +136,27 @@ final class RabbitMqConnector implements ConnectorInterface
             .'Set delivery_limit with dead_letter on the queue connection, or silence this '
             .'with production_warning => false.'
         );
+    }
+
+    /**
+     * Whether the unbounded-redelivery warning applies: not already emitted
+     * this process, resolving in production, with neither delivery_limit nor
+     * dead_letter configured, and the warning not silenced. Conditions are
+     * ordered so the environment callback runs at most once per call.
+     *
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $compiled
+     */
+    private function shouldWarnOnUnboundedRedelivery(array $config, array $compiled): bool
+    {
+        if (self::$unboundedRedeliveryWarningEmitted) {
+            return false;
+        }
+
+        return $this->inProductionEnvironment !== null
+            && ($this->inProductionEnvironment)()
+            && ($compiled['topology']['queue']['delivery_limit'] ?? null) === null
+            && ($compiled['topology']['dead_letter'] ?? null) === null
+            && (bool) ($config['production_warning'] ?? $this->productionWarningEnabled);
     }
 }
