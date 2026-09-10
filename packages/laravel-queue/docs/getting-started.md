@@ -119,13 +119,13 @@ php artisan rabbit-rs:work --connection=orders-eu,billing
 'orders-eu' => [
     // ...
     'subscriptions' => [
-        'critical' => ['queue' => 'orders.critical', 'weight' => 8, 'priority_class' => 1, 'prefetch' => 8],
-        'bulk' => ['queue' => 'orders.bulk', 'weight' => 2, 'prefetch' => 32, 'starvation_after' => 60],
+        'critical' => ['queue' => 'orders.critical', 'weight' => 8, 'prefetch' => 8],
+        'bulk' => ['queue' => 'orders.bulk', 'weight' => 2, 'prefetch' => 32],
     ],
 ],
 ```
 
-`weight` (1–65535) sets each subscription's delivery share; `priority_class` serves higher numbers first; `starvation_after` protects low-priority subscriptions from aging out. `prefetch` also accepts an adaptive controller that keeps about `target_buffer_seconds` of ready work buffered:
+`weight` (1–65535) sets each subscription's delivery share — weighted-fair cannot starve by construction. `prefetch` also accepts an adaptive controller that keeps about `target_buffer_seconds` of ready work buffered:
 
 ```php
 'prefetch' => ['mode' => 'adaptive', 'initial' => 64, 'min' => 1, 'max' => 256, 'target_buffer_seconds' => 5],
