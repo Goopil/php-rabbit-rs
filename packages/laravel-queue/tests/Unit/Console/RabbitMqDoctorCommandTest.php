@@ -125,7 +125,7 @@ describe('rabbit-rs:doctor broker probe', function () {
         doctorConnection();
 
         $this->artisan('rabbit-rs:doctor')
-            ->expectsOutputToContain('^0.1')
+            ->expectsOutputToContain('^0.2')
             ->assertExitCode(1);
     });
 
