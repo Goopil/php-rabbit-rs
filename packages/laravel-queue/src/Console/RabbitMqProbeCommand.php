@@ -53,12 +53,14 @@ final class RabbitMqProbeCommand extends Command
             default => true, // alive: a fresh statefile is a turning consume loop
         };
 
-        $state = $files === []
-            ? 'no fresh statefile'
-            : sprintf('%d worker(s): %s', count($files), implode(', ', array_map(
+        if ($files === []) {
+            $state = 'no fresh statefile';
+        } else {
+            $state = sprintf('%d worker(s): %s', count($files), implode(', ', array_map(
                 static fn (array $file): string => $file['pid'].':'.$file['state'].($file['connected'] ? '' : ', disconnected'),
                 $files,
             )));
+        }
 
         $event = new RabbitRsProbeEvaluated($probe, $state, $healthy);
         $this->laravel->make('events')->dispatch($event);
@@ -78,9 +80,11 @@ final class RabbitMqProbeCommand extends Command
 
         $drained = $this->awaitDrain($targets, microtime(true) + (float) $this->option('timeout'));
 
-        $state = $targets === []
-            ? 'no fresh statefile'
-            : sprintf('%d worker(s) %s', count($targets), $drained ? 'drained' : 'did not drain in time');
+        if ($targets === []) {
+            $state = 'no fresh statefile';
+        } else {
+            $state = sprintf('%d worker(s) %s', count($targets), $drained ? 'drained' : 'did not drain in time');
+        }
 
         $event = new RabbitRsProbeEvaluated('prestop', $state, $drained);
         $this->laravel->make('events')->dispatch($event);

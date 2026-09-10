@@ -33,6 +33,8 @@ final class ConnectionCompiler
 
     private const PATH_NO_ACK = '.no_ack';
 
+    private const PATH_MODE = '.mode';
+
     /**
      * Top-level connection keys the compiler consumes. `driver` is read by
      * the queue dispatcher before compilation, not here; `after_commit` and
@@ -419,7 +421,7 @@ final class ConnectionCompiler
             );
             if ($earlyAck || $noAck) {
                 self::invalid(
-                    $path.'.mode',
+                    $path.self::PATH_MODE,
                     'adaptive prefetch requires consumer acknowledgements: early_ack and no_ack must be false',
                 );
             }
@@ -433,7 +435,7 @@ final class ConnectionCompiler
             ];
         }
 
-        self::invalid($path.'.mode', 'must be fixed or adaptive');
+        self::invalid($path.self::PATH_MODE, 'must be fixed or adaptive');
     }
 
     /**
@@ -525,7 +527,7 @@ final class ConnectionCompiler
 
         $mode = $delay['mode'] ?? 'auto';
         if (! is_string($mode) || ! in_array($mode, ['auto', 'plugin', 'ttl'], true)) {
-            self::invalid($path.'.mode', 'must be auto, plugin, or ttl');
+            self::invalid($path.self::PATH_MODE, 'must be auto, plugin, or ttl');
         }
 
         $buckets = $delay['buckets'] ?? [1, 5, 30, 120];
