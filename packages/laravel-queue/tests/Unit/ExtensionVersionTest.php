@@ -43,13 +43,14 @@ describe('ExtensionVersion', function () {
 
         expect($version)->not->toBeNull('[workspace.package] must declare a version');
 
-        // The caret constraint must cover the crate's current major.minor:
-        // on 0.x every minor may break the PHP API surface, so the constraint
-        // is re-pinned on each workspace bump. This test fails when the crate
-        // version moves without the composer requirement following (the 0.0
-        // -> 0.1 drift that made the package uninstallable with ext 0.1.0).
-        [$major, $minor] = explode('.', (string) $version);
-        $expectedConstraint = sprintf('^%s.%s', $major, $minor);
+        // The caret constraint must equal the crate's current version, patch
+        // included: the package and the extension are released in lockstep,
+        // and the compiled native config schema evolves with every release
+        // (deny_unknown_fields rejects unknown keys at pool creation), so an
+        // older extension binary must never satisfy a newer package (the
+        // 0.0 -> 0.1 drift that made the package uninstallable with ext
+        // 0.1.0, and the 0.2.1 routes key that 0.2.0 binaries reject).
+        $expectedConstraint = sprintf('^%s', $version);
 
         expect(RabbitMqServiceProvider::EXTENSION_CONSTRAINT)->toBe($expectedConstraint);
     });

@@ -4,11 +4,14 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
-## [Unreleased]
+## [0.2.1] - 2026-09-10
 
 ### Fixed
 
-- Require `ext-rabbit_rs ^0.1` (was `^0.0`): the 0.1.0 extension no longer satisfies a caret constraint pinned to 0.0.x, which made the package uninstallable (`composer check-platform-reqs` failure) wherever the current extension was loaded. The constraint, the `RabbitMqServiceProvider::EXTENSION_CONSTRAINT` message constant, and `docs/troubleshooting.md` are aligned, and a unit test now fails when the workspace crate version moves without the requirement following.
+- Require `ext-rabbit_rs ^0.2.1` (was `^0.2`): the compiled config now always
+  carries the publish `routes` inside the native section, and the 0.2.0 core
+  config (deny_unknown_fields, no `routes` field) rejects the unknown key at
+  pool creation. The package and the extension must move together.
 - The topology compiler declares the connection's publish route (#205): the compiled `routes` map (mirrored inside `native`) has `rabbit-rs:topology --fix` and declare-mode boot declare the exchange and its per-subscription `{queue}` bindings, so queues are reachable for publishers and delay-bucket and dead-letter republishing reach the main queue. Connections publishing through the default exchange (`exchange => null`) need no declaration.
 - Pops on multi-queue profiles are scoped regardless of `auto_subscribe` (#207): a `pop()` addressed to one queue of a multi-queue connection always resolves a dedicated `__auto__.{queue}` consumer, so default multi-queue connections (and Horizon supervisors popping named queues) no longer draw jobs from other queues. `auto_subscribe` keeps its remaining meaning: allowing pops on queues not defined in any profile.
 - Rejected `delivery_limit` on classic queues and non-durable quorum queues at compile time (#204): both combinations fail broker-side with `precondition_failed`, so `ConnectionCompiler` now throws with the exact `queue.connections.<name>.<key>` path before the extension is ever loaded.

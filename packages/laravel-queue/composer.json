@@ -35,7 +35,7 @@
         }
     },
     "suggest": {
-        "ext-rabbit_rs": "Required to dispatch and consume jobs (^0.2). composer install succeeds without it; connections fail at resolution time until the native extension is loaded (pie install goopil/rabbit-rs-native).",
+        "ext-rabbit_rs": "Required to dispatch and consume jobs (^0.2.1). composer install succeeds without it; connections fail at resolution time until the native extension is loaded (pie install goopil/rabbit-rs-native).",
         "laravel/horizon": "Required to use the Horizon dashboard integration (worker=horizon)"
     },
     "scripts": {

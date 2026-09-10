@@ -6,13 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
-## [Unreleased]
+## [0.2.1] - 2026-09-10
 
 ### Fixed
 
 - Keep-alive redeclare of live TTL bucket queues every `queue_expiry_margin`/2 (#211): the recovery coordinator passively redeclares the current plan's bucket queues so lazy quorum expiry can no longer delete a bucket queue with an in-flight delayed job; orphaned buckets keep self-cleaning through their own `x-expires`.
 - The topology plan declares the publish route (#205): each configured route's exchange (direct, durable) and per-subscription `{queue}` bindings joined the core config (`routes` map), the config fingerprint, and the topology plan, making declare-mode queues reachable for publishers and letting delay-bucket and dead-letter republishing reach the main queue. Routes through the default exchange (`exchange: null`) need no declaration or binding.
 - Compile-time rejection of `delivery_limit` on classic queues and of non-durable quorum queues (#204): both combinations fail broker-side with `precondition_failed`; the core config validation and the Laravel compiler now reject them with typed errors and exact paths.
+- Pops on multi-queue profiles are scoped unconditionally regardless of `auto_subscribe` (#207): a `pop()` addressed to one queue of a multi-queue connection resolves a dedicated consumer for that queue and no longer draws jobs from sibling queues.
+- The declare probe no longer burns the full consumer readiness wait when nothing consumes (#208): `rabbit-rs:topology --fix` bounds the probe's readiness wait to 2 s, and topology verify reports an unreachable broker as unverifiable (warn) instead of failing queues as missing.
+
+### Changed
+
+- The extension constraint moves to `^0.2.1` (was `^0.2`): the compiled native config now always carries the publish `routes` key, which the 0.2.0 core config (deny_unknown_fields, no `routes` field) rejects at pool creation. The package and the extension must move together.
 
 ## [0.2.0] - 2026-09-10
 
