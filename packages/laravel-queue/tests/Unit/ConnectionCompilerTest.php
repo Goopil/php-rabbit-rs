@@ -81,11 +81,20 @@ describe('env booleans', function (): void {
             'auto_subscribe' => 'off',
             'queue_durable' => 'no',
             'tls' => ['enabled' => 'yes'],
+            'queue_type' => 'classic',
         ]);
 
         expect($compiled['auto_subscribe'])->toBeFalse()
             ->and($compiled['native']['queue_durable'])->toBeFalse()
             ->and($compiled['native']['brokers'][0]['tls']['enabled'])->toBeTrue();
+    });
+
+    it('rejects queue_durable=false with quorum queues', function (): void {
+        expectCompileRejected(
+            ['queue_durable' => false],
+            'queue.connections.orders.queue_durable: quorum queues are always durable — '
+            .'set queue_durable=true or queue_type=classic',
+        );
     });
 
     it('falls back to the default when auto_subscribe is null', function (): void {

@@ -297,7 +297,11 @@ impl TopologyPlan {
                 let mut qd = QueueDefinition::new(&sub.queue)
                     .kind(queue_type)
                     .durable(queue_durable);
-                if let Some(limit) = config.delivery_limit() {
+                // x-delivery-limit is quorum-only: RabbitMQ rejects it on
+                // classic queues at declare time (issue #204).
+                if queue_type == QueueKind::Quorum
+                    && let Some(limit) = config.delivery_limit()
+                {
                     qd = qd.delivery_limit(limit);
                 }
                 qd

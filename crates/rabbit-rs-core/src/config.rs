@@ -587,6 +587,12 @@ impl Config {
                 "at least one broker is required",
             ));
         }
+        if self.queue_type == QueueKind::Quorum && !self.queue_durable {
+            return Err(ConfigError::new(
+                "queue_durable",
+                "quorum queues are always durable: set queue_durable=true or queue_type=classic",
+            ));
+        }
         for broker in &mut self.brokers {
             if broker.hosts.is_empty() {
                 return Err(ConfigError::new(
