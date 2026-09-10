@@ -58,7 +58,12 @@ jobs:
           if [[ "$CARGO_VERSION" == 0.0.* ]]; then
             EXPECTED="^0.0"
           else
-            EXPECTED="^${CARGO_VERSION%.*}"
+            # Full-version pin: the package and the extension are released in
+            # lockstep and the compiled native config schema evolves with
+            # every release (deny_unknown_fields rejects unknown keys at pool
+            # creation), so an older extension binary must never satisfy a
+            # newer package.
+            EXPECTED="^${CARGO_VERSION}"
           fi
           if [[ "$CONSTRAINT" != "$EXPECTED" ]]; then
             echo "::error::Laravel package ext-rabbit_rs constraint ($CONSTRAINT) does not match the extension version policy ($EXPECTED, derived from Cargo.toml $CARGO_VERSION)."
