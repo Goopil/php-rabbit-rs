@@ -447,9 +447,13 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         if ($profile !== null) {
             // A profile covering several queues round-robins them all, so a
             // pop addressed to one queue must not draw from the others:
-            // resolve a dedicated single-queue implicit profile instead. The
-            // compiled profile remains for topology, doctor, and publishing.
-            if ($this->autoSubscribe && $this->workerProfiles->isShared($profile)) {
+            // resolve a dedicated single-queue implicit profile instead,
+            // regardless of auto_subscribe. The implicit profile is built
+            // with subscription defaults (not the compiled subscription's
+            // custom prefetch), matching the core's synthesized profiles.
+            // The compiled profile remains for topology, doctor, and
+            // publishing.
+            if ($this->workerProfiles->isShared($profile)) {
                 $profile = $this->workerProfiles->registerAutoProfile($queueName);
             }
         } elseif ($queue === null) {

@@ -613,7 +613,18 @@ namespace Goopil\RabbitRs {
                     }
                 }
 
-                throw new Exception("workers.{$profile}: unknown worker profile");
+                // Mirrors the native pool: `__auto__.` profiles are
+                // synthesized on demand (client.rs), any other unknown
+                // profile is rejected.
+                if (! str_starts_with($profile, '__auto__.')) {
+                    throw new Exception("workers.{$profile}: unknown worker profile");
+                }
+
+                if (! isset($this->consumers[$profile]) || $this->consumers[$profile]->closeCalls > 0) {
+                    $this->consumers[$profile] = new Consumer;
+                }
+
+                return $this->consumers[$profile];
             }
         }
     }

@@ -59,6 +59,60 @@ function makeScopingQueue(bool $autoSubscribe): array
     return [$queue, $pool];
 }
 
+/**
+ * @return list<array<string, mixed>>
+ */
+function scopingAlphaBetaWorkers(): array
+{
+    return [
+        [
+            'name' => 'default',
+            'subscriptions' => [
+                ['name' => 'alpha-sub', 'queue' => 'alpha'],
+                ['name' => 'beta-sub', 'queue' => 'beta'],
+            ],
+        ],
+    ];
+}
+
+/**
+ * Pool seeded with the implicit profiles scoping resolves for 'alpha' and
+ * 'beta', mirroring the core synthesizing `__auto__.` profiles at first pop.
+ */
+function scopingAlphaBetaPool(): Pool
+{
+    return new Pool(['workers' => [...scopingAlphaBetaWorkers(), [
+        'name' => '__auto__.alpha',
+        'subscriptions' => [
+            ['name' => 'auto', 'queue' => 'alpha'],
+        ],
+    ], [
+        'name' => '__auto__.beta',
+        'subscriptions' => [
+            ['name' => 'auto', 'queue' => 'beta'],
+        ],
+    ]]]);
+}
+
+/**
+ * @return array{RabbitMqQueue, Pool}
+ */
+function makeAlphaBetaQueue(): array
+{
+    $pool = scopingAlphaBetaPool();
+    $queue = new RabbitMqQueue(
+        $pool,
+        ['default' => ['broker' => 'default-broker', 'exchange' => '', 'routing_key' => '{queue}']],
+        'alpha',
+        autoSubscribe: false,
+        workerProfiles: new WorkerProfileResolver(scopingAlphaBetaWorkers()),
+    );
+    $queue->setContainer(new Container);
+    $queue->setConnectionName('rabbit-rs');
+
+    return [$queue, $pool];
+}
+
 describe('queue scoping on shared profiles', function () {
     it('pops a single queue through a scoped profile instead of the shared one', function (): void {
         [$queue, $pool] = makeScopingQueue(true);
@@ -114,12 +168,33 @@ describe('queue scoping on shared profiles', function () {
         expect(['default'])->toBe($pool->consumerProfiles);
     });
 
-    it('keeps the shared profile when auto_subscribe is disabled', function (): void {
+    it('scopes a shared profile even when auto_subscribe is disabled', function (): void {
         [$queue, $pool] = makeScopingQueue(false);
+        $pool->pushDelivery('__auto__.orders-eu', new Delivery(
+            '{"job":"ProcessOrder","data":{}}',
+            ['message_id' => 'scoped-4', 'subscription' => 'auto', 'attempts' => 1],
+        ));
 
-        $queue->pop('orders-eu');
+        $job = $queue->pop('orders-eu');
 
-        expect(['default'])->toBe($pool->consumerProfiles);
+        expect($job)->toBeInstanceOf(RabbitMqJob::class)
+            ->and($job->getQueue())->toBe('orders-eu')
+            ->and(['__auto__.orders-eu'])->toBe($pool->consumerProfiles);
+    });
+
+    it('never draws a beta job through pop(alpha) on a default multi-queue connection', function (): void {
+        [$queue, $pool] = makeAlphaBetaQueue();
+        $pool->pushDelivery('__auto__.beta', new Delivery(
+            '{"job":"ProcessBeta","data":{}}',
+            ['message_id' => 'scoped-3', 'subscription' => 'auto', 'attempts' => 1],
+        ));
+
+        $job = $queue->pop('beta');
+
+        expect($queue->pop('alpha'))->toBeNull()
+            ->and($job)->toBeInstanceOf(RabbitMqJob::class)
+            ->and($job->getQueue())->toBe('beta')
+            ->and($pool->consumerProfiles)->toBe(['__auto__.beta', '__auto__.alpha']);
     });
 
     it('pops a shared profile by name without scoping', function (): void {
