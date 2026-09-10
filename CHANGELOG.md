@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.2.0] - 2026-09-10
+
+Breaking release: weight-only scheduling, plus honest delayed delivery and a loss-free terminating close from the early-adopter lab findings.
+
+### Changed
+
+- **BREAKING** — subscriptions are weight-only (#181): `priority_class` strict
+  preemption and its `starvation_after` aging compensation are removed across
+  the core config, the weighted-fair scheduler (which cannot starve by
+  construction), the PHP stubs, the Laravel compiler, and the docs. Carrying
+  either key is rejected with an actionable path.
+- **BREAKING** — the native config schema no longer accepts
+  `priority_class` / `starvation_after` in subscription objects; single-broker
+  pools may now omit the subscription `broker` key entirely (pinned to the
+  sole declared broker before deserialization; multi-broker pools keep the
+  explicit pin mandatory) (#181).
+- Pops on multi-queue profiles are scoped (#183): with `auto_subscribe`
+  enabled, a pop addressed to one queue of a profile that round-robins several
+  subscriptions resolves a dedicated `__auto__.{queue}` consumer instead of
+  the shared profile — prefetch and deliveries are no longer pooled across
+  queues. Single-queue connections, profile-name pops, and
+  `auto_subscribe=false` keep the previous behavior.
+- `Pool::close()` drains before dropping (#194): pending buffered publications
+  are attempted on the wire and awaited within the publisher confirm timeout
+  before channels close; only what genuinely cannot be attempted fails loudly
+  through `Closed` (counted in `dropped_publications_total`). This fixes the
+  multi-pool terminating-close tail loss (900 publishes → 0 in the lab).
+- Documentation rework: the auto_subscribe section describes the scoped pop
+  semantics, the subscriptions reference drops the removed knobs, and the
+  README states the unknown-queues-just-work contract (#167).
+
+### Added
+
+- `publisher.flush_interval` (#194): documented, bounded knob (integer ms,
+  default 1, 0..3,600,000) controlling the async age-flush latency of the
+  publish buffer — wired core → PHP extension → Laravel compiler.
+
+### Fixed
+
+- Delayed delivery is honest across every publish path (#196): blind-pump and
+  delayed-release publications route through the compiled delay strategy with
+  lazy infrastructure declaration; a delay the strategy cannot route fails
+  terminally instead of publishing to the original exchange where the ignored
+  `x-delay` header would run the job immediately; flush honors the remaining
+  broker-side delay; publisher acquisition is bounded by the confirm timeout
+  instead of hot-spinning; the consumer delayed-release double-route drop is
+  fixed.
+
 ## [0.1.6] - 2026-09-08
 
 Feature release: Kubernetes probes, an optional native extension at install time, and worker termination control — plus fixes for the early-adopter lab findings.
