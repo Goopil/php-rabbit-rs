@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- Keep-alive redeclare of live TTL bucket queues every `queue_expiry_margin`/2 (#211): the recovery coordinator passively redeclares the current plan's bucket queues so lazy quorum expiry can no longer delete a bucket queue with an in-flight delayed job; orphaned buckets keep self-cleaning through their own `x-expires`.
+- The topology plan declares the publish route (#205): each configured route's exchange (direct, durable) and per-subscription `{queue}` bindings joined the core config (`routes` map), the config fingerprint, and the topology plan, making declare-mode queues reachable for publishers and letting delay-bucket and dead-letter republishing reach the main queue. Routes through the default exchange (`exchange: null`) need no declaration or binding.
+- Compile-time rejection of `delivery_limit` on classic queues and of non-durable quorum queues (#204): both combinations fail broker-side with `precondition_failed`; the core config validation and the Laravel compiler now reject them with typed errors and exact paths.
+
 ## [0.2.0] - 2026-09-10
 
 Breaking release: weight-only scheduling, plus honest delayed delivery and a loss-free terminating close from the early-adopter lab findings.
