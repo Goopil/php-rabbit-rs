@@ -555,6 +555,14 @@ final class ConnectionCompiler
             self::invalid($path.'.queue_type', 'must be quorum or classic');
         }
 
+        $durable = self::boolean($config['queue_durable'] ?? true, $path.'.queue_durable');
+        if ($type === 'quorum' && ! $durable) {
+            self::invalid(
+                $path.'.queue_durable',
+                'quorum queues are always durable — set queue_durable=true or queue_type=classic',
+            );
+        }
+
         $deliveryLimit = $config['delivery_limit'] ?? null;
         if ($deliveryLimit !== null) {
             $deliveryLimit = self::positiveInt($deliveryLimit, $path.'.delivery_limit');
@@ -573,7 +581,7 @@ final class ConnectionCompiler
         return [
             'queue' => [
                 'type' => $type,
-                'durable' => self::boolean($config['queue_durable'] ?? true, $path.'.queue_durable'),
+                'durable' => $durable,
                 'delivery_limit' => $deliveryLimit,
             ],
             'dead_letter' => $deadLetter,

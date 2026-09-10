@@ -17,7 +17,7 @@ const BASE_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\RabbitMqQueue';
  * and without a broker, so the doctor's extension and broker probes are
  * substituted with configurable fakes.
  */
-function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.1.3', ?string $brokerError = null): void
+function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.2.0', ?string $brokerError = null): void
 {
     $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError) extends DoctorProbe
     {
@@ -121,7 +121,7 @@ describe('rabbit-rs:doctor broker probe', function () {
     });
 
     it('fails when the extension version drifts from the composer constraint', function () {
-        bindFakeProbe($this->app, loaded: true, version: '0.2.0');
+        bindFakeProbe($this->app, loaded: true, version: '0.1.3');
         doctorConnection();
 
         $this->artisan('rabbit-rs:doctor')
@@ -133,7 +133,7 @@ describe('rabbit-rs:doctor broker probe', function () {
         doctorConnection();
 
         $this->artisan('rabbit-rs:doctor')
-            ->expectsOutputToContain('0.1.3')
+            ->expectsOutputToContain('0.2.0')
             ->assertExitCode(0);
     });
 });
