@@ -250,12 +250,16 @@ impl TopologyPlan {
     /// configuration.
     ///
     /// Declares one queue per subscription plus the dead-letter topology when
-    /// enabled. In declare mode with a plugin-routed delay strategy (plugin
-    /// or auto mode), the `rabbit-rs.delayed` exchange and a queue-name-keyed
-    /// binding for every subscription queue join the plan so delayed delivery
-    /// works without operator-provisioned bindings (issue #97). Custom route
-    /// exchanges publish delayed messages through `{exchange}.delayed`, whose
-    /// bindings stay an infrastructure contract.
+    /// enabled. The connection's publish route joins the plan too: its
+    /// exchange and a `{queue}`-resolved binding for every subscription the
+    /// route's broker hosts (issue #205) — declared in declare mode and
+    /// passively verified in verify mode; the default exchange (empty route
+    /// exchange) needs neither. In declare mode with a plugin-routed delay
+    /// strategy (plugin or auto mode), the `rabbit-rs.delayed` exchange and a
+    /// queue-name-keyed binding for every subscription queue join the plan so
+    /// delayed delivery works without operator-provisioned bindings (issue
+    /// #97). Custom route exchanges publish delayed messages through
+    /// `{exchange}.delayed`, whose bindings stay an infrastructure contract.
     ///
     /// A definition that fails compilation falls back to an empty
     /// external-mode plan; the pool stays connectable and the invalid
@@ -321,6 +325,34 @@ impl TopologyPlan {
             }));
         }
 
+        // The publish route (issue #205): the connection's route exchange and
+        // its per-queue bindings join the plan so a declared queue is
+        // reachable from the publisher side too. The default exchange (empty
+        // name) needs neither declaration nor binding.
+        for route in config.routes().values() {
+            if route.exchange.is_empty() {
+                continue;
+            }
+            exchanges.push(ExchangeSpec {
+                name: route.exchange.clone(),
+                kind: ExchangeKind::Direct,
+                durable: true,
+                auto_delete: false,
+                internal: false,
+                arguments: Headers::new(),
+            });
+            bindings.extend(
+                subscriptions
+                    .iter()
+                    .filter(|sub| sub.broker == route.broker)
+                    .map(|sub| BindingSpec {
+                        queue: sub.queue.clone(),
+                        exchange: route.exchange.clone(),
+                        routing_key: route.routing_key.replace("{queue}", &sub.queue),
+                    }),
+            );
+        }
+
         let mut topology = TopologyDefinition::new(exchanges, queues, bindings);
         if let Some(dl) = config.dead_letter()
             && dl.enabled
@@ -369,6 +401,7 @@ impl Error for TopologyPlanError {}
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     use super::TopologyPlan;
@@ -408,6 +441,7 @@ mod tests {
             }],
             workers: vec![worker_profile("main", "default", queue)],
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,

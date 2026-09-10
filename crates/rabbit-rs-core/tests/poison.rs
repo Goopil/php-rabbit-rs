@@ -42,6 +42,7 @@ mod helper {
             brokers: vec![broker(name, vhost)],
             workers: vec![],
             topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
             delay: rabbit_rs_core::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
@@ -546,6 +547,7 @@ mod real_broker {
                     scheduler: SchedulerConfig::weighted_fair(),
                 }],
                 topology_mode: TopologyMode::External,
+                routes: BTreeMap::new(),
                 delay: DelayConfig::default(),
                 dead_letter,
                 delivery_limit: None,
@@ -813,6 +815,7 @@ mod real_broker {
                     scheduler: SchedulerConfig::weighted_fair(),
                 }],
                 topology_mode: TopologyMode::External,
+                routes: BTreeMap::new(),
                 delay: DelayConfig::default(),
                 dead_letter: Some(DeadLetterConfig {
                     enabled: true,

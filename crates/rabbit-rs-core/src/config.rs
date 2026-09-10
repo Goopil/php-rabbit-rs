@@ -1,4 +1,10 @@
-use std::{collections::HashSet, fmt, path::PathBuf, str::FromStr, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    path::PathBuf,
+    str::FromStr,
+    time::Duration,
+};
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer};
@@ -543,6 +549,34 @@ impl Default for ConsumerConfigSection {
     }
 }
 
+/// Serde default for the optional route `routing_key` key: a fresh route
+/// publishes to each subscription queue by name.
+#[allow(clippy::unnecessary_wraps)]
+fn default_route_routing_key() -> String {
+    "{queue}".to_owned()
+}
+
+/// Publish-side route configuration: where publications targeting a queue's
+/// routing key go, and what the declared topology must provision for them.
+///
+/// The topology plan declares the route exchange (direct, durable) and binds
+/// every subscription hosted by [`RouteConfig::broker`] to it with the
+/// `{queue}`-resolved routing key, so the consume side and the publish side
+/// always agree. An empty `exchange` is the AMQP default exchange:
+/// publications route by queue name and nothing needs declaring or binding.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RouteConfig {
+    pub broker: String,
+    /// Empty string = the AMQP default exchange: publishing routes by queue
+    /// name and nothing needs declaring.
+    pub exchange: String,
+    /// `{queue}` resolves to each subscription queue name; empty string binds
+    /// the empty routing key.
+    #[serde(default = "default_route_routing_key")]
+    pub routing_key: String,
+}
+
 /// Unvalidated user configuration.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -550,6 +584,10 @@ pub struct Config {
     pub brokers: Vec<BrokerConfig>,
     pub workers: Vec<WorkerProfile>,
     pub topology_mode: TopologyMode,
+    /// Publish-side routes keyed by route name. An empty map means every
+    /// connection publishes through the AMQP default exchange.
+    #[serde(default)]
+    pub routes: BTreeMap<String, RouteConfig>,
     #[serde(default)]
     pub delay: DelayConfig,
     #[serde(default)]
@@ -630,6 +668,8 @@ impl Config {
         self.workers
             .sort_unstable_by(|left, right| left.name.cmp(&right.name));
 
+        Self::validate_routes(&self.routes, &broker_names)?;
+
         Self::validate_delay(&self.delay)?;
 
         if self.consumer.wait_timeout < Duration::from_secs(1)
@@ -648,28 +688,7 @@ impl Config {
             ));
         }
 
-        if !self.publisher.mandatory {
-            return Err(ConfigError::new(
-                "publisher.mandatory",
-                "mandatory=false is no longer supported: mandatory routing is part of the safe \
-                 delivery guarantee; opt out with publisher.safety = \"unsafe\" or \"blind\" \
-                 instead",
-            ));
-        }
-
-        if self.publisher.confirm_timeout < Duration::from_secs(1) {
-            return Err(ConfigError::new(
-                "publisher.confirm_timeout",
-                "confirm_timeout must be at least 1 second",
-            ));
-        }
-
-        if self.publisher.flush_interval > Duration::from_hours(1) {
-            return Err(ConfigError::new(
-                "publisher.flush_interval",
-                "flush_interval must be at most 1 hour",
-            ));
-        }
+        Self::validate_publisher(&self.publisher)?;
 
         let fingerprint = ConfigFingerprint::calculate(&self);
 
@@ -677,6 +696,7 @@ impl Config {
             brokers: self.brokers,
             workers: self.workers,
             topology_mode: self.topology_mode,
+            routes: self.routes,
             delay: self.delay,
             dead_letter: self.dead_letter,
             delivery_limit: self.delivery_limit,
@@ -686,6 +706,50 @@ impl Config {
             queue_durable: self.queue_durable,
             fingerprint,
         })
+    }
+
+    /// Publisher settings that no longer have a valid non-default form are
+    /// rejected with the safety opt-out spelled out.
+    fn validate_publisher(publisher: &PublisherConfigSection) -> Result<(), ConfigError> {
+        if !publisher.mandatory {
+            return Err(ConfigError::new(
+                "publisher.mandatory",
+                "mandatory=false is no longer supported: mandatory routing is part of the safe \
+                 delivery guarantee; opt out with publisher.safety = \"unsafe\" or \"blind\" \
+                 instead",
+            ));
+        }
+        if publisher.confirm_timeout < Duration::from_secs(1) {
+            return Err(ConfigError::new(
+                "publisher.confirm_timeout",
+                "confirm_timeout must be at least 1 second",
+            ));
+        }
+        if publisher.flush_interval > Duration::from_hours(1) {
+            return Err(ConfigError::new(
+                "publisher.flush_interval",
+                "flush_interval must be at most 1 hour",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Publish routes must name an existing broker: a route pointing at a
+    /// broker that never connects would declare its exchange on nothing and
+    /// bind no queue.
+    fn validate_routes(
+        routes: &BTreeMap<String, RouteConfig>,
+        broker_names: &HashSet<&str>,
+    ) -> Result<(), ConfigError> {
+        for (name, route) in routes {
+            if !broker_names.contains(route.broker.as_str()) {
+                return Err(ConfigError::new(
+                    format!("routes.{name}.broker"),
+                    "references an unknown broker",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Enforces the TLS contract documented on [`TlsConfig`]: `verify = none`
@@ -850,6 +914,7 @@ pub struct ValidatedConfig {
     brokers: Vec<BrokerConfig>,
     workers: Vec<WorkerProfile>,
     topology_mode: TopologyMode,
+    routes: BTreeMap<String, RouteConfig>,
     delay: DelayConfig,
     dead_letter: Option<DeadLetterConfig>,
     delivery_limit: Option<u32>,
@@ -940,6 +1005,13 @@ impl ValidatedConfig {
     #[must_use]
     pub const fn topology_mode(&self) -> TopologyMode {
         self.topology_mode
+    }
+
+    /// Returns the publish-side routes keyed by route name (deterministic,
+    /// name-sorted iteration order).
+    #[must_use]
+    pub const fn routes(&self) -> &BTreeMap<String, RouteConfig> {
+        &self.routes
     }
 
     #[must_use]
@@ -1064,6 +1136,17 @@ impl ConfigFingerprint {
             digest.update(limit.to_be_bytes());
         } else {
             hash_value(&mut digest, "no_delivery_limit");
+        }
+
+        // Routes declare broker topology, so unlike `flush_interval` they
+        // split the fingerprint: a different declared route is a different
+        // pool. BTreeMap iteration keeps the digest deterministic.
+        for (name, route) in &config.routes {
+            hash_value(&mut digest, "route");
+            hash_value(&mut digest, name);
+            hash_value(&mut digest, &route.broker);
+            hash_value(&mut digest, &route.exchange);
+            hash_value(&mut digest, &route.routing_key);
         }
 
         hash_publisher(&mut digest, &config.publisher);
@@ -1236,6 +1319,7 @@ fn default_max_buffered_bytes() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -1243,7 +1327,7 @@ mod tests {
 
     use super::{
         BrokerConfig, Config, ConfigFingerprint, ConsumerConfigSection, Credentials, DelayConfig,
-        Endpoint, PrefetchConfig, PublisherConfigSection, SafetyMode, SchedulerConfig,
+        Endpoint, PrefetchConfig, PublisherConfigSection, RouteConfig, SafetyMode, SchedulerConfig,
         SchedulerStrategy, SubscriptionConfig, TlsConfig, TlsVerify, TopologyMode, ValidatedConfig,
         WorkerProfile,
     };
@@ -1287,6 +1371,7 @@ mod tests {
             brokers: vec![broker(hosts)],
             workers: vec![worker(16)],
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
@@ -2020,6 +2105,78 @@ mod tests {
     }
 
     #[test]
+    fn rejects_route_broker_pointing_at_an_unknown_broker() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.routes = BTreeMap::from([(
+            "default".to_owned(),
+            RouteConfig {
+                broker: "ghost".to_owned(),
+                exchange: "app.jobs".to_owned(),
+                routing_key: "{queue}".to_owned(),
+            },
+        )]);
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "routes.default.broker");
+    }
+
+    #[test]
+    fn routes_split_the_fingerprint() {
+        let base = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        let mut changed = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        changed.routes = BTreeMap::from([(
+            "default".to_owned(),
+            RouteConfig {
+                broker: "default".to_owned(),
+                exchange: "app.jobs".to_owned(),
+                routing_key: "{queue}".to_owned(),
+            },
+        )]);
+
+        assert_ne!(
+            ConfigFingerprint::calculate(&base),
+            ConfigFingerprint::calculate(&changed),
+            "a different declared route topology must not share a pool"
+        );
+    }
+
+    #[test]
+    fn route_routing_key_defaults_to_the_queue_template() {
+        let candidate = serde_json::from_value::<Config>(json!({
+            "brokers": [{
+                "name": "default",
+                "hosts": [{"host": "rabbit.local", "port": 5672}],
+                "vhost": "/",
+                "credentials": {"username": "guest", "password": "secret"},
+                "tls": {"enabled": false},
+                "heartbeat": 30
+            }],
+            "workers": [{
+                "name": "main",
+                "subscriptions": [{
+                    "name": "default",
+                    "broker": "default",
+                    "queue": "jobs",
+                    "weight": 1,
+                    "prefetch": 16
+                }],
+                "scheduler": {"strategy": "weighted_fair"}
+            }],
+            "topology_mode": "external",
+            "routes": {
+                "default": {"broker": "default", "exchange": "app.jobs"}
+            }
+        }))
+        .expect("route without routing_key deserializes");
+
+        assert_eq!(
+            candidate.routes["default"].routing_key, "{queue}",
+            "the omitted routing key defaults to the per-queue template"
+        );
+    }
+
+    #[test]
     fn rejects_deprecated_mandatory_false_with_safety_guidance() {
         let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
         candidate.publisher.mandatory = false;
@@ -2281,6 +2438,7 @@ mod tests {
                 scheduler: SchedulerConfig::weighted_fair(),
             }],
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
@@ -2578,6 +2736,7 @@ mod tests {
             brokers: vec![broker_config("main")],
             workers: vec![],
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
@@ -2640,6 +2799,7 @@ mod tests {
             brokers: vec![broker_config("one"), broker_config("two")],
             workers: vec![],
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
