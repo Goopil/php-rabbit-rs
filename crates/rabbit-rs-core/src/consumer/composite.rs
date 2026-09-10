@@ -445,6 +445,7 @@ mod tests {
             brokers: vec![broker(name)],
             workers: vec![],
             topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
             delay: crate::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,

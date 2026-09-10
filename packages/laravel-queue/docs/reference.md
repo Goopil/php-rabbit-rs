@@ -904,7 +904,7 @@ Rabbit RS manages RabbitMQ topology through three modes. The mode is set via `to
 
 #### declare (default)
 
-Rabbit RS declares all exchanges, queues, and bindings idempotently. If the existing topology is incompatible (e.g., a queue exists with different arguments), the declaration fails with a permanent error.
+Rabbit RS declares all exchanges, queues, and bindings idempotently. If the existing topology is incompatible (e.g., a queue exists with different arguments), the declaration fails with a permanent error. The connection's publish exchange and its `{queue}` bindings are declared in declare mode and verified in verify mode, so a queue declared by Rabbit RS is reachable from the publisher side; `routing_key: null` publishes through the default exchange and needs no binding.
 
 Use `declare` when Rabbit RS owns the topology and you want it created automatically:
 

@@ -4,7 +4,7 @@
 //! instead of re-declaring local `broker`/`config`/wait-loop copies.
 #![allow(dead_code)]
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use rabbit_rs_core::{
     config::{
@@ -57,6 +57,7 @@ pub fn config(brokers: Vec<BrokerConfig>, workers: Vec<WorkerProfile>) -> Arc<Va
             brokers,
             workers,
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,

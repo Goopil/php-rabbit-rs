@@ -14,6 +14,14 @@ describe('connection compilation', function (): void {
         expect(ConnectionCompiler::compile('orders', ['driver' => 'rabbit-rs', 'queue' => 'default']))
             ->toBe(referenceCompiled('orders'));
     });
+
+    it('mirrors the default route inside the native section for the extension', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', fullConnection());
+
+        expect($compiled['native']['routes'])
+            ->toBe($compiled['routes'])
+            ->and($compiled['native']['routes']['default']['routing_key'])->toBe('{queue}');
+    });
 });
 
 describe('hosts', function (): void {
@@ -823,6 +831,7 @@ function referenceCompiled(string $name): array
             'consumer' => ['wait_timeout' => 30000, 'max_attempts' => 20],
             'queue_type' => 'quorum',
             'queue_durable' => true,
+            'routes' => ['default' => ['broker' => $name, 'exchange' => 'laravel.jobs', 'routing_key' => '{queue}']],
         ],
         'routes' => ['default' => ['broker' => $name, 'exchange' => 'laravel.jobs', 'routing_key' => '{queue}']],
         'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000, 'flush_interval' => 1],

@@ -85,6 +85,17 @@ final class ConnectionCompiler
         $publisher = self::publisher($config, $path);
         $autoSubscribe = self::boolean($config['auto_subscribe'] ?? true, $path.'.auto_subscribe');
 
+        // The default route rides inside `native` so the extension declares
+        // the publish-side topology (exchange + {queue} bindings, issue #205)
+        // from the same source the PHP-side route resolution reads.
+        $routes = [
+            'default' => [
+                'broker' => $name,
+                'exchange' => self::exchange($config, $path),
+                'routing_key' => self::routingKey($config, $path),
+            ],
+        ];
+
         return [
             'native' => [
                 'brokers' => [$broker],
@@ -97,14 +108,9 @@ final class ConnectionCompiler
                 'consumer' => self::consumer($config, $path),
                 'queue_type' => $topology['queue']['type'],
                 'queue_durable' => $topology['queue']['durable'],
+                'routes' => $routes,
             ],
-            'routes' => [
-                'default' => [
-                    'broker' => $name,
-                    'exchange' => self::exchange($config, $path),
-                    'routing_key' => self::routingKey($config, $path),
-                ],
-            ],
+            'routes' => $routes,
             'publisher' => $publisher,
             'topology' => $topology,
             'best_effort' => $bestEffort,

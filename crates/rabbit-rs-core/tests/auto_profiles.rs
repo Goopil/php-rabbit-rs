@@ -32,6 +32,7 @@ fn single_worker_config(topology: TopologyMode, worker: WorkerProfile) -> Arc<Va
             brokers: vec![broker("main")],
             workers: vec![worker],
             topology_mode: topology,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,

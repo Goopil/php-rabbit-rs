@@ -42,6 +42,7 @@ fn connection_key() -> ConnectionKey {
             brokers: vec![broker("guest")],
             workers: vec![],
             topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
             delay: rabbit_rs_core::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,

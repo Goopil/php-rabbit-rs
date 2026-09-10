@@ -3,7 +3,7 @@
 //! zero outcome-waiting at the caller, and `ClientPool::flush_blind` must act
 //! as a barrier over everything enqueued before it.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
@@ -36,6 +36,7 @@ fn config() -> Arc<ValidatedConfig> {
             }],
             workers: Vec::new(),
             topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
@@ -454,6 +455,7 @@ fn config_with_delay_mode(mode: DelayMode) -> Arc<ValidatedConfig> {
             }],
             workers: Vec::new(),
             topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
             delay: DelayConfig {
                 mode,
                 ..DelayConfig::default()

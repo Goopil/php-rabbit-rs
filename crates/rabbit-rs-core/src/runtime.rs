@@ -275,6 +275,7 @@ impl Error for RuntimeCreationError {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         future,
         sync::{
             Arc,
@@ -377,6 +378,7 @@ mod tests {
             }],
             workers: Vec::new(),
             topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
             delay: crate::config::DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,

@@ -59,6 +59,7 @@ fn consumer_config() -> rabbit_rs_core::config::ValidatedConfig {
             scheduler: SchedulerConfig::weighted_fair(),
         }],
         topology_mode: TopologyMode::Declare,
+        routes: BTreeMap::new(),
         delay: rabbit_rs_core::config::DelayConfig::default(),
         dead_letter: None,
         delivery_limit: None,

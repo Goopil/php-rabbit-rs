@@ -1,12 +1,12 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
     client::ClientPool,
     config::{
         BrokerConfig, Config, ConsumerConfigSection, DeadLetterConfig, DelayConfig, DelayMode,
-        PrefetchConfig, PublisherConfigSection, SafetyMode, SchedulerConfig, SubscriptionConfig,
-        TopologyMode, ValidatedConfig, WorkerProfile,
+        PrefetchConfig, PublisherConfigSection, RouteConfig, SafetyMode, SchedulerConfig,
+        SubscriptionConfig, TopologyMode, ValidatedConfig, WorkerProfile,
     },
     consumer::{
         APPLICATION_ATTEMPTS_HEADER, AttemptsErrorKind, AttemptsResolver, ConsumerSet, Headers,
@@ -82,6 +82,7 @@ mod helper {
                 brokers: vec![broker_default()],
                 workers: vec![],
                 topology_mode: TopologyMode::External,
+                routes: BTreeMap::new(),
                 delay: DelayConfig::default(),
                 dead_letter: None,
                 delivery_limit: None,
@@ -117,6 +118,7 @@ mod helper {
                 scheduler: SchedulerConfig::weighted_fair(),
             }],
             topology_mode: TopologyMode::Declare,
+            routes: BTreeMap::new(),
             delay: DelayConfig::default(),
             dead_letter: None,
             delivery_limit: None,
@@ -162,6 +164,25 @@ mod helper {
             mode,
             ..DelayConfig::default()
         };
+        config
+    }
+
+    /// A declare-mode config with one publish route named `default`.
+    pub fn config_with_route(
+        queue: &str,
+        route_broker: &str,
+        exchange: &str,
+        routing_key: &str,
+    ) -> Config {
+        let mut config = base_config(queue);
+        config.routes = BTreeMap::from([(
+            "default".to_owned(),
+            RouteConfig {
+                broker: route_broker.to_owned(),
+                exchange: exchange.to_owned(),
+                routing_key: routing_key.to_owned(),
+            },
+        )]);
         config
     }
 
@@ -894,6 +915,102 @@ fn disabled_dead_letter_config_produces_no_dlx() {
         plan.exchanges().iter().all(|e| e.name != "jobs.dlx"),
         "no DLX when dead_letter is disabled"
     );
+}
+
+#[test]
+fn declare_mode_declares_the_route_exchange_and_per_queue_bindings() {
+    let config = config_with_route("orders", "primary", "app.jobs", "{queue}");
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    let exchange = plan
+        .exchanges()
+        .iter()
+        .find(|e| e.name == "app.jobs")
+        .expect("route exchange in plan");
+    assert_eq!(exchange.kind, ExchangeKind::Direct);
+    assert!(exchange.durable, "route exchange is durable");
+    assert!(!exchange.auto_delete);
+    assert!(!exchange.internal);
+
+    assert!(
+        plan.bindings()
+            .iter()
+            .any(|b| b == &binding("orders", "app.jobs", "orders")),
+        "the subscription queue is bound to the route exchange with its name"
+    );
+}
+
+#[test]
+fn route_with_empty_exchange_needs_no_declaration_or_binding() {
+    let config = config_with_route("orders", "primary", "", "{queue}");
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert!(
+        plan.exchanges().iter().all(|e| !e.name.is_empty()),
+        "the default exchange is never declared"
+    );
+    assert!(
+        plan.bindings().iter().all(|b| !b.exchange.is_empty()),
+        "no binding is emitted for the default exchange"
+    );
+}
+
+#[test]
+fn route_with_literal_routing_key_binds_it_verbatim() {
+    let config = config_with_route("orders", "primary", "app.jobs", "orders.created");
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert!(
+        plan.bindings()
+            .iter()
+            .any(|b| b == &binding("orders", "app.jobs", "orders.created")),
+        "the literal routing key is bound as-is"
+    );
+    assert!(
+        plan.bindings()
+            .iter()
+            .all(|b| b.exchange != "app.jobs" || b.routing_key == "orders.created"),
+        "no {{queue}}-resolved key leaks into a literal route"
+    );
+}
+
+#[test]
+fn route_broker_without_subscriptions_still_declares_its_exchange() {
+    let mut config = config_with_route("orders", "secondary", "side.jobs", "{queue}");
+    config.brokers.push(broker("secondary", "/", "guest"));
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    assert!(
+        plan.exchanges().iter().any(|e| e.name == "side.jobs"),
+        "the exchange of an unused broker is still declared"
+    );
+    assert!(
+        plan.bindings().iter().all(|b| b.exchange != "side.jobs"),
+        "no binding when no subscription is hosted by the route broker"
+    );
+}
+
+#[test]
+fn route_template_resolves_per_subscription_queue() {
+    let mut config = config_with_route("orders", "primary", "app.jobs", "{queue}");
+    config.workers[0]
+        .subscriptions
+        .push(subscription("billing"));
+    let validated = config.validate().expect("valid config");
+    let plan = build_plan_from_config(&validated);
+
+    for queue in ["orders", "billing"] {
+        assert!(
+            plan.bindings()
+                .iter()
+                .any(|b| b == &binding(queue, "app.jobs", queue)),
+            "queue '{queue}' is bound with its own name as routing key"
+        );
+    }
 }
 
 #[test]
