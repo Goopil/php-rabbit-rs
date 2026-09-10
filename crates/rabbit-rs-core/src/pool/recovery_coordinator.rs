@@ -3,24 +3,30 @@ use std::{
     collections::{BTreeMap, HashSet},
     error::Error,
     fmt,
+    future::pending,
     sync::{Arc, Mutex as StdMutex, MutexGuard},
+    time::Duration,
 };
 
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
     task::JoinHandle,
+    time::Interval,
 };
 
 use crate::{
     config::{BrokerConfig, TopologyMode, ValidatedConfig, WorkerProfile},
     consumer::{ConsumerError, ConsumerSet, ConsumerSetHandle, Subscription, SubscriptionPolicy},
-    metrics::Metrics,
-    metrics::MetricsSnapshot,
+    metrics::{Metrics, MetricsSnapshot},
     publisher::{
-        PublishError, PublisherActor, PublisherConfig, PublisherConnectionEvent, PublisherHandle,
+        Destination, PublishError, PublisherActor, PublisherConfig, PublisherConnectionEvent,
+        PublisherHandle,
     },
     recovery::{ConnectionState, RecoveryPolicy},
-    topology::{TopologyPlan, TopologyReconcileError, TopologyReconciler},
+    topology::{
+        TopologyPlan, TopologyReconcileError, TopologyReconciler,
+        delay::{DelayStrategy, TtlBucketPlan},
+    },
     transport::{ConsumerChannel, PublisherChannel, Transport, TransportError, TransportErrorKind},
 };
 
@@ -438,6 +444,12 @@ async fn run_coordinator(
     }
 
     let mut last_generation: u64 = 0;
+    let keep_alive = DelayKeepAlive::compile(&context.config);
+    let mut keep_alive_timer = keep_alive.as_ref().map(|keep_alive| {
+        let mut timer = tokio::time::interval(keep_alive.period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        timer
+    });
 
     loop {
         tokio::select! {
@@ -505,6 +517,13 @@ async fn run_coordinator(
                     ConnectionState::Disconnected | ConnectionState::Closed => {}
                 }
             }
+            () = keep_alive_due(&mut keep_alive_timer), if keep_alive.is_some() => {
+                keep_alive
+                    .as_ref()
+                    .expect("keep-alive timer is armed with it")
+                    .tick(&actor, &context)
+                    .await;
+            }
             close = close_rx.recv() => {
                 if let Some(CloseCommand { completed }) = close {
                     shutdown_coordinator(&publisher, &consumers, completed).await;
@@ -530,6 +549,144 @@ async fn shutdown_coordinator(
         let _ = consumer.close().await;
     }
     let _ = completed.send(());
+}
+
+// ---------------------------------------------------------------------------
+// Delay bucket queue keep-alive (issue #211)
+// ---------------------------------------------------------------------------
+
+/// Periodic passive redeclare of the live TTL bucket queues (issue #211).
+///
+/// `RabbitMQ` deletes a queue after `x-expires` of idleness, and publishing
+/// does not count as use — only consumers, redeclares, and `basic.get` do. A
+/// bucket queue whose lazy quorum TTL expiry outlasts
+/// `bucket + queue_expiry_margin` of idleness would be deleted **with the
+/// delayed job inside**. The keep-alive redeclares every live bucket queue
+/// every `queue_expiry_margin / 2` — a redeclare counts as use, so live
+/// buckets never idle past the margin while the plan runs. Orphaned queues
+/// (rotated configuration, older fingerprint) are not part of the plan and
+/// are therefore not redeclared by anyone: they keep self-cleaning through
+/// their own `x-expires`, preserving the sweep semantics
+/// ([`crate::topology::delay::sweep_delay_queues`] keeps `HasMessages`
+/// queues).
+struct DelayKeepAlive {
+    plan: TtlBucketPlan,
+    /// `queue_expiry_margin / 2`: even a tick missed while the coordinator
+    /// drives a recovery leaves the queue idle for less than the margin.
+    period: Duration,
+}
+
+impl DelayKeepAlive {
+    /// Arms the keep-alive for a TTL bucket strategy; plugin and auto
+    /// strategies have no bucket queues and stay idle.
+    #[must_use]
+    fn compile(config: &ValidatedConfig) -> Option<Self> {
+        let DelayStrategy::TtlBuckets(plan) = DelayStrategy::compile(config) else {
+            return None;
+        };
+        Some(Self {
+            period: (plan.expiry_margin() / 2).max(Duration::from_millis(1)),
+            plan,
+        })
+    }
+
+    /// Runs one keep-alive tick: at most destinations × buckets passive
+    /// redeclares, each on its own short-lived admin channel.
+    ///
+    /// A per-queue channel keeps one absent queue (a plan destination whose
+    /// queue was never created, or one already expired) from poisoning the
+    /// remaining redeclares: a failed passive declare closes the AMQP
+    /// channel, and the next tick alone must not be the retry path. The tick
+    /// never fails the coordinator: while the connection is down the channel
+    /// open fails and the tick is skipped, and a refused redeclare only
+    /// logs — the next tick retries, never a hot loop.
+    async fn tick(&self, actor: &ConnectionActorHandle, context: &CoordinatorContext) {
+        let destinations = keep_alive_destinations(context);
+        for destination in &destinations {
+            for bucket in self.plan.buckets() {
+                let Ok(spec) = self.plan.queue_for(destination, *bucket) else {
+                    continue;
+                };
+                let Ok(channel) = actor.open_admin_channel().await else {
+                    return;
+                };
+                if let Err(error) = channel.verify_queue(&spec).await {
+                    crate::log::info(
+                        "delay_keep_alive",
+                        format!(
+                            "keep-alive redeclare of bucket queue '{}' failed; the next tick retries: {error}",
+                            spec.name
+                        ),
+                    );
+                }
+                let _ = channel.close().await;
+            }
+        }
+    }
+}
+
+/// Resolves when the keep-alive period elapses; pends forever when the
+/// keep-alive is not armed (no TTL bucket strategy).
+async fn keep_alive_due(timer: &mut Option<Interval>) {
+    match timer {
+        Some(timer) => {
+            timer.tick().await;
+        }
+        None => pending().await,
+    }
+}
+
+/// Destinations whose bucket queues can be live on this broker: the retry
+/// destinations of the requested worker subscriptions (the same
+/// `(queue, queue)` destination the coordinator hands to each subscription's
+/// delayed publisher) plus every configured publish route (issue #205).
+/// Requested profiles are re-read per tick so a consumer acquired after the
+/// last recovery generation joins the schedule on the next tick.
+fn keep_alive_destinations(context: &CoordinatorContext) -> Vec<Destination> {
+    let mut destinations: Vec<Destination> = Vec::new();
+    for name in requested_snapshot(context) {
+        let worker = match context.config.worker(&name) {
+            Some(worker) => worker.clone(),
+            None => match lock_requested(context).get(&name).cloned() {
+                Some(worker) => worker,
+                None => continue,
+            },
+        };
+        for subscription in &worker.subscriptions {
+            if subscription.broker == context.broker.name {
+                destinations.push(Destination::new(
+                    subscription.queue.clone(),
+                    subscription.queue.clone(),
+                ));
+            }
+        }
+    }
+    // A publish route's bucket queues hold the delayed jobs publishers
+    // enqueue through the route exchange: resolve the `{queue}` template
+    // exactly like the plan's route bindings, over the subscriptions hosted
+    // by the route's broker. Publish-side destinations are not gated on
+    // requested profiles — an application may delay-publish before the
+    // queue's consumer is ever requested.
+    for route in context.config.routes().values() {
+        if route.broker != context.broker.name {
+            continue;
+        }
+        for worker in context.config.worker_profiles() {
+            for subscription in &worker.subscriptions {
+                if subscription.broker != context.broker.name {
+                    continue;
+                }
+                let destination = Destination::new(
+                    route.exchange.clone(),
+                    route.routing_key.replace("{queue}", &subscription.queue),
+                );
+                if !destinations.contains(&destination) {
+                    destinations.push(destination);
+                }
+            }
+        }
+    }
+    destinations
 }
 
 async fn recover_generation(
