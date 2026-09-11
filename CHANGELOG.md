@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.2.2] - 2026-09-11
+
+### Fixed
+
+- The publish buffer enforces the `publisher.flush_interval` age deadline with a background timer (#218): the deadline was armed by the first publication of a batch but evaluated only by the next `publish()`, so a process that stopped publishing held its batch in memory until a pop, an explicit flush, or close — a lone FPM publish stayed invisible for 15 s+ and back-to-back publishes landed in pairs. The timer hands the batch off to the existing pipelined drain; explicit flushes keep full-deadline semantics (a sleeping timer is aborted, and can never steal a batch it already took). The bug was latent since the v0.2.0 buffer rework: earlier harness scenarios interleaved pops, whose consume-side flush masked the missing timer.
+
 ## [0.2.1] - 2026-09-10
 
 ### Fixed

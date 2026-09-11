@@ -4,6 +4,19 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.2.2] - 2026-09-11
+
+### Fixed
+
+- Requires `ext-rabbit_rs ^0.2.2` (lockstep release): the native extension now
+  enforces the publish buffer's `flush_interval` age deadline with a background
+  timer, so a lone publish (or the tail of a burst) reaches the broker within
+  the configured interval even when the process never publishes, pops, or
+  flushes again — previously a process that stopped publishing held its batch
+  in memory until the next operation or close (a lone FPM publish stayed
+  invisible; alternating publishes landed in pairs). No Laravel-layer change;
+  the package and the extension move together.
+
 ## [0.2.1] - 2026-09-10
 
 ### Fixed
