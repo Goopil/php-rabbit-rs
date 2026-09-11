@@ -5,12 +5,13 @@
 //! AMQP over TLS on `localhost:5671`, its certificate signed by the lab CA in
 //! `lab/rabbitmq/tls/generated/lab-ca.pem`, a deliberately untrusted CA in
 //! `lab-other-ca.pem`, a client identity (`lab-client.pem` +
-//! `lab-client-key.pem`) for the mTLS node on `127.0.0.1:5676`
+//! `lab-client.key`) for the mTLS node on `127.0.0.1:5674`
 //! (`fail_if_no_peer_cert = true`), and `wrong.internal` resolvable to
 //! 127.0.0.1 via /etc/hosts for the SAN-negative test.
 
 #![cfg(feature = "integration")]
 
+use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -236,6 +237,23 @@ async fn mtls_handshake_fails_without_client_identity() {
 
 #[tokio::test]
 async fn tls_handshake_fails_when_host_is_not_in_the_certificate_san() {
+    // Self-certifying guard: without the /etc/hosts mapping the connect would
+    // fail on DNS resolution and this negative test would pass vacuously.
+    let resolved: Vec<std::net::SocketAddr> = format!("{WRONG_SAN_HOST}:{TLS_PORT}")
+        .to_socket_addrs()
+        .expect(
+            "resolve wrong.internal: add `127.0.0.1 wrong.internal` to /etc/hosts (CI adds \
+                 it in the integration job)",
+        )
+        .collect();
+    assert!(
+        resolved
+            .iter()
+            .any(|addr| addr.ip() == std::net::IpAddr::from([127, 0, 0, 1])),
+        "wrong.internal must map to 127.0.0.1 via /etc/hosts: add `127.0.0.1 wrong.internal` \
+         (CI adds it in the integration job), resolved to {resolved:?}"
+    );
+
     let broker_config = tls_broker_at(WRONG_SAN_HOST, TLS_PORT, "tls-san-mismatch", trusted_tls());
 
     let Err(error) = LapinTransport.connect(&broker_config).await else {
