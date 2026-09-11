@@ -19,3 +19,43 @@ updates:
     labels:
       - dependencies
       - ci
+
+  - package-ecosystem: composer
+    directory: /packages/laravel-queue
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - php
+
+  - package-ecosystem: composer
+    directory: /crates/rabbit-rs-php
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - php
+
+  - package-ecosystem: composer
+    directory: /benchmarks
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - php
+
+  - package-ecosystem: composer
+    directory: /benchmarks/driver-bench
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - php
