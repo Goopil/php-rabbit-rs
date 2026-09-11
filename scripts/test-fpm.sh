@@ -93,9 +93,10 @@ declare_queue() {
 }
 
 # Queue depth is read through the AMQP data plane (a passive declare via the
-# size.php observer), not the management API: the lab ships with
-# `management.disable_metrics_collector = true`, so the management API never
-# reports queue message counts. The observer runs as its own CLI process with
+# size.php observer), not the management API: the management endpoint may
+# omit the `messages` gauge entirely until its stats collector emits one, so
+# a fresh lab can make deadline polling read 0 forever (observed on live
+# queues holding messages). The observer runs as its own CLI process with
 # its own pool, so it never touches the publish path under test.
 queue_depth() {
     local body

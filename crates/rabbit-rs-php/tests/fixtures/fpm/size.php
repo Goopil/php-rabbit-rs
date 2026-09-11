@@ -2,11 +2,11 @@
 declare(strict_types=1);
 
 // Broker-side queue depth observer: reads the queue's message count through
-// an AMQP passive declare (data plane). The lab's management API cannot be
-// used for depth assertions: the lab ships with
-// `management.disable_metrics_collector = true`, so queue stats are never
-// reported there. This probe is independent of the publish path under test:
-// it opens its own pool, holds no publications, and only reads.
+// an AMQP passive declare (data plane) instead of the management API, whose
+// per-queue `messages` gauge may be omitted until its stats collector emits
+// one — a fresh lab can then make depth polling read 0 forever. This probe
+// is independent of the publish path under test: it opens its own pool,
+// holds no publications, and only reads.
 
 $queue = $_SERVER['RABBIT_RS_QUEUE'] ?? ($argv[1] ?? '');
 if ($queue === '') {
