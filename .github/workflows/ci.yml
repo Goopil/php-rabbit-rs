@@ -376,3 +376,77 @@ jobs:
       - name: Run real-server Octane certification (RoadRunner)
         run: ./scripts/test-octane-runtime.sh --server=roadrunner
 
+  fpm:
+    name: FPM certification (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.4"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # The extension is built inside the php:fpm container (same PHP ABI),
+      # so the Rust cache lives in workspace-relative paths like the phpt job.
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+          key: fpm-${{ matrix.php }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            fpm-${{ matrix.php }}-
+
+      - name: Start RabbitMQ lab
+        run: ./scripts/lab-up.sh with-plugin
+
+      - name: Wait for lab readiness
+        run: |
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh; then
+              echo "Lab is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Lab did not become ready after 120s." >&2
+          exit 1
+
+      - name: Run FPM certification in Docker
+        run: |
+          mkdir -p .cargo-registry .cargo-git .rustup-home
+          # The certification script runs inside the php:fpm container and
+          # reaches the lab through the host-gateway alias: the lab's AMQP
+          # (5672) and management (15672) ports are published on the runner.
+          docker run --rm \
+            --add-host=host.docker.internal:host-gateway \
+            -v "${{ github.workspace }}:/src" \
+            -v "${{ github.workspace }}/.cargo-registry:/root/.cargo/registry" \
+            -v "${{ github.workspace }}/.cargo-git:/root/.cargo/git" \
+            -v "${{ github.workspace }}/.rustup-home:/root/.rustup" \
+            -e RABBIT_RS_FPM_EXTERNAL_LAB=1 \
+            -e RABBIT_RS_FPM_BROKER_HOST=host.docker.internal \
+            -e RABBIT_RS_FPM_MGMT_BASE=http://host.docker.internal:15672 \
+            -w /src \
+            php:${{ matrix.php }}-fpm \
+            sh -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq libclang-dev curl jq git
+
+              if ! command -v cargo &>/dev/null; then
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+              fi
+              . "$HOME/.cargo/env"
+
+              cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+              ./scripts/test-fpm.sh
+            '
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh
+
+
