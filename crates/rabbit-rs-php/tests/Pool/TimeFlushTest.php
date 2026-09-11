@@ -27,4 +27,22 @@ describe('time-based publish buffer flush', function () {
 
         $pool->close();
     });
+
+    it('time-flushes a lone publication with no follow-up operation', function () {
+        $pool = testingPool(defaultConfig(), ['publication_outcomes' => ['ack']]);
+
+        $pool->publish(pubMessage('lone-flush', timeoutMs: 30000));
+        expect($pool->stats()['publishes_total'])->toBe(0);
+
+        // No second publish, no pop, no explicit flush: the armed interval
+        // deadline must flush the batch on its own.
+        $deadline = microtime(true) + 2;
+        while (microtime(true) < $deadline && $pool->stats()['publishes_total'] < 1) {
+            usleep(1000);
+        }
+
+        expect($pool->stats()['publishes_total'])->toBe(1);
+
+        $pool->close();
+    });
 });

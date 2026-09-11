@@ -163,13 +163,18 @@ impl Pool {
             }
         }
 
-        self.publish_buffer.enqueue(publish);
+        let started_batch = self.publish_buffer.enqueue(publish);
 
         if self.publish_buffer.should_flush() {
             // Pipelined flush (Round D): the batch is spawned on the runtime
             // and publish returns before confirmations resolve. Non-confirmed
             // outcomes surface at the next operation (see below).
             self.publish_buffer.flush_triggered()?;
+        } else if started_batch {
+            // The deadline is armed but not due yet: arm the timer so the
+            // batch flushes even if this process never publishes, pops, or
+            // flushes again.
+            self.publish_buffer.ensure_flush_timer();
         }
 
         self.bridge.drain();
