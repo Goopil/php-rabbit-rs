@@ -348,6 +348,28 @@ jobs:
             # Same digest-pinned index as the musl x86_64 cell.
             docker_image: php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # Release-asset smoke (issue #227): every PIE install cell also runs
+      # the AMQP smoke against a real broker, so a published artifact that
+      # loads but cannot publish, confirm, consume, or recover never passes
+      # verification. The lab comes up once per job; runner cells reach it
+      # on localhost, docker cells through host.docker.internal.
+      - name: Start RabbitMQ lab
+        run: ./scripts/lab-up.sh with-plugin
+
+      - name: Wait for lab readiness
+        run: |
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh >/dev/null 2>&1; then
+              echo "Lab is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Lab did not become ready after 120s." >&2
+          exit 1
+
       - name: Setup PHP ${{ matrix.php }}
         if: matrix.docker_image == ''
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
@@ -404,6 +426,10 @@ jobs:
             echo 'OK: rabbit_rs ' . \$v . ' installed via PIE from the published release' . PHP_EOL;
           "
 
+      - name: AMQP smoke through the installed extension (runner)
+        if: matrix.docker_image == ''
+        run: ./scripts/amqp-smoke.sh --php php
+
       - name: Install the published release via PIE (pinned PHP image)
         if: matrix.docker_image != ''
         env:
@@ -418,6 +444,8 @@ jobs:
           COMPOSER_AUTH_JSON="$(jq -cn --arg t "${GITHUB_TOKEN}" '{"github-oauth":{"github.com":$t}}')"
           export COMPOSER_AUTH_JSON
           docker run --rm \
+            --add-host=host.docker.internal:host-gateway \
+            -v "${{ github.workspace }}:/src:ro" \
             -e GITHUB_REF_NAME \
             -e GITHUB_REPOSITORY \
             -e COMPOSER_AUTH_JSON \
@@ -455,7 +483,18 @@ jobs:
                 exit 1
               fi
               echo "OK: rabbit_rs ${INSTALLED} installed via PIE from the published release"
+              # Release-asset smoke against the runner-hosted lab: the PIE
+              # install path must publish, confirm, consume, and recover,
+              # not just load (issue #227).
+              /src/scripts/amqp-smoke.sh \
+                --php php \
+                --dsn host.docker.internal:5672 \
+                --toxiproxy http://host.docker.internal:18474
             '
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh || true
 
   verify-pie-upgrade-rollback:
     name: PIE upgrade + rollback (glibc x86_64 PHP 8.4)
