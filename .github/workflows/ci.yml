@@ -449,4 +449,32 @@ jobs:
         if: always()
         run: ./scripts/lab-down.sh
 
+  composer-audit:
+    name: Composer audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      # Neither composer.lock is committed (both are gitignored), so resolve
+      # the dependency tree first, then audit it. `composer audit` exits
+      # non-zero on security advisories — that failure blocks the PR.
+      - name: Audit Laravel package dependencies
+        run: |
+          cd packages/laravel-queue
+          composer update --quiet --no-interaction --ignore-platform-reqs
+          composer audit
+
+      - name: Audit extension package dependencies
+        run: |
+          cd crates/rabbit-rs-php
+          composer update --quiet --no-interaction
+          composer audit
+
 
