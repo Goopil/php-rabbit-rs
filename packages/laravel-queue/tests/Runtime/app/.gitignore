@@ -1,0 +1,9 @@
+/vendor
+/node_modules
+/.env
+# RoadRunner binary staged here by the harness (octane spawns it from the app
+# base path); the pinned copy lives in target/rr-bin/rr.
+/rr
+/storage
+/bootstrap/cache
+/composer.lock
