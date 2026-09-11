@@ -282,12 +282,52 @@ jobs:
           exit 1
 
       - name: Run Rust integration tests
-        # Exclude tls_integration: it requires the TLS lab profile and its
-        # generated certificates (opt-in via `./scripts/test-integration.sh --with-tls`).
+        # tls_integration runs in its own step below against the with-tls lab
+        # profile (it needs the TLS + mTLS nodes and the generated certs).
         run: cargo nextest run -p rabbit-rs-core --test '*' --features integration -j 1 --no-fail-fast -E 'not binary(tls_integration)'
 
       - name: Run Laravel integration suite
         run: ./scripts/test-integration.sh
+
+      - name: Run TLS integration suite (PR-blocking)
+        run: |
+          # Fresh lab with the TLS profile: regenerates the lab certs, boots
+          # the TLS node and the client-cert-mandatory mTLS node.
+          ./scripts/lab-up.sh with-tls
+
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh; then
+              echo "Lab is ready."
+              break
+            fi
+            if [[ "${i}" == 120 ]]; then
+              echo "Lab did not become ready after 120s." >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # The SAN-negative test connects to a hostname that resolves to the
+          # TLS node but is absent from its certificate SANs.
+          sudo sh -c 'echo "127.0.0.1 wrong.internal" >> /etc/hosts'
+
+          for i in $(seq 1 60); do
+            if echo | openssl s_client -connect localhost:5674 -servername rabbit.internal \
+                -CAfile lab/rabbitmq/tls/generated/lab-ca.pem \
+                -cert lab/rabbitmq/tls/generated/lab-client.pem \
+                -key lab/rabbitmq/tls/generated/lab-client.key 2>/dev/null \
+                | grep -q "Verify return code: 0 (ok)"; then
+              echo "mTLS listener on localhost:5674 is ready."
+              break
+            fi
+            if [[ "${i}" == 60 ]]; then
+              echo "mTLS listener on localhost:5674 did not become ready." >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          cargo nextest run -p rabbit-rs-core --test tls_integration --features integration -j 1 --no-fail-fast
 
       - name: Stop RabbitMQ lab
         if: always()
