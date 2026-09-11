@@ -173,6 +173,11 @@ scan_prerequisites() {
     [[ -d "${ROOT}/benchmarks/driver-bench/vendor" ]] || missing_soft+=("benchmarks/driver-bench/vendor (composer install)")
     [[ -f "${DEBUG_ARTIFACT}" ]] || missing_soft+=("target/debug/librabbit_rs_php.${EXT_SUFFIX} (auto-built by the tiers)")
     [[ -f "${RELEASE_ARTIFACT}" ]] || missing_soft+=("target/release/librabbit_rs_php.${EXT_SUFFIX} (tier 9; built on demand on macOS)")
+    # Hard: the SAN-negative TLS case resolves wrong.internal; without the
+    # mapping tier 4 deterministically fails ~15 min in, so gate early.
+    if ! grep -q 'wrong\.internal' /etc/hosts 2>/dev/null; then
+        missing_hard+=("/etc/hosts mapping for the SAN-negative TLS case (run: sudo sh -c 'echo \"127.0.0.1 wrong.internal\" >> /etc/hosts'; CI adds the same line)")
+    fi
 }
 
 print_prerequisites() {
@@ -191,6 +196,11 @@ print_prerequisites() {
         echo "  MISSING docker daemon (docker ps failed)"
     fi
     echo "  info    php ${PHP_BIN} version: $(php_major_minor)"
+    if grep -q 'wrong\.internal' /etc/hosts 2>/dev/null; then
+        echo "  ok      /etc/hosts wrong.internal mapping (SAN-negative TLS case)"
+    else
+        echo "  MISSING /etc/hosts wrong.internal mapping (SAN-negative TLS case)"
+    fi
     for item in "${missing_soft[@]:-}"; do
         [[ -z "${item}" ]] && continue
         echo "  MISSING ${item}"
