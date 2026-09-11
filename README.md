@@ -86,13 +86,18 @@ No extra configuration required: pop the queue directly — it is the connection
 
 > On the curated lab workloads, rabbit-rs consumes **4–6× faster** than php-amqplib on the same session, with 0 losses and 0 duplicates in every reliable-mode run. Harness, methodology, and archived results: [benchmarks/README.md](benchmarks/README.md).
 
-## Requirements
+## Support contract
 
-- **PHP** 8.4 or 8.5
-- **Laravel** 12 or 13 (for the Laravel queue driver)
-- **RabbitMQ** 4.2.9 or newer (the CI lab runs 4.2.9)
-- **Linux** x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE
-- **macOS** ARM64 (Apple Silicon) — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases)
+| Dimension | Support |
+|-----------|---------|
+| PHP | 8.4 and 8.5, NTS (ZTS is deferred to V2) |
+| Laravel | 12 and 13 (for the Laravel queue driver) |
+| SAPIs | CLI, PHP-FPM, and Octane (FrankenPHP, RoadRunner, Open Swoole, Swoole) |
+| RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
+| Platforms | Linux x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE; macOS ARM64 — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and Homebrew |
+| Native extension | `ext-rabbit_rs ^0.2.2` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
+| Delivery | At-least-once: duplicates are permitted and measured (`duplicates_total`, `messages_redelivered`); silent loss after confirmed-path acceptance is a bug |
+
 - **Rust** 1.96.0 (contributors only — see [Contributing](#contributing))
 
 ## Distribution channels
@@ -105,7 +110,7 @@ Rabbit RS is distributed via three channels:
 | `goopil/rabbit-rs-laravel` | [Packagist](https://packagist.org) | Laravel queue driver (PHP source) |
 | `rabbit-rs` | [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs) | Native PHP extension (macOS binary) |
 
-PIE selects the correct pre-compiled binary for your PHP version, architecture, libc, and thread-safety mode. Homebrew does the same for macOS Apple Silicon. Composer installs the Laravel bridge and verifies that `ext-rabbit_rs` is loaded, but does **not** install or modify system PHP binaries.
+PIE selects the correct pre-compiled binary for your PHP version, architecture, libc, and thread-safety mode. Homebrew does the same for macOS Apple Silicon. Composer installs the Laravel bridge but does **not** install, verify, or modify system PHP: `ext-rabbit_rs` is a Composer suggestion and the driver fails at connection resolution until the extension is loaded (PIE installs the binary).
 
 ### macOS
 

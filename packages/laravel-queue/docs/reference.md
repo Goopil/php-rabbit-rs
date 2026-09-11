@@ -1049,7 +1049,7 @@ rabbitmq-plugins enable rabbitmq_delayed_message_exchange
 
 If the plugin is not installed, the exchange declare fails with a permanent error: in `declare` mode the pool connection fails during topology reconciliation, while in `external` and `verify` modes delayed publishes fail terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working. Use `ttl` mode when the plugin cannot be installed.
 
-#### TTL fallback mode
+#### TTL mode (explicit)
 
 ```php
 'delay' => [
@@ -1674,7 +1674,7 @@ mechanics (modes, declarations, recovery order) live in
 | Work queue (competing consumers) | Background jobs of one kind | The default: one connection, one `queue` key, `--workers=N` |
 | Weighted multi-queue | Job classes with different latency needs | `subscriptions` with `weight` / per-subscription `prefetch` |
 | Pub/sub (fan-out) | One event, several independent consumer groups | A topic exchange plus one subscription queue per group, each bound with its own routing key |
-| Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — plugin exchange when available, TTL buckets otherwise |
+| Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — a documented alias for the delayed-message plugin; no TTL fallback (an unroutable delay fails terminally). `ttl` remains available as an explicit mode |
 | Request/reply (RPC) | Service-to-service call/answer | Not yet built — milestone M3, see the [ROADMAP](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/plans/ROADMAP.md) |
 
 One rule cuts across all patterns: **jobs must be idempotent.** The

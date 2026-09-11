@@ -8,9 +8,9 @@ Build a PHP extension written in Rust and a Laravel package capable of publishin
 
 ## V1 scope
 
-- PHP 8.4 and 8.5.
+- PHP 8.4 and 8.5 (NTS only).
 - Laravel 12 and 13.
-- RabbitMQ 4.3.x.
+- RabbitMQ 4.2.9 or newer.
 - Linux x86_64 and ARM64.
 - glibc and musl distributions.
 - SAPIs: CLI, PHP-FPM, and Octane.
@@ -142,18 +142,15 @@ Each message handed to PHP carries an opaque native token with connection identi
 - a failed delayed publication leaves the original unacknowledged.
 - a connection closure automatically requeues unacknowledged messages.
 
-basic.reject is preferred over basic.nack for a single delivery: quorum queues can then increment their delivery counters. The x-acquired-count and x-delivery-count headers of RabbitMQ 4.3 are used together with the application counter to implement attempts.
+basic.reject is preferred over basic.nack for a single delivery: quorum queues can then increment their delivery counters. The x-acquired-count and x-delivery-count headers of RabbitMQ 4.2+ are used together with the application counter to implement attempts.
 
 After an outage, an ACK carrying an old generation is rejected by the extension. The broker redelivers the message. If the job had already completed on the PHP side before the ACK failure, its processing may therefore be repeated.
 
 ## Delays
 
-The delay driver is auto by default:
+The delay driver is `auto` by default, a documented alias for `plugin`: delayed publications route through the rabbitmq_delayed_message_exchange. There is no automatic TTL fallback — a delayed publication the configured strategy cannot route fails terminally. The explicit `ttl` mode remains available: it uses bounded, configurable buckets.
 
-1. use rabbitmq_delayed_message_exchange when available and permitted;
-2. otherwise use TTL queues with a dead-letter exchange.
-
-The TTL fallback uses bounded, configurable buckets. Delay queues are declared lazily, durable when needed, and given a queue expiry to avoid unbounded topology growth. Delays are rounded up to the bucket so a job is never delivered before its due time.
+Delay queues are declared lazily, durable when needed, and given a queue expiry to avoid unbounded topology growth. Delays are rounded up to the bucket so a job is never delivered before its due time.
 
 ## Reconnection
 
@@ -277,7 +274,7 @@ The core exposes a snapshot without imposing a backend:
 - publish, confirm, wait, and processing latencies;
 - theoretical weight and effective distribution per subscription.
 
-The Laravel package turns this data into events and can provide Prometheus or OpenTelemetry adapters later. Logs are structured and never contain a password, full URI, or private certificate.
+The Laravel package turns this data into events. Observability for v1 is the ratified external-collection model: metrics are exposed as a snapshot for an external collector (for example a sidecar scraping a metrics endpoint, or the RabbitMQ management API) — no exporter ships in v1. Prometheus and OpenTelemetry exporters stay in the planned evolutions. Logs are structured and never contain a password, full URI, or private certificate.
 
 ## Validation
 
@@ -294,7 +291,7 @@ The repository contains three labs:
 
 - benchmarks/native: Rust, Lapin, batching, confirms, and FFI cost;
 - benchmarks/laravel: Laravel application with the native extension, php-amqplib, the existing Laravel RabbitMQ driver, Redis, and a database control;
-- lab/rabbitmq: a three-node RabbitMQ 4.3 cluster, metrics, and fault injection.
+- lab/rabbitmq: a three-node RabbitMQ 4.2.9 cluster, metrics, and fault injection.
 
 Reference payloads are 256 B, 1 KiB, 10 KiB, 100 KiB, and 1 MiB. Metrics are throughput, p50/p95/p99, CPU per message, RSS, connections, channels, recovery time, losses, duplicates, and fairness error.
 
@@ -306,7 +303,7 @@ Distribution optimizes user simplicity and cleanly separates the system binary f
 
 ### Native extension
 
-The main repository is registered on Packagist as a goopil/rabbit-rs-native package of type php-ext. Its root composer.json declares extension-name = rabbit_rs, Linux only, NTS and ZTS support, and download-url-method = pre-packaged-binary.
+The main repository is registered on Packagist as a goopil/rabbit-rs-native package of type php-ext. Its root composer.json declares extension-name = rabbit_rs, Linux only, NTS-only support (thread-safe builds are deferred to V2), and download-url-method = pre-packaged-binary.
 
 The public installation is:
 
@@ -314,12 +311,12 @@ The public installation is:
 
 PIE replaces PECL as the primary channel. It selects the right binary according to PHP version, architecture, libc, and NTS/ZTS mode, installs the shared file, and enables the extension in the right PHP configuration.
 
-CI produces 16 release archives:
+CI produces 10 release archives — 30 release assets once each archive's SHA-256 checksum and SBOM are counted:
 
-- PHP 8.4 and 8.5;
-- x86_64 and ARM64;
-- glibc and musl;
-- NTS and ZTS.
+- 8 Linux archives: PHP 8.4 and 8.5; x86_64 and ARM64; glibc and musl — all NTS;
+- 2 macOS ARM64 archives (PHP 8.4 and 8.5, NTS), distributed through GitHub Releases and Homebrew because PIE does not support macOS.
+
+Thread-safe (ZTS) builds were dropped from the matrix by the 2026-08-31 decision recorded in the CHANGELOG; they return in V2 with per-thread isolation.
 
 Debug builds are not distributed. Each archive follows the PIE naming convention exactly, for example:
 
@@ -335,11 +332,11 @@ The packages/laravel-queue package is published on Packagist as goopil/rabbit-rs
 
     composer require goopil/rabbit-rs-laravel
 
-It requires PHP ^8.4, Laravel 12 or 13, and ext-rabbit_rs with the same major version. Composer checks for the extension's presence but never attempts to install or enable a system binary.
+It requires PHP ^8.4 and Laravel 12 or 13, and suggests `ext-rabbit_rs` with the tracking constraint (`^0.2.x`): `composer install` succeeds without the extension, and a connection resolved without it — or with a loaded extension outside the constraint — fails with a typed runtime error naming the version and the install command. Composer never attempts to install or enable a system binary.
 
 The monorepo remains the development source. A subtree split CI publishes packages/laravel-queue to a read-only mirror repository, then pushes the same tag as the extension. The native GitHub release is only published after all binaries are produced and validated, the Laravel mirror tag is pushed, and both Packagist metadata are verified.
 
-The stable V1 is only released after certification of CLI, FPM, and the four announced Octane servers.
+The stable V1 is only released after runtime certification of CLI, FPM, and the four announced Octane servers — evidenced by the release checklist (`docs/release-checklist.md`, see the v1 readiness remediation plan) rather than asserted.
 
 ## Planned evolutions
 

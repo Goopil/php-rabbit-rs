@@ -89,7 +89,7 @@ For a complete Dockerfile example, see [examples/laravel/Dockerfile](../examples
 composer require goopil/rabbit-rs-laravel
 ```
 
-Composer installs the PHP package and verifies that `ext-rabbit_rs` is loaded. It does **not** install or modify system PHP binaries — that is PIE's job.
+Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.2.2`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 The package auto-discovers the service provider in Laravel 12 and 13. If you disabled auto-discovery, register it manually:
 
@@ -155,9 +155,9 @@ The separation is:
 | Tool | Responsibility |
 |------|---------------|
 | PIE | Downloads and installs the correct pre-compiled `.so` binary |
-| Composer | Installs the Laravel queue driver (PHP source) and verifies `ext-rabbit_rs` is loaded |
+| Composer | Installs the Laravel queue driver (PHP source); `ext-rabbit_rs` stays a suggestion — connections fail at connection resolution until the extension is loaded |
 
-The Laravel driver's `composer.json` declares `"ext-rabbit_rs": "^0.1"`, which causes Composer to check that the extension is loaded at install time. If the extension is missing, Composer reports the error. But Composer never installs the binary — that is PIE's role.
+The Laravel driver's `composer.json` declares `ext-rabbit_rs` as a *suggestion* (`^0.2.2`), not a requirement: `composer install` succeeds without the extension. The constraint is enforced at connection resolution — the driver fails with a typed error when the extension is missing or its version falls outside the constraint. Composer never installs the binary — that is PIE's role.
 
 ### Multiple PHP versions
 
@@ -193,7 +193,7 @@ Check which version is active before and after:
 php --ri rabbit_rs
 ```
 
-Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` requires a specific `ext-rabbit_rs` major version. When moving across a major boundary — in either direction — upgrade or roll back the extension and the driver together. Composer fails loudly at `composer update` if the loaded extension does not satisfy the driver's constraint, so a half-upgraded system (new driver with old extension, or the reverse) cannot go unnoticed.
+Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` tracks a specific `ext-rabbit_rs` constraint (`^0.2.2`). When moving across a version boundary — in either direction — upgrade or roll back the extension and the driver together. Composer cannot check loaded extensions (the constraint lives in `suggest`), so the driver enforces the constraint itself with a typed error at connection resolution: a half-upgraded system (new driver with old extension, or the reverse) fails loudly on the first connection instead of going unnoticed.
 
 Every release exercises these paths in CI before it is finalized: the release pipeline installs the previous published release, upgrades it to the new release, and rolls back again (see [End-to-end PIE validation](#end-to-end-pie-validation)).
 
@@ -204,7 +204,7 @@ Rabbit RS distributes two packages in synchronized releases:
 - **`goopil/rabbit-rs-native`** — the native PHP extension, installed via [PIE](https://github.com/php/pie)
 - **`goopil/rabbit-rs-laravel`** — the Laravel queue driver, installed via [Composer](https://getcomposer.org)
 
-Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package requires `ext-rabbit_rs ^0.1` — the constraint tracks the extension version until 1.0 (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package suggests `ext-rabbit_rs ^0.2.2` — the constraint tracks the extension version until 1.0 and is enforced by a typed error at connection resolution (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 #### PIE build matrix
 
@@ -540,7 +540,7 @@ TLS server name indication (SNI) and certificate hostname verification always us
 
 **Error:**
 ```
-The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.1 to be loaded.
+The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.2.2 to be loaded.
 ```
 
 **Solution:**
