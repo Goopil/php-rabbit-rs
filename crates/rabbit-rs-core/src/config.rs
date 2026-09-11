@@ -463,14 +463,15 @@ pub struct PublisherConfigSection {
     /// This knob configures the boundary-crossing publish buffer built on top
     /// of the core (the PHP extension's `PublishBuffer`): accepted
     /// publications batch there and are flushed once the size threshold is
-    /// reached or a batch is older than this interval. The triggers are
-    /// evaluated whenever the buffer is touched — a publish call, an explicit
-    /// flush, a read that must observe the buffer (`size`, `clear`, a
-    /// consumer pop) — and the age clock is armed by the first publication of
-    /// each batch, so the interval measures how long the oldest buffered
-    /// publication has been waiting. A publication never touched by a
-    /// triggering operation is still flushed by an explicit `flush`/`close`
-    /// or the bounded teardown flush at buffer disposal.
+    /// reached or a batch is older than this interval. The age deadline is
+    /// armed by the first publication of each batch and enforced by a one-shot
+    /// background timer, so a batch is flushed once its oldest publication is
+    /// older than the interval even when the process never publishes, pops,
+    /// or flushes again (issue #218: a lone FPM publish reaches the broker
+    /// within the interval instead of sitting in process memory). Explicit
+    /// flush paths (`flush`, `close`, the bounded teardown flush at buffer
+    /// disposal) stay synchronous with full-deadline semantics and quiesce
+    /// the timer.
     ///
     /// Bounded to at most one hour so a misconfiguration cannot strand
     /// publications for a day; `0` flushes on every triggering operation.
@@ -2319,7 +2320,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_interval_defaults_to_the_current_age_flush_behavior() {
+    fn flush_interval_defaults_to_the_timer_enforced_age_flush_behavior() {
         assert_eq!(
             PublisherConfigSection::default().flush_interval,
             Duration::from_millis(1),
