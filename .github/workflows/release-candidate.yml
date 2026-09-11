@@ -90,6 +90,12 @@ jobs:
           fi
           php-fpm --version
 
+      # verify-release-candidate.sh hard-gates on this mapping (the SAN-negative
+      # TLS test connects to wrong.internal and expects it not to reach a real
+      # broker); ci.yml provisions the same entry in its integration job.
+      - name: Map wrong.internal for the SAN-negative TLS suite (tier 4)
+        run: sudo sh -c 'echo "127.0.0.1 wrong.internal" >> /etc/hosts'
+
       - name: Run RC orchestrator
         run: ./scripts/verify-release-candidate.sh
 
