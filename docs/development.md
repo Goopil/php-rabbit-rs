@@ -343,6 +343,64 @@ cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes
 
 **Fix:** Start the lab: `./scripts/lab-up.sh with-plugin && ./scripts/lab-ready.sh`. Or run only the unit tests: `cargo test -p rabbit-rs-core` (without `--features integration`).
 
+## Release candidate (RC) pipeline
+
+`scripts/verify-release-candidate.sh` runs the full release-candidate tier
+list — the same tiers `.github/workflows/release-candidate.yml` runs on
+`v*-*rc*` tags, with the tier output teed into an evidence directory
+(`target/rc-evidence/<timestamp>/`, uploaded as workflow artifacts in CI).
+
+```bash
+./scripts/verify-release-candidate.sh --dry-run     # prerequisites + tier plan, no tiers
+./scripts/verify-release-candidate.sh               # full RC pass (~2-3 h)
+```
+
+### Prerequisites
+
+Run on a quiet machine: the orchestrator manages the RabbitMQ lab itself
+(started before tier 5, shared by tiers 5, 6, 8, 9, stopped at the end).
+
+- Docker (daemon running) and the usual shell tooling (`jq`, `curl`, `git`)
+- Rust 1.96 (pinned by `rust-toolchain.toml`)
+- PHP 8.4+ with `php-config` (and `php-fpm` for tier 5)
+- Composer vendors: `packages/laravel-queue`, `crates/rabbit-rs-php`,
+  `benchmarks/driver-bench` (auto-installed by the tiers when missing)
+- Built extension artifact (`target/debug/librabbit_rs_php.*`, auto-built by
+  the tiers; `target/release/librabbit_rs_php.dylib` for tier 9 — built on
+  demand on macOS)
+
+`--dry-run` validates all of this and exits non-zero listing what is missing.
+
+### Expected duration
+
+| Tier | Script | Estimate |
+|------|--------|----------|
+| 1 | `scripts/check.sh` (fmt, clippy, full test suite, composer, cargo-deny) | ~10-25 min |
+| 2 | `scripts/test-extension.sh` (Pest + PHPT) | ~5-10 min |
+| 3 | `scripts/test-laravel.sh` (Unit + Feature) | ~2-5 min |
+| 4 | `scripts/test-integration.sh --with-tls` (Rust + Laravel integration on the TLS lab) | ~10-20 min |
+| 5 | `scripts/test-fpm.sh` (broker-backed FPM certification) | ~3-5 min |
+| 6 | `scripts/test-octane-runtime.sh` × 4 servers | ~40-80 min |
+| 7 | `scripts/validate-distribution.sh` | ~1-2 min |
+| 8 | `scripts/amqp-smoke.sh` per matching artifact in `release/` | ~2-5 min each |
+| 9 | Fresh rebench + `check-budgets.php` self-baseline | ~10-20 min |
+| — | **Total** | **~2-3 h** |
+
+### Blocking vs advisory
+
+| Tier | Verdict | Blocking? | Notes |
+|------|---------|-----------|-------|
+| 1-4 | PASS/FAIL | yes | Fail-fast: a failure SKIPs the remaining tiers with an explicit note |
+| 5 | PASS/FAIL | yes | Runs in external-lab mode against the shared lab |
+| 6 | PASS/FAIL/SKIP | yes | Harness exit 2 ("server not available on this machine") is an explicit SKIP — its evidence comes from the nightly matrix, which provisions each server in its own job |
+| 7 | PASS/FAIL | yes | Full artifact checks only when `release/` contains archives |
+| 8 | PASS/FAIL/SKIP | yes | SKIP with a note when `release/` is empty or no artifact matches this platform (php version + arch + libc); other cells are covered by the functional matrix |
+| 9 | PASS/FAIL/SKIP | losses/duplicates/ok: yes — ratio thresholds: advisory | Self-comparison by design: the committed baseline is single-machine, so the RC run re-baselines itself from its own fresh rebench output; only the integrity verdict (losses, duplicates, `ok`) blocks. SKIPs on Linux (rebench hardcodes the macOS `.dylib` path) — disclose the SKIP in the RC evidence |
+
+A blocking failure exits non-zero after printing the final per-tier summary.
+The go/no-go gate that consumes this evidence is
+[docs/release-checklist.md](release-checklist.md).
+
 ## Coding conventions
 
 See [AGENTS.md](../AGENTS.md) for the full list. Key points:
