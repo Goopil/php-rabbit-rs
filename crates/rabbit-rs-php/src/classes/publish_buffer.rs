@@ -11,12 +11,14 @@
 //! semantics and quiesce outstanding pipelined drains first, so their
 //! documented flush-barrier contracts are unchanged.
 //!
-//! Because the flush triggers only run on publish calls, a publication can
-//! otherwise remain buffered while the process stops publishing — a consumer
-//! created afterwards would starve waiting for messages that only exist in
-//! process memory. Consumers therefore hold a clone of this buffer and drain
-//! it before waiting for deliveries, so anything accepted before a pop is
-//! visible to that pop.
+//! The interval deadline is armed by the first publication of a batch and
+//! enforced by a background timer task, so a batch is flushed once its
+//! oldest publication is older than the interval even when the process
+//! never publishes, pops, or flushes again (a lone FPM publish reaches the
+//! broker within the interval instead of sitting in process memory).
+//! Consumers additionally hold a clone of this buffer and drain it before
+//! waiting for deliveries: this keeps the pop-visible guarantee synchronous
+//! even when the configured interval is large.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -98,6 +100,10 @@ pub(crate) struct PublishBuffer {
     /// Spawned pipelined drains, retained so `flush()`/`close()`/teardown
     /// can quiesce them within the teardown budget.
     drain_handles: std::sync::Mutex<Vec<JoinHandle<()>>>,
+    /// Spawned deadline timers, abortable while they sleep: `quiesce`
+    /// cancels them so an explicit flush keeps full-deadline semantics over
+    /// the still-buffered batch (a timer never holds a taken batch).
+    timer_handles: std::sync::Mutex<Vec<JoinHandle<()>>>,
     /// Bounded concurrent spawned drains (backpressure when the pipeline
     /// falls behind production).
     drain_permits: Arc<tokio::sync::Semaphore>,
@@ -105,6 +111,10 @@ pub(crate) struct PublishBuffer {
     /// count their publications as dropped instead of re-buffering them
     /// into a buffer nobody will flush again.
     tearing_down: AtomicBool,
+    /// Set while a timer task is scheduled to enforce the current batch's
+    /// interval deadline. The flag keeps one timer per batch: the deadline
+    /// covers every publication enqueued before it fires.
+    timer_pending: AtomicBool,
     /// Time-based flush trigger interval. Wired from the validated
     /// configuration (`publisher.flush_interval`, default 1 millisecond —
     /// issue #194); the test surface overrides it so tests can fill the
@@ -134,8 +144,10 @@ impl PublishBuffer {
             pending_errors: std::sync::Mutex::new(VecDeque::new()),
             dropped_error_records: AtomicU64::new(0),
             drain_handles: std::sync::Mutex::new(Vec::new()),
+            timer_handles: std::sync::Mutex::new(Vec::new()),
             drain_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DRAINS)),
             tearing_down: AtomicBool::new(false),
+            timer_pending: AtomicBool::new(false),
             flush_interval,
             flush_threshold: BUFFER_THRESHOLD,
         }
@@ -200,9 +212,12 @@ impl PublishBuffer {
     ///
     /// The first publication of a batch arms the interval deadline so a
     /// batch is time-flushed even when it never reaches the size threshold
-    /// (issue #96): a fresh pool's first publish would otherwise sit in the
-    /// buffer until the threshold, a drain, or an explicit flush.
-    pub(crate) fn enqueue(&self, publish: NativePublish) {
+    /// (issue #96): the deadline is enforced by [`Self::ensure_flush_timer`]
+    /// and evaluated by the next publish, whichever comes first.
+    ///
+    /// Returns whether this publication started a new batch (the buffer was
+    /// empty), so the caller can arm the interval timer.
+    pub(crate) fn enqueue(&self, publish: NativePublish) -> bool {
         let payload_bytes = publish.request.payload.len();
         let was_empty;
         {
@@ -214,6 +229,7 @@ impl PublishBuffer {
         if was_empty {
             *self.last_flush.lock().expect("last_flush mutex poisoned") = Some(Instant::now());
         }
+        was_empty
     }
 
     /// Returns whether the buffer reached a flush trigger.
@@ -313,6 +329,18 @@ impl PublishBuffer {
     /// are visible to it, and by the explicit `flush()`/`close()`/destructor
     /// paths.
     pub(crate) fn quiesce(&self) {
+        let timers: Vec<JoinHandle<()>> = std::mem::take(
+            &mut *self
+                .timer_handles
+                .lock()
+                .expect("timer handles mutex poisoned"),
+        );
+        for timer in timers {
+            timer.abort();
+        }
+        // An aborted timer never took the batch: the caller's synchronous
+        // flush owns it. The reset lets the next batch arm a fresh timer.
+        self.timer_pending.store(false, Ordering::Release);
         let handles: Vec<JoinHandle<()>> = std::mem::take(
             &mut *self
                 .drain_handles
@@ -441,6 +469,88 @@ impl PublishBuffer {
     pub(crate) fn flush_triggered(self: &Arc<Self>) -> PhpResult<()> {
         let publishes = self.take();
         self.flush_pipelined(publishes)
+    }
+
+    /// Arms the interval deadline for a freshly started batch.
+    ///
+    /// Without this, the deadline is evaluated only by the next `publish()`
+    /// and a process that stops publishing holds the batch in memory until
+    /// a pop, an explicit flush, or close (issue #96 regression report:
+    /// lone FPM publishes invisible for 15 s+). The timer enforces the
+    /// documented `flush_interval` contract: the batch is flushed once its
+    /// oldest publication is older than the interval, even with no further
+    /// PHP operation.
+    pub(crate) fn ensure_flush_timer(self: &Arc<Self>) {
+        if self.timer_pending.swap(true, Ordering::AcqRel) {
+            // A timer already covers the current batch: its deadline is the
+            // oldest publication's, so the whole batch flushes on time.
+            return;
+        }
+        let buffer = Arc::clone(self);
+        let task = self.handle.runtime().spawn(async move {
+            buffer.run_flush_timer().await;
+        });
+        self.timer_handles
+            .lock()
+            .expect("timer handles mutex poisoned")
+            .push(task);
+    }
+
+    /// Enforces the armed batch deadline (runs on the runtime).
+    ///
+    /// The timer never drains inline: it hands the batch off to a spawned
+    /// drain registered with the other pipelined drains, so aborting a
+    /// sleeping timer during [`Self::quiesce`] can never cancel a batch
+    /// that was already taken. An explicit flush therefore keeps
+    /// full-deadline semantics: quiesce aborts the sleeping timer, the
+    /// batch stays buffered, and the synchronous flush owns it.
+    async fn run_flush_timer(self: Arc<Self>) {
+        tokio::time::sleep(self.flush_interval).await;
+        self.timer_pending.store(false, Ordering::Release);
+        if !self.should_flush() {
+            return;
+        }
+        let buffer = Arc::clone(&self);
+        let task = self.handle.runtime().spawn(async move {
+            buffer.run_timer_drain().await;
+        });
+        self.drain_handles
+            .lock()
+            .expect("drain handles mutex poisoned")
+            .push(task);
+    }
+
+    /// Timer-initiated pipelined drain (runs on the runtime). Mirrors
+    /// `flush_pipelined` without its synchronous permit wait: this task
+    /// already runs on the runtime, where `block_on` would panic. On
+    /// saturation the batch is re-buffered and the backpressure surfaces at
+    /// the next operation, like every other non-confirmed outcome.
+    async fn run_timer_drain(self: Arc<Self>) {
+        let publishes = self.take();
+        if publishes.is_empty() {
+            return;
+        }
+        let requests = Self::drain_requests(&publishes);
+        let permit = tokio::time::timeout(
+            TEARDOWN_FLUSH_BUDGET,
+            self.drain_permits.clone().acquire_owned(),
+        )
+        .await;
+        let Ok(Ok(permit)) = permit else {
+            let message_id = publishes
+                .first()
+                .map(|publish| publish.request.properties.message_id.as_ref().to_owned())
+                .unwrap_or_default();
+            self.rebuffer_or_drop(publishes);
+            self.record_error(PendingPublishError {
+                message_id,
+                kind: "Backpressure".to_owned(),
+                message: "publish drain pipeline is saturated; retry after flush".to_owned(),
+            });
+            return;
+        };
+        let _permit = permit;
+        self.run_drain(publishes, requests).await;
     }
 
     /// Processes one spawned batch's outcomes (runs on the runtime).

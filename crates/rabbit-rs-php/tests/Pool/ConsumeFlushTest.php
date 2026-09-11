@@ -3,8 +3,13 @@
 declare(strict_types=1);
 
 describe('consume-side publish buffer flush', function () {
-    it('flushes buffered publishes before the consumer waits for deliveries', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
+    // The tests below pin publications as buffered until the pop, so the
+    // interval timer must stay out of the way (one hour = disabled for the
+    // scenario, like the backpressure ceiling test).
+    $noTimer = ['buffer_flush_interval_ms' => 3_600_000];
+
+    it('flushes buffered publishes before the consumer waits for deliveries', function () use ($noTimer) {
+        $pool = testingPool(defaultConfigWithWorkers(), $noTimer + [
             'publication_outcomes' => ['ack', 'ack'],
             'deliveries' => [],
         ]);
@@ -27,8 +32,8 @@ describe('consume-side publish buffer flush', function () {
         $pool->close();
     });
 
-    it('flushes buffered publishes on tryNext and nextBatch too', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
+    it('flushes buffered publishes on tryNext and nextBatch too', function () use ($noTimer) {
+        $pool = testingPool(defaultConfigWithWorkers(), $noTimer + [
             'publication_outcomes' => ['ack'],
             'deliveries' => [],
         ]);
@@ -44,8 +49,8 @@ describe('consume-side publish buffer flush', function () {
         $pool->close();
     });
 
-    it('drops deadline-expired publications flushed from the consume path', function () {
-        $pool = testingPool(defaultConfigWithWorkers(), [
+    it('drops deadline-expired publications flushed from the consume path', function () use ($noTimer) {
+        $pool = testingPool(defaultConfigWithWorkers(), $noTimer + [
             'publication_outcomes' => ['ack', 'ack'],
             'deliveries' => [],
         ]);

@@ -3,8 +3,13 @@
 declare(strict_types=1);
 
 describe('flush re-buffering', function () {
-    it('re-buffers and retries a publication whose batch flush failed', function () {
-        $pool = testingPool(defaultConfig(), [
+    // The tests below pin publications as buffered until the explicit
+    // flush(), so the interval timer must stay out of the way (one hour =
+    // disabled for the scenario, like the backpressure ceiling test).
+    $noTimer = ['buffer_flush_interval_ms' => 3_600_000];
+
+    it('re-buffers and retries a publication whose batch flush failed', function () use ($noTimer) {
+        $pool = testingPool(defaultConfig(), $noTimer + [
             'publication_outcomes' => ['transport_error', 'ack'],
         ]);
 
@@ -25,8 +30,8 @@ describe('flush re-buffering', function () {
         $pool->close();
     });
 
-    it('does not re-buffer a message returned as unroutable', function () {
-        $pool = testingPool(defaultConfig(), [
+    it('does not re-buffer a message returned as unroutable', function () use ($noTimer) {
+        $pool = testingPool(defaultConfig(), $noTimer + [
             'publication_outcomes' => ['returned', 'ack'],
         ]);
 
@@ -47,8 +52,8 @@ describe('flush re-buffering', function () {
         $pool->close();
     });
 
-    it('retries re-buffered messages before newer buffered messages', function () {
-        $pool = testingPool(defaultConfig(), [
+    it('retries re-buffered messages before newer buffered messages', function () use ($noTimer) {
+        $pool = testingPool(defaultConfig(), $noTimer + [
             'publication_outcomes' => ['transport_error', 'returned', 'ack'],
         ]);
 

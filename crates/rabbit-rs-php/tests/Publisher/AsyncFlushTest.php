@@ -58,8 +58,14 @@ describe('pipelined auto-flush', function () {
     });
 
     it('surfaces a terminal transport failure at stats and retries the re-buffered batch', function () {
+        // The re-buffered batch must stay buffered until the explicit
+        // retry flush, so the interval timer stays out of the way (one
+        // hour = disabled for the scenario).
         $outcomes = array_merge(['transport_error'], array_fill(0, 127, 'ack'));
-        $pool = testingPool(defaultConfig(), ['publication_outcomes' => $outcomes]);
+        $pool = testingPool(defaultConfig(), [
+            'publication_outcomes' => $outcomes,
+            'buffer_flush_interval_ms' => 3_600_000,
+        ]);
 
         for ($i = 0; $i < 64; $i++) {
             $pool->publish(pubMessage("m{$i}"));
