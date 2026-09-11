@@ -506,6 +506,20 @@ server_fn_suffix() {
     fi
 }
 
+# Whether a graceful octane:stop can flush parked publications at all.
+#
+# The Swoole family cannot: laravel/octane's Swoole
+# ServerProcessInspector::stopServer() sends SIGKILL to the master, the
+# manager, and every worker process. SIGKILL is uncatchable — no
+# workerstop callback runs, so no WorkerStopping event fires and the
+# driver's pool close (with its publish-buffer flush) never executes.
+# Publications parked in the worker's buffer are lost with the process.
+# The harness certifies the reload-flush path on these servers and
+# asserts the loss explicitly instead of faking a pass.
+stop_flush_expected() {
+    [[ "${SERVER}" != "swoole" && "${SERVER}" != "openswoole" ]]
+}
+
 start_server()    { "start_$(server_fn_suffix)"; }
 reload_server()   { "reload_$(server_fn_suffix)"; }
 stop_server()     { "stop_$(server_fn_suffix)"; }
@@ -562,11 +576,22 @@ scenario wait-buffered 5 15
 scenario wait-depth 5 15   # batch 2 is parked, NOT yet on the broker
 stop_server
 wait_server_gone
-scenario wait-depth 10 30
-log "phase 2 ok: graceful stop flushed the parked publications (depth 10, no loss)"
+if stop_flush_expected; then
+    scenario wait-depth 10 30
+    log "phase 2 ok: graceful stop flushed the parked publications (depth 10, no loss)"
+    EXPECTED_DRAIN=10
+else
+    # Upstream octane SIGKILLs swoole-family workers on stop: the parked
+    # batch dies with the process (documented limit, not a driver bug).
+    # Assert the loss explicitly so the harness can always DETECT it, then
+    # certify the reload-flush path only.
+    scenario wait-depth 5 15
+    log "phase 2: ${SERVER} octane:stop SIGKILLs workers (upstream laravel/octane) — the 5 parked publications are lost; graceful-stop flush not certifiable on this server"
+    EXPECTED_DRAIN=5
+fi
 
 # Phase 3: restart, consume everything, ack, drain to zero.
-log "phase 3: restart, consume 10 via CLI worker, ack all, drain to 0"
+log "phase 3: restart, consume ${EXPECTED_DRAIN} via CLI worker, ack all, drain to 0"
 "start_$(server_fn_suffix)"
 wait_server_up
 # Consume from a CLI worker process, not the running server: the driver
@@ -575,10 +600,14 @@ wait_server_up
 # per-profile cache, so server-side pops fail from the second request on
 # (driver bug, see the WS5b report). CLI workers are also the shape
 # production consumption uses.
-scenario consume-ack-cli 10 90
+scenario consume-ack-cli "${EXPECTED_DRAIN}" 90
 scenario wait-depth 0 30
 stop_server
 wait_server_gone
 
 echo ""
-echo "PASS: ${SERVER} certified — publish -> reload -> graceful stop -> no loss -> drain to zero"
+if stop_flush_expected; then
+    echo "PASS: ${SERVER} certified — publish -> reload -> graceful stop -> no loss -> drain to zero"
+else
+    echo "PASS: ${SERVER} certified with a documented limitation — publish -> reload -> no loss; octane:stop flush not certifiable (upstream SIGKILL, see docs certification table)"
+fi
