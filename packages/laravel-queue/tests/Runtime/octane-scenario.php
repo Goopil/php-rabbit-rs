@@ -12,6 +12,9 @@ declare(strict_types=1);
  *   wait-depth <expected> <timeout-seconds>
  *   wait-buffered <expected> <timeout-seconds>
  *   consume-ack <count> <timeout-seconds>
+ *   consume-ack-cli <count> <timeout-seconds>
+ *                                  pop+ack count jobs from THIS process (CLI
+ *                                  worker shape) instead of the running server
  *
  * Exits non-zero with a "FAIL: ..." message on any assertion failure.
  * The entry file deliberately lives outside the PSR-4 map and requires the
@@ -54,6 +57,10 @@ try {
 
         case 'consume-ack':
             Scenario::consumeAck((int) $args[0], (int) $args[1]);
+            break;
+
+        case 'consume-ack-cli':
+            Scenario::consumeAckCli((int) $args[0], (int) $args[1]);
             break;
 
         default:

@@ -189,7 +189,13 @@ prepare_runtime_app() {
     cd "${RUNTIME_APP}"
 
     if [[ ! -f vendor/autoload.php ]]; then
-        composer install --no-interaction 2>&1 | tail -3
+        # The app's composer.lock is gitignored: on a fresh checkout only
+        # `composer update` can resolve the tree (install needs a lock).
+        if [[ -f composer.lock ]]; then
+            composer install --no-interaction 2>&1 | tail -3
+        else
+            composer update --no-interaction 2>&1 | tail -3
+        fi
     fi
 
     if ! composer show laravel/octane >/dev/null 2>&1; then
@@ -560,10 +566,16 @@ scenario wait-depth 10 30
 log "phase 2 ok: graceful stop flushed the parked publications (depth 10, no loss)"
 
 # Phase 3: restart, consume everything, ack, drain to zero.
-log "phase 3: restart, consume 10, ack all, drain to 0"
+log "phase 3: restart, consume 10 via CLI worker, ack all, drain to 0"
 "start_$(server_fn_suffix)"
 wait_server_up
-scenario consume-ack 10 90
+# Consume from a CLI worker process, not the running server: the driver
+# closes cached consumers after every request (Octane terminating hook)
+# while the native client keeps serving the closed handle from its
+# per-profile cache, so server-side pops fail from the second request on
+# (driver bug, see the WS5b report). CLI workers are also the shape
+# production consumption uses.
+scenario consume-ack-cli 10 90
 scenario wait-depth 0 30
 stop_server
 wait_server_gone

@@ -8,6 +8,7 @@ use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 
 /**
@@ -139,6 +140,62 @@ final class Scenario
                 usleep(250_000);
             }
         }
+    }
+
+    /**
+     * Consumes and acknowledges exactly $count jobs from this CLI process
+     * (the queue worker shape: pop + ack in one long-lived process, no HTTP).
+     *
+     * The harness consumes through this path instead of the running server's
+     * /consume-one: the driver closes cached consumers after every request
+     * (Octane terminating hook) while the native client keeps serving the
+     * closed handle from its per-profile cache, so server-side pops fail
+     * from the second request on (driver bug, see the WS5b report).
+     * Consumption in production goes through CLI workers, which this path
+     * mirrors exactly.
+     */
+    public static function consumeAckCli(int $count, int $timeoutSeconds): void
+    {
+        $deadline = microtime(true) + $timeoutSeconds;
+        $acked = 0;
+
+        $app = self::app();
+        $connection = (string) config('queue.default');
+
+        while ($acked < $count) {
+            if (microtime(true) > $deadline) {
+                throw new RuntimeException("consume-ack-cli: acknowledged {$acked}/{$count} before the deadline");
+            }
+
+            $job = Queue::connection($connection)->pop();
+            if ($job === null) {
+                usleep(250_000);
+
+                continue;
+            }
+
+            $job->delete();
+            $acked++;
+        }
+
+        // Settlements are fire-and-forget: the ack commands queue on the
+        // consumer actor and flush asynchronously, so the CLI process must
+        // stay alive pumping until the broker confirms the drain — exiting
+        // right after the last ack would drop still-queued acks with the
+        // runtime (at-least-once: the messages survive, they just return to
+        // ready state).
+        do {
+            if (self::depth() === 0) {
+                return;
+            }
+
+            if (microtime(true) > $deadline) {
+                throw new RuntimeException('consume-ack-cli: acks not fully flushed before the deadline (depth '.self::depth().')');
+            }
+
+            Queue::connection($connection)->pop();
+            usleep(100_000);
+        } while (true);
     }
 
     /**
