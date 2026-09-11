@@ -526,6 +526,12 @@ Rabbit RS runs as a native PHP extension: an uncaught Rust unwind crossing the F
 
 `CoordinatorError` is a typed enum (`Topology`/`Transport`/`Publisher`/`Consumer`/`Internal`) whose variants carry the typed source error; `Display` messages keep the previously surfaced context. Callers must classify through variants, never through string matching.
 
+### TLS
+
+The AMQP transport always verifies the broker certificate (rustls, `verify: peer` — the only accepted value, and the default). A custom `ca_cert` chain extends the platform trust store, and a client identity (`client_cert` + `client_key`) enables mTLS: it is supported and certified by the lab test suite, which proves a connection with a client certificate succeeds against a broker listener that rejects anonymous clients (`fail_if_no_peer_cert = true`), and that the same listener rejects connections without one.
+
+TLS server name indication (SNI) and certificate hostname verification always use the AMQP connection host. A `server_name` override is not possible with the underlying AMQP transport (lapin 4.10) and is rejected at validation when it differs from the first configured host — a documented gap tracked for post-1.0 (#164, #166).
+
 ## Troubleshooting
 
 ### Common errors and solutions
