@@ -1,0 +1,72 @@
+name: Nightly
+
+on:
+  schedule:
+    # 03:15 UTC daily — off-hours for EU and US West.
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Real-server Octane certification (issue #226, decision D1): every server
+  # in the v1 contract runs the full publish -> reload -> graceful stop ->
+  # no-loss -> drain scenario against the RabbitMQ lab through
+  # scripts/test-octane-runtime.sh. RoadRunner additionally runs on every PR
+  # (ci.yml, octane-runtime job).
+  octane-runtime:
+    name: Octane runtime (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [roadrunner, frankenphp, swoole, openswoole]
+        include:
+          # Swoole-family servers need the matching PHP extension; RoadRunner
+          # and FrankenPHP get the native extension from the repo build (RR)
+          # or from the in-image ZTS build (FrankenPHP, see the harness).
+          - server: roadrunner
+            php-extensions: curl
+          - server: frankenphp
+            php-extensions: curl
+          - server: swoole
+            php-extensions: curl, swoole
+          - server: openswoole
+            php-extensions: curl, openswoole
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust 1.96
+        uses: ./.github/actions/rust-setup
+
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+          key: octane-runtime-${{ matrix.server }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            octane-runtime-${{ matrix.server }}-
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: ${{ matrix.php-extensions }}
+
+      - name: Build PHP extension
+        run: cargo build --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
+
+      - name: Run real-server Octane certification
+        run: ./scripts/test-octane-runtime.sh --server=${{ matrix.server }}
