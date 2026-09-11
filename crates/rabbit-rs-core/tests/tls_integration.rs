@@ -3,8 +3,11 @@
 //! Requires the TLS lab profile (`./scripts/lab-up.sh with-tls`, or
 //! `./scripts/test-integration.sh --with-tls`): a standalone broker serving
 //! AMQP over TLS on `localhost:5671`, its certificate signed by the lab CA in
-//! `lab/rabbitmq/tls/generated/lab-ca.pem`, and a deliberately untrusted CA
-//! in `lab-other-ca.pem`.
+//! `lab/rabbitmq/tls/generated/lab-ca.pem`, a deliberately untrusted CA in
+//! `lab-other-ca.pem`, a client identity (`lab-client.pem` +
+//! `lab-client-key.pem`) for the mTLS node on `127.0.0.1:5676`
+//! (`fail_if_no_peer_cert = true`), and `wrong.internal` resolvable to
+//! 127.0.0.1 via /etc/hosts for the SAN-negative test.
 
 #![cfg(feature = "integration")]
 
@@ -23,6 +26,13 @@ use rabbit_rs_core::{
 const TLS_HOST: &str = "localhost";
 const TLS_PORT: u16 = 5671;
 const TLS_VHOST: &str = "/orders-eu";
+/// Host port of the mTLS node's AMQPS listener (container port 5673; the
+/// host side avoids the with-plugin cluster's rabbitmq-2 mapping on 5673).
+const MTLS_HOST: &str = "127.0.0.1";
+const MTLS_PORT: u16 = 5674;
+/// Resolves to 127.0.0.1 via /etc/hosts but is absent from the server
+/// certificate SANs, so hostname verification must fail.
+const WRONG_SAN_HOST: &str = "wrong.internal";
 
 /// Absolute paths resolved from the crate directory, so the tests run from
 /// any working directory.
@@ -40,19 +50,31 @@ fn foreign_ca() -> std::path::PathBuf {
     generated_cert("lab-other-ca.pem")
 }
 
+fn client_cert() -> std::path::PathBuf {
+    generated_cert("lab-client.pem")
+}
+
+fn client_key() -> std::path::PathBuf {
+    generated_cert("lab-client.key")
+}
+
 /// A broker definition pointing at the TLS listener. `tls` is built from the
 /// given JSON so tests can pick their CA and SNI assertion per scenario.
-fn tls_broker(name: &str, tls: serde_json::Value) -> BrokerConfig {
+fn tls_broker_at(host: &str, port: u16, name: &str, tls: serde_json::Value) -> BrokerConfig {
     let tls: rabbit_rs_core::config::TlsConfig =
         serde_json::from_value(tls).expect("valid TLS config");
     BrokerConfig {
         name: name.to_owned(),
-        hosts: vec![Endpoint::new(TLS_HOST, TLS_PORT)],
+        hosts: vec![Endpoint::new(host, port)],
         vhost: TLS_VHOST.to_owned(),
         credentials: Credentials::new("rabbit_rs", "rabbit_rs_lab"),
         tls,
         heartbeat: Duration::from_secs(30),
     }
+}
+
+fn tls_broker(name: &str, tls: serde_json::Value) -> BrokerConfig {
+    tls_broker_at(TLS_HOST, TLS_PORT, name, tls)
 }
 
 fn trusted_tls() -> serde_json::Value {
@@ -169,4 +191,62 @@ async fn tls_connects_with_server_name_matching_the_connection_host() {
 
     declare_queue(&broker_config, queue).await;
     publish_with_confirms(&broker_config, queue, "msg-tls-sni-1").await;
+}
+
+#[tokio::test]
+async fn mtls_handshake_succeeds_with_client_identity() {
+    let broker_config = tls_broker_at(
+        MTLS_HOST,
+        MTLS_PORT,
+        "mtls-primary",
+        serde_json::json!({
+            "enabled": true,
+            "ca_cert": lab_ca().to_string_lossy(),
+            "client_cert": client_cert().to_string_lossy(),
+            "client_key": client_key().to_string_lossy()
+        }),
+    );
+    let queue = "rabbit-rs-it-mtls-client";
+
+    declare_queue(&broker_config, queue).await;
+    publish_with_confirms(&broker_config, queue, "msg-mtls-client-1").await;
+}
+
+#[tokio::test]
+async fn mtls_handshake_fails_without_client_identity() {
+    let broker_config = tls_broker_at(
+        MTLS_HOST,
+        MTLS_PORT,
+        "mtls-anonymous",
+        serde_json::json!({"enabled": true, "ca_cert": lab_ca().to_string_lossy()}),
+    );
+
+    let Err(error) = LapinTransport.connect(&broker_config).await else {
+        panic!("a listener requiring client certificates must reject anonymous TLS clients");
+    };
+
+    assert!(
+        matches!(
+            error.kind(),
+            TransportErrorKind::Connection | TransportErrorKind::Protocol
+        ),
+        "expected a typed transport-level handshake failure, got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn tls_handshake_fails_when_host_is_not_in_the_certificate_san() {
+    let broker_config = tls_broker_at(WRONG_SAN_HOST, TLS_PORT, "tls-san-mismatch", trusted_tls());
+
+    let Err(error) = LapinTransport.connect(&broker_config).await else {
+        panic!("a host outside the certificate SANs must fail the TLS handshake");
+    };
+
+    assert!(
+        matches!(
+            error.kind(),
+            TransportErrorKind::Connection | TransportErrorKind::Protocol
+        ),
+        "expected a typed transport-level handshake failure, got {error:?}"
+    );
 }

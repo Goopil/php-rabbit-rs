@@ -148,6 +148,38 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # mTLS node: a second standalone broker whose AMQPS listener requires a
+  # client certificate (fail_if_no_peer_cert = true). TLS options are
+  # per-node in RabbitMQ, so a client-cert-mandatory listener must live on
+  # its own node instead of sharing the rabbitmq-tls one. It reuses the same
+  # generated certificates (signed by the lab CA) and definitions.json, and
+  # is not part of the cluster.
+  rabbitmq-mtls:
+    profiles: ["with-tls"]
+    build:
+      context: ./rabbitmq
+      dockerfile: Dockerfile
+    hostname: rabbitmq-mtls
+    ports:
+      - "5674:5673"
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "rabbit_rs_lab_cluster_cookie"
+      RABBITMQ_NODENAME: "rabbit@rabbitmq-mtls"
+    configs:
+      - source: rabbitmq_conf_mtls
+        target: /etc/rabbitmq/rabbitmq.conf
+      - source: rabbitmq_definitions
+        target: /etc/rabbitmq/definitions.json
+    volumes:
+      - ./tls/generated:/etc/rabbitmq/tls:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
   # Toxiproxy provides the chaos suite with a lab-owned fault-injection API.
   # The API is bound to 18474 (not the conventional 8474) and the fingerprint
   # proxy rabbitmq-1 (upstream rabbitmq-1:5672) lets the suite prove it talks
@@ -227,5 +259,7 @@ configs:
     file: ./rabbitmq/rabbitmq-no-plugin.conf
   rabbitmq_conf_tls:
     file: ./rabbitmq/rabbitmq-tls.conf
+  rabbitmq_conf_mtls:
+    file: ./rabbitmq/rabbitmq-mtls.conf
   rabbitmq_definitions:
     file: ./rabbitmq/definitions.json
