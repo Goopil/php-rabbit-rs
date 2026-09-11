@@ -4,6 +4,15 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.2.3] - 2026-09-12
+
+### Fixed
+
+- Requires `ext-rabbit_rs ^0.2.3` (lockstep release). No Laravel-layer change;
+  the native extension is now installable through PIE on macOS Apple Silicon
+  (`pie install goopil/rabbit-rs-native`), validated by the release pipeline on
+  a macOS arm64 runner.
+
 ## [0.2.2] - 2026-09-11
 
 ### Fixed

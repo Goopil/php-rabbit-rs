@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.2.3] - 2026-09-12
+
+### Added
+
+- PIE installs on macOS Apple Silicon (#234): `composer.json` declares `os-families: ["linux", "darwin"]` and the macOS release assets are renamed to the PIE naming convention `php_rabbit_rs-v{version}_php{php}-arm64-darwin-bsdlibc-nts.zip` (PIE's `LibcFlavour` detection resolves `otool` to `bsdlibc` on macOS, matching the `BSN4/grpc-php-rs` precedent). The `pie install` path is now gated in the release pipeline by a new `macOS arm64 PHP 8.4` cell in `verify-pie-install` (`macos-14` runner, PIE phar checksum verified portably with `shasum`). The Homebrew formula consumes the same renamed assets, keeping a single URL per binary; the release inventory is unchanged (10 ZIPs / 30 files). Previously the macOS binaries were built but invisible to PIE — `pie install` refused to run on darwin and macOS users were routed to Homebrew best-effort.
+
 ## [0.2.2] - 2026-09-11
 
 ### Fixed
