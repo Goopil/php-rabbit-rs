@@ -10,8 +10,8 @@ set -euo pipefail
 #      across the packaging script, the release workflow, and the docs.
 #   3. Release artifacts, when the release directory contains archives:
 #      exactly the 30 expected files (10 ZIP + 10 SHA-256 + 10 SBOM for the
-#      8-entry Linux matrix plus 2 macOS darwin assets), checksum and SBOM
-#      validation, and version synchronization up to the git tag.
+#      10-entry matrix: 8 Linux cells plus 2 macOS darwin cells), checksum
+#      and SBOM validation, and version synchronization up to the git tag.
 #
 # Exits non-zero if any check fails. Run before tagging a release or
 # publishing the extension / Laravel package to Packagist.
@@ -33,7 +33,7 @@ PIE_MATRIX="${ROOT_DIR}/release/pie-matrix.json"
 WORKFLOW="${ROOT_DIR}/.github/workflows/release.yml"
 DOCS="${ROOT_DIR}/docs/reference.md"
 SPLIT_SCRIPT="${ROOT_DIR}/scripts/split-laravel-package.sh"
-EXPECTED_LINUX_ARCHIVE_COUNT=8
+EXPECTED_MATRIX_ARCHIVE_COUNT=10
 
 cargo_version() {
     grep -E '^version' "${CARGO_TOML}" | head -1 | sed 's/.*= *"//' | sed 's/"//'
@@ -110,12 +110,12 @@ ok "support-nts: ${support_nts}, support-zts: ${support_zts}"
 
 echo "==> Checking OS families"
 os_families="$(jq -r '.["php-ext"]."os-families" | length' "${ROOT_COMPOSER}")"
-[[ "${os_families}" -eq 1 ]] \
-    || fail "os-families must contain exactly 1 entry, found ${os_families}"
-os_family="$(jq -r '.["php-ext"]."os-families"[0]' "${ROOT_COMPOSER}")"
-[[ "${os_family}" == "linux" ]] \
-    || fail "os-families[0] is '${os_family}', expected 'linux'"
-ok "os-families: [${os_family}]"
+[[ "${os_families}" -eq 2 ]] \
+    || fail "os-families must contain exactly 2 entries (linux, darwin), found ${os_families}"
+os_families_list="$(jq -r '.["php-ext"]."os-families" | join(",")' "${ROOT_COMPOSER}")"
+[[ "${os_families_list}" == "linux,darwin" ]] \
+    || fail "os-families is '${os_families_list}', expected 'linux,darwin'"
+ok "os-families: [${os_families_list}]"
 
 echo "==> Checking Laravel package metadata"
 laravel_name="$(jq -r '.name' "${LARAVEL_COMPOSER}")"
@@ -129,11 +129,19 @@ expected_ns="Goopil\\RabbitRs\\Laravel\\"
     || fail "Laravel namespace is '${laravel_ns}', expected '${expected_ns}'"
 ok "Laravel namespace: ${laravel_ns}"
 
-ext_req="$(jq -r '.require."ext-rabbit_rs"' "${LARAVEL_COMPOSER}")"
+# The Laravel package installs without the native extension (require →
+# suggest policy, 5c295a5); the extension constraint lives in
+# RabbitMqServiceProvider::EXTENSION_CONSTRAINT and must track the Cargo
+# major, mirroring the release workflow's version policy check.
+SERVICE_PROVIDER="${ROOT_DIR}/packages/laravel-queue/src/RabbitMqServiceProvider.php"
+need_file "${SERVICE_PROVIDER}"
+ext_req="$(sed -n "s/.*EXTENSION_CONSTRAINT = '\([^']*\)'.*/\1/p" "${SERVICE_PROVIDER}")"
+[[ -n "${ext_req}" ]] \
+    || fail "EXTENSION_CONSTRAINT not found in ${SERVICE_PROVIDER}"
 [[ "${ext_req}" =~ ^\^([0-9]+) ]] \
     || fail "ext-rabbit_rs constraint '${ext_req}' does not pin a major version"
 laravel_major="${BASH_REMATCH[1]}"
-ok "Laravel requires ext-rabbit_rs: ${ext_req} (major ${laravel_major})"
+ok "Laravel extension constraint (suggest): ${ext_req} (major ${laravel_major})"
 
 echo "==> Checking Cargo version"
 cargo_ver="$(cargo_version)"
@@ -150,8 +158,8 @@ ok "major versions match: ${cargo_major}"
 
 echo "==> Checking PIE matrix"
 matrix_count="$(jq -r '.matrix | length' "${PIE_MATRIX}")"
-[[ "${matrix_count}" -eq "${EXPECTED_LINUX_ARCHIVE_COUNT}" ]] \
-    || fail "PIE matrix must have exactly ${EXPECTED_LINUX_ARCHIVE_COUNT} entries, found ${matrix_count}"
+[[ "${matrix_count}" -eq "${EXPECTED_MATRIX_ARCHIVE_COUNT}" ]] \
+    || fail "PIE matrix must have exactly ${EXPECTED_MATRIX_ARCHIVE_COUNT} entries, found ${matrix_count}"
 ok "PIE matrix entries: ${matrix_count}"
 
 php_ext_name="$(jq -r '.php_extension_name' "${PIE_MATRIX}")"
@@ -161,6 +169,7 @@ php_ext_name="$(jq -r '.php_extension_name' "${PIE_MATRIX}")"
 echo "==> Checking PIE matrix uniqueness and values"
 php_values="$(jq -r '.matrix[].php' "${PIE_MATRIX}" | sort -u)"
 arch_values="$(jq -r '.matrix[].arch' "${PIE_MATRIX}" | sort -u)"
+os_values="$(jq -r '.matrix[].os' "${PIE_MATRIX}" | sort -u)"
 libc_values="$(jq -r '.matrix[].libc' "${PIE_MATRIX}" | sort -u)"
 ts_values="$(jq -r '.matrix[].thread_safety' "${PIE_MATRIX}" | sort -u)"
 
@@ -168,7 +177,10 @@ expected_php="8.4
 8.5"
 expected_arch="arm64
 x86_64"
-expected_libc="glibc
+expected_os="darwin
+linux"
+expected_libc="bsdlibc
+glibc
 musl"
 expected_ts="nts"
 
@@ -176,16 +188,18 @@ expected_ts="nts"
     || fail "PHP versions are ${php_values//$'\n'/, }, expected 8.4,8.5"
 [[ "${arch_values}" == "${expected_arch}" ]] \
     || fail "architectures are ${arch_values//$'\n'/, }, expected arm64,x86_64"
+[[ "${os_values}" == "${expected_os}" ]] \
+    || fail "operating systems are ${os_values//$'\n'/, }, expected darwin,linux"
 [[ "${libc_values}" == "${expected_libc}" ]] \
-    || fail "libc values are ${libc_values//$'\n'/, }, expected glibc,musl"
+    || fail "libc values are ${libc_values//$'\n'/, }, expected bsdlibc,glibc,musl"
 [[ "${ts_values}" == "${expected_ts}" ]] \
     || fail "thread_safety values are ${ts_values//$'\n'/, }, expected nts (ZTS excluded in V1)"
 ok "PIE matrix values are correct"
 
 unique_suffixes="$(jq -r '.matrix[].artifact_suffix' "${PIE_MATRIX}" | sort -u | wc -l | tr -d ' ')"
-[[ "${unique_suffixes}" -eq "${EXPECTED_LINUX_ARCHIVE_COUNT}" ]] \
-    || fail "artifact_suffix entries must all be unique, found ${unique_suffixes} unique out of ${EXPECTED_LINUX_ARCHIVE_COUNT}"
-ok "All ${EXPECTED_LINUX_ARCHIVE_COUNT} artifact suffixes are unique"
+[[ "${unique_suffixes}" -eq "${EXPECTED_MATRIX_ARCHIVE_COUNT}" ]] \
+    || fail "artifact_suffix entries must all be unique, found ${unique_suffixes} unique out of ${EXPECTED_MATRIX_ARCHIVE_COUNT}"
+ok "All ${EXPECTED_MATRIX_ARCHIVE_COUNT} artifact suffixes are unique"
 
 echo "==> Checking glibc minimum"
 min_glibc="$(jq -r '.minimum_glibc' "${PIE_MATRIX}")"
@@ -211,33 +225,40 @@ ok "no zts entries in the PIE matrix (support-zts: ${support_zts})"
 
 echo "==> Checking PIE asset naming"
 
-# PIE candidate names for Linux pre-packaged binaries, no debug builds,
-# .zip format. Mirrors php/pie 1.5.x PrePackagedBinaryAssetName::packageNames:
-# the version component is the Composer pretty version (v-prefixed tag), and
-# Linux additionally accepts an anylibc fallback flavour.
+# PIE candidate names for pre-packaged binaries, no debug builds, .zip
+# format. Mirrors php/pie 1.5.x PrePackagedBinaryAssetName::packageNames:
+# the version component is the Composer pretty version (v-prefixed tag),
+# Linux additionally accepts an anylibc fallback flavour (Linux only),
+# and the libc token comes from LibcFlavour detection — on macOS, otool
+# (Xcode Command Line Tools) resolves to bsdlibc.
 pie_candidates() {
-    local php="$1" arch="$2" libc="$3" ts="$4"
+    local php="$1" arch="$2" os="$3" libc="$4" ts="$5"
     local ts_modes=()
     if [[ "${ts}" == "zts" ]]; then
         ts_modes=("-zts")
     else
         ts_modes=("" "-nts")
     fi
+    local flavours=( "${libc}" )
+    if [[ "${os}" == "linux" ]]; then
+        flavours+=( "anylibc" )
+    fi
     local flavour suffix
-    for flavour in "${libc}" "anylibc"; do
+    for flavour in "${flavours[@]}"; do
         for suffix in "${ts_modes[@]}"; do
-            printf 'php_%s-v1.2.3_php%s-%s-linux-%s%s.zip\n' \
-                "${php_ext_name}" "${php}" "${arch}" "${flavour}" "${suffix}"
-            printf 'php_%s-v1.2.3_php%s-%s-linux-%s%s.tgz\n' \
-                "${php_ext_name}" "${php}" "${arch}" "${flavour}" "${suffix}"
+            printf 'php_%s-v1.2.3_php%s-%s-%s-%s%s.zip\n' \
+                "${php_ext_name}" "${php}" "${arch}" "${os}" "${flavour}" "${suffix}"
+            printf 'php_%s-v1.2.3_php%s-%s-%s-%s%s.tgz\n' \
+                "${php_ext_name}" "${php}" "${arch}" "${os}" "${flavour}" "${suffix}"
         done
     done
 }
 
-declare -a linux_archives
+declare -a matrix_archives
 for i in $(seq 0 $((matrix_count - 1))); do
     entry_php="$(jq -r ".matrix[${i}].php" "${PIE_MATRIX}")"
     entry_arch="$(jq -r ".matrix[${i}].arch" "${PIE_MATRIX}")"
+    entry_os="$(jq -r ".matrix[${i}].os" "${PIE_MATRIX}")"
     entry_libc="$(jq -r ".matrix[${i}].libc" "${PIE_MATRIX}")"
     entry_ts="$(jq -r ".matrix[${i}].thread_safety" "${PIE_MATRIX}")"
     entry_ts_suffix="$(jq -r ".matrix[${i}].ts_suffix" "${PIE_MATRIX}")"
@@ -246,42 +267,44 @@ for i in $(seq 0 $((matrix_count - 1))); do
     # (previously NTS entries carried an empty suffix, which made the
     # workflow and the packaging script disagree).
     [[ "${entry_ts_suffix}" == "-${entry_ts}" ]] \
-        || fail "matrix entry ${i} (${entry_php}/${entry_arch}/${entry_libc}/${entry_ts}): ts_suffix is '${entry_ts_suffix}', expected '-${entry_ts}'"
+        || fail "matrix entry ${i} (${entry_php}/${entry_arch}/${entry_os}/${entry_libc}/${entry_ts}): ts_suffix is '${entry_ts_suffix}', expected '-${entry_ts}'"
 
     name="$(jq -r ".matrix[${i}].artifact_suffix" "${PIE_MATRIX}")"
-    expected_name="php${entry_php}-${entry_arch}-linux-${entry_libc}${entry_ts_suffix}"
+    expected_name="php${entry_php}-${entry_arch}-${entry_os}-${entry_libc}${entry_ts_suffix}"
     [[ "${name}" == "${expected_name}" ]] \
         || fail "matrix entry ${i}: artifact_suffix is '${name}', expected '${expected_name}'"
 
     archive="php_${php_ext_name}-v1.2.3_${name}.zip"
-    if ! pie_candidates "${entry_php}" "${entry_arch}" "${entry_libc}" "${entry_ts}" | grep -qx -- "${archive}"; then
+    if ! pie_candidates "${entry_php}" "${entry_arch}" "${entry_os}" "${entry_libc}" "${entry_ts}" | grep -qx -- "${archive}"; then
         fail "asset name '${archive}' is not an accepted PIE pre-packaged binary name"
     fi
 
-    linux_archives+=("${archive}")
+    matrix_archives+=("${archive}")
 done
 ok "all ${matrix_count} asset names carry an explicit thread-safety suffix and match the PIE naming pattern"
 
-unique_names="$(printf '%s\n' "${linux_archives[@]}" | sort -u | wc -l | tr -d ' ')"
+unique_names="$(printf '%s\n' "${matrix_archives[@]}" | sort -u | wc -l | tr -d ' ')"
 [[ "${unique_names}" -eq "${matrix_count}" ]] \
     || fail "expected ${matrix_count} unique asset names, found ${unique_names}"
 ok "all ${matrix_count} asset names are unique"
 
 echo "==> Checking release workflow naming"
 
-# The Linux build job must append the explicit thread-safety suffix from the
+# Every build job must append the explicit thread-safety suffix from the
 # matrix variable, never an implicit empty suffix for NTS.
 grep -q -- 'php_rabbit_rs-v${{ needs.create-release.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}' "${WORKFLOW}" \
     || fail "release.yml build-linux asset-base does not produce the unified naming pattern (explicit -\${{ matrix.ts }} suffix)"
 
-# macOS artifacts are outside the PIE matrix (os-families: linux) and are
-# consumed by Homebrew; they keep the explicit -nts suffix.
-grep -q 'arm64-darwin-nts' "${WORKFLOW}" \
-    || fail "release.yml macOS Package step lost the explicit -nts suffix"
+grep -q -- 'php_rabbit_rs-v${{ needs.create-release.outputs.version }}_php${{ matrix.php }}-arm64-darwin-bsdlibc-nts' "${WORKFLOW}" \
+    || fail "release.yml build-macos asset-base does not produce the unified naming pattern (bsdlibc token + explicit -nts suffix)"
+
+# The macOS cell in verify-pie-install must prove the PIE install path.
+grep -q 'runner: macos-14' "${WORKFLOW}" \
+    || fail "release.yml verify-pie-install matrix lost the macOS arm64 cell"
 ok "release workflow produces the unified naming pattern"
 
 echo "==> Checking documented convention"
-grep -q 'php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip' "${DOCS}" \
+grep -q 'php_rabbit_rs-v{version}_php{php}-{arch}-{os}-{libc}-{ts}.zip' "${DOCS}" \
     || fail "docs/reference.md does not document the unified naming pattern"
 ok "docs/reference.md documents the unified naming pattern"
 
@@ -315,17 +338,14 @@ if [[ -n "${GITHUB_REF:-}" ]]; then
     fi
 fi
 
-# Expected inventory: the 8 Linux matrix ZIPs plus 2 macOS darwin ZIPs
-# (one per matrix PHP version, arm64-darwin-nts), each with .sha256 and
-# .sbom.json sidecars — 30 files in total, matching the release workflow.
+# Expected inventory: all 10 matrix ZIPs (8 Linux + 2 macOS darwin), each
+# with .sha256 and .sbom.json sidecars — 30 files in total, matching the
+# release workflow.
 declare -a expected_bases
 for i in $(seq 0 $((matrix_count - 1))); do
     suffix="$(jq -r ".matrix[${i}].artifact_suffix" "${PIE_MATRIX}")"
     expected_bases+=("php_${php_ext_name}-v${VERSION}_${suffix}")
 done
-while IFS= read -r matrix_php; do
-    expected_bases+=("php_${php_ext_name}-v${VERSION}_php${matrix_php}-arm64-darwin-nts")
-done < <(jq -r '.matrix[].php' "${PIE_MATRIX}" | sort -u)
 
 declare -a expected_files
 for base in "${expected_bases[@]}"; do

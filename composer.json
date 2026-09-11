@@ -12,7 +12,7 @@
         "priority": 80,
         "support-zts": false,
         "support-nts": true,
-        "os-families": ["linux"],
+        "os-families": ["linux", "darwin"],
         "download-url-method": ["pre-packaged-binary"]
     }
 }
