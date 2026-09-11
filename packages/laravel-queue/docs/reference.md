@@ -1596,9 +1596,9 @@ Every server below is exercised by the real-server certification harness
 (`tests/Runtime/app`) publishes with no follow-up operation, parks the
 publications in the native publish buffer, and the harness asserts the
 reload and graceful-stop flush paths deliver them without loss
-(scenario detail in the script header). Every status below is backed by
-a local run of this harness; the RoadRunner `octane-runtime` job in
-`.github/workflows/ci.yml` and the four-server matrix in
+(scenario detail in the script header). Every status below except Swoole
+is backed by a local run of this harness; the RoadRunner `octane-runtime`
+job in `.github/workflows/ci.yml` and the four-server matrix in
 `.github/workflows/nightly.yml` are wired but have not run yet (first
 runs land once these workflows are pushed).
 
@@ -1607,7 +1607,7 @@ runs land once these workflows are pushed).
 | RoadRunner | Certified — full scenario green locally (real-server harness; pinned `rr` v2025.1.15, sha256-verified); PR CI + nightly runs pending first push. `octane:reload` recycles workers in place; graceful stop flushes; no loss; drain to zero |
 | FrankenPHP | Certified — full no-loss scenario green locally (pinned `dunglas/frankenphp:php8.4` digest, ZTS in-image extension build); nightly run pending first push. Documented availability note: upstream octane's reload shuts the whole frankenphp app down instead of recycling workers in place; the workers flush on the way out, so no data is lost and the harness restarts the server across the reload |
 | Open Swoole | Certified — full scenario green locally: the reload flush path is certified (no loss) and the harness asserts the stop loss explicitly; nightly run pending first push. Documented upstream limit: `octane:stop` SIGKILLs workers (laravel/octane Swoole `ServerProcessInspector::stopServer`), so publications parked at stop are lost |
-| Swoole | Harness delivered, CI-verified on nightly (requires ext-swoole, which the certification dev machine could not build) |
+| Swoole | Harness delivered; CI verification pending first nightly run (requires ext-swoole, which the certification dev machine could not build) |
 
 The Swoole-family stop behavior is an upstream laravel/octane property,
 not a Rabbit RS one: SIGKILL gives PHP no shutdown callback to run. The
