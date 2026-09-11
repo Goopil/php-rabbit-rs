@@ -1591,14 +1591,27 @@ php artisan octane:start --server=swoole
 
 #### Supported Octane servers
 
-Rabbit RS is certified with all four Octane servers:
+Every server below is exercised by the real-server certification harness
+`scripts/test-octane-runtime.sh --server=<name>`: a live Laravel 12 app
+(`tests/Runtime/app`) publishes with no follow-up operation, parks the
+publications in the native publish buffer, and the harness asserts the
+reload and graceful-stop flush paths deliver them without loss
+(scenario detail in the script header). RoadRunner additionally runs on
+every PR (`octane-runtime` job in `.github/workflows/ci.yml`); all four
+run nightly (`.github/workflows/nightly.yml`).
 
 | Server | Status |
 |--------|--------|
-| FrankenPHP | Certified |
-| RoadRunner | Certified |
-| Open Swoole | Certified |
-| Swoole | Certified |
+| RoadRunner | Certified — full scenario green locally and on PR CI + nightly (pinned `rr` v2025.1.15, sha256-verified). `octane:reload` recycles workers in place; graceful stop flushes; no loss; drain to zero |
+| FrankenPHP | Certified — full no-loss scenario green locally and on nightly (pinned `dunglas/frankenphp:php8.4` digest, ZTS in-image extension build). Documented availability note: upstream octane's reload shuts the whole frankenphp app down instead of recycling workers in place; the workers flush on the way out, so no data is lost and the harness restarts the server across the reload |
+| Open Swoole | Certified — nightly, with a documented upstream limit: `octane:stop` SIGKILLs workers (laravel/octane Swoole `ServerProcessInspector::stopServer`), so publications parked at stop are lost; the reload flush path IS certified (no loss) and the harness asserts the stop loss explicitly. Verified locally |
+| Swoole | Harness delivered, CI-verified on nightly (requires ext-swoole, which the certification dev machine could not build) |
+
+The Swoole-family stop behavior is an upstream laravel/octane property,
+not a Rabbit RS one: SIGKILL gives PHP no shutdown callback to run. The
+same publications survive `octane:reload` on those servers. Do not rely
+on `octane:stop` for a loss-free drain on Swoole/Open Swoole — drain via
+`octane:reload` or a CLI worker first.
 
 #### Worker count
 
