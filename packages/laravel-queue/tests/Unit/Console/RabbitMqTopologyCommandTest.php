@@ -123,18 +123,32 @@ describe('rabbit-rs:topology verify', function () {
     it('exits 0 and reports every plan item when the topology is complete', function () {
         bindFakeTopologyProbe($this->app);
         fakeManagementApi(
-            exchanges: [[
-                'name' => 'orders_dlx', 'type' => 'direct', 'durable' => true,
-                'auto_delete' => false, 'arguments' => new stdClass,
-            ]],
+            exchanges: [
+                [
+                    // Default route exchange the compiler injects when the
+                    // connection does not set one.
+                    'name' => 'laravel.jobs', 'type' => 'direct', 'durable' => true,
+                    'auto_delete' => false, 'arguments' => new stdClass,
+                ],
+                [
+                    'name' => 'orders_dlx', 'type' => 'direct', 'durable' => true,
+                    'auto_delete' => false, 'arguments' => new stdClass,
+                ],
+            ],
             queues: [[
                 'name' => 'orders', 'durable' => true,
                 'arguments' => ['x-queue-type' => 'quorum', 'x-dead-letter-exchange' => 'orders_dlx', 'x-dead-letter-routing-key' => 'orders'],
             ]],
-            bindings: [[
-                'source' => 'orders_dlx', 'destination' => 'orders_dlq',
-                'destination_type' => 'queue', 'routing_key' => 'orders',
-            ]],
+            bindings: [
+                [
+                    'source' => 'laravel.jobs', 'destination' => 'orders',
+                    'destination_type' => 'queue', 'routing_key' => 'orders',
+                ],
+                [
+                    'source' => 'orders_dlx', 'destination' => 'orders_dlq',
+                    'destination_type' => 'queue', 'routing_key' => 'orders',
+                ],
+            ],
         );
         topologyConnectionWithManagement();
 
@@ -216,6 +230,87 @@ describe('rabbit-rs:topology verify', function () {
 });
 
 describe('rabbit-rs:topology management api checks', function () {
+    it('reports a missing route exchange with its config path', function () {
+        bindFakeTopologyProbe($this->app);
+        topologyConnectionWithManagement('rabbitmq', ['exchange' => 'orders_exchange', 'routing_key' => '{queue}']);
+        fakeManagementApi(queues: [[
+            'name' => 'orders', 'durable' => true,
+            'arguments' => ['x-queue-type' => 'quorum'],
+        ]]);
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("exchange 'orders_exchange' is missing")
+            ->expectsOutputToContain('queue.connections.rabbitmq.exchange')
+            ->assertExitCode(1);
+    });
+
+    it('reports a missing route binding with its config path', function () {
+        bindFakeTopologyProbe($this->app);
+        topologyConnectionWithManagement('rabbitmq', ['exchange' => 'orders_exchange', 'routing_key' => '{queue}']);
+        fakeManagementApi(
+            exchanges: [[
+                'name' => 'orders_exchange', 'type' => 'direct', 'durable' => true,
+                'auto_delete' => false, 'arguments' => new stdClass,
+            ]],
+            queues: [[
+                'name' => 'orders', 'durable' => true,
+                'arguments' => ['x-queue-type' => 'quorum'],
+            ]],
+            bindings: [[
+                'source' => 'orders_exchange', 'destination' => 'orders',
+                'destination_type' => 'queue', 'routing_key' => 'wrong-key',
+            ]],
+        );
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("binding 'orders_exchange' -> 'orders' (routing key 'orders') is missing")
+            ->expectsOutputToContain('queue.connections.rabbitmq.exchange')
+            ->assertExitCode(1);
+    });
+
+    it('reports the route topology as declared when the exchange and binding match', function () {
+        bindFakeTopologyProbe($this->app);
+        topologyConnectionWithManagement('rabbitmq', ['exchange' => 'orders_exchange', 'routing_key' => '{queue}']);
+        fakeManagementApi(
+            exchanges: [
+                [
+                    'name' => 'orders_exchange', 'type' => 'direct', 'durable' => true,
+                    'auto_delete' => false, 'arguments' => new stdClass,
+                ],
+                [
+                    // The helper connection carries dead-letter wiring too.
+                    'name' => 'orders_dlx', 'type' => 'direct', 'durable' => true,
+                    'auto_delete' => false, 'arguments' => new stdClass,
+                ],
+            ],
+            queues: [
+                [
+                    'name' => 'orders', 'durable' => true,
+                    'arguments' => ['x-queue-type' => 'quorum'],
+                ],
+                [
+                    'name' => 'orders_dlq', 'durable' => true,
+                    'arguments' => ['x-queue-type' => 'quorum'],
+                ],
+            ],
+            bindings: [
+                [
+                    'source' => 'orders_exchange', 'destination' => 'orders',
+                    'destination_type' => 'queue', 'routing_key' => 'orders',
+                ],
+                [
+                    'source' => 'orders_dlx', 'destination' => 'orders_dlq',
+                    'destination_type' => 'queue', 'routing_key' => 'orders',
+                ],
+            ],
+        );
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("exchange 'orders_exchange' declared")
+            ->expectsOutputToContain("route binding 'orders_exchange' -> 'orders' declared")
+            ->assertExitCode(0);
+    });
+
     it('reports a missing dead-letter exchange with its config path', function () {
         bindFakeTopologyProbe($this->app);
         topologyConnectionWithManagement();

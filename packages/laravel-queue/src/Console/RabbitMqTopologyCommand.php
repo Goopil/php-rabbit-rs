@@ -157,8 +157,95 @@ final class RabbitMqTopologyCommand extends Command
         }
 
         $ok = $this->verifyQueueTypes($name, $queues, $compiled);
+        $ok = $this->verifyRouteTopology($name, $exchanges, $bindings, $compiled) && $ok;
 
         return $this->verifyDeadLetterWiring($name, $exchanges, $bindings, $compiled) && $ok;
+    }
+
+    /**
+     * Publish-route verification: the route exchange exists and each
+     * subscription on the route's broker is bound to it with the resolved
+     * routing key. Mirrors what the topology plan declares in declare mode
+     * (issue #205): a deleted binding silently unrouted publishes while
+     * verify stayed green. The default exchange (empty route exchange) needs
+     * neither declaration nor binding.
+     *
+     * @param  list<array<string, mixed>>  $exchanges
+     * @param  list<array<string, mixed>>  $bindings
+     * @param  array<string, mixed>  $compiled
+     */
+    private function verifyRouteTopology(
+        string $name,
+        array $exchanges,
+        array $bindings,
+        array $compiled,
+    ): bool {
+        $routes = $compiled['native']['routes'] ?? null;
+        if (! is_array($routes)) {
+            return true;
+        }
+
+        $ok = true;
+        foreach ($routes as $route) {
+            if (! is_array($route)) {
+                continue;
+            }
+            $exchange = (string) ($route['exchange'] ?? '');
+            if ($exchange === '') {
+                continue;
+            }
+
+            $broker = (string) ($route['broker'] ?? '');
+            $subscriptions = array_filter(
+                $compiled['native']['workers'][0]['subscriptions'] ?? [],
+                static fn (array $subscription): bool => (string) ($subscription['broker'] ?? '') === $broker,
+            );
+
+            if ($this->findByName($exchanges, $exchange) === null) {
+                $this->emit('fail', "exchange '{$exchange}' is missing");
+                $this->emit('fail', "check queue.connections.{$name}.exchange");
+                $ok = false;
+            } else {
+                $this->emit('ok', "exchange '{$exchange}' declared");
+            }
+
+            foreach ($subscriptions as $subscription) {
+                $queue = (string) $subscription['queue'];
+                $routingKey = str_replace('{queue}', $queue, (string) ($route['routing_key'] ?? ''));
+                if ($this->routeBindingExists($bindings, $exchange, $queue, $routingKey)) {
+                    $this->emit('ok', "route binding '{$exchange}' -> '{$queue}' declared");
+
+                    continue;
+                }
+                $this->emit('fail', "binding '{$exchange}' -> '{$queue}' (routing key '{$routingKey}') is missing");
+                $this->emit('fail', "check queue.connections.{$name}.exchange");
+                $ok = false;
+            }
+        }
+
+        return $ok;
+    }
+
+    /**
+     * Route-binding existence including the routing key: a direct exchange
+     * with the wrong key silently unroutables every publish, so the check
+     * must match the exact (source, destination, routing_key) triple.
+     *
+     * @param  list<array<string, mixed>>  $bindings
+     */
+    private function routeBindingExists(array $bindings, string $source, string $destination, string $routingKey): bool
+    {
+        foreach ($bindings as $entry) {
+            if (($entry['source'] ?? null) === $source
+                && ($entry['destination'] ?? null) === $destination
+                && ($entry['destination_type'] ?? null) === 'queue'
+                && ($entry['routing_key'] ?? null) === $routingKey
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
