@@ -333,3 +333,12 @@ jobs:
         if: always()
         run: ./scripts/lab-down.sh
 
+  docs:
+    name: Docs coherence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Check docs coherence
+        run: ./scripts/check-docs.sh
+
