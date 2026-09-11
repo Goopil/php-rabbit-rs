@@ -50,7 +50,10 @@ return [
             'routing_key' => '{queue}',
             'prefetch' => (int) env('RABBIT_RS_PREFETCH', 64),
             'safety' => env('RABBIT_RS_SAFETY', 'safe'),
-            'auto_subscribe' => true,
+            // auto_subscribe: not set — removed in v1 and rejected at compile
+            // time (ConnectionCompiler). The compiler derives the bench
+            // worker profile from the queue key above; the flag was inert
+            // here before it became fatal.
             'after_commit' => false,
             // Pop blocking window in seconds (worker-style): lets the pull
             // consumer wait for prefetch-window refills instead of
