@@ -223,6 +223,25 @@ The CI produces **8 pre-compiled release artifacts** (V1 is NTS-only, see [Threa
 
 The matrix is defined in [`release/pie-matrix.json`](../release/pie-matrix.json).
 
+#### Functional coverage of the matrix
+
+Every cell above is compiled, load-smoked, checksum-verified, and attested by the release pipeline — but "loads" is not "works against a broker". Real-broker coverage (publish + confirms, consume + ack, one Toxiproxy outage/recovery scenario via [`scripts/amqp-smoke.sh`](../scripts/amqp-smoke.sh), issue #227) is narrower and proven per tier:
+
+| PHP | Architecture | libc | Functional proof |
+|-----|-------------|------|------------------|
+| 8.4 | x86_64 | glibc | CI `integration` job (full Rust + Laravel integration suites) and the release PIE install smoke |
+| 8.4 | x86_64 | musl | Nightly [functional matrix](../.github/workflows/functional-matrix.yml) docker cell and the release PIE install smoke |
+| 8.4 | arm64 | glibc | Nightly functional matrix docker cell and the release PIE install smoke |
+| 8.4 | arm64 | musl | Nightly functional matrix docker cell and the release PIE install smoke |
+| 8.5 | x86_64 | glibc | Nightly functional matrix (full integration suites + AMQP smoke) and the release PIE install smoke |
+| 8.5 | x86_64 | musl | Build-only (shares the musl runtime path proven by the 8.4 musl smoke) |
+| 8.5 | arm64 | glibc | Build-only (shares the glibc runtime path proven by the 8.5 glibc x86_64 integration) |
+| 8.5 | arm64 | musl | Build-only (shares the musl runtime path proven by the 8.4 musl smoke) |
+| 8.4 | arm64 | darwin | Nightly functional matrix `macos-arm64` cell (dispatch/manual only): load + publish/confirm + consume/ack against a local Homebrew rabbitmq — no recovery scenario (no Toxiproxy on macOS runners) |
+| 8.5 | arm64 | darwin | Build-only (shares the 8.4 macOS ARM64 functional cell) |
+
+"Build-only" means the release pipeline compiles the artifact for that cell and proves it loads with the target PHP, but no AMQP traffic is exercised there; the runtime path it shares with a functional sibling is the only broker-level evidence. The functional bar itself is deliberately small — extension load, 5 messages published and confirmed, consumed and acked with the queue drained, and one outage/recovery scenario (publish 2 into a disabled Toxiproxy proxy, require both to buffer and confirm after the network heals) — so a release asset that cannot deliver against a real broker fails somewhere in CI, not in production.
+
 #### How pre-packaged binaries work
 
 Each artifact is a ZIP archive containing a single `rabbit_rs.so` compiled for the exact combination of PHP version, architecture, libc, and thread-safety mode. The naming convention follows PIE's expected format, which includes the `v` prefix from the git tag:
