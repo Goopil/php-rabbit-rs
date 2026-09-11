@@ -492,6 +492,8 @@ Native pool metrics — including `duplicates_total` — are **per-process by de
 
 An in-process Prometheus exporter is the planned evolution for per-process counters; it is deliberately not provided today.
 
+For operating on these signals — incident playbooks, example alert rules, and a dashboard definition — see `docs/operations/` ([runbook.md](operations/runbook.md), [alerts.md](operations/alerts.md), [dashboard.json](operations/dashboard.json)).
+
 ### When to use an external outbox
 
 Use an external outbox when:

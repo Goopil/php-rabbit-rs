@@ -1376,6 +1376,8 @@ The `prestop` hook always exits `0`: whether or not the workers finished drainin
 
 Rabbit RS does not include a Prometheus exporter in V1, but the status command provides the metrics needed. You can scrape them with a custom exporter or sidecar.
 
+For operating on these signals — incident playbooks, example alert rules, and a Grafana dashboard definition — see the monorepo's `docs/operations/` ([runbook.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/runbook.md), [alerts.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/alerts.md), [dashboard.json](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/dashboard.json)).
+
 #### Available metrics
 
 | Metric | Description |
