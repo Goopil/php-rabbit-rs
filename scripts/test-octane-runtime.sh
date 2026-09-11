@@ -80,6 +80,11 @@ ROADRUNNER_SHA256=(
 )
 FRANKENPHP_IMAGE="dunglas/frankenphp:php8.4"
 FRANKENPHP_IMAGE_DIGEST="sha256:77bc2d40a58ace3a9425e4cbb0c40d044188dfd850e44a943ed043d743625df3"
+# Derived image: pinned base + pcntl. Octane's artisan commands subscribe to
+# SIGINT/SIGTERM unconditionally (InteractsWithServers::getSubscribedSignals),
+# and the base image ships no pcntl, so octane:start dies with
+# "Undefined constant SIGINT" before spawning anything.
+FRANKENPHP_DERIVED_IMAGE="rabbitrs-octane/frankenphp:php8.4-pcntl"
 
 # Unique scenario queue per run; the lab's rabbit_rs user may declare queues
 # matching ^rabbit-rs\. (see lab/rabbitmq/rabbitmq/definitions.json).
@@ -338,13 +343,21 @@ ensure_frankenphp_image() {
     digest="$(docker image inspect "${FRANKENPHP_IMAGE}" --format '{{index .RepoDigests 0}}' 2>/dev/null | awk -F'@' '{print $2}' || true)"
     if [[ "${digest}" == "${FRANKENPHP_IMAGE_DIGEST}" ]]; then
         echo "FrankenPHP image already pinned: ${FRANKENPHP_IMAGE}@${FRANKENPHP_IMAGE_DIGEST}"
-        return 0
+    else
+        log "pulling pinned FrankenPHP image ${FRANKENPHP_IMAGE}"
+        docker pull "${FRANKENPHP_IMAGE}"
+        digest="$(docker image inspect "${FRANKENPHP_IMAGE}" --format '{{index .RepoDigests 0}}' 2>/dev/null | awk -F'@' '{print $2}' || true)"
+        if [[ "${digest}" != "${FRANKENPHP_IMAGE_DIGEST}" ]]; then
+            fail "FrankenPHP image digest drift: expected ${FRANKENPHP_IMAGE_DIGEST}, got ${digest:-none}"
+        fi
     fi
-    log "pulling pinned FrankenPHP image ${FRANKENPHP_IMAGE}"
-    docker pull "${FRANKENPHP_IMAGE}"
-    digest="$(docker image inspect "${FRANKENPHP_IMAGE}" --format '{{index .RepoDigests 0}}' 2>/dev/null | awk -F'@' '{print $2}' || true)"
-    if [[ "${digest}" != "${FRANKENPHP_IMAGE_DIGEST}" ]]; then
-        fail "FrankenPHP image digest drift: expected ${FRANKENPHP_IMAGE_DIGEST}, got ${digest:-none}"
+
+    if ! docker image inspect "${FRANKENPHP_DERIVED_IMAGE}" >/dev/null 2>&1; then
+        log "building derived image ${FRANKENPHP_DERIVED_IMAGE} (pinned base + pcntl)"
+        docker build -q -t "${FRANKENPHP_DERIVED_IMAGE}" - <<'DOCKERFILE'
+FROM dunglas/frankenphp:php8.4
+RUN docker-php-ext-install pcntl
+DOCKERFILE
     fi
 }
 
@@ -409,7 +422,7 @@ EOF
         --add-host=host.docker.internal:host-gateway \
         -p "${PORT}:8000" \
         -p "2019:2019" \
-        "${FRANKENPHP_IMAGE}" \
+        "${FRANKENPHP_DERIVED_IMAGE}" \
         php artisan octane:start --server=frankenphp \
             --host=0.0.0.0 --port=8000 --workers=1 --max-requests=500; then
         fail "failed to start the FrankenPHP container"
@@ -419,12 +432,15 @@ EOF
     docker logs "${SERVER_CONTAINER}" 2>&1 | tail -5 || true
 }
 
+# Reload/stop must run INSIDE the container: the octane state file records
+# container-namespace PIDs, and the host-side artisan commands would answer
+# "Octane server is not running" when inspecting them.
 reload_frankenphp() {
-    (cd "${RUNTIME_APP}" && "${PHP_BIN}" artisan octane:reload --server=frankenphp)
+    docker exec "${SERVER_CONTAINER}" php artisan octane:reload --server=frankenphp
 }
 
 stop_frankenphp() {
-    (cd "${RUNTIME_APP}" && "${PHP_BIN}" artisan octane:stop --server=frankenphp)
+    docker exec "${SERVER_CONTAINER}" php artisan octane:stop --server=frankenphp
 }
 
 # ---------------------------------------------------------------------------
@@ -520,6 +536,23 @@ stop_flush_expected() {
     [[ "${SERVER}" != "swoole" && "${SERVER}" != "openswoole" ]]
 }
 
+# Whether octane:reload recycles workers in place, keeping the server up.
+#
+# FrankenPHP does not: laravel/octane's FrankenPHP
+# ServerProcessInspector::reloadServer() PATCHes the Caddy admin config
+# endpoint (Cache-Control: must-revalidate), which on the pinned
+# dunglas/frankenphp image (digest-pinned above) shuts the whole
+# frankenphp app down instead of recycling workers in place. The PHP
+# workers still shut down gracefully — the parked publications are
+# flushed to the broker before the process exits (verified against the
+# broker) — so no data is lost; the harness restarts the server across
+# the reload and asserts the same no-loss outcome. This is an
+# availability difference (brief downtime on reload), not a data-safety
+# one.
+reload_recycles_workers() {
+    [[ "${SERVER}" != "frankenphp" ]]
+}
+
 start_server()    { "start_$(server_fn_suffix)"; }
 reload_server()   { "reload_$(server_fn_suffix)"; }
 stop_server()     { "stop_$(server_fn_suffix)"; }
@@ -560,14 +593,34 @@ log "starting ${SERVER} server"
 "start_$(server_fn_suffix)"
 wait_server_up
 
+# Publications that must be on the broker when phase 3 starts. A server
+# that loses a parked batch on the way reduces this count; the assertions
+# below make the loss explicit instead of failing silently later.
+TOTAL_EXPECTED=10
+
 # Phase 1: publish x5 with no follow-up op; publications park in the buffer.
 log "phase 1: publish x5 (parked), then octane:reload"
 scenario publish 5
 scenario wait-buffered 5 15
-reload_server
-scenario wait-depth 5 30
-scenario wait-buffered 0 15
-log "phase 1 ok: reload flushed the parked publications (depth 5, buffer 0)"
+if reload_recycles_workers; then
+    reload_server
+    scenario wait-depth 5 30
+    scenario wait-buffered 0 15
+    log "phase 1 ok: reload flushed the parked publications (depth 5, buffer 0)"
+else
+    # FrankenPHP: the upstream octane reload shuts the whole frankenphp
+    # app down (see reload_recycles_workers) — but the workers shut down
+    # gracefully, flushing parked publications to the broker before the
+    # process exits. Restart across the reload and assert the same
+    # no-loss outcome the in-place recycle provides elsewhere.
+    reload_server || true
+    wait_server_gone
+    "start_$(server_fn_suffix)"
+    wait_server_up
+    scenario wait-depth 5 30
+    scenario wait-buffered 0 15
+    log "phase 1 ok: upstream octane reload shut the whole frankenphp app down; workers flushed on the way out (depth 5, buffer 0, no loss; server restarted)"
+fi
 
 # Phase 2: publish x5 again, then graceful stop.
 log "phase 2: publish x5 (parked), then octane:stop"
@@ -577,9 +630,9 @@ scenario wait-depth 5 15   # batch 2 is parked, NOT yet on the broker
 stop_server
 wait_server_gone
 if stop_flush_expected; then
-    scenario wait-depth 10 30
-    log "phase 2 ok: graceful stop flushed the parked publications (depth 10, no loss)"
-    EXPECTED_DRAIN=10
+    scenario wait-depth "${TOTAL_EXPECTED}" 30
+    log "phase 2 ok: graceful stop flushed the parked publications (depth ${TOTAL_EXPECTED}, no loss)"
+    EXPECTED_DRAIN="${TOTAL_EXPECTED}"
 else
     # Upstream octane SIGKILLs swoole-family workers on stop: the parked
     # batch dies with the process (documented limit, not a driver bug).
@@ -606,8 +659,8 @@ stop_server
 wait_server_gone
 
 echo ""
-if stop_flush_expected; then
+if stop_flush_expected && reload_recycles_workers; then
     echo "PASS: ${SERVER} certified — publish -> reload -> graceful stop -> no loss -> drain to zero"
 else
-    echo "PASS: ${SERVER} certified with a documented limitation — publish -> reload -> no loss; octane:stop flush not certifiable (upstream SIGKILL, see docs certification table)"
+    echo "PASS: ${SERVER} certified with a documented limitation — see the certification table in packages/laravel-queue/docs/reference.md"
 fi
