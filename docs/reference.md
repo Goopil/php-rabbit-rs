@@ -430,6 +430,8 @@ This handles the race condition where:
 
 The job may be executed twice. This is expected and why jobs must be idempotent.
 
+Closing a consumer (or its pool) flushes pending and queued acknowledgements to the broker within a bounded 500 ms budget before the channels close; settlements still unacknowledged after the budget are abandoned to redelivery, preserving at-least-once.
+
 ### Replay buffer
 
 When a connection drops before a publish is confirmed, the state is ambiguous — the broker may or may not have received the message. Rabbit RS handles this by:

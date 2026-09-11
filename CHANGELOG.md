@@ -8,6 +8,11 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Fixed
+
+- The client-level consumer cache never serves a closed consumer (#232): `consumer_if_fresh()` handed the cached composite back without checking closedness, so after a request-scoped consumer was closed (the Octane lifecycle) every subsequent acquire returned the dead handle and every pop failed for the life of the process. The cache now evicts closed handles, and the recovery coordinator re-establishes a live set instead of returning its own closed cache entry when the profile is re-requested within the same connection generation.
+- Consumer close drains queued settlements within a bounded budget (#233): the close path cancelled pending settlements and cleared the per-channel queues, so a consumer that popped, acknowledged, and exited — the standard `queue:work --stop-when-empty` shape — dropped acks that had not yet reached the transport, silently degrading confirmed acks into broker redeliveries. Close now mirrors the publish side's bounded teardown flush: settlement commands that raced the actor's command loop are swept from the channel, and in-flight and queued settlements are driven to the transport within a fixed 500 ms budget before channels close; anything still unacknowledged when the budget expires is abandoned to redelivery (the delivery contract stays at-least-once).
+
 ### Changed
 
 - **BREAKING** — `auto_subscribe` is rejected at compile time (#228, #164-2): runtime worker-profile registration is not supported in v1, so the option could only surface the native `unknown worker profile` error at first pop. A connection carrying the key (any value, including through stale package defaults) now fails compilation with an actionable error naming the option and the migration path; declare queues explicitly with the connection `queue` key or the `subscriptions` escape hatch. Multi-queue pop scoping (the dedicated `__auto__.{queue}` consumer) is unaffected, and `RABBIT_RS_AUTO_SUBSCRIBE` is gone from the package config.
