@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING** — `tls.verify: none` is no longer a valid value (#224): the value was always rejected at validation because the AMQP transport (lapin 4.10) cannot disable certificate verification, and keeping the variant made the config surface lie. It now fails deserialization with a typed `unknown variant` error; the only accepted value is `peer` (the default).
+
 ## [0.2.2] - 2026-09-11
 
 ### Fixed
