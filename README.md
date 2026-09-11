@@ -166,6 +166,7 @@ Read before betting a pipeline on this.
 | Reference — configuration, usage, topology, operations, recipes | [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
 | Development guide | [docs/development.md](docs/development.md) |
+| Security policy — reporting vulnerabilities | [SECURITY.md](SECURITY.md) |
 
 ## Contributing
 
