@@ -26,4 +26,9 @@ composer.lock
 # LLVM raw coverage profiles (written to cwd when LLVM_PROFILE_FILE is unset)
 *.profraw
 
+# Staged release assets stay untracked; release/pie-matrix.json remains tracked
+/release/*.zip
+/release/*.sha256
+/release/*.sbom.json
+
 /packages/laravel-queue/composer.lock
