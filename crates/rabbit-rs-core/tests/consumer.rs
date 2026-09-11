@@ -2224,3 +2224,63 @@ async fn the_client_cache_never_serves_a_closed_consumer() {
 
     pool.close().await.expect("close pool");
 }
+
+// ---------------------------------------------------------------------------
+// Close-time settlement drain (issue #233)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn close_flushes_queued_settlements_within_a_bounded_budget() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    transport.push_delivery(Ok(delivery(1, b"one")));
+    transport.push_delivery(Ok(delivery(2, b"two")));
+    // Park the first broker ack mid-transport-call so the second ack queues
+    // behind the busy channel — the shape a short-lived CLI consumer hits
+    // when it acks its last deliveries and exits.
+    let gate = transport.push_ack_gate();
+
+    let handle = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 8).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+
+    let one = handle.next().await.expect("delivery one");
+    let two = handle.next().await.expect("delivery two");
+    one.ack().await.expect("ack one");
+    two.ack().await.expect("ack two");
+    // Let the actor process both settlements: tag 1 launches and parks on
+    // the gate mid-transport-call, tag 2 queues behind it.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The release fires 1ms in: on the unfixed code close has already
+    // dropped everything and the release lands on nothing.
+    let releaser = {
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            let _ = gate.release();
+        })
+    };
+
+    // Close WITHOUT any explicit drain: the queued ack must reach the
+    // transport within the bounded close budget instead of being dropped.
+    handle.close().await.expect("close drains settlements");
+    releaser.await.expect("releaser task");
+
+    let acked_tags: BTreeSet<u64> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Ack { delivery_tag, .. } => Some(*delivery_tag),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        acked_tags,
+        BTreeSet::from([1, 2]),
+        "close must flush queued settlements to the transport"
+    );
+}
