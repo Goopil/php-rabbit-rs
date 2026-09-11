@@ -10,6 +10,7 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ### Changed
 
+- **BREAKING** — `auto_subscribe` is rejected at compile time (#228, #164-2): runtime worker-profile registration is not supported in v1, so the option could only surface the native `unknown worker profile` error at first pop. A connection carrying the key (any value, including through stale package defaults) now fails compilation with an actionable error naming the option and the migration path; declare queues explicitly with the connection `queue` key or the `subscriptions` escape hatch. Multi-queue pop scoping (the dedicated `__auto__.{queue}` consumer) is unaffected, and `RABBIT_RS_AUTO_SUBSCRIBE` is gone from the package config.
 - **BREAKING** — `tls.verify: none` is no longer a valid value (#224): the value was always rejected at validation because the AMQP transport (lapin 4.10) cannot disable certificate verification, and keeping the variant made the config surface lie. It now fails deserialization with a typed `unknown variant` error; the only accepted value is `peer` (the default).
 
 ## [0.2.2] - 2026-09-11

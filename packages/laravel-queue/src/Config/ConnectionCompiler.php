@@ -69,7 +69,7 @@ final class ConnectionCompiler
      *     publisher: array{safety: string, confirms: bool, mandatory: bool, confirm_timeout: int, flush_interval: int},
      *     topology: array<string, mixed>,
      *     best_effort: bool,
-     *     auto_subscribe: bool
+     *     auto_subscribe: false
      * }
      */
     public static function compile(string $name, array $config, array $defaults = []): array
@@ -78,6 +78,7 @@ final class ConnectionCompiler
 
         $config = self::mergeDefaults($config, $defaults);
         self::rejectUnknownKeys($config, array_merge(self::CONNECTION_KEYS, array_keys($defaults)), $path);
+        self::rejectAutoSubscribe($config, $path);
 
         $queue = self::string($config['queue'] ?? null, $path.self::PATH_QUEUE);
         $broker = self::broker($name, $config, $path);
@@ -85,7 +86,6 @@ final class ConnectionCompiler
         $worker = self::worker($name, $queue, $config, $bestEffort, $path);
         $topology = self::topology($config, $path);
         $publisher = self::publisher($config, $path);
-        $autoSubscribe = self::boolean($config['auto_subscribe'] ?? true, $path.'.auto_subscribe');
 
         // The default route rides inside `native` so the extension declares
         // the publish-side topology (exchange + {queue} bindings, issue #205)
@@ -116,7 +116,10 @@ final class ConnectionCompiler
             'publisher' => $publisher,
             'topology' => $topology,
             'best_effort' => $bestEffort,
-            'auto_subscribe' => $autoSubscribe,
+            // Always false: the option is rejected above (issue #164-2). The
+            // key stays in the compiled shape because the connector reads it
+            // to build the queue; the runtime branch it feeds is unreachable.
+            'auto_subscribe' => false,
         ];
     }
 
@@ -472,6 +475,27 @@ final class ConnectionCompiler
         }
 
         return $mode;
+    }
+
+    /**
+     * `auto_subscribe` is removed in v1 (issue #164-2): runtime
+     * worker-profile registration is not supported, so the option could only
+     * produce the native `unknown worker profile` error at first pop. The
+     * key is rejected wherever the merged config carries it (connection or
+     * package defaults) with the migration path.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function rejectAutoSubscribe(array $config, string $path): void
+    {
+        if (array_key_exists('auto_subscribe', $config)) {
+            self::invalid(
+                $path.'.auto_subscribe',
+                'auto_subscribe is removed in v1: '
+                .'runtime worker-profile registration is not supported — '
+                .'declare the queue profile explicitly (queue key or subscriptions)',
+            );
+        }
     }
 
     private static function confirmTimeout(mixed $value, string $path): int

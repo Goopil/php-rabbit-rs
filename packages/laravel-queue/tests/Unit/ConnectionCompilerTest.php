@@ -86,14 +86,12 @@ describe('env booleans', function (): void {
     it('casts env booleans on the other boolean keys', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
             'queue' => 'default',
-            'auto_subscribe' => 'off',
             'queue_type' => 'classic',
             'queue_durable' => 'no',
             'tls' => ['enabled' => 'yes'],
         ]);
 
-        expect($compiled['auto_subscribe'])->toBeFalse()
-            ->and($compiled['native']['queue_durable'])->toBeFalse()
+        expect($compiled['native']['queue_durable'])->toBeFalse()
             ->and($compiled['native']['brokers'][0]['tls']['enabled'])->toBeTrue();
     });
 
@@ -104,11 +102,32 @@ describe('env booleans', function (): void {
             .'set queue_durable=true or queue_type=classic',
         );
     });
+});
 
-    it('falls back to the default when auto_subscribe is null', function (): void {
-        $compiled = ConnectionCompiler::compile('orders', ['queue' => 'default', 'auto_subscribe' => null]);
+describe('auto_subscribe rejection', function (): void {
+    it('rejects the option wherever it appears with an actionable error', function (mixed $value): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default', 'auto_subscribe' => $value]))
+            ->toThrow(
+                InvalidArgumentException::class,
+                'queue.connections.orders.auto_subscribe: auto_subscribe is removed in v1: '
+                .'runtime worker-profile registration is not supported — '
+                .'declare the queue profile explicitly (queue key or subscriptions)',
+            );
+    })->with([
+        'true' => [true],
+        'false' => [false],
+        'env string' => ['1'],
+        'null' => [null],
+    ]);
 
-        expect($compiled['auto_subscribe'])->toBeTrue();
+    it('rejects the option when it only arrives through the package defaults', function (): void {
+        expect(fn (): array => ConnectionCompiler::compile('orders', ['queue' => 'default'], ['auto_subscribe' => true]))
+            ->toThrow(
+                InvalidArgumentException::class,
+                'queue.connections.orders.auto_subscribe: auto_subscribe is removed in v1: '
+                .'runtime worker-profile registration is not supported — '
+                .'declare the queue profile explicitly (queue key or subscriptions)',
+            );
     });
 });
 
@@ -454,15 +473,13 @@ describe('package defaults', function (): void {
             'heartbeat' => '15',
             'best_effort' => '1',
             'prefetch' => '32',
-            'auto_subscribe' => '0',
         ]);
 
         expect($compiled['publisher']['confirm_timeout'])->toBe(30000)
             ->and($compiled['native']['consumer']['wait_timeout'])->toBe(5000)
             ->and($compiled['native']['brokers'][0]['heartbeat'])->toBe(15)
             ->and($compiled['best_effort'])->toBeTrue()
-            ->and($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe(32)
-            ->and($compiled['auto_subscribe'])->toBeFalse();
+            ->and($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe(32);
     });
 
     it('applies section validation after defaults fill the gaps', function (): void {
@@ -726,7 +743,6 @@ function packageDefaults(): array
         'dead_letter' => null,
         'delay' => ['mode' => 'auto', 'buckets' => [1, 5, 30, 120], 'max_buckets' => 8, 'queue_expiry_margin' => 60],
         'worker' => ['strategy' => 'weighted_fair'],
-        'auto_subscribe' => true,
         'production_warning' => true,
         'best_effort' => false,
     ];
@@ -811,7 +827,6 @@ function fullConnection(): array
         'wait_timeout' => 30000,
         'max_attempts' => 20,
         'best_effort' => false,
-        'auto_subscribe' => true,
         'topology_mode' => 'declare',
         'queue_type' => 'quorum',
         'queue_durable' => true,
@@ -863,6 +878,6 @@ function referenceCompiled(string $name): array
         'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000, 'flush_interval' => 1],
         'topology' => ['queue' => ['type' => 'quorum', 'durable' => true, 'delivery_limit' => null], 'dead_letter' => null],
         'best_effort' => false,
-        'auto_subscribe' => true,
+        'auto_subscribe' => false,
     ];
 }

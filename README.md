@@ -70,7 +70,7 @@ php artisan queue:work rabbit-rs
 php artisan rabbit-rs:work
 ```
 
-No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch. With `auto_subscribe`, queue names nothing declares just work: each pop gets a dedicated single-queue consumer (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#auto-subscribe)).
+No extra configuration required: pop the queue directly — it is the connection's `queue` key — or declare more queues under the `subscriptions` escape hatch. A pop addressed to one queue of a multi-queue connection gets a dedicated single-queue consumer, so it never draws from the sibling queues (see [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md#implicit-profiles)).
 
 ## What it does
 
