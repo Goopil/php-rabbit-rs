@@ -57,17 +57,20 @@ describe('pool registry', function () {
         $pool->close();
     });
 
-    it('invalidates aliases after closing a shared handle', function () {
+    it('keeps sibling aliases working after one pool closes its claim', function () {
         $first = new \Goopil\RabbitRs\Pool(poolConfig());
         $second = new \Goopil\RabbitRs\Pool(poolConfig());
+        $shared = $first->stats()['handle'];
+        expect($second->stats()['handle'])->toBe($shared);
+
         $first->close();
 
-        try {
-            $second->stats();
-            expect(false)->toBeTrue('closing a shared handle must invalidate its aliases');
-        } catch (\Goopil\RabbitRs\Exception $e) {
-            expect($e->getMessage())->toContain('closed');
-        }
+        // Issue #221: closing one pool releases only its claim on the
+        // shared handle; the sibling keeps working on the still-shared
+        // connection.
+        expect($second->stats()['handle'])->toBe($shared);
+
+        $second->close();
     });
 
     it('replaces a closed handle with a new one', function () {

@@ -219,6 +219,12 @@ namespace Goopil\RabbitRs {
 
     /**
      * Native `RabbitMQ` connection and operation pool.
+     *
+     * Each pool object holds one claim on its shared `ConnectionHandle` (the
+     * process-local handle behind the config fingerprint). `close()` releases
+     * that claim; the shared connection is torn down only when the last claim
+     * closes, so transient probe pools (doctor, topology) never kill their
+     * sibling pools (issue #221).
      */
     class Pool {
         /**
@@ -245,6 +251,11 @@ namespace Goopil\RabbitRs {
 
         /**
          * Auto-flushes buffered messages when the pool is garbage collected.
+         *
+         * The pool's claim on the shared connection handle is released here
+         * too, so a pool object that is dropped without an explicit `close()`
+         * never leaks a claim. Releasing the last claim without a close keeps
+         * the connection available for registry reuse.
          */
         public function __destruct() {}
 
@@ -274,6 +285,11 @@ namespace Goopil\RabbitRs {
 
         /**
          * Closes this pool handle.
+         *
+         * Closing releases this pool's claim on the shared connection handle:
+         * sibling pools built from the same configuration fingerprint keep
+         * working, and the shared connection itself is torn down only when the
+         * last claim closes.
          *
          * @return void
          */

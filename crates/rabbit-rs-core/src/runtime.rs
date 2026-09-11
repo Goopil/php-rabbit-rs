@@ -170,10 +170,12 @@ impl RuntimeRegistry {
                 if let Some(handle) = process.pools.get(&key)
                     && !handle.is_closed()
                 {
+                    handle.add_claim();
                     return Ok(handle.clone());
                 }
 
                 let handle = Arc::new(ConnectionHandle::new(process.runtime.handle().clone()));
+                handle.add_claim();
                 process.pools.insert(key, handle.clone());
                 Ok(handle)
             }
