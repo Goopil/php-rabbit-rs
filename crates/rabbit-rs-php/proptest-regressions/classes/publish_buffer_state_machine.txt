@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fe895a285b136df092a4a53453781ccdf8bc5e429647d38b24e1d2c28df60fed # shrinks to (initial_state, transitions, seen_counter) = (Model { next_id: 0, buffered: [], sent_ids: [], ack_resolutions: 0, returns_count: 0, dropped_ids: [], terminal_acked: [], terminal_returned: [], enqueued_ids: [], torn_down: false, client_closed: false, errors: [] }, [Enqueue { expired: false }], None)
