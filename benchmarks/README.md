@@ -64,17 +64,48 @@ Note: for the `rabbit-rs` driver, the no-confirm scenarios (`fire-and-forget`, `
 
 ### Budget system
 
-The smoke budget (`baselines/smoke-budget.json`) checks:
+Two layers with different contracts:
 
-| Metric | Check |
-|--------|-------|
-| `publish_throughput_min` | `actual >= budget` |
-| `consume_throughput_min` | `actual >= budget` |
-| `publish_p99_max_ms` | `actual <= budget` |
-| `consume_p99_max_ms` | `actual <= budget` |
-| `losses_max` | `actual == 0` |
+#### RC budget gate (anti-regression, blocking)
 
-Current thresholds: publish throughput ≥ 1,000 msgs/s, consume throughput ≥ 500 msgs/s, p99 latency ≤ 2,000 ms (publish and consume), losses == 0. **No CI runs the benchmark runner** — `run-benchmarks.php` prints the budget comparison but does not fail anything, so the budgets are informational. Treat them as a manual smoke signal on your own hardware, not an anti-regression gate.
+`baselines/reference-machine.json` stores the measured baseline for the reference
+machine (real machine spec, PHP/driver versions, date, per-cell numbers); the
+checker `baselines/check-budgets.php` compares a result run — one JSON or a
+directory of them — against it. The RC pipeline runs this checker as a blocking
+gate (wired by the RC-pipeline workstream); nightly benchmark runs are optional.
+
+| Metric | Budget |
+|--------|--------|
+| publish throughput (dispatch cells) | ≥ 80 % of baseline |
+| consume throughput (worker cell) | ≥ 80 % of baseline |
+| publish / consume per-op p99 | ≤ 150 % of baseline |
+| run integrity (`ok`), losses/`missing`, duplicates, final `publish_buffered`, buffered tripwire | **always blocking** — any non-zero / `false` fails |
+
+The ratio metrics are compared per scenario as the **median of the runs in the
+invocation**: one noise-contaminated run does not move the median, while a real
+regression shifts every run. Rows marked `n/a` mean "not measured" or "no
+baseline for this scenario" and never count as passing; a run where no check
+could be applied fails loudly. Exit codes: `0` pass, `1` budget fail or
+unjudgeable data, `2` usage error.
+
+```bash
+php benchmarks/baselines/check-budgets.php benchmarks/results/ws8-baseline-runs
+```
+
+#### Smoke budget (manual signal)
+
+`baselines/smoke-budget.json` holds absolute floors (publish ≥ 1,000 msgs/s,
+consume ≥ 500 msgs/s, p99 ≤ 2,000 ms publish and consume, losses == 0) that
+`run-benchmarks.php` prints a comparison for. **No CI runs that runner** — the
+smoke budget stays a manual signal on your own hardware, not a gate.
+
+#### Re-baselining
+
+The baseline is machine-specific: it records exactly which machine, versions and
+cells it covers. Re-baseline when the reference environment changes (hardware,
+macOS/OS, Docker/broker version, PHP or driver major versions) or after an
+intentional, reviewed performance trade-off — never to silence a failing gate.
+Procedure and policy: `docs/performance.md`.
 
 ### Soak memory methodology (Round K #143)
 
@@ -148,7 +179,9 @@ benchmarks/
 ├── run-benchmarks.sh         # Shell wrapper
 ├── driver-bench/              # Driver-level (Laravel queue API) benchmark app: bench.php + soak.php
 ├── baselines/
-│   └── smoke-budget.json     # Budget thresholds
+│   ├── check-budgets.php      # RC budget checker (anti-regression gate)
+│   ├── reference-machine.json # Measured baseline + thresholds (in-repo)
+│   └── smoke-budget.json      # Manual smoke thresholds
 ├── results/                  # Output directory (gitignored)
 ├── src/
 │   ├── run-benchmarks.php    # Main runner
