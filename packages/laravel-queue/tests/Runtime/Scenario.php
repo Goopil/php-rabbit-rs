@@ -8,6 +8,7 @@ use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
 
@@ -69,11 +70,29 @@ final class Scenario
 
     /**
      * Removes and re-declares the scenario queue for a clean slate.
+     *
+     * Retries briefly on transport failure: the management API can flap for
+     * a few seconds while a freshly booted lab settles (or while another
+     * process cycles the shared lab).
      */
     public static function purge(): void
     {
-        self::management('DELETE', self::queueUrl());
-        self::declareQueue();
+        $deadline = microtime(true) + 30;
+
+        do {
+            try {
+                self::management('DELETE', self::queueUrl());
+                self::declareQueue();
+
+                return;
+            } catch (RuntimeException $exception) {
+                if (microtime(true) > $deadline) {
+                    throw $exception;
+                }
+
+                usleep(1_000_000);
+            }
+        } while (true);
     }
 
     /**
@@ -298,15 +317,15 @@ final class Scenario
         return (string) (getenv('RUNTIME_MGMT_PASS') ?: 'admin_lab');
     }
 
-    private static ?\Illuminate\Foundation\Application $app = null;
+    private static ?Application $app = null;
 
     /**
      * Boots the scenario app (cached per process) so depth() compiles the
      * SAME connection config the Octane worker uses.
      */
-    private static function app(): \Illuminate\Foundation\Application
+    private static function app(): Application
     {
-        if (self::$app instanceof \Illuminate\Foundation\Application) {
+        if (self::$app instanceof Application) {
             return self::$app;
         }
 
