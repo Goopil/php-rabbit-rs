@@ -109,7 +109,7 @@ SHA_8_4=""
 SHA_8_5=""
 
 for php_ver in 8.4 8.5; do
-    asset_name="php_rabbit_rs-v${VERSION}_php${php_ver}-arm64-darwin-nts.zip"
+    asset_name="php_rabbit_rs-v${VERSION}_php${php_ver}-arm64-darwin-bsdlibc-nts.zip"
     download_url="${RELEASE_BASE}/v${VERSION}/${asset_name}"
     zip_path="${TMP_DIR}/${asset_name}"
 
@@ -157,11 +157,11 @@ content = File.read(formula_path)
 # Homebrew derives the version from the URL.
 content.gsub!(/^  version ".*"\n/, "")
 
-url84 = "https://github.com/Goopil/rabbit-rs/releases/download/v#{version}/php_rabbit_rs-v#{version}_php8.4-arm64-darwin-nts.zip"
+url84 = "https://github.com/Goopil/rabbit-rs/releases/download/v#{version}/php_rabbit_rs-v#{version}_php8.4-arm64-darwin-bsdlibc-nts.zip"
 content.gsub!(/^  url ".*"/, "  url \"#{url84}\"")
 content.gsub!(/^  sha256 ".*"/, "  sha256 \"#{sha84}\"")
 
-url85 = "https://github.com/Goopil/rabbit-rs/releases/download/v#{version}/php_rabbit_rs-v#{version}_php8.5-arm64-darwin-nts.zip"
+url85 = "https://github.com/Goopil/rabbit-rs/releases/download/v#{version}/php_rabbit_rs-v#{version}_php8.5-arm64-darwin-bsdlibc-nts.zip"
 content.gsub!(
   /resource "php85" do\n    url ".*"\n    sha256 ".*"/,
   "resource \"php85\" do\n    url \"#{url85}\"\n    sha256 \"#{sha85}\""
