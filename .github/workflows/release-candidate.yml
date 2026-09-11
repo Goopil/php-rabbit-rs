@@ -1,0 +1,102 @@
+name: Release Candidate
+
+# RC pipeline for the 1.0 gate (issue #177). Triggered by RC tags (v*-*rc*)
+# or manually. Three parallel evidence tracks:
+#
+#   1. nightly.yml (workflow_call): the 4-server Octane runtime matrix —
+#      publish -> reload -> graceful stop -> no loss -> drain per server.
+#   2. functional-matrix.yml (workflow_call): PHP 8.5 full integration plus
+#      the distribution smoke cells (musl/arm64/darwin).
+#   3. rc-orchestrator: scripts/verify-release-candidate.sh on the lab —
+#      tiers 1-9, evidence teed into target/rc-evidence/ and uploaded as
+#      workflow artifacts.
+#
+# Note: .github/workflows/release.yml also triggers on `v*` tags, so an RC
+# tag additionally builds, attests, and publishes the release assets; the
+# go/no-go checklist (docs/release-checklist.md) verifies those assets.
+#
+# Tier 9 (budget check) self-baselines on a macOS RC run because the
+# committed baseline is single-machine; on this ubuntu runner the
+# orchestrator skips that tier with an explicit note (rebench-driver-bench.sh
+# hardcodes the macOS .dylib path), and the Swoole-family servers SKIP for
+# the same reason the nightly matrix provisions them in dedicated jobs.
+
+on:
+  push:
+    tags:
+      - "v*-*rc*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  octane-nightly:
+    name: Nightly (Octane runtime matrix)
+    uses: ./.github/workflows/nightly.yml
+
+  functional-matrix:
+    name: Functional matrix
+    uses: ./.github/workflows/functional-matrix.yml
+
+  rc-orchestrator:
+    name: RC orchestrator
+    runs-on: ubuntu-latest
+    # The full blocking pass is ~2-3 h locally; the ubuntu subset (tier 9
+    # skipped) is well inside this budget.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust 1.96
+        uses: ./.github/actions/rust-setup
+
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            .cargo-registry
+            .cargo-git
+            .rustup-home
+            target
+          key: rc-orchestrator-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            rc-orchestrator-
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: curl
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq unzip curl
+
+      - name: Ensure php-fpm binary (tier 5)
+        run: |
+          if ! command -v php-fpm >/dev/null 2>&1; then
+            PHP_MM="$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')"
+            # setup-php installs the CLI package; the FPM SAPI ships in the
+            # same package series, so the FPM binary is ABI-identical to the
+            # extension built against php-config in the tier below.
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "php${PHP_MM}-fpm"
+            sudo ln -sf "/usr/sbin/php-fpm${PHP_MM}" /usr/local/bin/php-fpm
+          fi
+          php-fpm --version
+
+      - name: Run RC orchestrator
+        run: ./scripts/verify-release-candidate.sh
+
+      - name: Upload RC evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rc-evidence
+          path: target/rc-evidence/
+          if-no-files-found: warn
