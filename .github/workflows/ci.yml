@@ -436,7 +436,7 @@ jobs:
               set -e
               apt-get update -qq && apt-get install -y -qq libclang-dev curl jq git
 
-              if ! command -v cargo &>/dev/null; then
+              if ! command -v cargo >/dev/null 2>&1; then
                 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
               fi
               . "$HOME/.cargo/env"
