@@ -110,6 +110,21 @@ impl ConsumerHandle {
             .collect()
     }
 
+    /// Returns whether this handle was closed by its owner or every
+    /// underlying source set is closed. A closed handle fails deliveries and
+    /// settlements; caches must never serve one.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed_by_caller.load(Ordering::Acquire)
+            || self.inner.sources.iter().all(ConsumerSetHandle::is_closed)
+    }
+
+    /// Returns whether both handles wrap the same underlying composite.
+    #[must_use]
+    pub fn same_handle(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     #[must_use]
     pub fn metrics_snapshot(&self) -> MetricsSnapshot {
         // Every source shares the pool-level metrics registry, so any

@@ -339,6 +339,7 @@ impl RecoveryCoordinatorHandle {
         };
         if let Some(handle) = self.consumers.lock().await.get(profile).cloned()
             && handle.generation() == generation
+            && !handle.is_closed()
         {
             return Ok(handle);
         }
@@ -817,7 +818,7 @@ async fn establish_requested_profile(
         .lock()
         .await
         .get(profile)
-        .is_some_and(|handle| handle.generation() == generation)
+        .is_some_and(|handle| handle.generation() == generation && !handle.is_closed())
     {
         return Ok(());
     }
