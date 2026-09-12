@@ -62,7 +62,12 @@ function defaultConfigWithWorkers(): array
     ];
 }
 
-function pubMessage(string $messageId, string $payload = 'payload', array $headers = [], int $timeoutMs = 1000): array
+// The default per-message deadline is generous (issue #189): on a loaded
+// Docker CI runner the mock confirmations can take over a second to drain,
+// and an expired deadline resolves the publication with a terminal timeout
+// error instead of the scripted outcome. Tests that exercise deadline expiry
+// pass an explicit short timeoutMs.
+function pubMessage(string $messageId, string $payload = 'payload', array $headers = [], int $timeoutMs = 5000): array
 {
     return [
         'broker' => 'default',
