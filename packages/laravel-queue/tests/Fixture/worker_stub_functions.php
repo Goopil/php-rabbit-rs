@@ -10,6 +10,24 @@ namespace {
     const WORKER_PREFIX = '/worker-';
 
     /**
+     * Atomically replace the content of a state file.
+     *
+     * file_put_contents() truncates the target at open, before the write:
+     * a reader (or a SIGTERM interrupting the writer) can observe or leave
+     * behind an empty file. Writing to a temp file in the same directory and
+     * renaming over the target removes that window entirely — rename(2) is
+     * atomic, so readers see either the old or the new complete content.
+     * An interrupted writer may leave an orphan temp file, which the tests'
+     * state-dir cleanup removes.
+     */
+    function atomicWrite(string $path, string $content): void
+    {
+        $tmp = $path.'.'.getmypid().'.tmp';
+        file_put_contents($tmp, $content);
+        rename($tmp, $path);
+    }
+
+    /**
      * Atomically increment and return the invocation count for a worker.
      */
     function recordInvocation(string $stateDir, int $worker): int
@@ -27,7 +45,7 @@ namespace {
             }
         }
         $current++;
-        file_put_contents($counterFile, (string) $current, LOCK_EX);
+        atomicWrite($counterFile, (string) $current);
 
         return $current;
     }
@@ -44,15 +62,14 @@ namespace {
         }
 
         $markerFile = $stateDir.WORKER_PREFIX.$worker.'-started.txt';
-        file_put_contents(
+        atomicWrite(
             $markerFile,
-            json_encode([
+            (string) json_encode([
                 'worker' => $worker,
                 'invocation' => $invocation,
                 'pid' => getmypid(),
                 'time' => microtime(true),
             ]),
-            LOCK_EX,
         );
     }
 
@@ -68,14 +85,13 @@ namespace {
         }
 
         $exitFile = $stateDir.WORKER_PREFIX.$worker.'-exited.txt';
-        file_put_contents(
+        atomicWrite(
             $exitFile,
-            json_encode([
+            (string) json_encode([
                 'worker' => $worker,
                 'pid' => getmypid(),
                 'time' => microtime(true),
             ]),
-            LOCK_EX,
         );
     }
 }

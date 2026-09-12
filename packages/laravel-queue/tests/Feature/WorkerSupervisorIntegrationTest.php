@@ -185,8 +185,11 @@ describe('WorkerSupervisor integration', function () {
             $starts[$workerIndex]++;
 
             if ($workerIndex === 0) {
-                // Crash-loops: each run dies non-zero after ~1.2s.
-                return new Process([PHP_BINARY, '-r', 'usleep(1200000); exit(1);'], null, [
+                // Crash-loops: each run dies non-zero after ~2s. The window
+                // must leave room for several clean recycles of worker 1
+                // even on a loaded machine, where one recycle can take
+                // ~0.5s (poll tick + PHP cold start).
+                return new Process([PHP_BINARY, '-r', 'usleep(2000000); exit(1);'], null, [
                     'RABBIT_RS_WORKER_INDEX' => '0',
                 ]);
             }
@@ -214,7 +217,15 @@ describe('WorkerSupervisor integration', function () {
             // ...with exactly its budget (initial + 1 restart)...
             ->and($starts[0])->toBe(2)
             // ...while the clean worker recycled far beyond the crash budget.
-            ->and(supervisorInvocationCount(1))->toBeGreaterThanOrEqual(5);
+            // Assert on the parent-side spawn counter: it is deterministic,
+            // and a restart beyond the first requires the previous child to
+            // have exited cleanly (worker 1's crash budget of 1 caps
+            // crash-driven starts at 2), so 5 starts prove sustained clean
+            // recycling. The child-written count is only a secondary
+            // observation: the final stop signal can cut its last in-flight
+            // write short, so it only asserts the child actually executed.
+            ->and($starts[1])->toBeGreaterThanOrEqual(5)
+            ->and(supervisorInvocationCount(1))->toBeGreaterThanOrEqual(1);
     });
 
     it('stops all children when one worker exceeds max restarts', function () {
