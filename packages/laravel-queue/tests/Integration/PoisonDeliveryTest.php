@@ -21,25 +21,8 @@ class IntegrationPoisonFailingJob
 }
 
 /**
- * Declares the source queue with the same arguments the pool's declare-mode
- * reconcile sends (quorum, durable, dead-letter arguments). Declaring up front
- * keeps the worker's basic.consume from racing the quorum queue leader
- * election on a fresh queue.
+ * Deletes a test exchange through the management API (afterEach cleanup).
  */
-function queueMessageCount(string $queueName): int
-{
-    $url = 'http://localhost:15672/api/queues/%2Forders-eu/'.urlencode($queueName);
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_USERPWD, 'admin:admin_lab');
-    $response = curl_exec($ch);
-    curl_close($ch);
-
-    $data = json_decode((string) $response, true);
-
-    return (int) ($data['messages'] ?? 0);
-}
-
 function deleteExchange(string $exchangeName): void
 {
     $url = 'http://localhost:15672/api/exchanges/%2Forders-eu/'.urlencode($exchangeName);
@@ -160,15 +143,12 @@ it('dead-letters an unmarshable delivery when a dead-letter exchange is configur
     expect($this->queue->pop())->toBeNull();
     expect($this->queue->size($source))->toBe(0);
 
-    // Dead-letter routing is asynchronous on the broker: under CI load it
-    // can land well after the reject is processed (issue #191). Poll with a
-    // generous deadline instead of asserting immediately.
-    $dlqSize = 0;
-    $deadline = microtime(true) + 10;
-    while (microtime(true) < $deadline && ($dlqSize = $this->queue->size($dlq)) < 1) {
-        usleep(100_000);
-    }
-    expect($dlqSize)->toBe(1);
+    // Dead-letter routing is asynchronous on the broker: the quorum
+    // dead-letterer lands the message after the reject is confirmed, and
+    // under CI load that lag reaches seconds (issue #191). Poll with the
+    // shared generous deadline — the assertion still demands exactly one
+    // dead-lettered message, never fewer.
+    expect(waitForQueueSize($this->queue, $dlq, 1))->toBe(1);
 
     expect($this->queue->pop())->toBeNull();
 

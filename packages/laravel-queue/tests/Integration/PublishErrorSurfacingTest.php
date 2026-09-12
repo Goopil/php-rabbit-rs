@@ -48,7 +48,7 @@ it('surfaces an unroutable mandatory publish at the next pop', function () {
     // drain would record it for the next pop instead. Either way it must
     // surface, never vanish.
     $thrown = null;
-    $deadline = microtime(true) + 5;
+    $deadline = microtime(true) + ASYNC_BROKER_POLL_SECONDS;
     while (microtime(true) < $deadline) {
         try {
             $this->queue->pop();
@@ -66,28 +66,39 @@ it('surfaces an unroutable mandatory publish at the next pop', function () {
 it('surfaces a returned batch through drainSettlementErrors', function () {
     // 64 pushes reach the buffer threshold: the auto-flush spawns a
     // pipelined drain, so the returns are recorded for the next operation
-    // instead of raised from a synchronous flush.
-    for ($i = 0; $i < 64; $i++) {
-        $this->queue->push('stdClass', ['unroutable' => $i]);
+    // instead of raised from a synchronous flush. Under CI load that next
+    // operation can be one of these pushes itself — the definitive return
+    // is then raised at push, which is as final as surfacing at the drain
+    // (run 34269577417, issue #191): accept either surfacing point, never
+    // a vanished return.
+    $thrown = null;
+    try {
+        for ($i = 0; $i < 64; $i++) {
+            $this->queue->push('stdClass', ['unroutable' => $i]);
+        }
+    } catch (QueueException $exception) {
+        $thrown = $exception;
     }
 
-    $thrown = null;
-    $deadline = microtime(true) + 5;
-    while (microtime(true) < $deadline) {
-        try {
-            $this->queue->drainSettlementErrors();
-            usleep(100_000);
-        } catch (QueueException $exception) {
-            $thrown = $exception;
-            break;
+    if ($thrown === null) {
+        $deadline = microtime(true) + ASYNC_BROKER_POLL_SECONDS;
+        while (microtime(true) < $deadline) {
+            try {
+                $this->queue->drainSettlementErrors();
+                usleep(100_000);
+            } catch (QueueException $exception) {
+                $thrown = $exception;
+                break;
+            }
         }
+
+        // One failure is raised per call (sync-parity: the raise consumes the
+        // records taken at that moment); the next call must find the queue
+        // empty rather than re-raising stale records. Only meaningful in the
+        // drain path — a return raised at push left nothing to re-raise.
+        expect(count($this->pool->drainErrors()))->toBeLessThanOrEqual(63);
     }
 
     expect($thrown)->not->toBeNull('drainSettlementErrors must raise the recorded returns')
         ->and($thrown->getMessage())->toContain('unroutable');
-
-    // One failure is raised per call (sync-parity: the raise consumes the
-    // records taken at that moment); the next call must find the queue
-    // empty rather than re-raising stale records.
-    expect(count($this->pool->drainErrors()))->toBeLessThanOrEqual(63);
 });
