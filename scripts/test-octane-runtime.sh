@@ -232,17 +232,14 @@ prepare_runtime_app() {
 INI_DIR="${RUNTIME_ROOT}/.runtime-ini"
 
 extension_env() {
-    # If the extension is already loaded system-wide (e.g. installed via
-    # cargo php install), adding the scoped ini would double-load the module
-    # and RoadRunner workers would die at allocation. Skip the scoped ini
-    # and run against the system-wide build instead (honestly flagged).
+    # A system-wide ext-rabbit_rs (e.g. installed via `cargo php install`)
+    # would double-load with the scoped ini and kill RoadRunner workers at
+    # allocation, and repo policy requires tests to load the extension from
+    # target/ — never certify an uncontrolled build. Fail hard instead.
     local modules
     modules="$("${PHP_BIN}" -m 2>/dev/null || true)"
     if grep -qi '^rabbit_rs$' <<< "${modules}"; then
-        log "WARNING: ext-rabbit_rs is loaded system-wide; the scoped ini" \
-            "is skipped and tests run against the system-wide build" \
-            "(remove it with 'cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes' to test target/debug)" >&2
-        return 0
+        fail "ext-rabbit_rs is loaded system-wide; tests must load it from target/ — remove it with 'cargo php remove --manifest crates/rabbit-rs-php/Cargo.toml --yes' and delete any ext-rabbit_rs.ini in the PHP conf.d directory"
     fi
     mkdir -p "${INI_DIR}"
     printf 'extension=%s\n' "${EXTENSION_ARTIFACT}" > "${INI_DIR}/rabbit-rs.ini"

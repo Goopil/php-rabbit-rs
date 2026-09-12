@@ -63,14 +63,18 @@ for file in "${FILES[@]}"; do
   done
 done
 
-# Metric cross-check: every `*_total` metric named in the operations alert
-# rules must exist in the core metrics registry. The operations pack
+# Metric cross-check: every `rabbit_rs_*` symbol referenced by the
+# operations alert rules must exist in one of the two metric surfaces the
+# runbook maps them to: the core registry
+# (crates/rabbit-rs-core/src/metrics.rs) or the documented Pool::stats()
+# keys (crates/rabbit-rs-php/src/classes/pool.rs). The operations pack
 # (runbook/alerts/dashboard) is a later remediation deliverable, so its
 # absence is not an error.
 if [ -f docs/operations/alerts.md ]; then
-  for metric in $(grep -oE '`[a-z][a-z0-9_]*_total`' docs/operations/alerts.md | tr -d '`' | sort -u); do
-    if ! grep -q "${metric}" crates/rabbit-rs-core/src/metrics.rs; then
-      echo "check-docs: metric ${metric} referenced by docs/operations/alerts.md is missing from crates/rabbit-rs-core/src/metrics.rs" >&2
+  for metric in $(grep -oE 'rabbit_rs_[a-z0-9_]+' docs/operations/alerts.md | sort -u); do
+    if ! grep -q "${metric#rabbit_rs_}" crates/rabbit-rs-core/src/metrics.rs \
+      && ! grep -q "${metric#rabbit_rs_}" crates/rabbit-rs-php/src/classes/pool.rs; then
+      echo "check-docs: metric ${metric} referenced by docs/operations/alerts.md is missing from crates/rabbit-rs-core/src/metrics.rs and crates/rabbit-rs-php/src/classes/pool.rs" >&2
       failures=$((failures + 1))
     fi
   done

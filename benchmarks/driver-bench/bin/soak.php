@@ -532,6 +532,12 @@ $duplicates = $receivedTotal - $distinct;
 $reconnects = poolReconnects($pool);
 
 try {
+    $terminalBuffered = $pool->stats()['publish_buffered'] ?? null;
+} catch (Throwable) {
+    $terminalBuffered = null;
+}
+
+try {
     $pool->close();
 } catch (Throwable) {
     // best-effort cleanup
@@ -572,6 +578,7 @@ $result = [
     'cycles' => $cycles,
     'kills' => $kills,
     'reconnects_total' => $reconnects,
+    'publish_buffered' => $terminalBuffered,
     'published' => $published,
     'received_total' => $receivedTotal,
     'distinct_received' => $distinct,

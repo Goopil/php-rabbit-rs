@@ -87,6 +87,22 @@ jobs:
             --kill-every=10 --kill-timeout-ms=50 --sample-interval=10 \
             --output=benchmarks/results/round-k-soak/nightly-kill.json
 
+      # Fail fast unless the kill segment proves reconnect recovery: at least
+      # one reconnection, no missing messages at the end, and an empty
+      # publish buffer at the end.
+      - name: Assert kill-segment recovery
+        run: |
+          json=benchmarks/results/round-k-soak/nightly-kill.json
+          if ! jq -e '
+            (.reconnects_total != null and .reconnects_total > 0)
+            and .missing == 0
+            and .publish_buffered == 0
+          ' "${json}" > /dev/null; then
+            echo "FAIL: kill segment did not prove recovery — require reconnects_total > 0, missing == 0, terminal publish_buffered == 0" >&2
+            jq '{reconnects_total, missing, publish_buffered}' "${json}" || true
+            exit 1
+          fi
+
       - name: Upload soak artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
