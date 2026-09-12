@@ -36,7 +36,7 @@ builds + attests the distributable assets). Fill the table from those runs.
 | 5 | Octane certification green for FrankenPHP, RoadRunner, Open Swoole, Swoole (publish → reload → stop). FrankenPHP/RoadRunner: no loss on graceful stop with terminal `publish_buffered == 0`. Open Swoole/Swoole: harness-green with the documented upstream Octane stop-loss asserted as expected (loss counted at stop, `publish_buffered == 0` terminal, reload-flush path certified) | `nightly.yml` matrix via `release-candidate.yml` | <!-- run link --> | | |
 | 6 | FPM certification green: 2-worker isolation, lone-publish age-flush, graceful-stop flush, reload survival | `ci.yml` `fpm` job; tier 5 of the orchestrator | <!-- run link --> | | |
 | 7 | Functional matrix: every cell (PHP 8.4/8.5 × glibc/musl × x86_64/ARM64, macOS ARM64) green or explicitly marked build-only | `functional-matrix.yml` via `release-candidate.yml`; table in `docs/reference.md` | <!-- run link --> | | |
-| 8 | Distribution: 30 assets verified; attestations green per asset; PIE install + upgrade/rollback green; each install cell passes `amqp-smoke.sh` | `./scripts/validate-distribution.sh`; `release.yml` `verify-assets` + `verify-pie-install` jobs | <!-- run link --> | | |
+| 8 | Distribution: 30 assets verified; attestations green per asset; PIE install + upgrade/rollback green; each Linux install cell passes `amqp-smoke.sh` (macOS cell proves PIE resolution + install + load — no Docker on macOS runners; darwin broker coverage via the functional matrix `macos-arm64` cell) | `./scripts/validate-distribution.sh`; `release.yml` `verify-assets` + `verify-pie-install` jobs | <!-- run link --> | | |
 | 9 | This checklist complete: versions, dates, evidence links, benchmark comparison within thresholds (tier 9 of the orchestrator, or `benchmarks/baselines/check-budgets.php` on a rebench run) | `release-candidate.yml` artifacts | <!-- link --> | | |
 | 10 | Contract coherence: doc lint green; README support table matches `release/pie-matrix.json`, `composer.json`, and the design doc | `./scripts/check-docs.sh` (runs in `ci.yml` `docs` job) | <!-- run link --> | | |
 | 11 | Security: `SECURITY.md` live; Dependabot composer active; `composer audit` + `cargo deny check` green | `ci.yml` `composer-audit` + `deny` jobs | <!-- run link --> | | |
@@ -59,8 +59,10 @@ directory or the GitHub release assets):
   when possible.
 - **PIE install path:** the `verify-pie-install` job installs the pre-packaged
   binaries through PIE 1.5.x (including an upgrade/rollback pass) and runs
-  `amqp-smoke.sh` per cell — the functional proof that each shipped archive
-  actually loads and works.
+  `amqp-smoke.sh` per Linux cell — the functional proof that each shipped
+  archive actually loads and works. (The macOS cell has no Docker for the
+  lab and stops at install + load + version match; darwin broker coverage
+  comes from the functional matrix `macos-arm64` cell.)
 
 ## Final decision
 
