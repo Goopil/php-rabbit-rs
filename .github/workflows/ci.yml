@@ -324,7 +324,11 @@ jobs:
               break
             fi
             if [[ "${i}" == 60 ]]; then
-              echo "mTLS listener on localhost:5674 did not become ready." >&2
+              echo "mTLS listener on localhost:5674 did not become ready. Full s_client output of a final attempt:" >&2
+              echo | openssl s_client -connect localhost:5674 -servername rabbit.internal \
+                  -CAfile lab/rabbitmq/tls/generated/lab-ca.pem \
+                  -cert lab/rabbitmq/tls/generated/lab-client.pem \
+                  -key lab/rabbitmq/tls/generated/lab-client.key 2>&1 | tail -40 >&2
               exit 1
             fi
             sleep 2
