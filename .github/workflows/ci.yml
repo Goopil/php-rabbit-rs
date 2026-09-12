@@ -327,7 +327,20 @@ jobs:
             sleep 2
           done
 
+          # Debug evidence for rustls-vs-Erlang handshake EOF seen only on CI:
+          # proves the listener still accepts (openssl) in the same second the
+          # Rust client gets a mid-handshake EOF, then runs the suite.
+          echo | openssl s_client -connect localhost:5671 -servername localhost \
+            -CAfile lab/rabbitmq/tls/generated/lab-ca.pem 2>&1 \
+            | grep -E "Verify return code|Protocol|Cipher is" || true
+
           cargo nextest run -p rabbit-rs-core --test tls_integration --features integration -j 1 --no-fail-fast
+
+      - name: Dump TLS lab broker logs
+        if: failure()
+        run: |
+          cd lab/rabbitmq
+          docker compose --profile with-plugin --profile with-tls logs --tail 150 rabbitmq-tls rabbitmq-mtls || true
 
       - name: Stop RabbitMQ lab
         if: always()
