@@ -106,30 +106,36 @@ Rabbit RS is distributed via three channels:
 
 | Package | Channel | Purpose |
 |---------|---------|---------|
-| `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (Linux binary) |
+| `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (Linux and macOS binaries) |
 | `goopil/rabbit-rs-laravel` | [Packagist](https://packagist.org) | Laravel queue driver (PHP source) |
-| `rabbit-rs` | [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs) | Native PHP extension (macOS binary) |
+| `rabbit-rs` | [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs) | Native PHP extension (macOS binary, alternative to PIE) |
 
-PIE selects the correct pre-compiled binary for your PHP version, architecture, libc, and thread-safety mode. Homebrew does the same for macOS Apple Silicon. Composer installs the Laravel bridge but does **not** install, verify, or modify system PHP: `ext-rabbit_rs` is a Composer suggestion and the driver fails at connection resolution until the extension is loaded (PIE installs the binary).
+PIE selects the correct pre-compiled binary for your PHP version, architecture, operating system, libc, and thread-safety mode — including macOS Apple Silicon. Homebrew offers the same macOS binaries through the tap. Composer installs the Laravel bridge but does **not** install, verify, or modify system PHP: `ext-rabbit_rs` is a Composer suggestion and the driver fails at connection resolution until the extension is loaded (PIE installs the binary).
 
 ### macOS
 
-**Homebrew (Apple Silicon):**
+**PIE (Apple Silicon):**
+
+```bash
+pie install goopil/rabbit-rs-native
+```
+
+**Homebrew (Apple Silicon, alternative):**
 
 ```bash
 brew tap goopil/rabbit-rs
 brew install rabbit-rs
 ```
 
-Requires PHP 8.4 or 8.5 installed via Homebrew.
+Requires PHP 8.4 or 8.5 (Homebrew PHP for the tap).
 
 **Manual install (Apple Silicon):**
 
-PIE does not support macOS. On Apple Silicon (ARM64), download the pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and load it manually:
+On Apple Silicon (ARM64), download the pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and load it manually:
 
 ```bash
 # Download the matching asset for your PHP version
-unzip php_rabbit_rs-*_php8.4-arm64-darwin-nts.zip
+unzip php_rabbit_rs-*_php8.4-arm64-darwin-bsdlibc-nts.zip
 cp rabbit_rs.so $(php-config --extension-dir)/rabbit_rs.so
 echo "extension=rabbit_rs" > $(php-config --ini-dir)/ext-rabbit_rs.ini
 php -m | grep rabbit_rs

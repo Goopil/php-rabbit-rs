@@ -15,12 +15,12 @@ Installing the Rabbit RS native extension and the Laravel queue driver.
 ### Prerequisites
 
 - PHP 8.4 or 8.5 (**NTS only** — ZTS is not supported in V1, see [Thread safety](#thread-safety))
-- Linux x86_64 or ARM64 (glibc or musl)
+- Linux x86_64 or ARM64 (glibc or musl), or macOS Apple Silicon
 - RabbitMQ 4.2.9 or newer (reachable from your PHP process — the CI lab runs 4.2.9)
 - [PIE](https://github.com/php/pie) 1.4.10+ for extension installation (the version the release pipeline validates against)
 - [Composer](https://getcomposer.org) for the Laravel queue driver
 
-> **macOS** (Apple Silicon) is supported through the Homebrew tap or a manual release download; Windows is not supported in V1. macOS installs are validated best-effort — see [How pre-packaged binaries work](#how-pre-packaged-binaries-work).
+> **macOS** (Apple Silicon) installs through PIE like Linux — `composer.json` declares `os-families: ["linux", "darwin"]` — and the release pipeline validates the macOS `pie install` path on an Apple Silicon runner. Homebrew remains an alternative channel (see [How pre-packaged binaries work](#how-pre-packaged-binaries-work)). Windows is not supported in V1.
 
 #### Thread safety
 
@@ -36,7 +36,8 @@ PIE selects the correct pre-compiled binary for your environment:
 
 - PHP version (8.4 or 8.5)
 - Architecture (x86_64 or arm64)
-- libc (glibc or musl)
+- Operating system (linux or darwin)
+- libc (glibc or musl on Linux, bsdlibc on macOS)
 - Thread safety (NTS only in V1)
 
 It copies the shared object (`rabbit_rs.so`) to your PHP extension directory and enables it in the active PHP configuration.
@@ -244,32 +245,33 @@ Every cell above is compiled, load-smoked, checksum-verified, and attested by th
 
 #### How pre-packaged binaries work
 
-Each artifact is a ZIP archive containing a single `rabbit_rs.so` compiled for the exact combination of PHP version, architecture, libc, and thread-safety mode. The naming convention follows PIE's expected format, which includes the `v` prefix from the git tag:
+Each artifact is a ZIP archive containing a single `rabbit_rs.so` compiled for the exact combination of PHP version, architecture, operating system, libc, and thread-safety mode. The naming convention follows PIE's expected format, which includes the `v` prefix from the git tag:
 
 ```
-php_rabbit_rs-v{version}_php{php}-{arch}-linux-{libc}-{ts}.zip
+php_rabbit_rs-v{version}_php{php}-{arch}-{os}-{libc}-{ts}.zip
 ```
 
 For example:
 
 ```
 php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
+php_rabbit_rs-v1.2.0_php8.5-arm64-darwin-bsdlibc-nts.zip
 ```
 
-Every Linux artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.4.10+, the version the release pipeline validates) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. The convention is enforced in two places that must stay consistent:
+Every artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.4.10+, the version the release pipeline validates) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. On macOS, PIE derives the `bsdlibc` libc token from its `LibcFlavour` detection (`otool`, shipped with Xcode Command Line Tools, resolves to `bsdlibc`). The convention is enforced in two places that must stay consistent:
 
 - `release/pie-matrix.json` — machine-readable matrix (`ts_suffix` is always `-nts` in V1; ZTS entries are excluded)
 - `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name) via the `.github/actions/package-release-asset` composite action
 
 `scripts/validate-distribution.sh` fails if any of them drifts from the pattern expected by PIE.
 
-macOS artifacts (`arm64-darwin-nts`) are outside the PIE matrix — `composer.json` declares `os-families: ["linux"]` — and are consumed by the Homebrew formula. macOS installs are therefore validated best-effort: the release pipeline compiles and smoke-loads both `arm64-darwin-nts` builds, and the Homebrew formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
+macOS artifacts (`arm64-darwin-bsdlibc-nts`) are part of the PIE matrix — `composer.json` declares `os-families: ["linux", "darwin"]`. The release pipeline compiles and smoke-loads both macOS builds, and the Homebrew formula (alternative install channel) consumes the same assets, so there is a single name per binary; the formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
 
 #### End-to-end PIE validation
 
 Once the release is published, the release pipeline blocks on two verification stages against the published release:
 
-- **`verify-pie-install`** runs a real `pie install` on every supported platform/libc combination: Linux glibc x86_64 (PHP 8.4 and 8.5) on native runners, and Linux glibc arm64, musl x86_64, and musl arm64 (PHP 8.4) inside the same digest-pinned, multi-arch PHP images the build job uses. Each job asserts that `rabbit_rs` loads and that `phpversion('rabbit_rs')` equals the release version.
+- **`verify-pie-install`** runs a real `pie install` on every supported platform/libc combination: Linux glibc x86_64 (PHP 8.4 and 8.5) on native runners, Linux glibc arm64, musl x86_64, and musl arm64 (PHP 8.4) inside the same digest-pinned, multi-arch PHP images the build job uses, and macOS arm64 (PHP 8.4) on an Apple Silicon runner. Each job asserts that `rabbit_rs` loads and that `phpversion('rabbit_rs')` equals the release version.
 - **`verify-pie-upgrade-rollback`** installs the previous published release, upgrades it to the new release, then rolls back to the previous one, asserting the installed extension version at each step. A missing previous release fails the job loudly instead of silently skipping the gate.
 
 The Homebrew formula update and the Laravel package split run only after both stages succeed, so a release that PIE cannot install, upgrade, or roll back never reaches those channels.
@@ -298,13 +300,13 @@ Each release therefore contains **30 assets**: 10 ZIPs, 10 SHA256 files, and 10 
 
 Releases follow a strict order to ensure version coherence:
 
-1. **CI builds all 8 PIE artifacts** — each tested with the target PHP, checksum verified
+1. **CI builds all 10 PIE artifacts** — each tested with the target PHP, checksum verified
 2. **Laravel package is split** — the monorepo's `packages/laravel-queue/` is split into the `Goopil/rabbit-rs-laravel` mirror repository via `scripts/split-laravel-package.sh`
 3. **Native extension is tagged on Packagist** — `goopil/rabbit-rs-native` appears as a PIE package
 4. **Laravel package is tagged on Packagist** — `goopil/rabbit-rs-laravel` appears as a Composer package
 5. **GitHub release is published** — only after all binaries are produced, the Laravel tag is pushed, and both Packagist metadata entries are verified
 
-The validation script [`scripts/validate-distribution.sh`](../scripts/validate-distribution.sh) checks: root package name and type (`goopil/rabbit-rs-native`, `php-ext`), extension name, download method, NTS support with the V1 ZTS exclusion, Linux-only OS family, Laravel package name and namespace, version coherence between Cargo and both packages, exactly 8 PIE matrix entries (NTS only) with unique suffixes, the minimum glibc version, the PIE asset naming convention across the packaging script, the release workflow and this document, and — when archives are present — exactly 30 files (10 ZIP + 10 SHA-256 + 10 SBOM for the 8 Linux matrix entries plus 2 macOS darwin assets) with verified checksums and CycloneDX SBOMs.
+The validation script [`scripts/validate-distribution.sh`](../scripts/validate-distribution.sh) checks: root package name and type (`goopil/rabbit-rs-native`, `php-ext`), extension name, download method, NTS support with the V1 ZTS exclusion, dual Linux/darwin OS family, Laravel package name and namespace, version coherence between Cargo and both packages, exactly 10 PIE matrix entries (8 Linux + 2 macOS, NTS only) with unique suffixes, the minimum glibc version, the PIE asset naming convention across the packaging script, the release workflow and this document, and — when archives are present — exactly 30 files (10 ZIP + 10 SHA-256 + 10 SBOM) with verified checksums and CycloneDX SBOMs.
 
 #### Not V1 distribution channels
 

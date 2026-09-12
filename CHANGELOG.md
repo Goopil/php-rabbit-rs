@@ -18,6 +18,12 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 - **BREAKING** — `auto_subscribe` is rejected at compile time (#228, #164-2): runtime worker-profile registration is not supported in v1, so the option could only surface the native `unknown worker profile` error at first pop. A connection carrying the key (any value, including through stale package defaults) now fails compilation with an actionable error naming the option and the migration path; declare queues explicitly with the connection `queue` key or the `subscriptions` escape hatch. Multi-queue pop scoping (the dedicated `__auto__.{queue}` consumer) is unaffected, and `RABBIT_RS_AUTO_SUBSCRIBE` is gone from the package config.
 - **BREAKING** — `tls.verify: none` is no longer a valid value (#224): the value was always rejected at validation because the AMQP transport (lapin 4.10) cannot disable certificate verification, and keeping the variant made the config surface lie. It now fails deserialization with a typed `unknown variant` error; the only accepted value is `peer` (the default).
 
+## [0.2.3] - 2026-09-12
+
+### Added
+
+- PIE installs on macOS Apple Silicon (#234): `composer.json` declares `os-families: ["linux", "darwin"]` and the macOS release assets are renamed to the PIE naming convention `php_rabbit_rs-v{version}_php{php}-arm64-darwin-bsdlibc-nts.zip` (PIE's `LibcFlavour` detection resolves `otool` to `bsdlibc` on macOS, matching the `BSN4/grpc-php-rs` precedent). The `pie install` path is now gated in the release pipeline by a new `macOS arm64 PHP 8.4` cell in `verify-pie-install` (`macos-14` runner, PIE phar checksum verified portably with `shasum`). The Homebrew formula consumes the same renamed assets, keeping a single URL per binary; the release inventory is unchanged (10 ZIPs / 30 files). Previously the macOS binaries were built but invisible to PIE — `pie install` refused to run on darwin and macOS users were routed to Homebrew best-effort.
+
 ## [0.2.2] - 2026-09-11
 
 ### Fixed
