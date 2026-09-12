@@ -55,10 +55,35 @@ records pending errors (synchronous paths raise, teardown stays silent).
 
 ### Machine 2 — publisher replay across recovery (crates/rabbit-rs-core)
 
-Integration test driving the publisher path across scripted connection
-losses: unconfirmed publications are replayed with identical `message_id`
-and original deadline, stale confirmations from the lost generation are
-dropped, and every waiter resolves exactly once.
+**Done** (`tests/publisher_replay_machine.rs`, 256 proptest cases over the
+recovery coordinator + publisher actor + mock transport; paused Tokio time).
+Transitions: publish (healthy or pre-expired deadline, optionally scripted),
+non-recoverable and recoverable connection loss, full recovery (0–2 scripted
+connect refusals + scripted post-recovery confirmations), time advance,
+controlled confirmation resolution, and coordinator close. After every
+transition the test checks the model partition (every accepted publication is
+terminal exactly once or still live), wire-identity, resolution-identity, and
+the publisher metrics counters.
+
+Confirmed facts baked into the model:
+- Replay identity is verified via `message_id` **plus a probe header
+  (`x-probe-deadline`) stamped at acceptance time**: the transport-level
+  `PublishRequest` record has no deadline field, so the header is the
+  observable that proves a replayed publication carries its original
+  deadline (the actor preserves headers through re-sends).
+- A pre-expired Ready publish is rejected by the mailbox pre-wire guard
+  (no wire write, no confirmation consumed) and resolves as a timeout.
+- A publication parked in suspension whose deadline already expired is
+  re-armed at most once (retried flag, counted in
+  `publication_retries_total`) and resolves as a terminal timeout — the
+  suspension deadline watcher fires it, not the recovery flush.
+- Unscripted sends during recovery flush resolve `Unconfirmed`
+  (confirmations not requested by the model) and stay non-terminal for the
+  wire log; stale confirmations from a lost generation resolve nothing
+  (the parked waiter receiver is dropped).
+- A closed coordinator (quiesce) fails remaining waiters with `Closed`;
+  recovery waiters converge within the 100 ms→30 s EqualJitter backoff
+  window (bounded advance proves it, no flake margins needed).
 
 ### CI
 
