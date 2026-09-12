@@ -120,9 +120,14 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^rabbitrs-rabbitmq-tls
     TLS_VERIFY=""
     TLS_READY=false
     for i in $(seq 1 30); do
+        # Require a real session ("New, TLS…"), not just a verify code: when
+        # the broker is dead behind docker's userland proxy, s_client gets an
+        # immediate close and still prints "Verify return code: 0 (ok)" with
+        # "New, (NONE), Cipher is (NONE)" — a vacuous success.
         TLS_VERIFY=$(echo | openssl s_client -connect localhost:5671 -servername rabbit.internal \
-            -CAfile "${LAB_DIR}/tls/generated/lab-ca.pem" 2>/dev/null | grep "Verify return code" || true)
-        if [[ "${TLS_VERIFY}" == *"Verify return code: 0 (ok)"* ]]; then
+            -CAfile "${LAB_DIR}/tls/generated/lab-ca.pem" 2>/dev/null \
+            | grep -E "Verify return code|New, TLS" || true)
+        if [[ "${TLS_VERIFY}" == *"Verify return code: 0 (ok)"* && "${TLS_VERIFY}" == *"New, TLS"* ]]; then
             TLS_READY=true
             break
         fi

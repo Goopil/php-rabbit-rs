@@ -648,59 +648,9 @@ pub(crate) async fn run_actor(
                 Some(ConsumerCommand::Settle {
                     token,
                     settlement,
-                }) => {
-                    let Some(channel_key) = claim_settlement(&mut state, &token) else {
-                        continue;
-                    };
-                    let params = SettleParams { token, settlement };
-                    if state.settlement_in_flight.contains(&channel_key) {
-                        state.settlement_queues.entry(channel_key).or_default().push_back(params);
-                    } else {
-                        launch_settlement(&mut state, channel_key, params);
-                    }
-                }
+                }) => handle_settle(&mut state, token, settlement),
                 Some(ConsumerCommand::SettleThrough { token }) => {
-                    let Some(channel_key) = claim_settlement(&mut state, &token) else {
-                        continue;
-                    };
-                    let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
-                        token.settling.store(false, std::sync::atomic::Ordering::Release);
-                        state
-                            .record_settlement_error(settlement_error(
-                                &token,
-                                ConsumerErrorKind::Transport,
-                                "channel ledger not found",
-                            ));
-                        continue;
-                    };
-                    match validate_contiguous_prefix(ledger, token.delivery_tag) {
-                        Ok(affected_tokens) => {
-                            for affected in &affected_tokens {
-                                affected.settling.store(
-                                    true,
-                                    std::sync::atomic::Ordering::Release,
-                                );
-                            }
-                            let params = SettleThroughParams {
-                                token,
-                                affected_tokens,
-                            };
-                            if state.settlement_in_flight.contains(&channel_key) {
-                                state.settle_through_queues.entry(channel_key).or_default().push_back(params);
-                            } else {
-                                launch_settle_through(&mut state, channel_key, params);
-                            }
-                        }
-                        Err(error) => {
-                            token.settling.store(false, std::sync::atomic::Ordering::Release);
-                            state
-                                .record_settlement_error(settlement_error(
-                                    &token,
-                                    error.kind(),
-                                    error.to_string(),
-                                ));
-                        }
-                    }
+                    handle_settle_through(&mut state, token);
                 }
                 Some(ConsumerCommand::GetPrefetchStats { completed }) => {
                     let _ = completed.send(state.prefetch_stats());
@@ -711,9 +661,10 @@ pub(crate) async fn run_actor(
                 // Close signal from `close()` or `Drop`: independent of the
                 // command channel, so backpressure can never discard it. Only
                 // `true` is ever sent (or the sender is dropped after
-                // sending), and either way the set must close.
-                close_set(&mut state).await;
-                return;
+                // sending), and either way the set must close. Teardown runs
+                // after the select loop so the command receiver is free for
+                // the settlement drain.
+                break;
             }
             () = dispatch_notify.notified() => {
                 state.dispatch();
@@ -975,6 +926,77 @@ pub(crate) async fn run_actor(
             }
         }
     }
+
+    close_set(&mut state, &mut receiver).await;
+}
+
+/// Enqueues one settlement command into the actor's per-channel settlement
+/// machinery. Shared by the live command loop and the close-time sweep.
+fn handle_settle(state: &mut ActorState, token: Arc<DeliveryTokenInner>, settlement: Settlement) {
+    let Some(channel_key) = claim_settlement(state, &token) else {
+        return;
+    };
+    let params = SettleParams { token, settlement };
+    if state.settlement_in_flight.contains(&channel_key) {
+        state
+            .settlement_queues
+            .entry(channel_key)
+            .or_default()
+            .push_back(params);
+    } else {
+        launch_settlement(state, channel_key, params);
+    }
+}
+
+/// Enqueues a contiguous-prefix multi-ack. Shared by the live command loop
+/// and the close-time sweep.
+fn handle_settle_through(state: &mut ActorState, token: Arc<DeliveryTokenInner>) {
+    let Some(channel_key) = claim_settlement(state, &token) else {
+        return;
+    };
+    let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
+        token
+            .settling
+            .store(false, std::sync::atomic::Ordering::Release);
+        state.record_settlement_error(settlement_error(
+            &token,
+            ConsumerErrorKind::Transport,
+            "channel ledger not found",
+        ));
+        return;
+    };
+    match validate_contiguous_prefix(ledger, token.delivery_tag) {
+        Ok(affected_tokens) => {
+            for affected in &affected_tokens {
+                affected
+                    .settling
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            let params = SettleThroughParams {
+                token,
+                affected_tokens,
+            };
+            if state.settlement_in_flight.contains(&channel_key) {
+                state
+                    .settle_through_queues
+                    .entry(channel_key)
+                    .or_default()
+                    .push_back(params);
+            } else {
+                launch_settle_through(state, channel_key, params);
+            }
+        }
+        Err(error) => {
+            token
+                .settling
+                .store(false, std::sync::atomic::Ordering::Release);
+            state.record_settlement_error(settlement_error(
+                &token,
+                error.kind(),
+                error.to_string(),
+            ));
+        }
+    }
 }
 
 /// Builds a settlement error for a token whose asynchronous settlement failed.
@@ -991,17 +1013,102 @@ fn settlement_error(
     }
 }
 
-/// Shuts the consumer set down: cancels pending settlements, closes every
+/// Bounded budget for the close-time settlement flush (issue #233). Mirrors
+/// the publish side's teardown flush budget: long enough to land queued
+/// settlements on a healthy broker, short enough that a stalled transport
+/// cannot hold a process exit hostage. Settlements still unacknowledged when
+/// the budget expires are abandoned to the broker's redelivery — the
+/// delivery contract stays at-least-once.
+const CLOSE_SETTLEMENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Shuts the consumer set down: flushes pending and queued settlements to
+/// the transport within a bounded budget (a consumer that pops, acks, and
+/// exits must not silently drop its acknowledgements), closes every
 /// subscription channel (bounded by a deadline so a stalled broker cannot
 /// block close), and resolves any awaiting `close()` caller.
-async fn close_set(state: &mut ActorState) {
-    // Cancel pending settlements and clear queued work so close
-    // cannot block on in-flight broker operations.
-    state.pending_settlements = futures_util::stream::FuturesUnordered::new();
-    state.pending_settle_throughs = futures_util::stream::FuturesUnordered::new();
-    state.settlement_queues.clear();
-    state.settle_through_queues.clear();
-    state.settlement_in_flight.clear();
+async fn close_set(state: &mut ActorState, receiver: &mut mpsc::Receiver<ConsumerCommand>) {
+    // Sweep the command channel first: a settlement enqueued right before
+    // close raced the actor's command loop and must not die with it.
+    // Incoming deliveries are left for the broker to redeliver
+    // (at-least-once); stats callers observe a closed error.
+    while let Ok(command) = receiver.try_recv() {
+        match command {
+            ConsumerCommand::Settle { token, settlement } => {
+                handle_settle(state, token, settlement);
+            }
+            ConsumerCommand::SettleThrough { token } => handle_settle_through(state, token),
+            ConsumerCommand::Incoming { .. } | ConsumerCommand::GetPrefetchStats { .. } => {}
+        }
+    }
+
+    // Drive in-flight and queued settlements to the transport within the
+    // bounded budget — same sequencing as the actor's completion arms,
+    // minus bookkeeping that only matters to a consumer that stays open
+    // (metrics, prefetch observation, buffer accounting).
+    let deadline = tokio::time::Instant::now() + CLOSE_SETTLEMENT_DRAIN_BUDGET;
+    loop {
+        let drain_settlements = !state.pending_settlements.is_empty();
+        let drain_throughs = !state.pending_settle_throughs.is_empty();
+        if !drain_settlements && !drain_throughs {
+            break;
+        }
+        tokio::select! {
+            result = state.pending_settlements.next(), if drain_settlements => {
+                if let Some(result) = result {
+                    state.settlement_in_flight.remove(&result.channel_key);
+                    match &result.result {
+                        Ok(terminal) => result.token.state.store(
+                            *terminal as u8,
+                            std::sync::atomic::Ordering::Release,
+                        ),
+                        Err(_) => result.token.state.store(
+                            DeliveryState::Lost as u8,
+                            std::sync::atomic::Ordering::Release,
+                        ),
+                    }
+                    result.token.settling.store(false, std::sync::atomic::Ordering::Release);
+                    if let Err(error) = &result.result {
+                        state.record_settlement_error(settlement_error(
+                            &result.token,
+                            error.kind(),
+                            error.to_string(),
+                        ));
+                    }
+                    drain_settlement_queue(state, result.channel_key);
+                }
+            }
+            result = state.pending_settle_throughs.next(), if drain_throughs => {
+                if let Some(result) = result {
+                    state.settlement_in_flight.remove(&result.channel_key);
+                    let final_state = match &result.result {
+                        Ok(terminal) => *terminal,
+                        Err(_) => DeliveryState::Lost,
+                    };
+                    for token in &result.affected_tokens {
+                        token.state.store(
+                            final_state as u8,
+                            std::sync::atomic::Ordering::Release,
+                        );
+                        token.settling.store(false, std::sync::atomic::Ordering::Release);
+                    }
+                    if let Err(error) = &result.result {
+                        state.record_settlement_error(SettlementError {
+                            delivery_tag: result.target_tag,
+                            subscription: result.affected_tokens.last().map_or_else(
+                                || SubscriptionId::new("unknown"),
+                                |t| t.subscription.clone(),
+                            ),
+                            kind: error.kind(),
+                            message: error.to_string(),
+                        });
+                    }
+                    drain_settlement_queue(state, result.channel_key);
+                }
+            }
+            () = tokio::time::sleep_until(deadline) => break,
+        }
+    }
+
     for runtime in state.subscriptions.values() {
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(2), runtime.channel.close()).await;

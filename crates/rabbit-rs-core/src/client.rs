@@ -314,6 +314,13 @@ impl ClientPool {
             lock(&self.consumers).remove(profile);
             return Ok(None);
         }
+        if consumer.is_closed() {
+            // Closed (request-scoped lifecycle, issue #232): evict and fall
+            // through so the next acquire rebuilds a live consumer instead
+            // of serving the dead handle for the life of the process.
+            lock(&self.consumers).remove(profile);
+            return Ok(None);
+        }
         Ok(Some(consumer))
     }
 

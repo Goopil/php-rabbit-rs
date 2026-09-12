@@ -81,6 +81,12 @@ if [[ ! -d "${PACKAGE_DIR}/vendor" ]]; then
 fi
 
 # --- Run Pest tests ---
+# No forced flags: the run must be identical to a direct `vendor/bin/pest`
+# run in this directory. The previous forced --testdox switched Pest to
+# PHPUnit's testdox printer, the only printer that surfaces PHPUnit's
+# issue footer ("PHPUnit Notices: N" for unconfigured mock auto-returns),
+# which made the script report issues a direct run hid (issue #164 #5).
+# Pass extra Pest args explicitly, e.g. ./scripts/test-laravel.sh --testdox.
 echo ""
 if [[ "${NEED_EXTENSION}" == true ]]; then
     echo "=== Running Laravel Pest tests (with extension) ==="
@@ -90,7 +96,7 @@ fi
 cd "${PACKAGE_DIR}"
 
 if [[ ${#PEST_ARGS[@]} -eq 0 ]]; then
-    "${PHP_CMD[@]}" vendor/bin/pest --testdox
+    "${PHP_CMD[@]}" vendor/bin/pest
 else
     "${PHP_CMD[@]}" vendor/bin/pest "${PEST_ARGS[@]}"
 fi

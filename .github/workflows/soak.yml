@@ -47,6 +47,12 @@ jobs:
       - name: Install driver-bench dependencies
         run: composer install --no-interaction --no-progress --working-dir=benchmarks/driver-bench --ignore-platform-req=ext-rabbit_rs
 
+      # The bench app reads broker credentials from its gitignored .env
+      # (.env.example carries the lab-only values). Without it the soak
+      # authenticates with an empty password and never reaches the broker.
+      - name: Provision driver-bench env
+        run: cp benchmarks/driver-bench/.env.example benchmarks/driver-bench/.env
+
       - name: Start RabbitMQ lab
         run: ./scripts/lab-up.sh with-plugin
 
@@ -67,7 +73,7 @@ jobs:
 
       - name: Soak — steady segment (leak evidence)
         run: |
-          php -d extension=target/release/librabbit_rs_php.dylib \
+          php -d extension=target/release/librabbit_rs_php.so \
             benchmarks/driver-bench/bin/soak.php \
             --minutes=${{ inputs.steady_minutes || '30' }} --fill=1000 \
             --kill-every=0 --sample-interval=10 \
@@ -75,11 +81,27 @@ jobs:
 
       - name: Soak — kill segment (recovery evidence)
         run: |
-          php -d extension=target/release/librabbit_rs_php.dylib \
+          php -d extension=target/release/librabbit_rs_php.so \
             benchmarks/driver-bench/bin/soak.php \
             --minutes=${{ inputs.kill_minutes || '15' }} --fill=1000 \
             --kill-every=10 --kill-timeout-ms=50 --sample-interval=10 \
             --output=benchmarks/results/round-k-soak/nightly-kill.json
+
+      # Fail fast unless the kill segment proves reconnect recovery: at least
+      # one reconnection, no missing messages at the end, and an empty
+      # publish buffer at the end.
+      - name: Assert kill-segment recovery
+        run: |
+          json=benchmarks/results/round-k-soak/nightly-kill.json
+          if ! jq -e '
+            (.reconnects_total != null and .reconnects_total > 0)
+            and .missing == 0
+            and .publish_buffered == 0
+          ' "${json}" > /dev/null; then
+            echo "FAIL: kill segment did not prove recovery — require reconnects_total > 0, missing == 0, terminal publish_buffered == 0" >&2
+            jq '{reconnects_total, missing, publish_buffered}' "${json}" || true
+            exit 1
+          fi
 
       - name: Upload soak artifacts
         if: always()

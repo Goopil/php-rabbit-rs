@@ -4,7 +4,10 @@
     reason = "ext-php-rs preserves parameter identifiers for PHP named arguments, and PHP docblock array shapes keep snake_case keys"
 )]
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 #[cfg(feature = "extension-tests")]
 use std::time::Duration;
 
@@ -33,6 +36,12 @@ use rabbit_rs_core::{
 };
 
 /// Native `RabbitMQ` connection and operation pool.
+///
+/// Each pool object holds one claim on its shared `ConnectionHandle` (the
+/// process-local handle behind the config fingerprint). `close()` releases
+/// that claim; the shared connection is torn down only when the last claim
+/// closes, so transient probe pools (doctor, topology) never kill their
+/// sibling pools (issue #221).
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\Pool")]
 #[php(flags = ClassFlags::Final)]
@@ -43,6 +52,9 @@ pub struct Pool {
     pid: u32,
     bridge: Arc<EventBridge>,
     publish_buffer: Arc<PublishBuffer>,
+    /// This pool object's claim on the shared handle; false once the pool
+    /// closed its claim (explicitly or through the destructor).
+    claim_open: AtomicBool,
 }
 
 #[php_impl]
@@ -84,6 +96,7 @@ impl Pool {
             delay_strategy: DelayStrategy::compile(&config),
             pid: std::process::id(),
             bridge,
+            claim_open: AtomicBool::new(true),
         })
     }
 
@@ -421,6 +434,11 @@ impl Pool {
     }
 
     /// Closes this pool handle.
+    ///
+    /// Closing releases this pool's claim on the shared connection handle:
+    /// sibling pools built from the same configuration fingerprint keep
+    /// working, and the shared connection itself is torn down only when the
+    /// last claim closes.
     pub fn close(&self) -> PhpResult<()> {
         if self.pid != std::process::id() {
             return rabbit_exception("cannot close a pool inherited across fork");
@@ -432,17 +450,25 @@ impl Pool {
         // dropped by the destructor's bounded flush; deadline-expired
         // publications are counted by rebuffer itself (audit F-18).
         let _ = self.flush();
-        if !self.handle.is_closed()
-            && let Err(error) = self.handle.runtime().block_on(self.client.close())
-        {
-            self.handle.close();
-            return client_exception(&error);
+        if !self.claim_open.swap(false, Ordering::AcqRel) {
+            return Ok(());
         }
-        self.handle.close();
-        Ok(())
+        match self
+            .handle
+            .runtime()
+            .block_on(self.handle.close_claim(self.client.as_ref()))
+        {
+            Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
     }
 
     /// Auto-flushes buffered messages when the pool is garbage collected.
+    ///
+    /// The pool's claim on the shared connection handle is released here
+    /// too, so a pool object that is dropped without an explicit `close()`
+    /// never leaks a claim. Releasing the last claim without a close keeps
+    /// the connection available for registry reuse.
     pub fn __destruct(&self) {
         if self.pid != std::process::id() {
             return;
@@ -461,6 +487,9 @@ impl Pool {
                 )
                 .await
             });
+        }
+        if self.claim_open.swap(false, Ordering::AcqRel) {
+            self.handle.release_claim();
         }
     }
 }
@@ -506,6 +535,7 @@ impl Pool {
             client,
             delay_strategy,
             pid: std::process::id(),
+            claim_open: AtomicBool::new(true),
         }
     }
 
@@ -515,7 +545,7 @@ impl Pool {
                 "{operation} cannot use a pool inherited across fork"
             ));
         }
-        if self.handle.is_closed() {
+        if !self.claim_open.load(Ordering::Acquire) || self.handle.is_closed() {
             return rabbit_exception(format!("{operation} cannot use a closed pool"));
         }
         Ok(())

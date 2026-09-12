@@ -1,0 +1,99 @@
+{
+    "schema": "rabbit-rs-reference-machine-v1",
+    "meta": {
+        "recorded": "2026-09-11",
+        "git_sha": "d3e7a4ee1cc21e2ee9d28ca5405d6049acf0f569",
+        "machine": {
+            "cpu": "Apple M2 Max",
+            "cores_logical": 12,
+            "cores_physical": 12,
+            "ram_gb": 32,
+            "os": "macOS 26.6.2 (arm64, Darwin 25.6.0)"
+        },
+        "php": "8.5.6 (cli, NTS)",
+        "extension": "ext-rabbit_rs 0.2.2 — release cdylib (target/release/librabbit_rs_php.dylib), loaded per-run via -d extension=..., never installed system-wide",
+        "broker": "RabbitMQ 4.2.9 — local 3-node lab cluster + toxiproxy (./scripts/lab-up.sh with-plugin, ./scripts/lab-ready.sh verified)",
+        "drivers": {
+            "goopil/rabbit-rs-laravel": "dev-main",
+            "vladimir-yuldashev/laravel-queue-rabbitmq": "v15.0.1",
+            "laravel/framework": "v13.29.0"
+        },
+        "protocol": "./scripts/rebench-driver-bench.sh — 3 interleaved passes over 5 cells, count=1000, rounds=10 (10,000 measured ops per cell per pass), ~1024 B Laravel queue envelope, quorum queue, prefetch 64"
+    },
+    "thresholds": {
+        "throughput_min_ratio": 0.8,
+        "p99_max_ratio": 1.5
+    },
+    "baselines": {
+        "goopil-dispatch-blind": {
+            "throughput_ops_s": 18310.13,
+            "p99_ms": 0.243,
+            "runs": [
+                {"file": "goopil-dispatch-blind-run1.json", "throughput_ops_s": 18310.13, "p99_ms": 0.243},
+                {"file": "goopil-dispatch-blind-run2.json", "throughput_ops_s": 17762.93, "p99_ms": 0.244},
+                {"file": "goopil-dispatch-blind-run3.json", "throughput_ops_s": 21523.13, "p99_ms": 0.102}
+            ]
+        },
+        "goopil-dispatch-safe": {
+            "throughput_ops_s": 19666.48,
+            "p99_ms": 0.142,
+            "runs": [
+                {"file": "goopil-dispatch-safe-run1.json", "throughput_ops_s": 19666.48, "p99_ms": 0.142},
+                {"file": "goopil-dispatch-safe-run2.json", "throughput_ops_s": 12974.19, "p99_ms": 0.312},
+                {"file": "goopil-dispatch-safe-run3.json", "throughput_ops_s": 20996.37, "p99_ms": 0.129}
+            ]
+        },
+        "goopil-worker": {
+            "throughput_ops_s": 13057.48,
+            "p99_ms": 0.533,
+            "runs": [
+                {"file": "goopil-worker-run1.json", "throughput_ops_s": 13057.48, "p99_ms": 0.489},
+                {"file": "goopil-worker-run2.json", "throughput_ops_s": 6199.56, "p99_ms": 0.676},
+                {"file": "goopil-worker-run3.json", "throughput_ops_s": 13661.58, "p99_ms": 0.533}
+            ]
+        }
+    },
+    "reference_other_drivers": {
+        "note": "Measured in the same interleaved session for context only. NOT budget-checked: third-party drivers shift for external reasons (their own releases, their broker-side behavior), and a shift there is not a rabbit-rs regression.",
+        "vladimir-dispatch": {
+            "throughput_ops_s": 9524.82,
+            "p99_ms": 0.183,
+            "runs": [
+                {"file": "vladimir-dispatch-run1.json", "throughput_ops_s": 9725.06, "p99_ms": 0.183},
+                {"file": "vladimir-dispatch-run2.json", "throughput_ops_s": 9281.36, "p99_ms": 0.283},
+                {"file": "vladimir-dispatch-run3.json", "throughput_ops_s": 9524.82, "p99_ms": 0.182}
+            ]
+        },
+        "vladimir-worker": {
+            "throughput_ops_s": 1752.53,
+            "p99_ms": 1.057,
+            "runs": [
+                {"file": "vladimir-worker-run1.json", "throughput_ops_s": 1752.53, "p99_ms": 1.057},
+                {"file": "vladimir-worker-run2.json", "throughput_ops_s": 1627.53, "p99_ms": 1.291},
+                {"file": "vladimir-worker-run3.json", "throughput_ops_s": 1778.2, "p99_ms": 1.021}
+            ]
+        }
+    },
+    "coverage": {
+        "budget_metrics": {
+            "publish_throughput": "goopil-dispatch-safe + goopil-dispatch-blind (avg_rate_ops_s)",
+            "consume_throughput": "goopil-worker (avg_rate_ops_s)",
+            "publish_p99": "goopil-dispatch-safe + goopil-dispatch-blind (latency_ms.p99, per-op Queue::push)",
+            "consume_p99": "goopil-worker (latency_ms.p99, per-op pop+ack)"
+        },
+        "cells_measured": [
+            "goopil-dispatch-blind",
+            "goopil-dispatch-safe",
+            "goopil-worker",
+            "vladimir-dispatch (reference only, not budget-checked)",
+            "vladimir-worker (reference only, not budget-checked)"
+        ],
+        "notes": [
+            "All numbers are real runs of ./scripts/rebench-driver-bench.sh on this machine (Apple M2 Max, macOS 26.6.2, Docker 29.2.1, RabbitMQ 4.2.9 lab), release cdylib, interleaved passes per the release protocol.",
+            "Baseline values are the median of the 3 recorded runs per cell. Raw per-run values are kept above for provenance; the run JSONs themselves live under benchmarks/results/ws8-baseline-runs/ (gitignored) — copy them out before wiping results/.",
+            "Observed run-to-run variance: transient mid-run dips of 30-55% hit 2 of 3 rabbit-rs cells once each (goopil-dispatch-safe run2 round 1, goopil-worker run2 rounds 5-7); clean runs sit within ~±10% of the median. This is why the checker compares the median of an invocation's runs per scenario, not each file separately, and why the throughput floor is 80% of the median.",
+            "Measurement tree state: d3e7a4e. Two later commits (7792b0e auto_subscribe compile-time rejection, 58d32b0 docs) postdate the runs; neither touches the measured path. Pre-fix truth: the archived run JSONs record auto_subscribe=true — at d3e7a4e the compiler accepted and propagated the key (the compile-time rejection only landed in 7792b0e), but it never took effect on the measured path: the compiler already derived a worker profile covering the bench queue, so pop() resolved it without ever reaching the auto_subscribe fallback. Post-fix the key is rejected at compile time and removed from the bench connection, and the compiled shape pins auto_subscribe=false.",
+            "Soak-schema evidence (benchmarks/results/round-k-soak) carries no throughput/latency metrics and is not part of this baseline; the checker still applies its always-blocking integrity checks to such files."
+        ]
+    }
+}

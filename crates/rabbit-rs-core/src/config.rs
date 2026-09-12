@@ -81,26 +81,25 @@ impl fmt::Debug for Credentials {
 
 /// How the transport verifies the broker's TLS certificate.
 ///
-/// - `Peer` (default): full rustls verification against the platform trust
-///   store plus any `ca_cert` chain. The verified server name is always the
-///   AMQP connection host: the underlying AMQP transport (lapin 4.10) derives
-///   TLS SNI from the URI host and exposes no override.
-/// - `None`: rejected at validation and by the transport with a typed
-///   [`ConfigError`]. lapin 4.10 does not allow disabling certificate
-///   verification, so accepting the value would silently do nothing.
+/// `Peer` (default, the only valid value): full rustls verification against
+/// the platform trust store plus any `ca_cert` chain. The verified server
+/// name is always the AMQP connection host: the underlying AMQP transport
+/// (lapin 4.10) derives TLS SNI from the URI host and exposes no override.
+/// Any other `verify` value fails deserialization: lapin 4.10 does not allow
+/// disabling certificate verification, so a "none" value would silently do
+/// nothing.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsVerify {
     #[default]
     Peer,
-    None,
 }
 
 /// TLS parameters that are safe to retain in normalized configuration.
 ///
 /// Contract enforced by [`Config::validate`] and the transport:
 ///
-/// - `verify` is `Peer` (default) or an explicit validation error (see
+/// - `verify` is `Peer` (default); any other value fails deserialization (see
 ///   [`TlsVerify`]).
 /// - `server_name` is an explicit assertion of the TLS server name. The
 ///   transport always uses the AMQP connection host (its first endpoint) as
@@ -464,14 +463,15 @@ pub struct PublisherConfigSection {
     /// This knob configures the boundary-crossing publish buffer built on top
     /// of the core (the PHP extension's `PublishBuffer`): accepted
     /// publications batch there and are flushed once the size threshold is
-    /// reached or a batch is older than this interval. The triggers are
-    /// evaluated whenever the buffer is touched — a publish call, an explicit
-    /// flush, a read that must observe the buffer (`size`, `clear`, a
-    /// consumer pop) — and the age clock is armed by the first publication of
-    /// each batch, so the interval measures how long the oldest buffered
-    /// publication has been waiting. A publication never touched by a
-    /// triggering operation is still flushed by an explicit `flush`/`close`
-    /// or the bounded teardown flush at buffer disposal.
+    /// reached or a batch is older than this interval. The age deadline is
+    /// armed by the first publication of each batch and enforced by a one-shot
+    /// background timer, so a batch is flushed once its oldest publication is
+    /// older than the interval even when the process never publishes, pops,
+    /// or flushes again (issue #218: a lone FPM publish reaches the broker
+    /// within the interval instead of sitting in process memory). Explicit
+    /// flush paths (`flush`, `close`, the bounded teardown flush at buffer
+    /// disposal) stay synchronous with full-deadline semantics and quiesce
+    /// the timer.
     ///
     /// Bounded to at most one hour so a misconfiguration cannot strand
     /// publications for a day; `0` flushes on every triggering operation.
@@ -758,20 +758,13 @@ impl Config {
         Ok(())
     }
 
-    /// Enforces the TLS contract documented on [`TlsConfig`]: `verify = none`
-    /// and a `server_name` differing from the first (sorted) host are rejected
-    /// instead of being silently ignored by the transport.
+    /// Enforces the TLS contract documented on [`TlsConfig`]: a `server_name`
+    /// differing from the first (sorted) host is rejected instead of being
+    /// silently ignored by the transport.
     fn validate_broker_tls(broker: &BrokerConfig) -> Result<(), ConfigError> {
         let tls = &broker.tls;
         if !tls.enabled {
             return Ok(());
-        }
-        if tls.verify == TlsVerify::None {
-            return Err(ConfigError::new(
-                format!("brokers.{}.tls.verify", broker.name),
-                "'none' requires a custom TLS connector, which the AMQP transport (lapin 4.10) \
-                 does not support; use 'peer' or disable tls.enabled",
-            ));
         }
         let first_host = broker
             .hosts
@@ -1256,7 +1249,6 @@ fn hash_value(digest: &mut Sha256, value: &str) {
 const fn tls_verify_name(verify: TlsVerify) -> &'static str {
     match verify {
         TlsVerify::Peer => "peer",
-        TlsVerify::None => "none",
     }
 }
 
@@ -2328,7 +2320,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_interval_defaults_to_the_current_age_flush_behavior() {
+    fn flush_interval_defaults_to_the_timer_enforced_age_flush_behavior() {
         assert_eq!(
             PublisherConfigSection::default().flush_interval,
             Duration::from_millis(1),
@@ -2572,20 +2564,17 @@ mod tests {
     }
 
     #[test]
-    fn tls_verify_none_is_rejected_at_validation() {
-        let tls: TlsConfig = serde_json::from_value(json!({
+    fn tls_verify_none_fails_deserialization() {
+        let error = serde_json::from_value::<TlsConfig>(json!({
             "enabled": true,
             "verify": "none"
         }))
-        .expect("valid TLS config");
-        let config = config_with_broker_tls(tls);
+        .expect_err("verify none must be rejected at deserialization");
 
-        let error = config.validate().expect_err("verify none must be rejected");
-
-        assert_eq!(error.path(), "brokers.primary.tls.verify");
         assert!(
-            error.to_string().contains("custom TLS connector"),
-            "error must explain the capability gap: {error}"
+            error.to_string().contains("unknown variant"),
+            "the removed variant must fail deserialization with a typed unknown-variant error: \
+             {error}"
         );
     }
 

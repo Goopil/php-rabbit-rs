@@ -372,6 +372,14 @@ impl ConsumerSetHandle {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// Returns whether this set has been closed (explicitly or by dropping
+    /// every handle). A closed set fails deliveries; caches must never serve
+    /// one.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for ConsumerSetHandle {

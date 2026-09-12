@@ -63,21 +63,35 @@ describe('topology command on the publish route', function () {
         }
         grantRabbitRsConfigure();
 
-        // Pool-free on purpose: the topology command's probes close their
-        // transient pools, and a probe pool sharing the live pool's config
-        // fingerprint tears its shared connection down with it (the ext
-        // closes the shared ConnectionHandle without a use count).
+        // Issue #221 regression guard: the live pool below shares its config
+        // fingerprint with the topology command's transient probe pools, so
+        // closing a probe pool must leave the live pool working.
         $this->queueName = uniqueQueue();
         $this->exchangeName = uniqueQueue();
 
-        config()->set('queue.connections.'.INTEGRATION_CONNECTION, array_merge(liveConfig($this->queueName), [
-            'exchange' => $this->exchangeName,
-            'routing_key' => '{queue}',
-            // liveConfig carries no management_url; verify's route checks are
-            // advisory without one. The lab's rabbit_rs user holds the
-            // management tag, so its credentials suffice for the API.
-            'management_url' => 'http://localhost:15672',
-        ]));
+        [$this->pool, $this->queue] = integrationPoolAndQueue(
+            $this->app,
+            $this->queueName,
+            configOverrides: [
+                'exchange' => $this->exchangeName,
+                'routing_key' => '{queue}',
+                // liveConfig carries no management_url; verify's route checks are
+                // advisory without one. The lab's rabbit_rs user holds the
+                // management tag, so its credentials suffice for the API.
+                'management_url' => 'http://localhost:15672',
+            ],
+            connectOverrides: ['block_for' => 3],
+        );
+    });
+
+    afterEach(function () {
+        if (isset($this->pool) && ! $this->pool->stats()['closed']) {
+            $this->pool->close();
+        }
+        deleteQueue($this->queueName);
+        // PoisonDeliveryTest declares a local deleteExchange(); keep the helper
+        // local here too so the two never collide in one Pest run.
+        managementRequest('DELETE', 'http://localhost:15672/api/exchanges/'.rawurlencode(ORDERS_VHOST).'/'.urlencode($this->exchangeName));
     });
 
     afterEach(function () {
@@ -119,5 +133,10 @@ describe('topology command on the publish route', function () {
         // deleted-binding scenario, bug #14 follow-up).
         $topology(['--fix' => true])->assertExitCode(0);
         expect($routeBinding())->not->toBeEmpty('route binding must be re-declared by --fix');
+
+        // Issue #221: the verify probes opened and closed transient pools
+        // sharing the live pool's config fingerprint; the live pool must
+        // still be usable afterwards.
+        expect($this->pool->stats()['closed'])->toBeFalse();
     });
 });

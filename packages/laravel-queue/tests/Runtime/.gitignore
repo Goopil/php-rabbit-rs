@@ -1,0 +1,5 @@
+# Harness runtime artifacts (regenerated on every run by
+# scripts/test-octane-runtime.sh)
+/.server-*.log
+/.runtime-ini/
+/.frankenphp-ini/

@@ -41,6 +41,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     /**
      * @param  array<string, array<string, mixed>>  $routes
      * @param  array{confirm_timeout?: int}  $publisherConfig
+     * @param  bool  $autoSubscribe  kept for call-site compatibility; the compiler pins the value to false
      */
     public function __construct(
         private readonly Pool $pool,
@@ -51,7 +52,11 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         private readonly WorkerProfileResolver $workerProfiles = new WorkerProfileResolver([]),
         private readonly int $blockForMilliseconds = 0,
         array $publisherConfig = [],
-        private readonly bool $autoSubscribe = false,
+        // Deliberately write-only: the runtime branch is gone (v1 compile-time
+        // rejection pins the compiled value to false), but dropping this
+        // property means dropping the compiled key and the connector arg in
+        // the same sweep (owner follow-up, outside this change's scope).
+        private readonly bool $autoSubscribe = false, // @phpstan-ignore property.onlyWritten (deliberate compat shim, see comment above)
         private readonly bool $hasDeadLetter = false,
     ) {
         $this->dispatchAfterCommit = $dispatchAfterCommit;
@@ -447,12 +452,11 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         if ($profile !== null) {
             // A profile covering several queues round-robins them all, so a
             // pop addressed to one queue must not draw from the others:
-            // resolve a dedicated single-queue implicit profile instead,
-            // regardless of auto_subscribe. The implicit profile is built
-            // with subscription defaults (not the compiled subscription's
-            // custom prefetch), matching the core's synthesized profiles.
-            // The compiled profile remains for topology, doctor, and
-            // publishing.
+            // resolve a dedicated single-queue implicit profile instead.
+            // The implicit profile is built with subscription defaults (not
+            // the compiled subscription's custom prefetch), matching the
+            // core's synthesized profiles. The compiled profile remains for
+            // topology, doctor, and publishing.
             if ($this->workerProfiles->isShared($profile)) {
                 $profile = $this->workerProfiles->registerAutoProfile($queueName);
             }
@@ -460,12 +464,10 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             $profile = $queueName;
         } elseif ($this->workerProfiles->hasProfile($queueName)) {
             $profile = $queueName;
-        } elseif ($this->autoSubscribe) {
-            $profile = $this->workerProfiles->registerAutoProfile($queueName);
         } else {
             throw new InvalidArgumentException(
-                "No worker profile subscribes to queue '{$queueName}': define it in "
-                .'queue.connections.<name> (queue key or subscriptions) or enable auto_subscribe.',
+                "No worker profile subscribes to queue '{$queueName}': declare it in "
+                .'queue.connections.<name> (queue key or subscriptions).',
             );
         }
         try {

@@ -129,19 +129,32 @@ expected_ns="Goopil\\RabbitRs\\Laravel\\"
     || fail "Laravel namespace is '${laravel_ns}', expected '${expected_ns}'"
 ok "Laravel namespace: ${laravel_ns}"
 
-# The Laravel package installs without the native extension (require →
-# suggest policy, 5c295a5); the extension constraint lives in
-# RabbitMqServiceProvider::EXTENSION_CONSTRAINT and must track the Cargo
-# major, mirroring the release workflow's version policy check.
-SERVICE_PROVIDER="${ROOT_DIR}/packages/laravel-queue/src/RabbitMqServiceProvider.php"
-need_file "${SERVICE_PROVIDER}"
-ext_req="$(sed -n "s/.*EXTENSION_CONSTRAINT = '\([^']*\)'.*/\1/p" "${SERVICE_PROVIDER}")"
-[[ -n "${ext_req}" ]] \
-    || fail "EXTENSION_CONSTRAINT not found in ${SERVICE_PROVIDER}"
-[[ "${ext_req}" =~ ^\^([0-9]+) ]] \
-    || fail "ext-rabbit_rs constraint '${ext_req}' does not pin a major version"
-laravel_major="${BASH_REMATCH[1]}"
-ok "Laravel extension constraint (suggest): ${ext_req} (major ${laravel_major})"
+# D9 suggest model: composer install must succeed without the extension;
+# the constraint is enforced at connection resolution via
+# RabbitMqServiceProvider::EXTENSION_CONSTRAINT and mirrored in the
+# composer.json suggest entry. The expected constraint is derived from the
+# Cargo version exactly as .github/workflows/release.yml does, so this
+# check and the release workflow's policy check cannot drift.
+ext_in_require="$(jq -r '.require // {} | has("ext-rabbit_rs")' "${LARAVEL_COMPOSER}")"
+[[ "${ext_in_require}" == "false" ]] \
+    || fail "ext-rabbit_rs must NOT be in require (D9 suggest model: composer install succeeds without the extension)"
+ext_suggest="$(jq -r '.suggest."ext-rabbit_rs" // empty' "${LARAVEL_COMPOSER}")"
+[[ -n "${ext_suggest}" ]] \
+    || fail "ext-rabbit_rs is missing from suggest (D9 suggest model)"
+ok "ext-rabbit_rs is suggested, not required"
+
+extension_constraint="$(sed -n "s/.*EXTENSION_CONSTRAINT = '\([^']*\)'.*/\1/p" "${ROOT_DIR}/packages/laravel-queue/src/RabbitMqServiceProvider.php")"
+[[ -n "${extension_constraint}" ]] \
+    || fail "EXTENSION_CONSTRAINT not found in packages/laravel-queue/src/RabbitMqServiceProvider.php"
+# Composer suggest values are description strings, not constraints; the
+# constraint is embedded in the description text. Extract it so the check
+# remains drift-proof without dictating the exact wording.
+suggest_constraint="$(grep -o '\^[0-9][0-9.]*' <<<"${ext_suggest}" | head -1)"
+[[ -n "${suggest_constraint}" ]] \
+    || fail "suggest ext-rabbit_rs does not embed a version constraint: '${ext_suggest}'"
+[[ "${suggest_constraint}" == "${extension_constraint}" ]] \
+    || fail "suggest ext-rabbit_rs constraint '${suggest_constraint}' does not match EXTENSION_CONSTRAINT '${extension_constraint}'"
+ok "suggest ext-rabbit_rs embeds EXTENSION_CONSTRAINT: ${extension_constraint}"
 
 echo "==> Checking Cargo version"
 cargo_ver="$(cargo_version)"
@@ -151,10 +164,26 @@ ok "Cargo version: ${cargo_ver}"
 
 cargo_major="${cargo_ver%%.*}"
 
+echo "==> Checking extension version policy (mirrors release.yml)"
+if [[ "${cargo_ver}" == 0.0.* ]]; then
+    expected_constraint="^0.0"
+else
+    # Full-version pin: the package and the extension are released in
+    # lockstep and the compiled native config schema evolves with every
+    # release (deny_unknown_fields rejects unknown keys at pool creation),
+    # so an older extension binary must never satisfy a newer package.
+    expected_constraint="^${cargo_ver}"
+fi
+[[ "${extension_constraint}" == "${expected_constraint}" ]] \
+    || fail "EXTENSION_CONSTRAINT '${extension_constraint}' does not match the extension version policy '${expected_constraint}' (derived from Cargo.toml ${cargo_ver}; release.yml enforces the same rule at tag time)"
+ok "EXTENSION_CONSTRAINT matches the version policy: ${extension_constraint}"
+
 echo "==> Checking version coherence"
-[[ "${cargo_major}" == "${laravel_major}" ]] \
-    || fail "Cargo major ${cargo_major} != Laravel ext-rabbit_rs major ${laravel_major}"
-ok "major versions match: ${cargo_major}"
+constraint_major="${extension_constraint#^}"
+constraint_major="${constraint_major%%.*}"
+[[ "${cargo_major}" == "${constraint_major}" ]] \
+    || fail "Cargo major ${cargo_major} != EXTENSION_CONSTRAINT major ${constraint_major}"
+ok "major versions match: ${cargo_major} (constraint ${extension_constraint})"
 
 echo "==> Checking PIE matrix"
 matrix_count="$(jq -r '.matrix | length' "${PIE_MATRIX}")"

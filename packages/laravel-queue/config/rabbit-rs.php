@@ -48,7 +48,10 @@ return [
     ],
     // default | horizon
     'worker' => env('RABBIT_RS_WORKER', 'default'),
-    'auto_subscribe' => env('RABBIT_RS_AUTO_SUBSCRIBE', false),
+    // auto_subscribe was removed (v1): runtime worker-profile registration is
+    // not supported. The connection compiler rejects the key with guidance —
+    // declare queues explicitly via the connection `queue` key or the
+    // `subscriptions` escape hatch. Multi-queue pop scoping is unaffected.
     'production_warning' => env('RABBIT_RS_PRODUCTION_WARNING', true),
     'best_effort' => env('RABBIT_RS_BEST_EFFORT', false),
     // Worker health statefiles read by `rabbit-rs:probe` (one JSON file per worker PID)

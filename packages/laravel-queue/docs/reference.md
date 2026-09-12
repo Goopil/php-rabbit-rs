@@ -80,9 +80,9 @@ The connection compiles to a single worker profile (named after the connection) 
 
 The `--queue` value is resolved in this order:
 
-1. A queue consumed by the connection (its `queue` key or a `subscriptions` entry's `queue`) — a pop addressed to one queue of a multi-queue connection resolves a dedicated single-queue implicit profile (see [Auto subscribe](#auto-subscribe)), so it never draws from the connection's other queues; a pop addressed to a single-queue connection or to the profile name uses the compiled profile.
+1. A queue consumed by the connection (its `queue` key or a `subscriptions` entry's `queue`) — a pop addressed to one queue of a multi-queue connection resolves a dedicated single-queue implicit profile (see [Implicit profiles](#implicit-profiles)), so it never draws from the connection's other queues; a pop addressed to a single-queue connection or to the profile name uses the compiled profile.
 2. The connection name (the profile name) — the connection's whole profile, all subscriptions included, is used.
-3. Otherwise the name is treated as a plain queue: with `auto_subscribe` enabled, an implicit profile dedicated to the queue is synthesized at first pop (see [Auto subscribe](#auto-subscribe)); without it, `pop()` fails with an actionable error telling you to declare the queue in the connection's `queue` key or `subscriptions`.
+3. Otherwise the name is a plain queue nothing consumes: `pop()` fails with an actionable error telling you to declare the queue in the connection's `queue` key or `subscriptions` (the removed `auto_subscribe` opt-in is rejected at compile time — see [Implicit profiles](#implicit-profiles)).
 
 #### Multi-process supervisor
 
@@ -173,7 +173,7 @@ if ($job !== null) {
 }
 ```
 
-`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`) — scoped to a dedicated single-queue implicit profile when the connection consumes several queues — the connection name (its whole profile), or, for unknown queues, an implicit profile synthesized at first pop when `auto_subscribe` is enabled. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
+`pop()` delegates to the native consumer set. The queue argument is resolved on the connection (see the resolution order above): a queue the connection consumes (`queue` key or `subscriptions`) — scoped to a dedicated single-queue implicit profile when the connection consumes several queues — or the connection name (its whole profile). A plain queue name nothing consumes fails with an actionable error telling you to declare it. A single call selects the next delivery from any ready subscription using the weighted-fair scheduler.
 
 #### size
 
@@ -477,7 +477,6 @@ The minimal connection is therefore:
 | `wait_timeout` | int (ms) | `30000` | Transport (broker connection) acquisition deadline, 1000–86400000 — **not** the `pop()` wait; use `block_for` to make `pop()` block for work |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
-| `auto_subscribe` | bool | `false` | Lets `pop()` resolve plain queue names not declared on the connection via dedicated `__auto__.{queue}` profiles synthesized by the core at first pop — see [Auto subscribe](#auto-subscribe). Multi-queue pop scoping no longer depends on this flag |
 | `topology_mode` | string | `declare` | `declare`, `verify`, `external` — see [Topology](#topology) |
 | `queue_type` | string | `quorum` | `quorum` or `classic` |
 | `queue_durable` | bool | `true` | Queue durability |
@@ -700,56 +699,13 @@ Without the escape hatch, one subscription named `default` is derived from the
 connection's `queue`. With it, the list replaces the derivation. Rules:
 at least one entry, unique queues across aliases, unknown fields rejected.
 
-### Auto subscribe
+### Implicit profiles
 
-`auto_subscribe` (opt-in, default `false`) controls how `pop()` resolves
-plain queue names the connection does not consume — for example
-`queue:work --queue=emails` when neither the connection's `queue` key nor
-its `subscriptions` escape hatch references the `emails` queue.
+The implicit `__auto__.{queue}` mechanism remains for one purpose: **multi-queue pop scoping**. A pop addressed to one queue of a multi-queue connection always resolves a dedicated `__auto__.{queue}` consumer instead of the shared profile, so its prefetch and deliveries are not pooled with the other subscriptions — `pop('orders.critical')` never draws from the connection's other queues (and Horizon supervisors popping named queues inherit the same guarantee). The implicit profile is built with subscription defaults (not the compiled subscription's custom prefetch); the compiled profile remains for topology, doctor, and publishing.
 
-- `false` (default): `pop()` resolves queues through the compiled profile
-  exactly as declared, and unknown queues fail with an actionable error
-  telling you to declare the queue on the connection (`queue` key or
-  `subscriptions`) or enable `auto_subscribe`.
-- `true`: unknown queues work at the first pop — the core synthesizes a
-  default worker profile named `__auto__.{queue}` (for `emails`:
-  `__auto__.emails`): one subscription named `auto` on the connection's
-  broker, weight 1, fixed prefetch 64, acknowledgements on. The implicit
-  name is cached in process memory and reused on subsequent pops of the
-  same queue.
+`auto_subscribe` itself is removed: pops of plain queue names nothing declares fail with an actionable error telling you to declare the queue on the connection (`queue` key or `subscriptions`). The option was rejected at compile time in v1 (#164-2) because runtime worker-profile registration is not supported — a connection carrying the key (any value, including through stale package defaults) fails compilation with guidance instead of surfacing the native `unknown worker profile` error at first pop.
 
-Scoping is unconditional and independent of `auto_subscribe`: a pop
-addressed to one queue of a multi-queue connection always resolves a
-dedicated `__auto__.{queue}` consumer instead of the shared profile, so
-its prefetch and deliveries are not pooled with the other subscriptions —
-`pop('orders.critical')` never draws from the connection's other queues
-(and Horizon supervisors popping named queues inherit the same guarantee).
-
-The synthesized default is a floor, not a ceiling: to tune a queue (weight,
-prefetch), declare it on the connection — the `queue` key or the
-`subscriptions` escape hatch — and the declared profile wins over the
-synthesized one (single-queue connections keep their compiled profile).
-
-Caveats:
-
-- With `topology_mode: external` the auto queue is never declared by the
-  driver, so the broker rejects the consumer with a 404 unless the queue
-  already exists — the same contract as `declare => false` in other drivers.
-  The default `declare` mode declares the auto queue on first use.
-- With `topology_mode: verify` auto queues are neither declared nor
-  verifiable: the queue must exist externally, the pop surfaces the broker's
-  404, and the rest of the connection stays healthy.
-- Synthesized profiles require a single broker in the pool config — always
-  true for this driver (one connection = one broker). Core configurations
-  with several brokers must declare every auto-consumed queue explicitly.
-
-Prefer declared subscriptions in production: they control per-queue weights
-and prefetch, and they are visible to `rabbit-rs:status`. Use
-`auto_subscribe` for development convenience or dynamic low-traffic queues.
-
-The value can be set per connection (`auto_subscribe` in `config/queue.php` —
-takes precedence) or package-wide in `config/rabbit-rs.php`
-(`RABBIT_RS_AUTO_SUBSCRIBE`).
+Prefer declared subscriptions: they control per-queue weights and prefetch, and they are visible to `rabbit-rs:status`.
 
 ### Worker fan-out
 
@@ -1093,7 +1049,7 @@ rabbitmq-plugins enable rabbitmq_delayed_message_exchange
 
 If the plugin is not installed, the exchange declare fails with a permanent error: in `declare` mode the pool connection fails during topology reconciliation, while in `external` and `verify` modes delayed publishes fail terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working. Use `ttl` mode when the plugin cannot be installed.
 
-#### TTL fallback mode
+#### TTL mode (explicit)
 
 ```php
 'delay' => [
@@ -1420,6 +1376,8 @@ The `prestop` hook always exits `0`: whether or not the workers finished drainin
 
 Rabbit RS does not include a Prometheus exporter in V1, but the status command provides the metrics needed. You can scrape them with a custom exporter or sidecar.
 
+For operating on these signals — incident playbooks, example alert rules, and a Grafana dashboard definition — see the monorepo's `docs/operations/` ([runbook.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/runbook.md), [alerts.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/alerts.md), [dashboard.json](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/dashboard.json)).
+
 #### Available metrics
 
 | Metric | Description |
@@ -1635,14 +1593,29 @@ php artisan octane:start --server=swoole
 
 #### Supported Octane servers
 
-Rabbit RS is certified with all four Octane servers:
+Every server below is exercised by the real-server certification harness
+`scripts/test-octane-runtime.sh --server=<name>`: a live Laravel 12 app
+(`tests/Runtime/app`) publishes with no follow-up operation, parks the
+publications in the native publish buffer, and the harness asserts the
+reload and graceful-stop flush paths deliver them without loss
+(scenario detail in the script header). Every status below except Swoole
+is backed by a local run of this harness; the RoadRunner `octane-runtime`
+job in `.github/workflows/ci.yml` and the four-server matrix in
+`.github/workflows/nightly.yml` are wired but have not run yet (first
+runs land once these workflows are pushed).
 
 | Server | Status |
 |--------|--------|
-| FrankenPHP | Certified |
-| RoadRunner | Certified |
-| Open Swoole | Certified |
-| Swoole | Certified |
+| RoadRunner | Certified — full scenario green locally (real-server harness; pinned `rr` v2025.1.15, sha256-verified); PR CI + nightly runs pending first push. `octane:reload` recycles workers in place; graceful stop flushes; no loss; drain to zero |
+| FrankenPHP | Certified — full no-loss scenario green locally (pinned `dunglas/frankenphp:php8.4` digest, ZTS in-image extension build); nightly run pending first push. Documented availability note: upstream octane's reload shuts the whole frankenphp app down instead of recycling workers in place; the workers flush on the way out, so no data is lost and the harness restarts the server across the reload |
+| Open Swoole | Certified — full scenario green locally: the reload flush path is certified (no loss) and the harness asserts the stop loss explicitly; nightly run pending first push. Documented upstream limit: `octane:stop` SIGKILLs workers (laravel/octane Swoole `ServerProcessInspector::stopServer`), so publications parked at stop are lost |
+| Swoole | Harness delivered; CI verification pending first nightly run (requires ext-swoole, which the certification dev machine could not build) |
+
+The Swoole-family stop behavior is an upstream laravel/octane property,
+not a Rabbit RS one: SIGKILL gives PHP no shutdown callback to run. The
+same publications survive `octane:reload` on those servers. Do not rely
+on `octane:stop` for a loss-free drain on Swoole/Open Swoole — drain via
+`octane:reload` or a CLI worker first.
 
 #### Worker count
 
@@ -1718,7 +1691,7 @@ mechanics (modes, declarations, recovery order) live in
 | Work queue (competing consumers) | Background jobs of one kind | The default: one connection, one `queue` key, `--workers=N` |
 | Weighted multi-queue | Job classes with different latency needs | `subscriptions` with `weight` / per-subscription `prefetch` |
 | Pub/sub (fan-out) | One event, several independent consumer groups | A topic exchange plus one subscription queue per group, each bound with its own routing key |
-| Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — plugin exchange when available, TTL buckets otherwise |
+| Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — a documented alias for the delayed-message plugin; no TTL fallback (an unroutable delay fails terminally). `ttl` remains available as an explicit mode |
 | Request/reply (RPC) | Service-to-service call/answer | Not yet built — milestone M3, see the [ROADMAP](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/plans/ROADMAP.md) |
 
 One rule cuts across all patterns: **jobs must be idempotent.** The

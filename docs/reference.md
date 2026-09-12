@@ -90,7 +90,7 @@ For a complete Dockerfile example, see [examples/laravel/Dockerfile](../examples
 composer require goopil/rabbit-rs-laravel
 ```
 
-Composer installs the PHP package and verifies that `ext-rabbit_rs` is loaded. It does **not** install or modify system PHP binaries — that is PIE's job.
+Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.2.2`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 The package auto-discovers the service provider in Laravel 12 and 13. If you disabled auto-discovery, register it manually:
 
@@ -156,9 +156,9 @@ The separation is:
 | Tool | Responsibility |
 |------|---------------|
 | PIE | Downloads and installs the correct pre-compiled `.so` binary |
-| Composer | Installs the Laravel queue driver (PHP source) and verifies `ext-rabbit_rs` is loaded |
+| Composer | Installs the Laravel queue driver (PHP source); `ext-rabbit_rs` stays a suggestion — connections fail at connection resolution until the extension is loaded |
 
-The Laravel driver's `composer.json` declares `"ext-rabbit_rs": "^0.1"`, which causes Composer to check that the extension is loaded at install time. If the extension is missing, Composer reports the error. But Composer never installs the binary — that is PIE's role.
+The Laravel driver's `composer.json` declares `ext-rabbit_rs` as a *suggestion* (`^0.2.2`), not a requirement: `composer install` succeeds without the extension. The constraint is enforced at connection resolution — the driver fails with a typed error when the extension is missing or its version falls outside the constraint. Composer never installs the binary — that is PIE's role.
 
 ### Multiple PHP versions
 
@@ -194,7 +194,7 @@ Check which version is active before and after:
 php --ri rabbit_rs
 ```
 
-Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` requires a specific `ext-rabbit_rs` major version. When moving across a major boundary — in either direction — upgrade or roll back the extension and the driver together. Composer fails loudly at `composer update` if the loaded extension does not satisfy the driver's constraint, so a half-upgraded system (new driver with old extension, or the reverse) cannot go unnoticed.
+Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` tracks a specific `ext-rabbit_rs` constraint (`^0.2.2`). When moving across a version boundary — in either direction — upgrade or roll back the extension and the driver together. Composer cannot check loaded extensions (the constraint lives in `suggest`), so the driver enforces the constraint itself with a typed error at connection resolution: a half-upgraded system (new driver with old extension, or the reverse) fails loudly on the first connection instead of going unnoticed.
 
 Every release exercises these paths in CI before it is finalized: the release pipeline installs the previous published release, upgrades it to the new release, and rolls back again (see [End-to-end PIE validation](#end-to-end-pie-validation)).
 
@@ -205,7 +205,7 @@ Rabbit RS distributes two packages in synchronized releases:
 - **`goopil/rabbit-rs-native`** — the native PHP extension, installed via [PIE](https://github.com/php/pie)
 - **`goopil/rabbit-rs-laravel`** — the Laravel queue driver, installed via [Composer](https://getcomposer.org)
 
-Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package requires `ext-rabbit_rs ^0.1` — the constraint tracks the extension version until 1.0 (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package suggests `ext-rabbit_rs ^0.2.2` — the constraint tracks the extension version until 1.0 and is enforced by a typed error at connection resolution (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 #### PIE build matrix
 
@@ -223,6 +223,25 @@ The CI produces **8 pre-compiled release artifacts** (V1 is NTS-only, see [Threa
 | 8.5 | arm64 | musl | NTS |
 
 The matrix is defined in [`release/pie-matrix.json`](../release/pie-matrix.json).
+
+#### Functional coverage of the matrix
+
+Every cell above is compiled, load-smoked, checksum-verified, and attested by the release pipeline — but "loads" is not "works against a broker". Real-broker coverage (publish + confirms, consume + ack, one Toxiproxy outage/recovery scenario via [`scripts/amqp-smoke.sh`](../scripts/amqp-smoke.sh), issue #227) is narrower and proven per tier:
+
+| PHP | Architecture | libc | Functional proof |
+|-----|-------------|------|------------------|
+| 8.4 | x86_64 | glibc | CI `integration` job (full Rust + Laravel integration suites) and the release PIE install smoke |
+| 8.4 | x86_64 | musl | Nightly [functional matrix](../.github/workflows/functional-matrix.yml) docker cell and the release PIE install smoke |
+| 8.4 | arm64 | glibc | Nightly functional matrix docker cell and the release PIE install smoke |
+| 8.4 | arm64 | musl | Nightly functional matrix docker cell and the release PIE install smoke |
+| 8.5 | x86_64 | glibc | Nightly functional matrix (full integration suites + AMQP smoke) and the release PIE install smoke |
+| 8.5 | x86_64 | musl | Build-only (shares the musl runtime path proven by the 8.4 musl smoke) |
+| 8.5 | arm64 | glibc | Build-only (shares the glibc runtime path proven by the 8.5 glibc x86_64 integration) |
+| 8.5 | arm64 | musl | Build-only (shares the musl runtime path proven by the 8.4 musl smoke) |
+| 8.4 | arm64 | darwin | Nightly functional matrix `macos-arm64` cell (dispatch/manual only): load + publish/confirm + consume/ack against a local Homebrew rabbitmq — no recovery scenario (no Toxiproxy on macOS runners) |
+| 8.5 | arm64 | darwin | Build-only (shares the 8.4 macOS ARM64 functional cell) |
+
+"Build-only" means the release pipeline compiles the artifact for that cell and proves it loads with the target PHP, but no AMQP traffic is exercised there; the runtime path it shares with a functional sibling is the only broker-level evidence. The functional bar itself is deliberately small — extension load, 5 messages published and confirmed, consumed and acked with the queue drained, and one outage/recovery scenario (publish 2 into a disabled Toxiproxy proxy, require both to buffer and confirm after the network heals) — so a release asset that cannot deliver against a real broker fails somewhere in CI, not in production.
 
 #### How pre-packaged binaries work
 
@@ -413,6 +432,8 @@ This handles the race condition where:
 
 The job may be executed twice. This is expected and why jobs must be idempotent.
 
+Closing a consumer (or its pool) flushes pending and queued acknowledgements to the broker within a bounded 500 ms budget before the channels close; settlements still unacknowledged after the budget are abandoned to redelivery, preserving at-least-once.
+
 ### Replay buffer
 
 When a connection drops before a publish is confirmed, the state is ambiguous — the broker may or may not have received the message. Rabbit RS handles this by:
@@ -473,6 +494,8 @@ Native pool metrics — including `duplicates_total` — are **per-process by de
 
 An in-process Prometheus exporter is the planned evolution for per-process counters; it is deliberately not provided today.
 
+For operating on these signals — incident playbooks, example alert rules, and a dashboard definition — see `docs/operations/` ([runbook.md](operations/runbook.md), [alerts.md](operations/alerts.md), [dashboard.json](operations/dashboard.json)).
+
 ### When to use an external outbox
 
 Use an external outbox when:
@@ -528,6 +551,12 @@ Rabbit RS runs as a native PHP extension: an uncaught Rust unwind crossing the F
 
 `CoordinatorError` is a typed enum (`Topology`/`Transport`/`Publisher`/`Consumer`/`Internal`) whose variants carry the typed source error; `Display` messages keep the previously surfaced context. Callers must classify through variants, never through string matching.
 
+### TLS
+
+The AMQP transport always verifies the broker certificate (rustls, `verify: peer` — the only accepted value, and the default). A custom `ca_cert` chain extends the platform trust store, and a client identity (`client_cert` + `client_key`) enables mTLS: it is supported and certified by the lab test suite, which proves a connection with a client certificate succeeds against a broker listener that rejects anonymous clients (`fail_if_no_peer_cert = true`), and that the same listener rejects connections without one.
+
+TLS server name indication (SNI) and certificate hostname verification always use the AMQP connection host. A `server_name` override is not possible with the underlying AMQP transport (lapin 4.10) and is rejected at validation when it differs from the first configured host — a documented gap tracked for post-1.0 (#164, #166).
+
 ## Troubleshooting
 
 ### Common errors and solutions
@@ -536,7 +565,7 @@ Rabbit RS runs as a native PHP extension: an uncaught Rust unwind crossing the F
 
 **Error:**
 ```
-The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.1 to be loaded.
+The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.2.2 to be loaded.
 ```
 
 **Solution:**

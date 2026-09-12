@@ -2174,3 +2174,113 @@ async fn prefetch_stats_reports_fixed_and_adaptive_state() {
     assert_eq!(fixed.current, 16);
     assert_eq!(fixed.ewma, Duration::ZERO);
 }
+
+// ---------------------------------------------------------------------------
+// Client cache closedness (issue #232)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn the_client_cache_never_serves_a_closed_consumer() {
+    let transport = Arc::new(MockTransport::default());
+    transport.keep_delivery_stream_open();
+    transport.push_delivery(Ok(delivery(1, b"first-request")));
+
+    let config = Config {
+        brokers: vec![broker("b", "/")],
+        workers: vec![worker_profile("main", "b", "main.jobs")],
+        topology_mode: TopologyMode::External,
+        routes: BTreeMap::new(),
+        delay: DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        consumer: ConsumerConfigSection::default(),
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+    };
+    let pool = ClientPool::new(
+        Arc::new(config.validate().expect("valid config")),
+        transport.clone(),
+    );
+
+    // Request-scoped consumer lifecycle (Octane): acquire at the start of a
+    // request, close at the end of it.
+    let first = pool.consumer("main").await.expect("first consumer");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    first.close().await.expect("close first consumer");
+
+    // The next request must get a NEW consumer whose operations succeed —
+    // never the closed one from the client-level cache.
+    let second = pool.consumer("main").await.expect("second consumer");
+    assert!(
+        !second.same_handle(&first),
+        "the cache must not serve the closed consumer"
+    );
+    let stats = tokio::time::timeout(Duration::from_millis(100), second.prefetch_stats())
+        .await
+        .expect("the second acquire must not hang")
+        .expect("operations on the second consumer must succeed");
+    assert_eq!(stats.len(), 1, "the rebuilt consumer serves the profile");
+
+    pool.close().await.expect("close pool");
+}
+
+// ---------------------------------------------------------------------------
+// Close-time settlement drain (issue #233)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn close_flushes_queued_settlements_within_a_bounded_budget() {
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    transport.push_delivery(Ok(delivery(1, b"one")));
+    transport.push_delivery(Ok(delivery(2, b"two")));
+    // Park the first broker ack mid-transport-call so the second ack queues
+    // behind the busy channel — the shape a short-lived CLI consumer hits
+    // when it acks its last deliveries and exits.
+    let gate = transport.push_ack_gate();
+
+    let handle = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 8).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+
+    let one = handle.next().await.expect("delivery one");
+    let two = handle.next().await.expect("delivery two");
+    one.ack().await.expect("ack one");
+    two.ack().await.expect("ack two");
+    // Let the actor process both settlements: tag 1 launches and parks on
+    // the gate mid-transport-call, tag 2 queues behind it.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // The release fires 1ms in: on the unfixed code close has already
+    // dropped everything and the release lands on nothing.
+    let releaser = {
+        let gate = gate.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            let _ = gate.release();
+        })
+    };
+
+    // Close WITHOUT any explicit drain: the queued ack must reach the
+    // transport within the bounded close budget instead of being dropped.
+    handle.close().await.expect("close drains settlements");
+    releaser.await.expect("releaser task");
+
+    let acked_tags: BTreeSet<u64> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Ack { delivery_tag, .. } => Some(*delivery_tag),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        acked_tags,
+        BTreeSet::from([1, 2]),
+        "close must flush queued settlements to the transport"
+    );
+}

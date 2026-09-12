@@ -6,7 +6,7 @@
 
 **Architecture:** A Rust workspace contains rabbit-rs-core and the rabbit-rs-php extension building ext-rabbit_rs. The Composer package goopil/rabbit-rs-laravel adapts this API to the Laravel Queue contracts without replacing Illuminate\Queue\Worker. Connections and channels are driven by Tokio actors per PHP process, while a reproducible RabbitMQ lab validates performance and failure scenarios.
 
-**Tech Stack:** Rust 1.96, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5, PIE 1.5+, Composer, Packagist, Laravel 12/13, Pest, Orchestra Testbench, RabbitMQ 4.3, Docker Compose, Prometheus.
+**Tech Stack:** Rust 1.96, Tokio, Lapin, ext-php-rs, PHP 8.4/8.5 (NTS), PIE 1.5+, Composer, Packagist, Laravel 12/13, Pest, Orchestra Testbench, RabbitMQ 4.2.9+, Docker Compose, Prometheus.
 
 > **Note (2026-08-21):** Chaos tests and Toxiproxy fault injection have been removed. The at-least-once delivery guarantees are validated through integration tests with the mock transport and the 3-node RabbitMQ lab (without Toxiproxy). Criterion benchmarks have been replaced by the PHP benchmark suite.
 
@@ -27,11 +27,11 @@
 
 ## Progress
 
-**Last updated:** August 23, 2026
+**Last updated:** September 11, 2026
 
-**Implementation branch:** Goopil/feat-horizon
+**Implementation branch:** Goopil/pre-v1
 
-**Next step:** Milestone F — Distribution and documentation.
+**Next step:** v1 readiness remediation (see `docs/plans/2026-09-11-v1-readiness-remediation-plan.md`) — wave 2: contract reconciliation (docs coherence lint, `auto_subscribe` compile-time rejection), runtime certification, functional matrix, performance baselines; wave 3: RC pipeline.
 
 - [x] Task 1 — Reproducible Rust/PHP workspace (`4f2a997`).
 - [x] Task 2 — Normalized and validated configuration (`c324929`).
@@ -2119,7 +2119,7 @@ Expected: PASS for each certified runtime.
 
 **Step 1: Write failing readiness check**
 
-The script must verify three RabbitMQ 4.3 nodes, a healthy cluster, a quorum leader, two vhosts, limited users, Prometheus and Toxiproxy.
+The script must verify three RabbitMQ 4.2.9 nodes (the broker floor moved from the originally planned 4.3 to 4.2.9 — see the 2026-09-11 remediation plan, D7), a healthy cluster, a quorum leader, two vhosts, limited users, Prometheus and Toxiproxy.
 
 **Step 2: Verify failure**
 
@@ -2376,7 +2376,7 @@ The script verifies:
 - the root package is named goopil/rabbit-rs-native and its type is php-ext;
 - extension-name is rabbit_rs;
 - download-url-method contains only pre-packaged-binary;
-- NTS and ZTS are advertised;
+- NTS is advertised (ZTS was dropped from the matrix by the 2026-08-31 decision — see `release/pie-matrix.json` and the CHANGELOG);
 - Linux is the only OS family advertised in V1;
 - the Laravel package is named goopil/rabbit-rs-laravel;
 - its namespace is Goopil\RabbitRs\Laravel;
@@ -2390,6 +2390,11 @@ Run: ./scripts/validate-distribution.sh
 Expected: FAIL before the manifest and checks.
 
 **Step 3: Add the exact PIE matrix**
+
+> **Superseded 2026-08-31 (ZTS dropped):** the matrix is now NTS-only —
+> 8 Linux combinations (PHP 8.4/8.5 × x86_64/arm64 × glibc/musl) plus
+> 2 macOS ARM64 archives = 10 ZIPs / 30 release assets. The 16-combination
+> text below records the original plan and is kept for history.
 
 release/pie-matrix.json contains exactly 16 combinations:
 
@@ -2606,7 +2611,7 @@ Add versions, checksums, results, observed duplicates, recovery times, Packagist
 ## Completion criteria
 
 - All Rust, PHPT, PHPUnit tests and Composer matrices pass.
-- The 16 PIE artifacts PHP 8.4/8.5, NTS/ZTS, glibc/musl and x86_64/ARM64 load.
+- The 10 NTS PIE artifacts (PHP 8.4/8.5 × x86_64/ARM64 × glibc/musl on Linux, plus macOS ARM64) load; ZTS was dropped by the 2026-08-31 decision.
 - pie install goopil/rabbit-rs-native selects and enables the right artifact.
 - composer require goopil/rabbit-rs-laravel validates ext-rabbit_rs without altering the system.
 - The goopil/rabbit-rs-native, goopil/rabbit-rs-laravel and ext-rabbit_rs tags and versions are synchronized.

@@ -4,10 +4,11 @@
 #   lab-ca.pem / lab-ca.key        trusted lab root CA (signs the server cert)
 #   lab-other-ca.pem / ...key      deliberately untrusted CA (negative tests)
 #   server.pem / server.key        broker certificate signed by the lab CA
+#   lab-client.pem / ...key        mTLS client identity signed by the lab CA
 #
 # Server certificate names (SANs): rabbit.internal, localhost, 127.0.0.1
-# The TLS node mounts ./generated at /etc/rabbitmq/tls (see compose.yaml and
-# rabbitmq-tls.conf).
+# The TLS nodes mount ./generated at /etc/rabbitmq/tls (see compose.yaml,
+# rabbitmq-tls.conf and rabbitmq-mtls.conf).
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +20,7 @@ command -v openssl >/dev/null 2>&1 || { echo "ERROR: openssl is required" >&2; e
 mkdir -p "${OUT}"
 rm -f "${OUT}"/lab-ca.pem "${OUT}"/lab-ca.key \
     "${OUT}"/lab-other-ca.pem "${OUT}"/lab-other-ca.key \
+    "${OUT}"/lab-client.pem "${OUT}"/lab-client.key "${OUT}"/lab-client.csr \
     "${OUT}"/server.pem "${OUT}"/server.key "${OUT}"/server.csr
 
 # 1. Trusted lab root CA.
@@ -52,8 +54,31 @@ openssl x509 -req -in "${OUT}/server.csr" \
     -out "${OUT}/server.pem" >/dev/null 2>&1
 rm -f "${OUT}/server.csr" "${OUT}/lab-ca.srl"
 
-# Broker keys must not be group/world readable inside the container.
-chmod 600 "${OUT}/server.key" "${OUT}/lab-ca.key" "${OUT}/lab-other-ca.key"
+# 4. mTLS client identity signed by the trusted lab CA. No SAN required for
+#    client certificates, but the clientAuth extended key usage is: RabbitMQ
+#    rejects certificates without it when it verifies peer certificates.
+openssl req -newkey rsa:2048 -nodes \
+    -keyout "${OUT}/lab-client.key" -out "${OUT}/lab-client.csr" \
+    -subj "/CN=rabbit-rs-lab-client" >/dev/null 2>&1
+openssl x509 -req -in "${OUT}/lab-client.csr" \
+    -CA "${OUT}/lab-ca.pem" -CAkey "${OUT}/lab-ca.key" -CAcreateserial \
+    -days 825 \
+    -extfile <(printf '%s\n' \
+        "basicConstraints=CA:FALSE" \
+        "keyUsage=digitalSignature,keyEncipherment" \
+        "extendedKeyUsage=clientAuth") \
+    -out "${OUT}/lab-client.pem" >/dev/null 2>&1
+rm -f "${OUT}/lab-client.csr" "${OUT}/lab-ca.srl"
+
+# lab-ca.key, lab-other-ca.key and lab-client.key are only read by the
+# generating user (generation and the test process), so 0600 stays. The
+# broker reads server.key as the container's `rabbitmq` user (uid 999); on
+# Linux bind mounts honor the host uid, so 0600 owned by the runner makes
+# the key unreadable and the TLS nodes crash-loop at startup. The key is a
+# disposable lab secret regenerated on every lab-up (never committed), so
+# 0644 inside the ephemeral lab is the accepted trade.
+chmod 600 "${OUT}/lab-ca.key" "${OUT}/lab-other-ca.key" "${OUT}/lab-client.key"
+chmod 644 "${OUT}/server.key"
 
 echo "TLS lab certificates generated in ${OUT}:"
 ls -1 "${OUT}" | sed 's/^/  /'

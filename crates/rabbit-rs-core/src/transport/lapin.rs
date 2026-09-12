@@ -319,16 +319,8 @@ fn build_tls_config(config: &BrokerConfig) -> TransportResult<OwnedTLSConfig> {
     // The transport is the last line of defense for the TLS contract: callers
     // may bypass `Config::validate` and hand a raw [`BrokerConfig`] to
     // [`LapinTransport::connect`], so the policy is enforced again here.
-    match tls.verify() {
-        crate::config::TlsVerify::Peer => {}
-        crate::config::TlsVerify::None => {
-            return Err(TransportError::config(format!(
-                "brokers.{}.tls.verify: 'none' requires a custom TLS connector, which the AMQP \
-                 transport (lapin 4.10) does not support; use 'peer' or disable tls.enabled",
-                config.name
-            )));
-        }
-    }
+    // (`verify` needs no re-check: `TlsVerify` has a single valid variant, so
+    // the deserializer already rejected everything else.)
     if let Some(server_name) = tls.server_name() {
         let first_host = config
             .hosts()
@@ -746,29 +738,6 @@ mod tests {
 
     fn tls_from_json(value: serde_json::Value) -> TlsConfig {
         serde_json::from_value(value).expect("valid TLS config")
-    }
-
-    #[test]
-    fn tls_verify_none_is_rejected_by_the_transport() {
-        let config = broker_with_tls(
-            "rabbit.example.com",
-            tls_from_json(serde_json::json!({"enabled": true, "verify": "none"})),
-        );
-
-        let error = build_tls_config(&config).expect_err("verify none must be rejected");
-
-        assert_eq!(
-            error.kind(),
-            crate::transport::TransportErrorKind::Configuration
-        );
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "brokers.{}.tls.verify: 'none' requires a custom TLS connector, which the AMQP \
-                 transport (lapin 4.10) does not support; use 'peer' or disable tls.enabled",
-                config.name
-            )
-        );
     }
 
     #[test]
