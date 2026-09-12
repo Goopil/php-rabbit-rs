@@ -2,7 +2,10 @@
 
 declare(strict_types=1);
 
-function outcomeMessage(string $id, int $timeoutMs = 1000): array
+// The default per-message deadline is generous (issue #189): on a loaded
+// Docker CI runner the mock confirmations can take over a second to drain.
+// The timeout-path dataset passes an explicit short timeoutMs instead.
+function outcomeMessage(string $id, int $timeoutMs = 5000): array
 {
     return [
         'broker' => 'default',
@@ -34,7 +37,7 @@ it('maps publisher confirmations and transport failures to the PHP contract', fu
             'pending' => 'timeout',
             'transport_error' => 'transport',
         };
-        $timeoutMs = $outcome === 'pending' ? 1 : 1000;
+        $timeoutMs = $outcome === 'pending' ? 1 : 5000;
 
         try {
             $pool->publish(outcomeMessage($messageId, $timeoutMs));

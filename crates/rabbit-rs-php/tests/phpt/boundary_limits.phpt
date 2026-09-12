@@ -17,7 +17,11 @@ function config(): array {
     ];
 }
 
-function message(string $id, string $payload = 'x', array $headers = [], int $timeoutMs = 1000): array {
+// The default per-message deadline is generous (issue #189): on a loaded
+// Docker CI runner the mock confirmations can take over a second to drain,
+// and an expired deadline fails the subsequent flush with a timeout error.
+// The deadline-boundary publications pass explicit timeoutMs values instead.
+function message(string $id, string $payload = 'x', array $headers = [], int $timeoutMs = 5000): array {
     return [
         'broker' => 'default',
         'exchange' => 'jobs',

@@ -2,7 +2,10 @@
 Publication outcomes (ack, mandatory return, timeout, transport error)
 --FILE--
 <?php
-function message(string $id, int $timeoutMs = 1000): array {
+// The default per-message deadline is generous (issue #189): on a loaded
+// Docker CI runner the mock confirmations can take over a second to drain.
+// The timeout-path publication passes an explicit short timeoutMs instead.
+function message(string $id, int $timeoutMs = 5000): array {
     return [
         'broker' => 'default',
         'exchange' => 'jobs',
