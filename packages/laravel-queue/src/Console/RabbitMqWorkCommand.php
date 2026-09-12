@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Console;
 
-use Goopil\RabbitRs\Laravel\Support\ManagementApi;
+use Goopil\RabbitRs\Laravel\Support\QueueDepthSampler;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Events\Dispatcher as EventDispatcher;
 use InvalidArgumentException;
@@ -113,33 +113,24 @@ class RabbitMqWorkCommand extends Command
     /**
      * Builds the supervisor's depth sampler: one call returns the ready
      * depth per plan connection, summed over the connection's planned
-     * queues. Queues whose depth cannot be read (no management_url, failed
-     * request) contribute nothing; a connection with no readable depth
-     * reports null, which leaves it out of scaling silently.
+     * queues. Each queue is read from the management API when the
+     * connection configures `management_url`, otherwise through a passive
+     * native probe (`Pool::size()`). Queues whose depth cannot be read
+     * contribute nothing; a connection with no readable depth reports null,
+     * which leaves it out of scaling silently.
+     *
+     * The sampler instance outlives the callback (the supervisor calls it
+     * on every scaling pass), so its native probe pools are created once
+     * and reused for the supervisor's lifetime.
      *
      * @param  list<array{connection: string, queues: list<string>}>  $plan
      * @return \Closure(): array<string, int|null>
      */
     private function depthCallback(array $plan): \Closure
     {
-        return static function () use ($plan): array {
-            $depths = [];
-            foreach ($plan as $entry) {
-                $depth = 0;
-                $known = false;
-                foreach ($entry['queues'] as $queue) {
-                    $queueDepth = ManagementApi::queueDepth($entry['connection'], $queue);
-                    if ($queueDepth !== null) {
-                        $known = true;
-                        $depth += $queueDepth;
-                    }
-                }
+        $sampler = new QueueDepthSampler($plan);
 
-                $depths[$entry['connection']] = $known ? $depth : null;
-            }
-
-            return $depths;
-        };
+        return static fn (): array => $sampler->depths();
     }
 
     /**
