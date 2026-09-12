@@ -69,13 +69,17 @@ case "$OUT" in
 esac
 
 # Phases (b)-(f) live in the PHP driver: publish + confirms, consume + ack,
-# Toxiproxy outage/recovery, non-zero exit on any loss.
+# Toxiproxy outage/recovery, non-zero exit on any loss. PHP CLI options
+# (--ext) must precede the driver path; anything after it is passed to
+# run.php via $argv. A --dsn=... before the script path would be parsed as
+# a PHP option and rejected with a usage error.
 set --
 if [ -n "$EXT" ]; then
     set -- "$@" -d "extension=$EXT"
 fi
+set -- "$@" "$DRIVER"
 [ -n "$DSN" ] && set -- "$@" "--dsn=$DSN"
 [ -n "$TOXIPROXY" ] && set -- "$@" "--toxiproxy=$TOXIPROXY"
 [ -n "$SKIP_RECOVERY" ] && set -- "$@" --skip-recovery
 
-"$PHP_BIN" "$@" "$DRIVER"
+"$PHP_BIN" "$@"

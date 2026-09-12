@@ -327,6 +327,10 @@ jobs:
           # PHP 8.4 (its build cell already covers PHP 8.5). The macOS cell
           # proves PIE resolves the darwin-bsdlibc asset on an Apple Silicon
           # runner (build-macos already compiles and smoke-loads 8.4 and 8.5).
+          # GitHub macOS runners ship no Docker for the lab, so the macOS
+          # cell stops at PIE install + load + version match; broker smoke
+          # for the darwin binary is covered by the RC functional matrix's
+          # macos-arm64 cell (Homebrew RabbitMQ + --skip-recovery).
           - label: Linux glibc x86_64 PHP 8.4
             runner: ubuntu-latest
             php: "8.4"
@@ -365,11 +369,15 @@ jobs:
       # the AMQP smoke against a real broker, so a published artifact that
       # loads but cannot publish, confirm, consume, or recover never passes
       # verification. The lab comes up once per job; runner cells reach it
-      # on localhost, docker cells through host.docker.internal.
+      # on localhost, docker cells through host.docker.internal. macOS
+      # runners have no Docker, so their cell skips the lab and the smoke
+      # (see the matrix comment above).
       - name: Start RabbitMQ lab
+        if: runner.os != 'macOS'
         run: ./scripts/lab-up.sh with-plugin
 
       - name: Wait for lab readiness
+        if: runner.os != 'macOS'
         run: |
           for i in $(seq 1 120); do
             if ./scripts/lab-ready.sh >/dev/null 2>&1; then
@@ -449,7 +457,7 @@ jobs:
           "
 
       - name: AMQP smoke through the installed extension (runner)
-        if: matrix.docker_image == ''
+        if: matrix.docker_image == '' && runner.os != 'macOS'
         run: ./scripts/amqp-smoke.sh --php php
 
       - name: Install the published release via PIE (pinned PHP image)
@@ -515,7 +523,7 @@ jobs:
             '
 
       - name: Stop RabbitMQ lab
-        if: always()
+        if: always() && runner.os != 'macOS'
         run: ./scripts/lab-down.sh || true
 
   verify-pie-upgrade-rollback:
