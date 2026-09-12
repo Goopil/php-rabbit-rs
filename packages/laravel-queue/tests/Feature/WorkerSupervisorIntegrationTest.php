@@ -541,7 +541,120 @@ describe('WorkerSupervisor integration', function () {
 
         expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
     });
+
+    it('idle fleet is downscaled to min workers without polluting the restart bookkeeping', function () {
+        // Two workers (the ceiling) with a permanently empty queue: after
+        // the idle window the highest-index worker is released, the floor
+        // worker stays, and the released slot is never recycled.
+        $script = writeSupervisorScript(
+            mode: 'run',
+            minWorkers: 1,
+            workers: 2,
+            maxWorkers: 2,
+            depth: 0,
+            scaleIdle: 1,
+            scaleCooldown: 1,
+        );
+        $process = new Process([PHP_BINARY, $script, test()->stateDir]);
+        $process->start();
+
+        foreach ([0, 1] as $worker) {
+            expect(supervisorWaitForMarker($worker, timeoutMs: 4000))->not->toBeNull("worker {$worker} should have started");
+        }
+
+        // The idle window elapses and worker 1 (highest index) is released.
+        $exitFile = test()->stateDir.'/worker-1-exited.txt';
+        $deadline = microtime(true) + 5.0;
+        while (microtime(true) < $deadline) {
+            if (is_file($exitFile)) {
+                break;
+            }
+            usleep(20_000);
+        }
+        expect(is_file($exitFile))->toBeTrue('worker 1 should have been released by the downscale');
+
+        // The floor worker is never signaled.
+        expect(is_file(test()->stateDir.'/worker-0-exited.txt'))->toBeFalse();
+
+        // The released slot is removed, not recycled: exactly one invocation.
+        usleep(500_000);
+        expect(supervisorInvocationCount(1))->toBe(1);
+
+        $supervisorPid = $process->getPid();
+        expect($supervisorPid)->not->toBeNull();
+        posix_kill($supervisorPid, SIGTERM);
+
+        supervisorAwaitExit($process, 10);
+
+        expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
+    });
+
+    it('downscale escalates to SIGKILL when a child does not honor SIGTERM', function () {
+        $script = writeSupervisorScript(
+            mode: 'run',
+            minWorkers: 1,
+            workers: 2,
+            maxWorkers: 2,
+            depth: 0,
+            scaleIdle: 1,
+            scaleCooldown: 1,
+            modes: [1 => 'slow-term'],
+        );
+        $process = new Process([PHP_BINARY, $script, test()->stateDir]);
+        $process->start();
+
+        foreach ([0, 1] as $worker) {
+            expect(supervisorWaitForMarker($worker, timeoutMs: 4000))->not->toBeNull("worker {$worker} should have started");
+        }
+
+        // The downscale SIGTERMs worker 1; the stub records the signal but
+        // keeps running (parked graceful shutdown).
+        $sigtermFile = test()->stateDir.'/worker-1-sigterm.txt';
+        $deadline = microtime(true) + 5.0;
+        while (microtime(true) < $deadline) {
+            if (is_file($sigtermFile)) {
+                break;
+            }
+            usleep(20_000);
+        }
+        expect(is_file($sigtermFile))->toBeTrue('worker 1 should have received the downscale SIGTERM');
+        $sigtermObservedAt = microtime(true);
+
+        // Wait past the 15 s SIGTERM grace period (STOP_ESCALATION_SECONDS)
+        // plus the poll tick: the supervisor must have escalated to SIGKILL
+        // by now. A graceful exit would have written the exit marker; SIGKILL
+        // cannot.
+        $exitFile = test()->stateDir.'/worker-1-exited.txt';
+        $deadline = $sigtermObservedAt + 16.5;
+        while (microtime(true) < $deadline) {
+            usleep(100_000);
+        }
+        expect(is_file($exitFile))->toBeFalse('worker 1 should have died on SIGKILL, not exited gracefully');
+
+        // The proof of escalation: with worker 1 already gone, the final
+        // SIGTERM shuts the supervisor down promptly. Without escalation the
+        // parked child would hold the shutdown for Symfony's 10 s fallback.
+        $supervisorPid = $process->getPid();
+        expect($supervisorPid)->not->toBeNull();
+        posix_kill($supervisorPid, SIGTERM);
+
+        supervisorAwaitExit($process, 5);
+
+        expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
+    });
 });
+
+/**
+ * Bounded wait for a subprocess: a supervisor that never exits fails the
+ * test on the deadline instead of hanging the suite.
+ */
+function supervisorAwaitExit(Process $process, float $timeoutSeconds): void
+{
+    $deadline = microtime(true) + $timeoutSeconds;
+    while ($process->isRunning() && microtime(true) < $deadline) {
+        usleep(20_000);
+    }
+}
 
 /**
  * Build a supervisor that spawns the worker stub instead of queue:work.
@@ -650,20 +763,29 @@ function supervisorCleanupStateDir(string $dir): void
  * @param  string  $mode  Stub mode for the child worker.
  * @param  int  $maxRestarts  Supervisor max-restarts budget.
  * @param  int  $baseBackoffSeconds  Supervisor base backoff.
+ * @param  int  $workers  Children spawned per plan entry (the initial fleet
+ *                        when auto-scaling is configured).
+ * @param  array<int, string>  $modes  Per-worker stub modes, overriding $mode.
  * @param  int|null  $minWorkers  Auto-scaling floor (omitted from the
  *                                constructor when null).
  * @param  int|null  $maxWorkers  Auto-scaling ceiling (omitted from the
  *                                constructor when null).
  * @param  int|null  $depth  Depth reported by the injected callback for the
  *                           plan's connection (no callback when null).
+ * @param  int|null  $scaleIdle  Scale-down hysteresis window in seconds.
+ * @param  int|null  $scaleCooldown  Minimum seconds between scaling passes.
  */
 function writeSupervisorScript(
     string $mode = 'run',
     int $maxRestarts = 1,
     int $baseBackoffSeconds = 0,
+    int $workers = 1,
     ?int $minWorkers = null,
     ?int $maxWorkers = null,
     ?int $depth = null,
+    ?int $scaleIdle = null,
+    ?int $scaleCooldown = null,
+    array $modes = [],
 ): string {
     $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
     $autoloadPath = dirname(__DIR__, 2).'/vendor/autoload.php';
@@ -675,6 +797,12 @@ function writeSupervisorScript(
     if ($maxWorkers !== null) {
         $scalingArgs .= ", maxWorkers: {$maxWorkers}";
     }
+    if ($scaleIdle !== null) {
+        $scalingArgs .= ", scaleIdleSeconds: {$scaleIdle}";
+    }
+    if ($scaleCooldown !== null) {
+        $scalingArgs .= ", scaleCooldownSeconds: {$scaleCooldown}";
+    }
     if ($depth !== null) {
         $scalingArgs .= ", depthCallback: static fn (): array => ['rabbit-rs' => {$depth}]";
     }
@@ -685,12 +813,14 @@ function writeSupervisorScript(
     $code .= 'require '.var_export($autoloadPath, true).";\n";
     $code .= '$stubPath = '.var_export($stubPath, true).";\n";
     $code .= "\$stateDir = \$argv[1];\n";
-    $code .= "\$factory = static function (int \$workerIndex) use (\$stubPath, \$stateDir): \\Symfony\\Component\\Process\\Process {\n";
-    $code .= "    \$env = ['RABBIT_RS_WORKER_INDEX'   => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => ".var_export($mode, true).", 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
+    $code .= '$modes = '.var_export($modes, true).";\n";
+    $code .= "\$factory = static function (int \$workerIndex) use (\$stubPath, \$stateDir, \$modes): \\Symfony\\Component\\Process\\Process {\n";
+    $code .= '    $mode = $modes[$workerIndex] ?? '.var_export($mode, true).";\n";
+    $code .= "    \$env = ['RABBIT_RS_WORKER_INDEX'   => (string) \$workerIndex, 'RABBIT_RS_STUB_MODE' => \$mode, 'RABBIT_RS_STUB_STATE_DIR' => \$stateDir];\n";
     $code .= "    return new \\Symfony\\Component\\Process\\Process([PHP_BINARY, \$stubPath], null, \$env);\n";
     $code .= "};\n";
     $code .= "\$supervisor = new \\Goopil\\RabbitRs\\Laravel\\Console\\WorkerSupervisor(\n";
-    $code .= "    plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: {$maxRestarts}, baseBackoffSeconds: {$baseBackoffSeconds},\n";
+    $code .= "    plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: {$workers}, maxRestarts: {$maxRestarts}, baseBackoffSeconds: {$baseBackoffSeconds},\n";
     $code .= "    processFactory: \$factory{$scalingArgs},\n";
     $code .= ");\n";
     $code .= "exit(\$supervisor->run());\n";

@@ -12,7 +12,7 @@ use Symfony\Component\Process\Process;
  * @phpstan-type WorkPlanEntry array{connection: string, queues: list<string>}
  * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null, stop-when-empty?: bool}
  * @phpstan-type DepthSample array<string, int|null>
- * @phpstan-type ChildSlot array{process: Process, entry: int, restarts: int, restartAt: float}
+ * @phpstan-type ChildSlot array{process: Process, entry: int, restarts: int, restartAt: float, stopping: bool, stoppingAt: float}
  */
 class WorkerSupervisor
 {
@@ -40,6 +40,12 @@ class WorkerSupervisor
      * late-async-flushed messages keep the fleet spinning.
      */
     private const MAX_ONE_SHOT_REARMS = 3;
+
+    /**
+     * Seconds between a downscale SIGTERM and the SIGKILL escalation for a
+     * child that has not exited yet.
+     */
+    private const STOP_ESCALATION_SECONDS = 15.0;
 
     private readonly int $initialWorkers;
 
@@ -367,6 +373,8 @@ class WorkerSupervisor
             'entry' => $entryIndex,
             'restarts' => 0,
             'restartAt' => 0.0,
+            'stopping' => false,
+            'stoppingAt' => 0.0,
         ];
 
         return $index;
@@ -466,7 +474,7 @@ class WorkerSupervisor
 
             if ($this->scalingEnabled() && $now - $lastScalePass >= $this->scaleCooldownSeconds) {
                 $lastScalePass = $now;
-                $this->runScalePass($now, $slots, $scaleStates);
+                $this->runScalePass($now, $slots, $scaleStates, admitOnly: true);
             }
 
             usleep(100_000);
@@ -500,7 +508,24 @@ class WorkerSupervisor
             $now = microtime(true);
 
             foreach (array_keys($slots) as $index) {
-                if ($slots[$index]['process']->isRunning()) {
+                $slot = $slots[$index];
+
+                if ($slot['process']->isRunning()) {
+                    // A downscaled child that outlives its SIGTERM grace
+                    // period gets SIGKILLed (it may be parked in a blocking
+                    // native call that never wakes for the signal).
+                    if ($slot['stopping'] && $now - $slot['stoppingAt'] > self::STOP_ESCALATION_SECONDS) {
+                        $this->killSlot($slot['process']);
+                    }
+
+                    continue;
+                }
+
+                if ($slot['stopping']) {
+                    // The released child exited: remove the slot without
+                    // touching the crash budget — downscaling is not a crash.
+                    unset($slots[$index]);
+
                     continue;
                 }
 
@@ -512,7 +537,7 @@ class WorkerSupervisor
 
             if ($this->scalingEnabled() && $now - $lastScalePass >= $this->scaleCooldownSeconds) {
                 $lastScalePass = $now;
-                $this->runScalePass($now, $slots, $scaleStates);
+                $this->runScalePass($now, $slots, $scaleStates, admitOnly: false);
             }
 
             usleep(100_000);
@@ -527,14 +552,16 @@ class WorkerSupervisor
      * One scaling pass: samples the per-connection depths through the
      * injected callback and applies the scale policy per plan entry. Depth
      * entries that are null (no management url, failed request) are skipped
-     * silently, leaving that connection static. Admission only spawns
-     * children; in one-shot mode that is the whole regime (children
-     * self-terminate, no signals are ever sent).
+     * silently, leaving that connection static.
+     *
+     * In one-shot mode the pass is admission-only: children self-terminate,
+     * so no signals are ever sent. In long-running mode a Stop decision
+     * releases the idlest children of the connection.
      *
      * @param  array<int, ChildSlot>  $slots
      * @param  array<int, ScaleState>  $scaleStates
      */
-    private function runScalePass(float $now, array &$slots, array $scaleStates): void
+    private function runScalePass(float $now, array &$slots, array $scaleStates, bool $admitOnly): void
     {
         $depthCallback = $this->depthCallback;
         if ($depthCallback === null || $this->scalePolicy === null) {
@@ -550,6 +577,14 @@ class WorkerSupervisor
                 continue;
             }
 
+            // One release at a time per connection: re-signaling a child
+            // stuck in its graceful shutdown would keep pushing the SIGKILL
+            // escalation forward, and walking the fleet below its floor
+            // before the previous release lands is never wanted.
+            if ($this->hasPendingRelease($slots, (int) $entryIndex)) {
+                continue;
+            }
+
             $action = $this->scalePolicy->decide(
                 $now,
                 (int) $depth,
@@ -560,6 +595,88 @@ class WorkerSupervisor
             for ($i = 0; $i < $action->up; $i++) {
                 $this->spawnSlot($slots, (int) $entryIndex);
             }
+
+            if (! $admitOnly && $action->down > 0) {
+                $this->releaseIdleSlots($slots, (int) $entryIndex, $action->down, $now);
+            }
+        }
+    }
+
+    /**
+     * Whether a downscaled child of one plan entry has not exited yet.
+     *
+     * @param  array<int, ChildSlot>  $slots
+     */
+    private function hasPendingRelease(array $slots, int $entryIndex): bool
+    {
+        foreach ($slots as $slot) {
+            if ($slot['entry'] === $entryIndex && $slot['stopping']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Releases the idlest children of one plan entry: the highest-index live
+     * slots receive a NON-BLOCKING SIGTERM and their slot is marked stopping;
+     * the poll loop observes the exit and removes the slot. Deliberately not
+     * `Process::stop(10, ...)`, which would freeze the supervision loop for
+     * up to 10 s per child — the loop must keep polling.
+     *
+     * Caveat (blocking native calls freeze signal handlers): with a
+     * `block_for > 0` driver config, a child parked inside the extension's
+     * blocking `next()` may not observe SIGTERM promptly; run auto-scaling
+     * with `block_for=0` (the default) so released children exit promptly.
+     * A child that outlives the grace period is escalated to SIGKILL
+     * ({@see STOP_ESCALATION_SECONDS}).
+     *
+     * Requires ext-posix for `posix_kill`, which ships alongside ext-pcntl
+     * on the platforms the forking path supports (same requirement as
+     * Laravel Horizon); without it the fleet is left as is.
+     *
+     * @param  array<int, ChildSlot>  $slots
+     */
+    private function releaseIdleSlots(array &$slots, int $entryIndex, int $count, float $now): void
+    {
+        if (! function_exists('posix_kill')) {
+            return;
+        }
+
+        $victims = [];
+        foreach ($slots as $index => $slot) {
+            if ($slot['entry'] === $entryIndex && $slot['process']->isRunning()) {
+                $victims[] = $index;
+            }
+        }
+
+        rsort($victims);
+        $victims = array_slice($victims, 0, $count);
+
+        foreach ($victims as $index) {
+            $slot = $slots[$index];
+            $pid = $slot['process']->getPid();
+            if ($pid === null || ! posix_kill($pid, SIGTERM)) {
+                // The child exited between the poll and the signal: leave
+                // the slot to the regular clean-exit path.
+                continue;
+            }
+
+            $slot['stopping'] = true;
+            $slot['stoppingAt'] = $now;
+            $slots[$index] = $slot;
+        }
+    }
+
+    /**
+     * Sends SIGKILL to one running child (escalation path).
+     */
+    private function killSlot(Process $process): void
+    {
+        $pid = $process->getPid();
+        if ($pid !== null && function_exists('posix_kill')) {
+            posix_kill($pid, SIGKILL);
         }
     }
 

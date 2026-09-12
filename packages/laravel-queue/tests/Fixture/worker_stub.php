@@ -71,6 +71,26 @@ namespace {
         exit(1);
     }
 
+    if ($mode === 'slow-term') {
+        // Handles SIGTERM without exiting: simulates a child parked in a
+        // long graceful shutdown (e.g. block_for > 0 inside the extension's
+        // blocking next()) that only dies on SIGKILL. Writes a marker when
+        // the signal arrives, then gives the supervisor 30 s to escalate.
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+            pcntl_signal(SIGTERM, static function () use ($stateDir, $worker): void {
+                @file_put_contents($stateDir.'/worker-'.(int) $worker.'-sigterm.txt', 'received');
+            });
+        }
+
+        $deadline = microtime(true) + 30;
+        while (microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+
+        exit(0);
+    }
+
     // "run" or "crash-after" before threshold: wait for signal.
     $running = true;
     if (function_exists('pcntl_async_signals')) {
