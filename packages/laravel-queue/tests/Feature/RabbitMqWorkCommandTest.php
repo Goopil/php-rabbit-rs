@@ -55,6 +55,32 @@ describe('rabbit-rs:work command', function () {
         expect($command->getDefinition()->hasOption('stop-when-empty'))->toBeTrue();
     });
 
+    it('command signature accepts the auto-scaling options', function () {
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
+        $command = $commands['rabbit-rs:work'];
+
+        $definition = $command->getDefinition();
+
+        expect($definition->hasOption('once'))->toBeTrue()
+            ->and($definition->hasOption('min-workers'))->toBeTrue()
+            ->and($definition->hasOption('max-workers'))->toBeTrue()
+            ->and($definition->hasOption('scale-cooldown'))->toBeTrue()
+            ->and($definition->hasOption('scale-idle'))->toBeTrue();
+    });
+
+    it('auto-scaling options have expected defaults', function () {
+        $commands = $this->app->make(CONSOLE_KERNEL)->all();
+        $command = $commands['rabbit-rs:work'];
+
+        $definition = $command->getDefinition();
+
+        expect($definition->getOption('once')->getDefault())->toBeFalse()
+            ->and($definition->getOption('min-workers')->getDefault())->toBe('1')
+            ->and($definition->getOption('max-workers')->getDefault())->toBeNull()
+            ->and($definition->getOption('scale-cooldown')->getDefault())->toBe('3')
+            ->and($definition->getOption('scale-idle')->getDefault())->toBe('30');
+    });
+
     it('worker propagation options have expected defaults', function () {
         $commands = $this->app->make(CONSOLE_KERNEL)->all();
         $command = $commands['rabbit-rs:work'];
@@ -315,6 +341,47 @@ describe('rabbit-rs:work plan fan-out wiring', function () {
             expect($arg)->not->toContain('--stop-when-empty');
         }
     });
+
+    it('wires --once into the supervisor and its child commands', function () {
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command', ['--once' => true])->assertSuccessful();
+
+        expect($command->capturedSupervisor)->not->toBeNull()
+            ->and($command->capturedSupervisor->buildChildCommands()[0])->toContain('--once');
+    });
+
+    it('clamps the initial fleet to --max-workers', function () {
+        config()->set('queue.connections', [
+            'eu' => [
+                'driver' => 'rabbit-rs',
+                'queue' => 'orders',
+                'hosts' => 'eu-rabbit:5672',
+            ],
+        ]);
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command', ['--workers' => '4', '--max-workers' => '2'])->assertSuccessful();
+
+        expect($command->capturedSupervisor)->not->toBeNull()
+            ->and($command->capturedSupervisor->buildChildCommands())->toHaveCount(2);
+    });
+
+    it('rejects --once together with --stop-when-empty', function () {
+        $this->withoutExceptionHandling();
+        registerTestWorkCommand($this->app);
+
+        expect(fn () => $this->artisan('test:work-command', ['--once' => true, '--stop-when-empty' => true])->run())
+            ->toThrow(InvalidArgumentException::class, 'mutually exclusive');
+    });
+
+    it('rejects a max-workers value below min-workers', function () {
+        $this->withoutExceptionHandling();
+        registerTestWorkCommand($this->app);
+
+        expect(fn () => $this->artisan('test:work-command', ['--min-workers' => '3', '--max-workers' => '2'])->run())
+            ->toThrow(InvalidArgumentException::class, '--max-workers');
+    });
 });
 
 /**
@@ -350,6 +417,11 @@ function registerTestWorkCommand($app): RabbitMqWorkCommand
             {--max-jobs= : The number of jobs to process before stopping}
             {--max-time= : The maximum number of seconds the worker should run}
             {--stop-when-empty : Process pending jobs then exit when the queues are empty}
+            {--once : One-shot mode: children process a single job each}
+            {--min-workers=1 : Auto-scaling floor per connection}
+            {--max-workers= : Auto-scaling ceiling per connection}
+            {--scale-cooldown=3 : Minimum seconds between two scaling passes}
+            {--scale-idle=30 : Seconds of continuous empty queues before releasing idle workers}
             {--rabbit-rs-worker= : Worker index for logging/metrics attribution (set by the supervisor)}';
 
         protected $description = 'Test command';

@@ -451,6 +451,96 @@ describe('WorkerSupervisor integration', function () {
         expect($exit)->toBe(1)
             ->and($calls)->toBe(1);
     });
+
+    it('once mode removes exited slots and exits clean without respawn', function () {
+        $calls = [];
+        $supervisor = makeSupervisor(
+            workers: 1,
+            maxRestarts: 3,
+            extraEnv: ['RABBIT_RS_STUB_MODE' => 'exit-clean'],
+            once: true,
+            calls: $calls,
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($calls)->toBe([0 => 1]);
+    });
+
+    it('once mode re-arms children while broker depth remains, with unique worker indexes', function () {
+        $calls = [];
+        $supervisor = makeSupervisor(
+            workers: 1,
+            maxRestarts: 3,
+            extraEnv: ['RABBIT_RS_STUB_MODE' => 'exit-clean'],
+            once: true,
+            maxWorkers: 3,
+            depth: 100,
+            calls: $calls,
+        );
+
+        $exit = $supervisor->run();
+
+        // 1 initial child + 2 admitted on the first scale pass (depth 100 vs
+        // 1 live) + 3 bounded re-arms of the initial fleet after the final
+        // depth check keeps finding work. Every index spawned exactly once:
+        // dynamic spawns never collide on --name or the worker env index.
+        ksort($calls);
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and(array_keys($calls))->toBe([0, 1, 2, 3, 4, 5])
+            ->and($calls)->each->toBe(1);
+    });
+
+    it('once mode without a depth source never scales or re-arms', function () {
+        $calls = [];
+        $supervisor = makeSupervisor(
+            workers: 1,
+            maxRestarts: 3,
+            extraEnv: ['RABBIT_RS_STUB_MODE' => 'exit-clean'],
+            once: true,
+            maxWorkers: 3,
+            calls: $calls,
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($calls)->toBe([0 => 1]);
+    });
+
+    it('admission scaling grows the fleet to max workers and never beyond', function () {
+        $script = writeSupervisorScript(mode: 'run', minWorkers: 1, maxWorkers: 3, depth: 100);
+        $process = new Process([PHP_BINARY, $script, test()->stateDir]);
+        $process->start();
+
+        // Depth 100 against 1 live worker: the fleet grows to the bound.
+        foreach ([0, 1, 2] as $worker) {
+            expect(supervisorWaitForMarker($worker, timeoutMs: 4000))->not->toBeNull("worker {$worker} should have been admitted");
+        }
+
+        // No worker beyond the bound: the policy never exceeds max-workers,
+        // and the cooldown gates the passes while the fleet stays saturated.
+        $deadline = microtime(true) + 1.5;
+        $overflow = false;
+        while (microtime(true) < $deadline) {
+            if (supervisorWaitForMarker(3, timeoutMs: 100) !== null) {
+                $overflow = true;
+
+                break;
+            }
+        }
+
+        expect($overflow)->toBeFalse('no worker should be admitted beyond max-workers');
+
+        $supervisorPid = $process->getPid();
+        expect($supervisorPid)->not->toBeNull();
+        posix_kill($supervisorPid, SIGTERM);
+
+        $process->wait();
+
+        expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
+    });
 });
 
 /**
@@ -458,7 +548,9 @@ describe('WorkerSupervisor integration', function () {
  *
  * @param  array<string, string>  $extraEnv  Additional env vars for the child.
  * @param  array<int, string>  $modes  Per-worker stub modes, overriding extraEnv.
- * @param  array<int, int>|null  $calls  Receives the spawn count per worker.
+ * @param  array<int, int>|null  $calls  Receives the spawn count per worker index.
+ * @param  int|null  $depth  When set, injects a depth callback reporting this
+ *                           depth for the plan's connection.
  */
 function makeSupervisor(
     int $workers,
@@ -468,6 +560,10 @@ function makeSupervisor(
     array $options = [],
     array $modes = [],
     ?array &$calls = null,
+    bool $once = false,
+    ?int $minWorkers = null,
+    ?int $maxWorkers = null,
+    ?int $depth = null,
 ): WorkerSupervisor {
     $stateDir = test()->stateDir;
     $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
@@ -495,6 +591,10 @@ function makeSupervisor(
         baseBackoffSeconds: $baseBackoffSeconds,
         processFactory: $factory,
         options: $options,
+        minWorkers: $minWorkers,
+        maxWorkers: $maxWorkers,
+        once: $once,
+        depthCallback: $depth !== null ? static fn (): array => ['rabbit-rs' => $depth] : null,
     );
 }
 
@@ -550,14 +650,34 @@ function supervisorCleanupStateDir(string $dir): void
  * @param  string  $mode  Stub mode for the child worker.
  * @param  int  $maxRestarts  Supervisor max-restarts budget.
  * @param  int  $baseBackoffSeconds  Supervisor base backoff.
+ * @param  int|null  $minWorkers  Auto-scaling floor (omitted from the
+ *                                constructor when null).
+ * @param  int|null  $maxWorkers  Auto-scaling ceiling (omitted from the
+ *                                constructor when null).
+ * @param  int|null  $depth  Depth reported by the injected callback for the
+ *                           plan's connection (no callback when null).
  */
 function writeSupervisorScript(
     string $mode = 'run',
     int $maxRestarts = 1,
     int $baseBackoffSeconds = 0,
+    ?int $minWorkers = null,
+    ?int $maxWorkers = null,
+    ?int $depth = null,
 ): string {
     $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
     $autoloadPath = dirname(__DIR__, 2).'/vendor/autoload.php';
+
+    $scalingArgs = '';
+    if ($minWorkers !== null) {
+        $scalingArgs .= ", minWorkers: {$minWorkers}";
+    }
+    if ($maxWorkers !== null) {
+        $scalingArgs .= ", maxWorkers: {$maxWorkers}";
+    }
+    if ($depth !== null) {
+        $scalingArgs .= ", depthCallback: static fn (): array => ['rabbit-rs' => {$depth}]";
+    }
 
     // Build a self-contained script that constructs the supervisor and runs it.
     $code = "<?php\n";
@@ -571,7 +691,7 @@ function writeSupervisorScript(
     $code .= "};\n";
     $code .= "\$supervisor = new \\Goopil\\RabbitRs\\Laravel\\Console\\WorkerSupervisor(\n";
     $code .= "    plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: {$maxRestarts}, baseBackoffSeconds: {$baseBackoffSeconds},\n";
-    $code .= "    processFactory: \$factory,\n";
+    $code .= "    processFactory: \$factory{$scalingArgs},\n";
     $code .= ");\n";
     $code .= "exit(\$supervisor->run());\n";
 
