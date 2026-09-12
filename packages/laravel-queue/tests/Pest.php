@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
+use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
@@ -20,6 +21,36 @@ const INTEGRATION_CONNECTION = 'rabbit-rs-integration';
 
 /** Default lab vhost the shared helpers operate on. */
 const ORDERS_VHOST = '/orders-eu';
+
+/**
+ * Poll deadline for asynchronous broker-side effects (quorum dead-lettering,
+ * mandatory returns): they land after the triggering operation is confirmed,
+ * and on coverage-instrumented, contended CI runners that lag reaches
+ * seconds. A fixed assertion right after the trigger races the broker, which
+ * made the poison-DLX and publish-error suites flaky (issues #189, #191);
+ * the 30s window matches the other async-effect polls in the Integration
+ * suite (ConsumerRejoinTest, TwoConnectionsTest).
+ */
+const ASYNC_BROKER_POLL_SECONDS = 30.0;
+
+/**
+ * Polls the broker-reported size of $queueName until it reaches $expected or
+ * the deadline expires, and returns the last observed size. The caller still
+ * asserts the returned size, so the deadline only widens the window — it
+ * never accepts a wrong outcome. size() throws on real errors, so the poll
+ * cannot mask a broken topology or a failed publish.
+ */
+function waitForQueueSize(RabbitMqQueue $queue, string $queueName, int $expected, float $timeoutSeconds = ASYNC_BROKER_POLL_SECONDS): int
+{
+    $deadline = microtime(true) + $timeoutSeconds;
+    $size = $queue->size($queueName);
+    while ($size < $expected && microtime(true) < $deadline) {
+        usleep(100_000);
+        $size = $queue->size($queueName);
+    }
+
+    return $size;
+}
 
 /**
  * Boots a service provider instance whose extension check succeeds, so queue
