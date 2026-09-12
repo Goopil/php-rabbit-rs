@@ -4,6 +4,19 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.0] - 2026-09-12
+
+### Changed
+
+- **BREAKING** — `auto_subscribe` is rejected at connection-compile time
+  (#228): the option could only surface the native `unknown worker profile`
+  error at first pop. Remove the key from your connection config (including
+  `RABBIT_RS_AUTO_SUBSCRIBE`, which is gone from the package config); declare
+  queues explicitly with the connection `queue` key or the `subscriptions`
+  escape hatch.
+- Requires `ext-rabbit_rs ^0.3.0` (lockstep release; `tls.verify: none` is
+  no longer a valid value — the only accepted value is `peer`).
+
 ## [0.2.3] - 2026-09-12
 
 ### Fixed
