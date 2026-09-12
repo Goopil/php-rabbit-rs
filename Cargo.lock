@@ -2079,6 +2079,7 @@ dependencies = [
  "rabbit-rs-core",
  "serde_json",
  "tokio",
+ "zend-link-stubs",
 ]
 
 [[package]]
@@ -3258,6 +3259,10 @@ dependencies = [
  "syn 2.0.119",
  "synstructure",
 ]
+
+[[package]]
+name = "zend-link-stubs"
+version = "0.0.0"
 
 [[package]]
 name = "zerocopy"

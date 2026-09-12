@@ -43,6 +43,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use proptest::prelude::*;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
+// Forces the stub crate into the harness link so the dynamic loader finds the
+// Zend symbols the ext-php-rs machinery references (see zend-link-stubs).
+use zend_link_stubs as _;
 
 use rabbit_rs_core::client::ClientPool;
 use rabbit_rs_core::config::{

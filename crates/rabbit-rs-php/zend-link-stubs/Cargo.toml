@@ -1,0 +1,14 @@
+[package]
+name = "zend-link-stubs"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+publish = false
+
+# Dev-dependency of rabbit-rs-php only. This crate defines its own lint
+# configuration instead of inheriting the workspace's, whose
+# `unsafe_code = "forbid"` would reject the `#[unsafe(no_mangle)]` symbol
+# definitions in src/lib.rs. Nothing here runs against a PHP engine.
+[lints.rust]
+unsafe_code = "allow"
