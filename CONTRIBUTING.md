@@ -38,6 +38,7 @@ cargo build -p rabbit-rs-php --features extension-tests
 | `crates/rabbit-rs-php/` | Rust → C ABI | `cdylib` that exposes the core to PHP via `ext-php-rs` |
 | `packages/laravel-queue/` | PHP | Laravel queue driver on top of the native extension |
 | `benchmarks/` | PHP | Benchmark suite (4 drivers, 3 scenarios) |
+| `crates/rabbit-rs-core/benches/` | Rust | Broker-free micro-benchmarks tracked on CodSpeed |
 
 Dependency flow: `rabbit-rs-core` → `rabbit-rs-php` (compiles to `.so`/`.dylib`) → loaded by PHP → consumed by `laravel-queue`.
 
@@ -53,6 +54,7 @@ Dependency flow: `rabbit-rs-core` → `rabbit-rs-php` (compiles to `.so`/`.dylib
 | FPM isolation | `./scripts/test-fpm.sh` | Extension (release build) |
 | Full integration | `./scripts/test-integration.sh` | Extension + Docker |
 | Quality gate | `./scripts/check.sh` | Rust + Composer |
+| Rust benchmarks | `cargo bench -p rabbit-rs-core --features bench` | Rust only |
 
 ## Where to go next
 

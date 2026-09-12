@@ -5,10 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Benchmark targets are declared explicitly: benches/support.rs is a shared
+# fixture module, not a benchmark binary.
+autobenches = false
 
 [features]
 test-support = []
 integration = []
+# Gates the benchmark targets: they use a custom harness that the nextest
+# runner (`--all-targets`) cannot drive, so they stay out of the test build.
+bench = []
 
 [dependencies]
 async-trait = "0.1"
@@ -30,6 +36,22 @@ tokio = { version = "1.47", features = ["test-util", "process"] }
 rabbit-rs-core = { path = ".", features = ["test-support"] }
 proptest = "1.8"
 proptest-state-machine = "0.8"
+divan = { version = "5.0.1", package = "codspeed-divan-compat" }
+
+[[bench]]
+name = "config"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "consumer"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "topology"
+harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true
