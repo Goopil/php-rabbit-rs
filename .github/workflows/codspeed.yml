@@ -26,14 +26,25 @@ jobs:
       - name: Install Rust 1.96
         uses: ./.github/actions/rust-setup
 
+      # The rabbit-rs-php bench compiles against ext-php-rs, which needs the
+      # PHP headers and libclang for bindgen (same setup as the coverage job).
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed --locked --quiet || true
 
       - name: Build the benchmark targets
-        run: cargo codspeed build --package rabbit-rs-core --features bench
+        run: cargo codspeed build --workspace --features rabbit-rs-core/bench,rabbit-rs-php/bench
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         with:
           mode: simulation
-          run: cargo codspeed run --package rabbit-rs-core
+          run: cargo codspeed run

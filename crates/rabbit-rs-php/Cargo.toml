@@ -5,12 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Benchmark targets are declared explicitly (see the core crate): the custom
+# harness cannot be driven by nextest, and support.rs-style fixtures stay
+# out of the bench binary set.
+autobenches = false
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 extension-tests = ["rabbit-rs-core/test-support"]
+# Gates the benchmark target (custom harness, see the core crate).
+bench = []
 
 [dependencies]
 bytes = "1.10"
@@ -24,6 +30,12 @@ rabbit-rs-core = { path = "../rabbit-rs-core", features = ["test-support"] }
 proptest = "1.8"
 proptest-state-machine = "0.8"
 zend-link-stubs = { path = "zend-link-stubs" }
+divan = { version = "5.0.1", package = "codspeed-divan-compat" }
+
+[[bench]]
+name = "publish_buffer"
+harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true

@@ -75,7 +75,7 @@ impl ConversionBudget {
     }
 }
 
-pub(crate) struct NativePublish {
+pub struct NativePublish {
     pub broker: String,
     pub request: PublishRequest,
 }

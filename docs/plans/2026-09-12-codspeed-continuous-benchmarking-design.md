@@ -1,68 +1,60 @@
 # CodSpeed continuous benchmarking — design (2026-09-12)
 
-Implements #158 with the scope agreed in design review. Supersedes the
-implementation sketch embedded in #158 where it differs (bench target list,
-PHP-adjacent coverage, gating decision).
+Implements #158. Amended on the same day after CodSpeed's own wizard PR
+(#256, merged as 4aa427c) landed the foundation; this document records the
+amended design. Supersedes the implementation sketch embedded in #158.
 
 ## Decisions
 
+- **Foundation**: #256 (merged) ships the CI workflow, the divan harness
+  (`codspeed-divan-compat`), the `bench` feature gating (custom harnesses
+  break `nextest --all-targets`), and 26 sync micro-benchmarks over config,
+  topology and consumer scheduling. This wave adds the remaining hot paths
+  on top of that scaffolding, in the same style.
 - **PHP coverage strategy**: Rust "PHP-adjacent" benches. CodSpeed has no
   native PHP support and `conversion.rs` requires a live Zend runtime, so
   PHP processing is covered by benching the pure-Rust hot path every PHP
-  publish/consume traverses (`PublishBuffer`) plus the core hot paths. The
-  broker-bound driver benchmarks stay on the WS8 flow (#229: stored
-  baselines + budget checker). No walltime PHP job.
+  publish traverses (`PublishBuffer`, driven through a narrow
+  `#[doc(hidden)] bench_api` module). The broker-bound driver benchmarks
+  stay on the WS8 flow (#229). No walltime PHP job.
 - **Gating**: blocking performance gate at >10% regression on PRs
-  (configured on the CodSpeed dashboard + required status check).
-- **CI**: one workflow, simulation mode, OIDC authentication.
+  (dashboard configuration + required status check; manual steps below).
+- **Harness**: divan (follows #256), not criterion.
 
-## Bench targets (7, broker-free, criterion harness)
+## Bench inventory (final)
+
+Landed with #256 (26 benches): config deserialize/validate/fingerprint/URI
+(small + large shapes), auto-profile synthesis, `TopologyPlan::from_config`,
+delay strategy/routing/buckets, attempts resolution, weighted-fair
+scheduling rounds, metrics snapshot, latency percentiles.
+
+Added by this wave (4 benches):
 
 | Target | Crate | Measures |
 |---|---|---|
-| `config` | rabbit-rs-core | `Config::validate()` end-to-end (happy paths + typed error paths) |
-| `pool_key` | rabbit-rs-core | connection-key derivation from config |
-| `publisher_pump` | rabbit-rs-core | pipelined publish loop over `MockTransport` — the main hot path |
-| `consumer_delivery` | rabbit-rs-core | delivery → ack/reject round-trip over `MockTransport` |
-| `metrics` | rabbit-rs-core | metrics recording on publish/consume paths |
-| `topology_declare` | rabbit-rs-core | config → topology declaration plan construction |
-| `publish_buffer` | rabbit-rs-php | enqueue → flush (threshold/age) → pop → teardown cycles over `MockTransport`; the CPU work each PHP publish performs before reaching the core |
+| `publisher::pump_batch_128` | rabbit-rs-core | one full pipelined publish batch (128) over the mock transport: mailbox hand-off, in-flight accounting, wire write, confirmation resolution — the main hot path |
+| `consumer_delivery::delivery_ack_round_trip` | rabbit-rs-core | one delivered job fetched and acknowledged over the mock transport — the per-job consumer cost |
+| `consumer_delivery::delivery_ack_burst[16,64]` | rabbit-rs-core | burst fetch+ack, exercising the pipelined delivery buffer |
+| `publish_buffer::publish_buffer_batch_64` | rabbit-rs-php | enqueue (conversion output) → buffer bookkeeping reads → pipelined flush → quiesce barrier: the CPU work each PHP publish performs before reaching the core |
 
-All benches are broker-free: the three transport-driven benches
-(`publisher_pump`, `consumer_delivery`, `publish_buffer`) declare
-`required-features = ["test-support"]` and run against the scriptable mock
-transport with real Tokio time (no paused clocks in benches) and healthy
-deadlines.
+All mock-transport benches keep real Tokio time with immediate scripted
+outcomes (never pending, never timed out), so they stay CPU-bound and
+deterministic under CPU simulation. The php bench links
+`zend-link-stubs` (the machine-1 trick) and touches no Zend value.
 
-## Scaffolding changes
+## Scaffolding changes (this wave)
 
-1. Both crates gain the dev-dependency
-   `criterion = { package = "codspeed-criterion-compat", version = "5" }`
-   (passthrough over criterion 0.5: plain `cargo bench` behaves like stock
-   criterion).
-2. `crates/rabbit-rs-php`: `crate-type = ["cdylib", "rlib"]` so bench
-   targets can link the crate; `PublishBuffer` and its operation methods
-   move from `pub(crate)` to `pub` (the bench entry surface; documented as
-   the benchmark/test API).
-3. `[[bench]]` sections with `harness = false` for each target.
-4. Bench hygiene: `black_box` on every consumed value, `measurement_time`
-   bounded (~3 s per bench, full run < 1 min), throughput reporting on the
-   pump/buffer benches.
-
-## CI workflow (`.github/workflows/codspeed.yml`)
-
-- Triggers: `push` on `main`, all `pull_request`s, `workflow_dispatch`
-  (backtest analysis).
-- Job `benchmarks` on `ubuntu-latest`, permissions
-  `contents: read`, `id-token: write` (OIDC auth with CodSpeed).
-- Steps: checkout (pinned SHA) → `./.github/actions/rust-setup`
-  (channel 1.96, release cache) with `cargo-codspeed` installed →
-  PHP 8.4 via `shivammathur/setup-php` + `libclang-dev` (needed to compile
-  the `publish_buffer` bench against ext-php-rs) → `cargo codspeed build`
-  (with the feature flags required by the mock-transport benches; verify
-  at implementation whether `cargo codspeed build` forwards `--features`,
-  otherwise build per-package) → `CodSpeedHQ/action@v5`, mode
-  `simulation`, run `cargo codspeed run`.
+1. `crates/rabbit-rs-php`: `crate-type = ["cdylib", "rlib"]`; `bench`
+   feature; `autobenches = false`; `[[bench]] publish_buffer`
+   (`harness = false`, `required-features = ["bench"]`).
+2. `#[doc(hidden)] pub mod bench_api` in the php crate re-exports
+   `PublishBuffer` and `NativePublish`; the buffer's operation methods
+   move from `pub(crate)` to `pub` with `# Panics` / `# Errors` docs — the
+   benchmark entry surface, not part of the extension's public contract.
+3. Core: two `[[bench]]` targets with the same `bench` gating.
+4. CI workflow (amended): setup PHP 8.4 + libclang before `cargo codspeed
+   build --workspace --features rabbit-rs-core/bench,rabbit-rs-php/bench`;
+   run step runs every built suite.
 
 ## Gating
 
@@ -75,28 +67,29 @@ No other repository workflow is modified.
 
 ## Manual steps (owner: repository admin)
 
-- [ ] Install the CodSpeed GitHub App on `Goopil/php-rabbit-rs`
-      (app.codspeed.io → import repository). OIDC is the primary auth;
-      fallback: repository secret `CODSPEED_TOKEN` referenced by the
-      workflow.
+- [ ] Install the CodSpeed GitHub App on `Goopil/php-rabbit-rs` (OIDC is
+      primary; fallback: repository secret `CODSPEED_TOKEN`).
 - [ ] Create the 10% performance gate on the dashboard.
 - [ ] Add `CodSpeed Performance Checks` to the required status checks.
 
 ## Out of scope (explicit)
 
-- PHP walltime benchmarks (no native support, higher variance; revisit if
-  the PHP-adjacent benches prove insufficient).
+- PHP walltime benchmarks (no native support, higher variance).
 - Driver-level broker benchmarks (WS8 owns them).
-- Benchmark-driven optimization work — this PR only establishes
-  measurement.
+- Standalone `Metrics::record_*` benches (the methods are `pub(crate)`;
+  the counters are exercised through the pump and buffer benches instead).
+- Standalone `ConnectionKey::from_config` bench (hashing is already
+  covered by the config benches).
+- Benchmark-driven optimization work — measurement first.
 
 ## Local verification
 
 ```sh
 cargo install cargo-codspeed
-cargo codspeed build
-cargo codspeed run   # plain criterion locally, nothing uploaded
+cargo codspeed build --workspace --features rabbit-rs-core/bench,rabbit-rs-php/bench
+cargo codspeed run   # plain divan locally, nothing uploaded
 ```
 
 `scripts/check.sh` is untouched: bench targets compile only via
-`cargo bench` / codspeed commands, so the normal gate is unaffected.
+`cargo bench` / codspeed commands with the `bench` feature, so the normal
+gate (fmt + clippy + nextest + deny) never drives them.
