@@ -1096,6 +1096,11 @@ What this means for timing:
   by an unbounded amount. Only `delay.mode=plugin` — which requires the
   `rabbitmq_delayed_message_exchange` broker plugin — routes each message
   through the `x-delayed-message` exchange at the exact requested delay.
+- **In-flight delayed jobs are protected from bucket-queue deletion.** The
+  connection periodically re-declares its live bucket queues (`DelayKeepAlive`,
+  issue #211), so the `x-expires` idleness window cannot delete a queue that
+  still holds messages. The unbounded wait above stays broker lazy-TTL
+  semantics — a late release, never a silent loss.
 - **Bucket granularity is the tuning knob** (`delay.buckets`): add
   intermediate buckets to tighten quantization, at the cost of one more
   declared queue per bucket.
