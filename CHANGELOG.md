@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.3.1] - 2026-09-12
+
+### Fixed
+
+- The release pipeline's PIE verification cells now pass (#243, follow-up to #236): the per-cell AMQP smoke passed its `--dsn`/`--toxiproxy` arguments before the driver path, so PHP parsed them as its own CLI options and every dockerized install cell aborted with a usage error right after the extension load check (the PIE install itself resolved the correct platform asset and loaded the extension in all cells); script arguments are now passed after the driver path. The macOS install cell no longer attempts to start the dockerized lab (GitHub macOS runners ship no Docker) and stops at PIE resolution, install, load, and version match — broker coverage for the darwin binary stays with the functional matrix's `macos-arm64` cell. No runtime change: 0.3.1 ships the same code as 0.3.0.
+
 ## [0.3.0] - 2026-09-12
 
 ### Fixed
