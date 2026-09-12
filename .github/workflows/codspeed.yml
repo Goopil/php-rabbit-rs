@@ -1,0 +1,39 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allows CodSpeed to trigger backtest performance analysis.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OpenID Connect authentication with CodSpeed
+
+concurrency:
+  group: codspeed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Rust benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust 1.96
+        uses: ./.github/actions/rust-setup
+
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --locked --quiet || true
+
+      - name: Build the benchmark targets
+        run: cargo codspeed build --package rabbit-rs-core --features bench
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+        with:
+          mode: simulation
+          run: cargo codspeed run --package rabbit-rs-core

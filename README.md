@@ -5,6 +5,7 @@
 [![CI](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml)
 [![Release](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/Goopil/php-rabbit-rs?utm_source=badge)
 
 Rabbit RS is a native RabbitMQ runtime for PHP and Laravel workers, designed to stay alive. Your application keeps using Laravel's standard queue API; Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption in a native Rust runtime.
 
