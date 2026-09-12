@@ -207,7 +207,9 @@ Local gate green (fmt, clippy, 418 nextest tests, composer validate, Pint, PHPSt
 2. PR-tier CI green on the RC commit, including: TLS suite (6 cases), broker-backed FPM, one Octane runtime server, doc lint, composer audit.
 3. `./scripts/verify-release-candidate.sh` exits 0 on the RC tag; evidence archived as workflow artifacts.
 4. Nightly evidence against the RC ref: ≥7 consecutive green soaks, each showing `missing == 0`, terminal `publish_buffered == 0`, leak slope within documented budget, 100 % reconnect recovery.
-5. Octane certification: green evidence recorded for FrankenPHP, RoadRunner, Open Swoole, Swoole (publish → reload → graceful stop → no loss → `publish_buffered == 0`).
+5. Octane certification: green evidence recorded for FrankenPHP, RoadRunner, Open Swoole, Swoole (publish → reload → stop). FrankenPHP/RoadRunner: no loss on graceful stop with terminal `publish_buffered == 0`; Open Swoole/Swoole: harness-green with the documented upstream Octane stop-loss asserted as expected (parked publications lost on stop, `publish_buffered == 0` terminal, reload-flush path certified).
+
+   > Plan deviation (2026-09-12): criterion 5 reworded per the final whole-branch review — upstream laravel/octane SIGKILLs Swoole-family workers on stop, so "no loss on graceful stop" is unsatisfiable for Open Swoole and Swoole; the certification harness asserts that stop-loss as the expected behavior instead.
 6. FPM certification: green evidence for 2-worker isolation, lone-publish age-flush, graceful-stop flush, reload survival.
 7. Functional matrix table: every cell (PHP 8.4/8.5 × glibc/musl × x86_64/ARM64, macOS ARM64) green or explicitly marked build-only.
 8. Distribution: `validate-distribution.sh` green with 30 assets; `gh attestation verify` green per asset; `verify-pie-install` + upgrade/rollback green; each install cell passes `amqp-smoke.sh`.

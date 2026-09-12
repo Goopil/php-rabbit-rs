@@ -11,6 +11,14 @@ Requirement: **≥7 consecutive green nightly soaks against the RC tag**,
 each showing `missing == 0`, terminal `publish_buffered == 0`, a leak slope
 within the documented budget, and 100 % reconnect recovery.
 
+**Running the soak on the tag.** Scheduled runs always execute on the
+default branch and cannot target a tag, so dispatch the soak manually
+against the RC ref — `gh workflow run soak.yml --ref <rc-tag>
+-f steady_minutes=30 -f kill_minutes=15`. soak.yml declares
+`workflow_dispatch`, and the workflow file exists on the tag, so
+dispatching with `--ref` runs it there. The ≥7-run window is 7 such
+dispatches (the nightly schedule cannot substitute for them).
+
 **Workflow map.** Pushing an RC tag (`v*-*rc*`) runs the RC pipeline
 (`release-candidate.yml`: calls `nightly.yml` + `functional-matrix.yml`, and
 runs `scripts/verify-release-candidate.sh` with archived evidence) **and**
@@ -24,8 +32,8 @@ builds + attests the distributable assets). Fill the table from those runs.
 | 1 | Fast gate green on the RC commit | `./scripts/check.sh` | <!-- run link --> | | |
 | 2 | PR-tier CI green on the RC commit: TLS suite (6 cases), broker-backed FPM, one Octane runtime server, doc lint, composer audit | `.github/workflows/ci.yml` | <!-- run link --> | | |
 | 3 | RC orchestrator exits 0 on the RC tag; evidence archived as workflow artifacts | `./scripts/verify-release-candidate.sh` (or the `rc-orchestrator` job of `release-candidate.yml`) | <!-- run link + artifact --> | | |
-| 4 | Nightly soak evidence against the RC ref: ≥7 consecutive green runs, each `missing == 0`, terminal `publish_buffered == 0`, leak slope in budget, 100 % reconnect recovery | `soak.yml` re-run against the RC tag (or 7 nightly runs on the tag) | <!-- run links (7) --> | | |
-| 5 | Octane certification green for FrankenPHP, RoadRunner, Open Swoole, Swoole (publish → reload → graceful stop → no loss → `publish_buffered == 0`) | `nightly.yml` matrix via `release-candidate.yml` | <!-- run link --> | | |
+| 4 | Nightly soak evidence against the RC ref: ≥7 consecutive green runs, each `missing == 0`, terminal `publish_buffered == 0`, leak slope in budget, 100 % reconnect recovery | `soak.yml` dispatched against the RC tag: `gh workflow run soak.yml --ref <rc-tag> -f steady_minutes=30 -f kill_minutes=15` (see "Running the soak on the tag" above) | <!-- run links (7) --> | | |
+| 5 | Octane certification green for FrankenPHP, RoadRunner, Open Swoole, Swoole (publish → reload → stop). FrankenPHP/RoadRunner: no loss on graceful stop with terminal `publish_buffered == 0`. Open Swoole/Swoole: harness-green with the documented upstream Octane stop-loss asserted as expected (loss counted at stop, `publish_buffered == 0` terminal, reload-flush path certified) | `nightly.yml` matrix via `release-candidate.yml` | <!-- run link --> | | |
 | 6 | FPM certification green: 2-worker isolation, lone-publish age-flush, graceful-stop flush, reload survival | `ci.yml` `fpm` job; tier 5 of the orchestrator | <!-- run link --> | | |
 | 7 | Functional matrix: every cell (PHP 8.4/8.5 × glibc/musl × x86_64/ARM64, macOS ARM64) green or explicitly marked build-only | `functional-matrix.yml` via `release-candidate.yml`; table in `docs/reference.md` | <!-- run link --> | | |
 | 8 | Distribution: 30 assets verified; attestations green per asset; PIE install + upgrade/rollback green; each install cell passes `amqp-smoke.sh` | `./scripts/validate-distribution.sh`; `release.yml` `verify-assets` + `verify-pie-install` jobs | <!-- run link --> | | |
