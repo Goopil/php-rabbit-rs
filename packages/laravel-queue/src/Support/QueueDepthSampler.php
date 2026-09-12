@@ -86,7 +86,7 @@ final class QueueDepthSampler
         foreach ($queues as $queue) {
             $queueDepth = $this->hasManagementUrl($connection)
                 ? ManagementApi::queueDepth($connection, $queue)
-                : $this->nativeQueueDepth($connection, $queue);
+                : $this->probeQueueDepth($connection, $queue);
             if ($queueDepth !== null) {
                 $known = true;
                 $depth += $queueDepth;
@@ -104,26 +104,18 @@ final class QueueDepthSampler
     }
 
     /**
-     * Dispatches the native path: to the injected seam when present
-     * (tests), otherwise to the real passive probe.
-     */
-    private function nativeQueueDepth(string $connection, string $queue): ?int
-    {
-        if ($this->nativeDepth !== null) {
-            return ($this->nativeDepth)($connection, $queue);
-        }
-
-        return $this->probeQueueDepth($connection, $queue);
-    }
-
-    /**
-     * Ready depth of one queue through a lazily created, cached native
+     * Ready depth of one queue through the native path: the injected seam
+     * when present (tests), otherwise a lazily created, cached passive-declare
      * pool. Any native failure (unreachable broker, auth, missing queue)
      * closes and drops the pool and reads as null: the next pass reconnects
      * from scratch instead of riding a broken socket.
      */
     private function probeQueueDepth(string $connection, string $queue): ?int
     {
+        if ($this->nativeDepth !== null) {
+            return ($this->nativeDepth)($connection, $queue);
+        }
+
         if (! extension_loaded('rabbit_rs')) {
             return null;
         }

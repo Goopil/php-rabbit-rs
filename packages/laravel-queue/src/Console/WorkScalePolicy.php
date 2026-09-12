@@ -27,16 +27,18 @@ final class WorkScalePolicy
     public function __construct(
         private readonly int $minWorkers,
         private readonly int $maxWorkers,
-        private readonly float $cooldownSeconds = 3.0,
-        private readonly int $idleSeconds = 30,
+        private readonly float $cooldownSeconds,
+        private readonly int $idleSeconds,
     ) {}
 
     /**
      * Decide one scaling step for a connection. The state accumulator is
      * updated in place: the last-action timestamp and the continuous
      * zero-depth streak (tracked even while the cooldown blocks acting).
+     *
+     * @return array{up: int, down: int}
      */
-    public function decide(float $now, int $depth, int $live, ScaleState $state): ScaleAction
+    public function decide(float $now, int $depth, int $live, ScaleState $state): array
     {
         if ($depth > 0) {
             $state->emptySince = null;
@@ -45,24 +47,24 @@ final class WorkScalePolicy
         }
 
         if ($now - $state->lastScaleAt < $this->cooldownSeconds) {
-            return new ScaleAction;
+            return ['up' => 0, 'down' => 0];
         }
 
         $up = $this->upCount($depth, $live);
         if ($up > 0) {
             $state->lastScaleAt = $now;
 
-            return new ScaleAction(up: $up);
+            return ['up' => $up, 'down' => 0];
         }
 
         $down = $this->downCount($now, $depth, $live, $state);
         if ($down > 0) {
             $state->lastScaleAt = $now;
 
-            return new ScaleAction(down: $down);
+            return ['up' => 0, 'down' => $down];
         }
 
-        return new ScaleAction;
+        return ['up' => 0, 'down' => 0];
     }
 
     private function upCount(int $depth, int $live): int

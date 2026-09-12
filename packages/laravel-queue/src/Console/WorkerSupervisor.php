@@ -592,12 +592,12 @@ class WorkerSupervisor
                 $scaleStates[(int) $entryIndex],
             );
 
-            for ($i = 0; $i < $action->up; $i++) {
+            for ($i = 0; $i < $action['up']; $i++) {
                 $this->spawnSlot($slots, (int) $entryIndex);
             }
 
-            if (! $admitOnly && $action->down > 0) {
-                $this->releaseIdleSlots($slots, (int) $entryIndex, $action->down, $now);
+            if (! $admitOnly && $action['down'] > 0) {
+                $this->releaseIdleSlots($slots, (int) $entryIndex, $action['down'], $now);
             }
         }
     }
