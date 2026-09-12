@@ -61,6 +61,11 @@ it('surfaces an unroutable mandatory publish at the next pop', function () {
 
     expect($thrown)->not->toBeNull('an unroutable mandatory publication must surface at the next pop')
         ->and($thrown->getMessage())->toContain('unroutable');
+
+    // The outcome must also be countable without a follow-up publish
+    // operation (issue #252): the publisher actor records the broker
+    // return in the metrics snapshot read by stats().
+    expect($this->pool->stats()['returns_total'])->toBeGreaterThan(0);
 });
 
 it('surfaces a returned batch through drainSettlementErrors', function () {
