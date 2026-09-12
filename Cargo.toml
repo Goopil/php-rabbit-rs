@@ -2,6 +2,7 @@
 members = [
     "crates/rabbit-rs-core",
     "crates/rabbit-rs-php",
+    "crates/rabbit-rs-php/zend-link-stubs",
 ]
 resolver = "2"
 
