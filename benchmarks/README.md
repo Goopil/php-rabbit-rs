@@ -96,8 +96,13 @@ php benchmarks/baselines/check-budgets.php benchmarks/results/ws8-baseline-runs
 
 `baselines/smoke-budget.json` holds absolute floors (publish ≥ 1,000 msgs/s,
 consume ≥ 500 msgs/s, p99 ≤ 2,000 ms publish and consume, losses == 0) that
-`run-benchmarks.php` prints a comparison for. **No CI runs that runner** — the
-smoke budget stays a manual signal on your own hardware, not a gate.
+`run-benchmarks.php` prints a comparison for. The nightly throughput workflow
+(`.github/workflows/throughput.yml`) runs the suite against the lab and
+reports the floors in its job summary, but treats them as **non-blocking
+signal** — hosted runners are too noisy for a throughput gate. Its only gate
+is run integrity (a rabbit-rs result set present, 0 losses / 0 duplicates on
+every combo); per-run JSON + stdout are archived as the `throughput-results`
+artifact.
 
 #### Re-baselining
 

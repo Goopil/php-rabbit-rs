@@ -1,0 +1,118 @@
+name: Nightly Throughput
+
+# Scheduled workflows are disabled by GitHub after 60 days of repository
+# inactivity — re-enable manually from the Actions tab if that happens.
+
+on:
+  schedule:
+    - cron: "17 4 * * *" # nightly, UTC — after soak (02:07) and Octane nightly (03:15)
+  workflow_dispatch:
+    inputs:
+      drivers:
+        description: "Driver filter passed as --driver= (empty = all detected)"
+        default: ""
+      scenarios:
+        description: "Scenario filter passed as --scenario= (empty = all)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-throughput
+  cancel-in-progress: true
+
+jobs:
+  throughput:
+    name: Throughput (all detected drivers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust 1.96
+        uses: ./.github/actions/rust-setup
+
+      - name: Setup PHP 8.4
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: "8.4"
+          coverage: none
+          extensions: json
+
+      # Release build mandatory: a debug extension masks throughput ~4x
+      # (benchmarks/README.md release protocol). System-wide install is safe
+      # on the ephemeral runner; no Laravel Unit/Feature suite runs after.
+      - name: Build and install release extension
+        run: ./scripts/install.sh --release --yes
+
+      - name: Install benchmark dependencies
+        run: composer install --no-interaction --no-progress --working-dir=benchmarks
+
+      - name: Start RabbitMQ lab
+        run: ./scripts/lab-up.sh with-plugin
+
+      - name: Wait for lab readiness
+        run: |
+          for i in $(seq 1 120); do
+            if ./scripts/lab-ready.sh; then
+              echo "Lab is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Lab did not become ready after 120s." >&2
+          exit 1
+
+      # pipefail is required: run-benchmarks.php exits 1 when the broker is
+      # unreachable, and that must not be masked by tee.
+      - name: Run throughput benchmarks
+        run: |
+          set -o pipefail
+          args=""
+          if [[ -n "${{ inputs.drivers }}" ]]; then args="$args --driver=${{ inputs.drivers }}"; fi
+          if [[ -n "${{ inputs.scenarios }}" ]]; then args="$args --scenario=${{ inputs.scenarios }}"; fi
+          ./benchmarks/run-benchmarks.sh $args 2>&1 | tee benchmark-output.log
+
+      # run-benchmarks.php exits 0 even with losses, duplicates, or a SKIPped
+      # combo (it only prints WARNING/SKIP lines), so the integrity contract
+      # is asserted here from the JSON instead: at least one result set must
+      # exist, the rabbit-rs driver must have produced one, and every combo
+      # must report 0 losses and 0 duplicates.
+      - name: Assert run integrity
+        run: |
+          json=benchmarks/results/benchmark-results.json
+          if ! jq -e '
+            (keys | length) > 0
+            and (keys | any(contains("rabbit-rs")))
+            and ([.[] | ((.consume.losses // 0) == 0) and ((.consume.duplicates // 0) == 0)] | all)
+          ' "${json}" > /dev/null; then
+            echo "FAIL: integrity contract violated — require a rabbit-rs result set and 0 losses / 0 duplicates on every combo" >&2
+            jq . "${json}" || true
+            exit 1
+          fi
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Nightly throughput (msgs/s)"
+            echo
+            printf '```\n'
+            sed -n '/=== Summary ===/,$p' benchmark-output.log
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload throughput artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: throughput-results
+          path: |
+            benchmarks/results/benchmark-results.json
+            benchmark-output.log
+          if-no-files-found: warn
+
+      - name: Stop RabbitMQ lab
+        if: always()
+        run: ./scripts/lab-down.sh
