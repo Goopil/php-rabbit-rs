@@ -356,6 +356,12 @@ Publisher confirms are **enabled by default** (`safety = "safe"`, the default, d
 
 A confirm timeout (connection key `confirm_timeout`, default 30000 ms) ensures the call does not hang indefinitely. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
 
+#### Lone-publish landing latency
+
+The publish buffer's age-flush timer (`publisher.flush_interval`, default 1 ms) arms on the first buffered publication, so a lone publish is flushed to the broker even if the process never publishes, pops, or flushes again. Measured on the reference lab (RabbitMQ 4.2.9, 3-node cluster, release extension): publish-to-delivery p50 ≈ 1.9 ms, p99 ≤ 6.4 ms, max 7.3 ms across 630 lone publishes — cold, warm, and under concurrent integration-suite load, in `safe` and `blind` modes (`benchmarks/results/flush-timer-latency/`).
+
+Measuring this yourself? Do not observe with the management API's sampled per-queue depth: on RabbitMQ 4.2.9 the `messages_ready` sample does not surface promptly (often never appears for a fresh queue, on classic and quorum queues alike). Observe the landing with a consumer arrival timestamp or the management API's live `POST /api/queues/{vhost}/{queue}/get` endpoint — sampled depth produced the phantom multi-second tails reported against v0.2.2 (issue #255).
+
 ### Mandatory returns
 
 Mandatory routing is **always on in safe mode** (`safety = "safe"`, which derives `mandatory = true`). When enabled:
