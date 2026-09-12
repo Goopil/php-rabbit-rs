@@ -82,6 +82,7 @@ No extra configuration required: pop the queue directly — it is the connection
 - **Connection-generation-aware tokens** — stale ACKs are rejected so RabbitMQ redelivers
 - **Bounded replay buffer** — unconfirmed publications survive connection recovery in bounded memory, replayed with the same `message_id`
 - **Multi-broker fan-out** — a vhost owns a distinct AMQP connection; define one connection per broker/vhost and `rabbit-rs:work` supervises them all
+- **Auto-scaling supervisor** — `rabbit-rs:work` grows its fleet under load and releases idle workers, driven by management-API queue depth (`--min-workers`/`--max-workers`), with one-shot `--once`/`--stop-when-empty` modes for CI drains
 - **Octane lifecycle** — flush, reload, and stop hooks prevent channel leaks
 - **No unsafe Rust** — `#![forbid(unsafe_code)]` across the entire workspace
 

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Added
+
+- Auto-scaling for `rabbit-rs:work` (#257): the supervisor can grow and shrink its fleet per connection, driven by the RabbitMQ management API's ready depth (`messages_ready`, via the new `queue.connections.<name>.management_url` sampler — absent or failing, the connection silently keeps a static fleet). `--min-workers`/`--max-workers` bound the policy (scale up when depth outpaces the live fleet, scale down after 30 s of continuous empty depth, 3 s cooldown, 2 children per pass, clamped to the bounds; long-running downscale signals the idlest children with a non-blocking `SIGTERM` escalated to `SIGKILL` after 15 s, and a released slot never consumes the crash budget). One-shot modes: `--once` and `--stop-when-empty` supervise a fleet that exits after draining (children never recycled; a final depth check re-arms the initial fleet while the broker still reports work, bounded to 3 re-arms), making CI smoke tests and cron drains first-class. `rabbit-rs:doctor` reports the per-supervisor AMQP connection math (workers × brokers). Defaults are unchanged: without the new flags the command behaves exactly as before.
+
 ## [0.3.1] - 2026-09-12
 
 ### Fixed
