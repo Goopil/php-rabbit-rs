@@ -311,15 +311,20 @@ jobs:
           # TLS node but is absent from its certificate SANs.
           sudo sh -c 'echo "127.0.0.1 wrong.internal" >> /etc/hosts'
 
+          mTLS_PROBE=""
           for i in $(seq 1 60); do
-            # "New, TLS" in the output proves a real session was established;
-            # against a dead broker behind docker's userland proxy, s_client
-            # closes immediately and still prints "Verify return code: 0 (ok)".
-            if echo | openssl s_client -connect localhost:5674 -servername rabbit.internal \
+            # Both markers must appear: "New, TLS" proves a real session was
+            # established (a dead broker behind docker's userland proxy still
+            # yields "Verify return code: 0 (ok)" with "New, (NONE)"), and the
+            # verify code proves the chain was trusted. Capture both lines
+            # with one grep: chained filtering greps would AND them onto a
+            # single line, dropping the verify line.
+            mTLS_PROBE=$(echo | openssl s_client -connect localhost:5674 -servername rabbit.internal \
                 -CAfile lab/rabbitmq/tls/generated/lab-ca.pem \
                 -cert lab/rabbitmq/tls/generated/lab-client.pem \
                 -key lab/rabbitmq/tls/generated/lab-client.key 2>/dev/null \
-                | grep "New, TLS" | grep -q "Verify return code: 0 (ok)"; then
+                | grep -E "Verify return code|New, TLS" || true)
+            if [[ "${mTLS_PROBE}" == *"Verify return code: 0 (ok)"* && "${mTLS_PROBE}" == *"New, TLS"* ]]; then
               echo "mTLS listener on localhost:5674 is ready."
               break
             fi
