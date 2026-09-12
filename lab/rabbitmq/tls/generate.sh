@@ -70,9 +70,15 @@ openssl x509 -req -in "${OUT}/lab-client.csr" \
     -out "${OUT}/lab-client.pem" >/dev/null 2>&1
 rm -f "${OUT}/lab-client.csr" "${OUT}/lab-ca.srl"
 
-# Broker keys must not be group/world readable inside the container.
-chmod 600 "${OUT}/server.key" "${OUT}/lab-ca.key" "${OUT}/lab-other-ca.key" \
-    "${OUT}/lab-client.key"
+# lab-ca.key, lab-other-ca.key and lab-client.key are only read by the
+# generating user (generation and the test process), so 0600 stays. The
+# broker reads server.key as the container's `rabbitmq` user (uid 999); on
+# Linux bind mounts honor the host uid, so 0600 owned by the runner makes
+# the key unreadable and the TLS nodes crash-loop at startup. The key is a
+# disposable lab secret regenerated on every lab-up (never committed), so
+# 0644 inside the ephemeral lab is the accepted trade.
+chmod 600 "${OUT}/lab-ca.key" "${OUT}/lab-other-ca.key" "${OUT}/lab-client.key"
+chmod 644 "${OUT}/server.key"
 
 echo "TLS lab certificates generated in ${OUT}:"
 ls -1 "${OUT}" | sed 's/^/  /'

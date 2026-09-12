@@ -312,11 +312,14 @@ jobs:
           sudo sh -c 'echo "127.0.0.1 wrong.internal" >> /etc/hosts'
 
           for i in $(seq 1 60); do
+            # "New, TLS" in the output proves a real session was established;
+            # against a dead broker behind docker's userland proxy, s_client
+            # closes immediately and still prints "Verify return code: 0 (ok)".
             if echo | openssl s_client -connect localhost:5674 -servername rabbit.internal \
                 -CAfile lab/rabbitmq/tls/generated/lab-ca.pem \
                 -cert lab/rabbitmq/tls/generated/lab-client.pem \
                 -key lab/rabbitmq/tls/generated/lab-client.key 2>/dev/null \
-                | grep -q "Verify return code: 0 (ok)"; then
+                | grep "New, TLS" | grep -q "Verify return code: 0 (ok)"; then
               echo "mTLS listener on localhost:5674 is ready."
               break
             fi
@@ -326,13 +329,6 @@ jobs:
             fi
             sleep 2
           done
-
-          # Debug evidence for rustls-vs-Erlang handshake EOF seen only on CI:
-          # proves the listener still accepts (openssl) in the same second the
-          # Rust client gets a mid-handshake EOF, then runs the suite.
-          echo | openssl s_client -connect localhost:5671 -servername localhost \
-            -CAfile lab/rabbitmq/tls/generated/lab-ca.pem 2>&1 \
-            | grep -E "Verify return code|Protocol|Cipher is" || true
 
           cargo nextest run -p rabbit-rs-core --test tls_integration --features integration -j 1 --no-fail-fast
 
