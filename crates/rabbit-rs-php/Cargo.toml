@@ -22,7 +22,7 @@ tokio = { version = "1.47", features = ["time"] }
 [dev-dependencies]
 rabbit-rs-core = { path = "../rabbit-rs-core", features = ["test-support"] }
 proptest = "1.8"
-proptest-state-machine = "0.4"
+proptest-state-machine = "0.8"
 zend-link-stubs = { path = "zend-link-stubs" }
 
 [lints]

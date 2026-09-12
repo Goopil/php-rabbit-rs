@@ -29,7 +29,7 @@ serde_json = "1.0"
 tokio = { version = "1.47", features = ["test-util", "process"] }
 rabbit-rs-core = { path = ".", features = ["test-support"] }
 proptest = "1.8"
-proptest-state-machine = "0.4"
+proptest-state-machine = "0.8"
 
 [lints]
 workspace = true
