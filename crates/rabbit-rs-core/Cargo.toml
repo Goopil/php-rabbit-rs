@@ -53,5 +53,15 @@ name = "topology"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "publisher"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "consumer_delivery"
+harness = false
+required-features = ["bench"]
+
 [lints]
 workspace = true

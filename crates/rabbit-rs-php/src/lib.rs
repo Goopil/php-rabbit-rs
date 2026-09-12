@@ -9,6 +9,15 @@ mod sink;
 #[cfg(feature = "extension-tests")]
 mod testing;
 
+/// Benchmark entry surface: the publish buffer is the pure-Rust hot path
+/// every PHP publish traverses, so CodSpeed benches it directly. Kept
+/// `#[doc(hidden)]` — not part of the extension's public contract.
+#[doc(hidden)]
+pub mod bench_api {
+    pub use crate::classes::publish_buffer::PublishBuffer;
+    pub use crate::conversion::NativePublish;
+}
+
 use classes::{
     consumer::Consumer,
     delivery::Delivery,

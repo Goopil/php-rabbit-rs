@@ -62,7 +62,7 @@ const MAX_PENDING_ERRORS: usize = 4096;
 /// so outcomes land here and surface at the next PHP-visible operation —
 /// the same pattern as consumer settlement errors after a pop.
 #[derive(Clone, Debug)]
-pub(crate) struct PendingPublishError {
+pub struct PendingPublishError {
     pub(crate) message_id: String,
     pub(crate) kind: String,
     pub(crate) message: String,
@@ -83,7 +83,7 @@ struct Buffered {
 }
 
 /// Shared publish buffer with batched flush semantics.
-pub(crate) struct PublishBuffer {
+pub struct PublishBuffer {
     client: Arc<ClientPool>,
     handle: Arc<ConnectionHandle>,
     buffer: std::sync::Mutex<Buffered>,
@@ -130,7 +130,7 @@ pub(crate) struct PublishBuffer {
 }
 
 impl PublishBuffer {
-    pub(crate) fn new(
+    pub fn new(
         client: Arc<ClientPool>,
         handle: Arc<ConnectionHandle>,
         flush_interval: Duration,
@@ -165,13 +165,13 @@ impl PublishBuffer {
 
     /// Returns the number of publications discarded without confirmed
     /// delivery (deadline-expired, closing-client, or teardown drops).
-    pub(crate) fn dropped_publications(&self) -> u64 {
+    pub fn dropped_publications(&self) -> u64 {
         self.dropped_publications.load(Ordering::Relaxed)
     }
 
     /// Returns the number of pending error records evicted before PHP could
     /// observe them.
-    pub(crate) fn dropped_error_records(&self) -> u64 {
+    pub fn dropped_error_records(&self) -> u64 {
         self.dropped_error_records.load(Ordering::Relaxed)
     }
 
@@ -193,7 +193,11 @@ impl PublishBuffer {
     }
 
     /// Drains and returns every pending publish error record.
-    pub(crate) fn take_errors(&self) -> Vec<PendingPublishError> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded internal mutex was poisoned by a panicked drain.
+    pub fn take_errors(&self) -> Vec<PendingPublishError> {
         self.pending_errors
             .lock()
             .expect("pending publish errors mutex poisoned")
@@ -202,7 +206,11 @@ impl PublishBuffer {
     }
 
     /// Returns whether the buffer cannot accept `payload_bytes` more bytes.
-    pub(crate) fn would_overflow(&self, payload_bytes: usize) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded internal mutex was poisoned by a panicked drain.
+    pub fn would_overflow(&self, payload_bytes: usize) -> bool {
         let buffered = self.buffer.lock().expect("publish buffer mutex poisoned");
         buffered.publishes.len() >= PUBLISH_BUFFER_MAX_MESSAGES
             || buffered.bytes + payload_bytes > PUBLISH_BUFFER_MAX_BYTES
@@ -217,7 +225,11 @@ impl PublishBuffer {
     ///
     /// Returns whether this publication started a new batch (the buffer was
     /// empty), so the caller can arm the interval timer.
-    pub(crate) fn enqueue(&self, publish: NativePublish) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded internal mutex was poisoned by a panicked drain.
+    pub fn enqueue(&self, publish: NativePublish) -> bool {
         let payload_bytes = publish.request.payload.len();
         let was_empty;
         {
@@ -239,7 +251,11 @@ impl PublishBuffer {
     /// deadline measures how long the oldest buffered publication has been
     /// waiting: a batch is flushed once it is older than the interval even
     /// if it never reaches the size threshold.
-    pub(crate) fn should_flush(&self) -> bool {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded internal mutex was poisoned by a panicked drain.
+    pub fn should_flush(&self) -> bool {
         self.buffered_len() >= self.flush_threshold
             || self
                 .last_flush
@@ -249,7 +265,11 @@ impl PublishBuffer {
     }
 
     /// Returns the number of buffered publications.
-    pub(crate) fn buffered_len(&self) -> usize {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded internal mutex was poisoned by a panicked drain.
+    pub fn buffered_len(&self) -> usize {
         self.buffer
             .lock()
             .expect("publish buffer mutex poisoned")
@@ -258,7 +278,11 @@ impl PublishBuffer {
     }
 
     /// Returns the cumulative buffered payload bytes.
-    pub(crate) fn buffered_bytes(&self) -> usize {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded internal mutex was poisoned by a panicked drain.
+    pub fn buffered_bytes(&self) -> usize {
         self.buffer
             .lock()
             .expect("publish buffer mutex poisoned")
@@ -328,7 +352,11 @@ impl PublishBuffer {
     /// Called before every synchronous flush so re-buffered publications
     /// are visible to it, and by the explicit `flush()`/`close()`/destructor
     /// paths.
-    pub(crate) fn quiesce(&self) {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the drain-handle mutex was poisoned by a panicked drain.
+    pub fn quiesce(&self) {
         let timers: Vec<JoinHandle<()>> = std::mem::take(
             &mut *self
                 .timer_handles
@@ -466,7 +494,13 @@ impl PublishBuffer {
     }
 
     /// Drains the buffer and spawns the batch on the runtime.
-    pub(crate) fn flush_triggered(self: &Arc<Self>) -> PhpResult<()> {
+    ///
+    /// # Errors
+    ///
+    /// Raises the backpressure exception when no drain slot frees up within
+    /// the teardown budget: the batch is re-buffered (or counted as dropped
+    /// once teardown started), so nothing is lost.
+    pub fn flush_triggered(self: &Arc<Self>) -> PhpResult<()> {
         let publishes = self.take();
         self.flush_pipelined(publishes)
     }
@@ -480,7 +514,11 @@ impl PublishBuffer {
     /// documented `flush_interval` contract: the batch is flushed once its
     /// oldest publication is older than the interval, even with no further
     /// PHP operation.
-    pub(crate) fn ensure_flush_timer(self: &Arc<Self>) {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the timer-handle mutex was poisoned by a panicked drain.
+    pub fn ensure_flush_timer(self: &Arc<Self>) {
         if self.timer_pending.swap(true, Ordering::AcqRel) {
             // A timer already covers the current batch: its deadline is the
             // oldest publication's, so the whole batch flushes on time.

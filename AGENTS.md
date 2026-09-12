@@ -23,7 +23,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 - `crates/rabbit-rs-core/tests/`: consolidated Rust integration tests (12 files: blind_pump, consumer, integration, log_facade, metrics, poison, pool_clear, publisher, recovery, topology, transport_liveness, transport_tuning).
 - `crates/rabbit-rs-php/`: `cdylib` for the native PHP extension; depends on the core crate. Pest tests in `tests/`.
 - `packages/laravel-queue/`: Laravel queue driver package (`goopil/rabbit-rs-laravel`). Pest tests in `tests/`.
-- `crates/rabbit-rs-core/benches/`: divan micro-benchmarks (config, consumer, topology) behind the `bench` feature, run on CodSpeed via `.github/workflows/codspeed.yml`; they touch no broker. Run locally with `cargo bench -p rabbit-rs-core --features bench`.
+- `crates/rabbit-rs-core/benches/` + `crates/rabbit-rs-php/benches/`: divan micro-benchmarks (config, topology, consumer, publisher pump, consumer delivery loop, publish buffer) behind the `bench` feature, run on CodSpeed via `.github/workflows/codspeed.yml`; they touch no broker or PHP runtime. Run locally with `cargo codspeed build --workspace --features rabbit-rs-core/bench,rabbit-rs-php/bench && cargo codspeed run` (or `cargo bench -p <crate> --features bench`).
 - `benchmarks/`: PHP benchmark suite with AbstractBenchmark pattern, 4 drivers, 3 scenarios.
 - `composer.json`: PIE package metadata for `rabbit-rs/native`.
 - `scripts/check.sh`: Rust quality gate (fmt + clippy + nextest + composer validate).
