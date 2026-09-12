@@ -4,15 +4,17 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Console;
 
+use Goopil\RabbitRs\Laravel\Support\QueueDepthSampler;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Events\Dispatcher as EventDispatcher;
+use InvalidArgumentException;
 
 class RabbitMqWorkCommand extends Command
 {
     protected $signature = 'rabbit-rs:work
         {--connection= : Comma-separated queue connections (default: every rabbit-rs connection)}
         {--queue= : Comma-separated queue names, resolved by definition (default: every defined queue)}
-        {--workers=1 : Child workers per connection}
+        {--workers=1 : Child workers per connection (the initial fleet when auto-scaling is configured)}
         {--max-restarts=3 : Maximum restarts per worker}
         {--backoff=1 : Base backoff in seconds}
         {--timeout=60 : The number of seconds a child process can run}
@@ -21,12 +23,19 @@ class RabbitMqWorkCommand extends Command
         {--max-jobs= : The number of jobs to process before stopping}
         {--max-time= : The maximum number of seconds the worker should run}
         {--stop-when-empty : Process pending jobs then exit once the children terminate (once mode for CI smoke tests; children get --stop-when-empty and are never recycled)}
+        {--once : One-shot mode: children get --once (a single job each) and are never recycled; the supervisor exits once the fleet drains}
+        {--min-workers=1 : Auto-scaling floor per connection}
+        {--max-workers= : Auto-scaling ceiling per connection (default: fixed --workers fleet, scaling off)}
+        {--scale-cooldown=3 : Minimum seconds between two scaling passes}
+        {--scale-idle=30 : Seconds of continuous empty queues before releasing idle workers}
         {--rabbit-rs-worker= : Worker index for logging/metrics attribution (direct invocation only; the supervisor passes it via RABBIT_RS_WORKER_INDEX)}';
 
     protected $description = 'Supervise Rabbit RS queue workers across connections with automatic restart';
 
     public function handle(): int
     {
+        $this->validateScalingOptions();
+
         $this->registerWorkCommandExtension();
 
         $plan = WorkPlanResolver::resolve($this->option('connection'), $this->option('queue'));
@@ -40,6 +49,31 @@ class RabbitMqWorkCommand extends Command
         ));
 
         return $supervisor->run();
+    }
+
+    /**
+     * Validates the auto-scaling flags: --once and --stop-when-empty are two
+     * mutually exclusive one-shot regimes, and the scaling ceiling must not
+     * fall below the floor.
+     *
+     * @throws InvalidArgumentException
+     */
+    private function validateScalingOptions(): void
+    {
+        if ((bool) $this->option('once') && (bool) $this->option('stop-when-empty')) {
+            throw new InvalidArgumentException('The --once and --stop-when-empty options are mutually exclusive: children cannot both stop after one job and drain until empty.');
+        }
+
+        $minWorkers = (int) $this->option('min-workers');
+        $maxWorkers = $this->option('max-workers') !== null ? (int) $this->option('max-workers') : null;
+
+        if ($maxWorkers !== null && $maxWorkers < $minWorkers) {
+            throw new InvalidArgumentException(sprintf(
+                'The --max-workers value (%d) must be greater than or equal to --min-workers (%d).',
+                $maxWorkers,
+                $minWorkers,
+            ));
+        }
     }
 
     /**
@@ -67,7 +101,36 @@ class RabbitMqWorkCommand extends Command
             maxRestarts: (int) $this->option('max-restarts'),
             baseBackoffSeconds: (int) $this->option('backoff'),
             options: $options,
+            minWorkers: (int) $this->option('min-workers'),
+            maxWorkers: $this->option('max-workers') !== null ? (int) $this->option('max-workers') : null,
+            scaleCooldownSeconds: (float) $this->option('scale-cooldown'),
+            scaleIdleSeconds: (int) $this->option('scale-idle'),
+            once: (bool) $this->option('once'),
+            depthCallback: $this->depthCallback($plan),
         );
+    }
+
+    /**
+     * Builds the supervisor's depth sampler: one call returns the ready
+     * depth per plan connection, summed over the connection's planned
+     * queues. Each queue is read from the management API when the
+     * connection configures `management_url`, otherwise through a passive
+     * native probe (`Pool::size()`). Queues whose depth cannot be read
+     * contribute nothing; a connection with no readable depth reports null,
+     * which leaves it out of scaling silently.
+     *
+     * The sampler instance outlives the callback (the supervisor calls it
+     * on every scaling pass), so its native probe pools are created once
+     * and reused for the supervisor's lifetime.
+     *
+     * @param  list<array{connection: string, queues: list<string>}>  $plan
+     * @return \Closure(): array<string, int|null>
+     */
+    private function depthCallback(array $plan): \Closure
+    {
+        $sampler = new QueueDepthSampler($plan);
+
+        return static fn (): array => $sampler->depths();
     }
 
     /**

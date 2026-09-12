@@ -100,6 +100,16 @@ describe('rabbit-rs:doctor worker class resolution', function () {
     });
 });
 
+describe('rabbit-rs:doctor worker capacity', function () {
+    it('reports the per-supervisor AMQP connection math', function () {
+        doctorConnection();
+
+        $this->artisan('rabbit-rs:doctor')
+            ->expectsOutputToContain('1 worker(s) × 1 broker(s) → 1 AMQP connection(s) per supervisor')
+            ->assertExitCode(0);
+    });
+});
+
 describe('rabbit-rs:doctor broker probe', function () {
     it('fails when the broker is unreachable and still runs the other checks', function () {
         bindFakeProbe($this->app, brokerError: 'connection refused');

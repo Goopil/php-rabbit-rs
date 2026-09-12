@@ -98,10 +98,12 @@ Options:
 |--------|-------------|---------|
 | `--connection` | Comma-separated connection names | Every rabbit-rs connection |
 | `--queue` | Comma-separated queue names, resolved by definition (connection `queue` key or `subscriptions` alias) | Every defined queue |
-| `--workers` | Children spawned per connection | `1` |
+| `--workers` | Children spawned per connection (the initial fleet when auto-scaling is configured) | `1` |
 | `--max-restarts` | Max restarts per worker | `3` |
 | `--backoff` | Base backoff in seconds | `1` |
 | `--stop-when-empty` | Once mode: children get `--stop-when-empty`, are never recycled, and the supervisor exits with the highest child exit status once every child has terminated (CI smoke tests) | disabled |
+| `--once` | Once mode: children get `--once` (a single job each) under the same one-shot supervision | disabled |
+| `--min-workers`, `--max-workers` | Auto-scaling floor and ceiling per connection; without `--max-workers` the fleet is the fixed `--workers` and scaling is off | `1`, — |
 
 Unknown connection or queue names fail with a typed error listing what is available. A queue defined on two targeted connections is consumed on both — see [Worker fan-out](#worker-fan-out) for the full semantics.
 
@@ -112,7 +114,7 @@ Exit codes:
 | Code | Meaning |
 |------|---------|
 | `0` | Clean shutdown (including `SIGTERM`/`SIGINT`) |
-| `1` | Max restarts exceeded, or a child crash in `--stop-when-empty` mode (the highest child exit status is propagated) |
+| `1` | Max restarts exceeded, or a child crash in once mode (`--stop-when-empty` or `--once`; the highest child exit status is propagated) |
 
 #### Status command
 
@@ -1213,12 +1215,51 @@ php artisan rabbit-rs:work --workers=4
 |--------|-------------|---------|
 | `--connection` | Comma-separated connection names | Every rabbit-rs connection |
 | `--queue` | Comma-separated queue names, resolved by definition (connection `queue` key or `subscriptions` alias) | Every defined queue |
-| `--workers` | Child workers per connection | `1` |
+| `--workers` | Child workers per connection (the initial fleet when auto-scaling is configured) | `1` |
 | `--max-restarts` | Max restarts per worker before giving up | `3` |
 | `--backoff` | Base backoff in seconds (doubles on each restart, max 60) | `1` |
 | `--timeout`, `--tries`, `--memory`, `--max-jobs`, `--max-time` | Propagated to each `queue:work` child | `60`, `—`, `128`, `—`, `—` |
 | `--stop-when-empty` | Once mode: children run once (with `--stop-when-empty`) and are never recycled; the supervisor exits with the highest child exit status once all children have terminated | disabled |
+| `--once` | Once mode: children get `--once` (a single job each) under the same one-shot supervision; mutually exclusive with `--stop-when-empty` | disabled |
+| `--min-workers` | Auto-scaling floor per connection | `1` |
+| `--max-workers` | Auto-scaling ceiling per connection; without it the fleet is the fixed `--workers` and scaling is off | — |
+| `--scale-cooldown` | Minimum seconds between two scaling passes | `3` |
+| `--scale-idle` | Seconds of continuous empty queues before releasing idle workers | `30` |
 | `--rabbit-rs-worker` | Worker index (set by the supervisor, not by users) | — |
+
+#### Auto-scaling
+
+`rabbit-rs:work` can grow and shrink its fleet per connection, driven by the broker's queue depth. Scaling is opt-in: without `--max-workers` the fixed `--workers` fleet runs exactly as before.
+
+```bash
+php artisan rabbit-rs:work --min-workers=1 --max-workers=8
+```
+
+One decision per connection, per pass (a pass runs at most every `--scale-cooldown` seconds):
+
+- **Scale up** when the ready depth exceeds twice the live workers — at most 2 children per pass, never beyond `--max-workers`.
+- **Scale down** (long-running mode only) after the depth has stayed at zero for the whole `--scale-idle` window (hysteresis, so a queue draining in a burst does not flap the fleet) — at most 2 children per pass, never below `--min-workers`. The idlest children (highest index) receive a non-blocking `SIGTERM` and their slot is removed without touching the crash-restart budget (downscaling is not a crash); a child that outlives the 15 s grace period is escalated to `SIGKILL`.
+- In once mode (`--once` / `--stop-when-empty`) scaling is admission-only: children self-terminate and the supervisor admits more while the depth justifies it — it never signals a child. When the fleet drains, a final depth check re-arms the initial fleet while the broker still reports work (bounded to 3 re-arms, guarding the late-async-flush race where a publisher's last messages land just after the queue looked empty).
+
+The depth is sampled per queue from the first available source:
+
+- **Management API** — when the connection configures `queue.connections.<name>.management_url` (+ credentials), the sampler reads `messages_ready` over HTTP: zero AMQP in the supervisor, and the only source that still counts after every worker has exited (the one-shot final depth check).
+- **Passive native probe** — otherwise, `Pool::size()` (the same passive declare the doctor and topology commands use): no management plugin required. While the sampler lives the supervisor holds one extra AMQP connection per connection, and each lookup blocks up to the connection's socket timeout — bounded, at the `--scale-cooldown` cadence. The supervisor never publishes, so its probe pools carry no publish buffer.
+
+Either way, an unreadable depth (request failure, unreachable broker, missing queue, extension absent) leaves that connection silently on a static fleet — no warning, because the sources are optional. A configured-but-failing management endpoint disables scaling for that connection rather than cascading into the native probe. Note that children are fresh processes (never forks), so the probe pools the supervisor owns are safe from inheritance concerns by construction.
+
+Caveat: with a `block_for > 0` driver config, a child parked inside the extension's blocking `next()` may not observe `SIGTERM` promptly. Run auto-scaling with `block_for=0` (the default) so released children exit promptly.
+
+One-shot patterns for CI and cron:
+
+```bash
+# CI smoke test: process whatever is pending, fail on a crashed child, exit clean.
+php artisan rabbit-rs:work --stop-when-empty
+
+# Cron drain: a single job per child, more children while the queues are deep,
+# exit when everything is consumed.
+php artisan rabbit-rs:work --once --min-workers=2 --max-workers=8
+```
 
 #### Signal handling
 
@@ -1232,15 +1273,16 @@ php artisan rabbit-rs:work --workers=4
 | Code | Meaning |
 |------|---------|
 | `0` | Clean shutdown (including `SIGTERM`/`SIGINT`) |
-| `1` | Max restarts exceeded, or a child crash in `--stop-when-empty` mode (the highest child exit status is propagated) |
+| `1` | Max restarts exceeded, or a child crash in once mode (`--stop-when-empty` or `--once`; the highest child exit status is propagated) |
 
 #### How it works
 
 1. The supervisor spawns one child per targeted connection (× `--workers`), each running `php artisan queue:work <name> --queue=<q1,q2>` (the connection is `queue:work`'s positional argument)
-2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER_INDEX={i}` environment variable
+2. Each child gets a unique `--name=worker-{i}` and the `RABBIT_RS_WORKER_INDEX={i}` environment variable; dynamically spawned children continue the index sequence so identities never collide
 3. The supervisor monitors child processes every 100ms
-4. If a child exits with a non-zero code (a crash), the supervisor waits (backoff seconds) and restarts it; a clean exit (0, e.g. `--max-jobs` recycling) restarts the child immediately and resets its crash budget. With `--stop-when-empty`, neither happens: children run once and the supervisor exits with the highest child exit status once all children have terminated (CI smoke-test mode)
+4. If a child exits with a non-zero code (a crash), the supervisor waits (backoff seconds) and restarts it; a clean exit (0, e.g. `--max-jobs` recycling) restarts the child immediately and resets its crash budget. In once mode (`--stop-when-empty` or `--once`), neither happens: children run once and the supervisor exits with the highest child exit status once all children have terminated (CI smoke-test mode)
 5. On `SIGTERM`/`SIGINT`, the supervisor sends `SIGTERM` to each child and waits up to 10 seconds
+6. With auto-scaling configured, the loop samples the broker depth every `--scale-cooldown` seconds and applies the [Auto-scaling](#auto-scaling) policy per connection
 
 ### Supervisor (systemd) configuration
 

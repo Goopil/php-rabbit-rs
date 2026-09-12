@@ -104,6 +104,7 @@ final class RabbitMqDoctorCommand extends Command
 
         $extensionUsable = $this->checkExtension($probe);
         $workerClass = $this->checkWorker($config);
+        $this->checkWorkerCapacity($compiled);
         $brokerError = $this->checkBroker($compiled, $probe, $extensionUsable);
         $this->checkManagement($config);
         $this->checkTopology($compiled, $brokerError);
@@ -149,6 +150,28 @@ final class RabbitMqDoctorCommand extends Command
         }
 
         return $class;
+    }
+
+    /**
+     * Reports the AMQP connection math per supervisor: every `queue:work`
+     * child owns one pool per broker of its connection (sockets are not
+     * fork-safe, so cross-process connection sharing is impossible by
+     * design), which makes the per-worker FD cost visible to operators.
+     * The expected fleet is the `--workers` default (1 per connection;
+     * there is no workers config key) — each extra `--workers` multiplies
+     * the count. The broker count comes from the compiled native config.
+     *
+     * @param  array<string, mixed>  $compiled
+     */
+    private function checkWorkerCapacity(array $compiled): void
+    {
+        $brokers = is_array($compiled['native']['brokers'] ?? null) ? count($compiled['native']['brokers']) : 0;
+
+        $this->emit('ok', sprintf(
+            'capacity: 1 worker(s) × %d broker(s) → %d AMQP connection(s) per supervisor',
+            $brokers,
+            $brokers,
+        ));
     }
 
     /**

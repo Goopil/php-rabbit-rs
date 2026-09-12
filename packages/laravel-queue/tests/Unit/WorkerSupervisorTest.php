@@ -153,6 +153,56 @@ describe('buildChildCommands', function (): void {
     });
 });
 
+describe('auto-scaling command building', function (): void {
+    it('clamps the initial children to max-workers when scaling is configured', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 4,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            maxWorkers: 2,
+        );
+
+        expect($supervisor->buildChildCommands())->toHaveCount(2);
+    });
+
+    it('keeps the full workers fleet when scaling is not configured', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 3,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+        );
+
+        expect($supervisor->buildChildCommands())->toHaveCount(3);
+    });
+
+    it('propagates the once flag to child commands', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            once: true,
+        );
+
+        expect($supervisor->buildChildCommands()[0])->toContain('--once');
+    });
+
+    it('omits the once flag by default', function (): void {
+        $supervisor = new WorkerSupervisor(
+            plan: singlePlan(),
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+        );
+
+        foreach ($supervisor->buildChildCommands()[0] as $arg) {
+            expect($arg)->not->toContain('--once');
+        }
+    });
+});
+
 describe('buildChildCommands option propagation', function (): void {
     it('omits worker options when none are provided', function (): void {
         $supervisor = new WorkerSupervisor(
