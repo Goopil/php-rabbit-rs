@@ -2203,7 +2203,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rabbit-rs-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "rabbit-rs-php"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "bytes",
  "codspeed-divan-compat",

@@ -4,6 +4,23 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.2] - 2026-09-12
+
+### Added
+
+- Auto-scaling for `rabbit-rs:work` (#257): the supervisor grows and shrinks
+  its fleet per connection, driven by the broker's ready depth — from the
+  RabbitMQ management API (`messages_ready`, via
+  `queue.connections.<name>.management_url`) when configured, otherwise
+  through a passive native probe (`Pool::size()`, no management plugin
+  needed). `--min-workers`/`--max-workers` bound the policy. One-shot modes
+  `--once` and `--stop-when-empty` supervise a fleet that exits after
+  draining, making CI smoke tests and cron drains first-class.
+  `rabbit-rs:doctor` reports the per-supervisor AMQP connection math.
+  Defaults are unchanged: without the new flags the command behaves exactly
+  as before.
+- Requires `ext-rabbit_rs ^0.3.2` (lockstep release).
+
 ## [0.3.1] - 2026-09-12
 
 ### Fixed
