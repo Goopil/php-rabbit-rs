@@ -147,12 +147,12 @@ impl ClientPool {
     /// immediately.
     pub async fn publish_batch(
         &self,
-        requests: Vec<(String, PublishRequest)>,
+        requests: Vec<(Arc<str>, PublishRequest)>,
     ) -> Result<Vec<PublishOutcome>, ClientError> {
         self.ensure_open()?;
         let total = requests.len();
         let blind = matches!(self.publisher_config.safety, SafetyMode::Blind);
-        let mut by_broker: HashMap<String, Vec<(usize, PublishRequest)>> = HashMap::new();
+        let mut by_broker: HashMap<Arc<str>, Vec<(usize, PublishRequest)>> = HashMap::new();
         for (i, (broker, request)) in requests.into_iter().enumerate() {
             by_broker.entry(broker).or_default().push((i, request));
         }

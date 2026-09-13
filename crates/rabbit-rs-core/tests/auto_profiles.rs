@@ -245,7 +245,7 @@ async fn auto_profile_declared_when_popped_after_publisher_use() {
         MessageProperties::new("published-before-pop"),
         tokio::time::Instant::now() + Duration::from_secs(30),
     );
-    pool.publish_batch(vec![("main".to_owned(), request)])
+    pool.publish_batch(vec![("main".into(), request)])
         .await
         .expect("publish through the fresh pool");
     assert!(!transport.declared_queues().contains(&"emails".to_owned()));

@@ -58,7 +58,7 @@ impl PidProvider for FixedPid {
 /// One buffered publication as the conversion layer would hand it over.
 fn publish(index: usize) -> NativePublish {
     NativePublish {
-        broker: "bench".to_owned(),
+        broker: "bench".into(),
         request: PublishRequest::new(
             Destination::new("jobs", "orders"),
             PAYLOAD,

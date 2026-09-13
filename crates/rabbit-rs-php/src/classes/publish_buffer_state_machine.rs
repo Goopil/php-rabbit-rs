@@ -557,7 +557,7 @@ impl StateMachineTest for PublishBufferMachine {
                     .last()
                     .expect("enqueue recorded in the model");
                 let publish = NativePublish {
-                    broker: BROKER.to_owned(),
+                    broker: BROKER.into(),
                     request: PublishRequest::new(
                         Destination::new("jobs", "orders"),
                         Bytes::from_static(PAYLOAD),

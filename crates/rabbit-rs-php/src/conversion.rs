@@ -76,7 +76,7 @@ impl ConversionBudget {
 }
 
 pub struct NativePublish {
-    pub broker: String,
+    pub broker: Arc<str>,
     pub request: PublishRequest,
 }
 
@@ -164,7 +164,7 @@ fn publish_with_budget(
         ],
     )?;
 
-    let broker = required_string(table, "broker", path)?;
+    let broker: Arc<str> = required_string(table, "broker", path)?.into();
     let exchange = required_string(table, "exchange", path)?;
     let routing_key = required_string(table, "routing_key", path)?;
     let message_id = required_string(table, "message_id", path)?;
