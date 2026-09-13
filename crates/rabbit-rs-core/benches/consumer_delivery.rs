@@ -28,8 +28,13 @@ struct DeliveryLoop {
 impl DeliveryLoop {
     fn spawn() -> Self {
         let transport = Arc::new(MockTransport::default());
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+        // Single-threaded executor on purpose: a multi-threaded runtime makes
+        // every iteration pay park/unpark futex traffic whose cost depends on
+        // the host scheduler, not on the consume path. That turned the measure
+        // into a syscall-dominated number that shifted between CI runners. The
+        // consumer task still runs to completion here, driven cooperatively by
+        // `block_on`, so the same code path is measured — deterministically.
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("bench runtime");
