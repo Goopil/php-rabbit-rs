@@ -193,9 +193,14 @@ final class RabbitMqStatusCommand extends Command
             $this->line("    publishes:       {$poolStats['publishes_total']}");
             $this->line("    confirmations:   {$poolStats['confirmations_total']}");
             $this->line("    returns:         {$poolStats['returns_total']}");
+            $droppedPublications = (int) ($poolStats['dropped_publications_total'] ?? 0);
+            $this->line("    dropped publications: {$droppedPublications}");
             $this->line("    backpressure:    {$poolStats['backpressure_total']}");
             $this->line("    reconnects:      {$poolStats['reconnects_total']}");
             $this->line('    duplicates:      '.($poolStats['duplicates_total'] ?? 0));
+            if ($droppedPublications > 0) {
+                $this->warn("dropped_publications_total is {$droppedPublications} on connection {$name} — publications were dropped on a closed client; drainSettlementErrors()/safe mode surface the details");
+            }
             $this->line('');
             $this->line('  Consumer Metrics:');
             $this->line("    deliveries:      {$poolStats['deliveries_total']}");

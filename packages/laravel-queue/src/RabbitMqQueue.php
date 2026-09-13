@@ -589,6 +589,21 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     }
 
     /**
+     * Process-local native pool metrics for observability: delivery/ack/reject
+     * totals plus the publish-outcome counters — returns_total (mandatory
+     * publications returned as unroutable) and dropped_publications_total
+     * (publications dropped on a closed client, never handed off, never
+     * returned). These are per-process; a short-lived process takes them to
+     * the grave, so drain them before exit when they matter.
+     *
+     * @return array<string, int>
+     */
+    public function stats(): array
+    {
+        return $this->pool->stats();
+    }
+
+    /**
      * Closes all cached consumers and clears the cache.
      *
      * This prevents AMQP channel leaks in long-lived processes (Octane,

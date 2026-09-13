@@ -4,6 +4,16 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [Unreleased]
+
+### Added
+
+- `RabbitMqQueue::stats()` exposes the process-local native pool counters to
+  userland — including `returns_total` (unroutable mandatory publications) and
+  `dropped_publications_total` (publications dropped on a closed client) — and
+  `rabbit-rs:status` now reports the drop counter and warns when it is non-zero
+  (issue #290).
+
 ## [0.3.4] - 2026-09-13
 
 ### Fixed
