@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
+use Goopil\RabbitRs\Laravel\Support\QueueDepthSampler;
 use Symfony\Component\Process\Process;
 
 const WORKER_STUB_PATH = '/Fixture/worker_stub.php';
@@ -575,6 +576,54 @@ describe('WorkerSupervisor integration', function () {
         $process->wait();
 
         expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
+    });
+
+    it('does not re-probe the native depth fallback on every scale pass within one ttl window', function () {
+        // Native-only connection (no management_url): every scale pass would
+        // pay a blocking AMQP round-trip through the native probe (issue #272).
+        // The sampler memoizes the probe for its TTL, so the whole supervised
+        // run — several scale passes at cooldown 0 — probes exactly once.
+        $probes = [];
+        $passes = 0;
+        $sampler = new QueueDepthSampler(
+            [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            static function (string $connection, string $queue) use (&$probes): ?int {
+                $probes[] = [$connection, $queue];
+
+                return 5;
+            },
+            60.0,
+        );
+        $stateDir = test()->stateDir;
+        $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
+        $factory = static function (int $workerIndex) use ($stubPath, $stateDir): Process {
+            return new Process([PHP_BINARY, $stubPath], null, [
+                'RABBIT_RS_WORKER_INDEX' => (string) $workerIndex,
+                'RABBIT_RS_STUB_MODE' => 'crash',
+                'RABBIT_RS_STUB_STATE_DIR' => $stateDir,
+            ]);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 1,
+            maxRestarts: 1,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            maxWorkers: 2,
+            scaleCooldownSeconds: 0.0,
+            depthCallback: static function () use ($sampler, &$passes): array {
+                $passes++;
+
+                return $sampler->depths();
+            },
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_MAX_RESTARTS)
+            ->and($passes)->toBeGreaterThanOrEqual(2)
+            ->and($probes)->toBe([['rabbit-rs', 'default']]);
     });
 
     it('idle fleet is downscaled to min workers without polluting the restart bookkeeping', function () {

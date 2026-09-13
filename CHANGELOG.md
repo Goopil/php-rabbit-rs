@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- The `rabbit-rs:work` supervision loop no longer blocks on the native depth fallback (#272): on connections without a `management_url`, every scale pass (and once-mode drain check) paid a blocking AMQP round-trip through `Pool::size()` inside the 100 ms loop — a slow or half-open broker stalled the whole supervision (no signal handling, no slot reaping, no admission), and the failure path's pool recreation turned into a blocking retry spin. The sampler now memoizes the native probe per connection and queue for a short TTL (2 s), failures included, so the loop probes at most once per window and the pool only reconnects after it; the management API path stays uncached (its HTTP client is already bounded).
+
 ## [0.3.3] - 2026-09-13
 
 ### Added
