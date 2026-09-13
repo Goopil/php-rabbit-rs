@@ -218,6 +218,10 @@ class DoctorProbe
 
                 throw new RuntimeException('canary message was not consumed from the main queue within 10s');
             }
+        } catch (RuntimeException $e) {
+            return $e;
+        } catch (\Throwable $e) {
+            return new RuntimeException($e->getMessage(), 0, $e);
         } finally {
             $pool->close();
         }
