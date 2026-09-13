@@ -410,7 +410,7 @@ final class RabbitMqDoctorCommand extends Command
             return;
         }
 
-        $this->emit('ok', 'dead-letter canary: delivered, rejected, and received on the DLQ');
+        $this->emit('ok', 'dead-letter canary: delivered, rejected, and received on the configured DLQ');
     }
 
     /**
