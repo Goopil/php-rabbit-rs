@@ -842,6 +842,40 @@ routing are **derived from it**, never set independently:
   outcome. A transport failure after the hand-off is a silent loss. Delayed
   jobs are not honored in this mode.
 
+#### Where unroutable-publish failures surface (safe mode)
+
+In `safe` mode the broker returns every publication it cannot route
+(`mandatory` routing). The return is recorded as a definitive failure and
+never re-buffered; it surfaces at the earliest of:
+
+- **The publish itself**, when the outcome is already known synchronously:
+  `bulk()` and any explicit `flush()` (also `size()`/`clear()`, which flush
+  first) throw `QueueException` carrying the message id and the AMQP reply
+  code.
+- **The next queue operation** otherwise. Publishes are buffered and drained
+  in the background (`publisher.flush_interval`, 1 ms default), so a lone
+  `push()`
+  returns before the broker confirms. The definitive return then surfaces
+  from the next `push()`, `flush()`, `size()`, `clear()`, `stats()`, or
+  `pop()` (which drains pending publish errors first through
+  `drainSettlementErrors()`); `Pool::drainErrors()` reads the raw records
+  without throwing.
+- **Process teardown, as a guaranteed net.** A process whose final publish
+  was returned and that performs no further queue operation (a lone dispatch
+  in a CLI one-shot, or an FPM request that never touches the queue again)
+  would otherwise take the record with it: `RabbitMqQueue::__destruct()`
+  drains pending publish errors and logs each one at `error` level
+  (`rabbit-rs: publication outcome never surfaced before process teardown`,
+  with the native `kind`, `message_id`, and `message` context). A throw is
+  impossible at that point — destructors cannot propagate exceptions — so
+  the log entry plus the `returns_total` counter is the floor of the
+  contract.
+
+`stats()['returns_total']` counts every mandatory return for the process
+lifetime of the pool (`rabbit-rs:status` exposes it), and `rabbit-rs:doctor`
+reads the broker's own `return_unroutable` counter on the publish exchange —
+cross-process evidence that survives the death of the publishing process.
+
 See [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability) for the full contract.
 
 ### Validation and strict errors

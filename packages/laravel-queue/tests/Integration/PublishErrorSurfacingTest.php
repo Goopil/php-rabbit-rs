@@ -107,3 +107,28 @@ it('surfaces a returned batch through drainSettlementErrors', function () {
     expect($thrown)->not->toBeNull('drainSettlementErrors must raise the recorded returns')
         ->and($thrown->getMessage())->toContain('unroutable');
 });
+
+it('surfaces a lone unroutable publish at the next queue operation', function () {
+    $this->queue->push('stdClass', ['unroutable' => true]);
+
+    // The probe F shape: a lone safe-mode push and no follow-up work. Any
+    // subsequent operation (here size(), which force-flushes first) must
+    // raise the definitive return — never a silent loss.
+    $thrown = null;
+    $deadline = microtime(true) + ASYNC_BROKER_POLL_SECONDS;
+    while (microtime(true) < $deadline) {
+        try {
+            $this->queue->size();
+            usleep(100_000);
+        } catch (QueueException $exception) {
+            $thrown = $exception;
+            break;
+        }
+    }
+
+    expect($thrown)->not->toBeNull('a lone unroutable publication must surface at the next queue operation')
+        ->and($thrown->getMessage())->toContain('unroutable');
+
+    // The return remains countable without re-raising (issue #252).
+    expect($this->pool->stats()['returns_total'])->toBeGreaterThan(0);
+});

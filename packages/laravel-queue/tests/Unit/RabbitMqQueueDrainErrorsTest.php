@@ -217,3 +217,88 @@ it('pop surfaces a pipelined publish failure before fetching deliveries', functi
     expect(fn () => $queue->pop('orders-eu'))
         ->toThrow(QueueException::class);
 });
+
+it('logs a returned publish at teardown when no operation surfaced it', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError([
+        'kind' => 'Returned',
+        'message_id' => 'msg-teardown-1',
+        'message' => 'message msg-teardown-1 was returned as unroutable (AMQP 312)',
+    ]);
+
+    Log::spy();
+    $caught = null;
+    try {
+        unset($queue);
+        gc_collect_cycles();
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    expect($caught)->toBeNull('teardown must never throw');
+
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => str_contains($message, 'never surfaced')
+        && ($context['kind'] ?? null) === 'Returned'
+        && ($context['message_id'] ?? null) === 'msg-teardown-1'
+        && str_contains((string) ($context['message'] ?? ''), 'unroutable'));
+});
+
+it('logs nothing at teardown when every publish outcome was surfaced', function (): void {
+    [$queue] = makeDrainQueue();
+
+    Log::spy();
+    $caught = null;
+    try {
+        unset($queue);
+        gc_collect_cycles();
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    expect($caught)->toBeNull();
+
+    Log::shouldNotHaveReceived('error');
+});
+
+it('never throws from teardown when the pool drain fails', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->throwOnNextDrainErrors(new RuntimeException('pool closed mid-teardown'));
+
+    Log::spy();
+    $caught = null;
+    try {
+        unset($queue);
+        gc_collect_cycles();
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    expect($caught)->toBeNull();
+
+    Log::shouldNotHaveReceived('error');
+});
+
+it('teardown of a container-less queue logs nothing and never throws', function (): void {
+    $pool = new Pool(['workers' => popWorkers()]);
+    $queue = new RabbitMqQueue(
+        $pool,
+        popRoutes(),
+        'default',
+        workerProfiles: new WorkerProfileResolver(popWorkers()),
+    );
+    $pool->pushPublishError([
+        'kind' => 'Returned',
+        'message_id' => 'msg-teardown-2',
+        'message' => 'message msg-teardown-2 was returned as unroutable (AMQP 312)',
+    ]);
+
+    $caught = null;
+    try {
+        unset($queue);
+        gc_collect_cycles();
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    expect($caught)->toBeNull();
+});

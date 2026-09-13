@@ -23,6 +23,8 @@
 ## 🔴 HIGH
 
 ### 1. ✅ STILL OPEN @v0.3.2 — `bulk()` in `safe` mode silently loses jobs in web/FPM
+
+> **Status update (2026-09-13, branch `fix/safe-unroutable-surfacing`)** — the probe-F half (safe-mode unroutable publish lost when the process ends without a further queue operation) is fixed driver-side: `RabbitMqQueue::__destruct()` drains pending publish errors and logs each at error level (`docs/reference.md` "Where unroutable-publish failures surface"). Verified against HEAD code: `bulk()` itself is already sync-loud (`Pool::publishBatch` block_on's `publish_batch`, which awaits every outcome and throws on `Returned`), so the Octane cross-request detonation applies to the pipelined single-push path, not to bulk.
 `src/RabbitMqQueue.php:349-405, 293-305` (@v0.3.1: `drainSettlementErrors()` still called only from `pop()` at `:448`)
 
 `drainPublishErrors()` is `private` and only called by `drainSettlementErrors()`, itself called **only** by `pop()`:

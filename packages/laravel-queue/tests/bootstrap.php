@@ -345,6 +345,8 @@ namespace Goopil\RabbitRs {
 
             private ?\Throwable $nextPublishException = null;
 
+            private ?\Throwable $nextDrainException = null;
+
             private ?\Throwable $nextSizeException = null;
 
             private ?\Throwable $nextClearException = null;
@@ -371,6 +373,11 @@ namespace Goopil\RabbitRs {
             public function throwOnNextPublish(\Throwable $exception): void
             {
                 $this->nextPublishException = $exception;
+            }
+
+            public function throwOnNextDrainErrors(\Throwable $exception): void
+            {
+                $this->nextDrainException = $exception;
             }
 
             public function throwOnNextSize(\Throwable $exception): void
@@ -404,6 +411,13 @@ namespace Goopil\RabbitRs {
              */
             public function drainErrors(): array
             {
+                if ($this->nextDrainException !== null) {
+                    $exception = $this->nextDrainException;
+                    $this->nextDrainException = null;
+
+                    throw $exception;
+                }
+
                 $errors = $this->publishErrors;
                 $this->publishErrors = [];
 
