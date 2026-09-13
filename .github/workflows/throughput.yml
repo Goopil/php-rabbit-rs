@@ -41,10 +41,10 @@ jobs:
           extensions: json
 
       # Release build mandatory: a debug extension masks throughput ~4x
-      # (benchmarks/README.md release protocol). System-wide install is safe
-      # on the ephemeral runner; no Laravel Unit/Feature suite runs after.
-      - name: Build and install release extension
-        run: ./scripts/install.sh --release --yes
+      # (benchmarks/README.md release protocol). The cdylib is loaded with
+      # -d extension= (soak.yml pattern) — no system-wide install needed.
+      - name: Build release PHP extension
+        run: cargo build --release --locked --manifest-path crates/rabbit-rs-php/Cargo.toml
 
       - name: Install benchmark dependencies
         run: composer install --no-interaction --no-progress --working-dir=benchmarks
@@ -65,14 +65,17 @@ jobs:
           exit 1
 
       # pipefail is required: run-benchmarks.php exits 1 when the broker is
-      # unreachable, and that must not be masked by tee.
+      # unreachable, and that must not be masked by tee. The extension is
+      # loaded with -d extension= (soak.yml pattern) so the rabbit-rs driver
+      # is detected by the runner without a system-wide install.
       - name: Run throughput benchmarks
         run: |
           set -o pipefail
           args=""
           if [[ -n "${{ inputs.drivers }}" ]]; then args="$args --driver=${{ inputs.drivers }}"; fi
           if [[ -n "${{ inputs.scenarios }}" ]]; then args="$args --scenario=${{ inputs.scenarios }}"; fi
-          ./benchmarks/run-benchmarks.sh $args 2>&1 | tee benchmark-output.log
+          php -d xdebug.mode=off -d extension=target/release/librabbit_rs_php.so \
+            benchmarks/src/run-benchmarks.php $args 2>&1 | tee benchmark-output.log
 
       # run-benchmarks.php exits 0 even with losses, duplicates, or a SKIPped
       # combo (it only prints WARNING/SKIP lines), so the integrity contract
@@ -98,9 +101,13 @@ jobs:
           {
             echo "## Nightly throughput (msgs/s)"
             echo
-            printf '```\n'
-            sed -n '/=== Summary ===/,$p' benchmark-output.log
-            printf '```\n'
+            if [[ -f benchmark-output.log ]]; then
+              printf '```\n'
+              sed -n '/=== Summary ===/,$p' benchmark-output.log
+              printf '```\n'
+            else
+              echo "Benchmark output missing — the run failed before any benchmark executed."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload throughput artifacts
