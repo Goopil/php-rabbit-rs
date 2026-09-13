@@ -6,7 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
-## [Unreleased]
+## [0.3.3] - 2026-09-13
+
+### Added
+
+- `rabbit-rs:doctor` verifies broker-side publish outcomes (#252): the new `checkPublishOutcomes` reads `message_stats.return_unroutable` on the connection's publish exchange from the RabbitMQ management API — cross-process evidence that survives the death of the publishing process, the one gap the in-process safety-mode pin could not cover — and reports severity by compiled safety mode: fail under safe ("published as lost; fix the exchange→queue binding"), warn under unsafe/blind (fire-and-forget by contract). Silently skipped without a configured/reachable management API; a missing exchange stays the topology check's finding.
+- `rabbit-rs:doctor` dead-letter canary (#219): proves the configured dead-letter wiring end-to-end — publishes a uniquely marked probe (unique `message_id`, `x-canary` header), consumes it through a transient consumer (foreign traffic `release()`d untouched), rejects it terminally, and asserts DLQ reception through the management API (`/get` `ack_requeue_true` matched on `properties.message_id`, probe removed with `ack_requeue_false`). The only check exercising the whole chain (queue args → DLX → binding → DLQ) instead of inspecting its parts: it catches a `direct` DLX whose binding never matches — wiring that passes every static check while dead-lettered messages vanish. Skipped without a reachable broker, a usable management API, or a configured `dead_letter` topology.
 
 ### Fixed
 

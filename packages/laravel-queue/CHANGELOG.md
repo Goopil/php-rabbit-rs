@@ -4,6 +4,40 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.3] - 2026-09-13
+
+### Added
+
+- `rabbit-rs:doctor` publish-outcomes check (#252): reads
+  `message_stats.return_unroutable` on the connection's publish exchange from
+  the RabbitMQ management API — cross-process evidence that survives the death
+  of the publishing process — and reports severity by compiled safety mode:
+  fail under safe ("published as lost; fix the exchange→queue binding"), warn
+  under unsafe/blind (fire-and-forget by contract). Silently skipped without a
+  configured/reachable management API.
+- `rabbit-rs:doctor` dead-letter canary (#219): proves the configured
+  dead-letter wiring end-to-end — publishes a uniquely marked probe, consumes
+  it through a transient consumer (foreign traffic `release()`d untouched),
+  rejects it terminally, and asserts DLQ reception through the management API.
+  The only check exercising the whole chain (queue args → DLX → binding → DLQ)
+  instead of inspecting its parts: it catches a `direct` DLX whose binding
+  never matches — wiring that passes every static check while dead-lettered
+  messages vanish. Skipped without a reachable broker, a usable management
+  API, or a configured `dead_letter` topology.
+
+### Fixed
+
+- `rabbit-rs:work --once` now drains deep queues (#269): the one-shot re-arm
+  budget renews on observed progress — a clean child exit (the child consumed
+  a job) or a decrease of the reported depth between re-arms — instead of
+  capping at 3 re-arms. The cap now only binds a crash loop (crashed children
+  never renew the budget, and their exit status still fails the command).
+  Signal handlers are now installed before the initial fleet spawns, closing
+  the orphan window on SIGTERM/SIGINT during spawn. `--stop-when-empty`
+  remains the authoritative drain mode (quorum-queue `messages_ready` lags
+  seconds behind reality after a burst).
+- Requires `ext-rabbit_rs ^0.3.3` (lockstep release).
+
 ## [0.3.2] - 2026-09-12
 
 ### Added
