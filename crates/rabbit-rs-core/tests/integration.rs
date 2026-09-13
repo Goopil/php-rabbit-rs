@@ -430,7 +430,7 @@ async fn opens_a_profile_consumer_on_the_reused_broker_connection() {
         operation,
         TransportOperation::Ack {
             delivery_tag: 42,
-            multiple: false
+            multiple: true
         }
     )));
 }
