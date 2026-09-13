@@ -429,13 +429,16 @@ class WorkerSupervisor
      * clean exit removes its slot, a crash is remembered as the command's
      * exit status without touching the other children. When the fleet drains,
      * a final depth check re-arms the initial fleet while work remains on the
-     * broker: the absolute re-arm cap only bounds a depth gauge that never
-     * decreases (stale or lying gauge); as long as the reported depth
-     * decreases between re-arms, the fleet is demonstrably making progress
-     * and keeps re-arming (issue #269). Without a depth source, or once the
-     * gauge stops decreasing, the supervisor returns with the highest child
-     * exit status. On SIGTERM/SIGINT, children are stopped gracefully and
-     * the command exits clean.
+     * broker. The re-arm budget renews on observed progress: a clean child
+     * exit (the child consumed a job) or a decrease of the reported depth
+     * between re-arms — quorum-queue gauges lag seconds behind consumption,
+     * so completed children are the trustworthy progress signal (issue #269).
+     * The absolute cap then only binds a fleet that produces neither clean
+     * exits nor a decreasing gauge (crash loop, or a gauge that never
+     * converges). Without a depth source, or once progress stops, the
+     * supervisor returns with the highest child exit status. On
+     * SIGTERM/SIGINT, children are stopped gracefully and the command exits
+     * clean.
      */
     private function runOneShot(): int
     {
@@ -447,6 +450,7 @@ class WorkerSupervisor
         $maxExit = null;
         $reArms = 0;
         $lastReArmDepth = 0;
+        $cleanExitsSinceReArm = 0;
         $scaleStates = $this->newScaleStates();
         $lastScalePass = 0.0;
 
@@ -465,14 +469,24 @@ class WorkerSupervisor
                 $exit = $slot['process']->getExitCode() ?? self::EXIT_CLEAN;
                 $maxExit = $maxExit === null ? $exit : max($maxExit, $exit);
                 unset($slots[$index]);
+
+                // A clean exit means the child consumed a job — observed
+                // progress the re-arm budget renews on. Crashed children
+                // consumed nothing, so they never renew the budget.
+                if ($exit === self::EXIT_CLEAN) {
+                    $cleanExitsSinceReArm++;
+                }
             }
 
             if ($slots === []) {
                 $pending = $this->pendingDepth();
                 if ($pending > 0
-                    && ($reArms < self::MAX_ONE_SHOT_REARMS || $pending < $lastReArmDepth)) {
+                    && ($reArms < self::MAX_ONE_SHOT_REARMS
+                        || $cleanExitsSinceReArm > 0
+                        || $pending < $lastReArmDepth)) {
                     $reArms++;
                     $lastReArmDepth = $pending;
+                    $cleanExitsSinceReArm = 0;
                     $this->spawnInitialChildren($slots);
 
                     continue;

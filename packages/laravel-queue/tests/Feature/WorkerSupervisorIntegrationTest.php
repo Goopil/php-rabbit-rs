@@ -468,12 +468,12 @@ describe('WorkerSupervisor integration', function () {
             ->and($calls)->toBe([0 => 1]);
     });
 
-    it('once mode re-arms children while broker depth remains, with unique worker indexes', function () {
+    it('once mode caps re-arms when children crash without consuming, instead of looping forever', function () {
         $calls = [];
         $supervisor = makeSupervisor(
             workers: 1,
             maxRestarts: 3,
-            extraEnv: ['RABBIT_RS_STUB_MODE' => 'exit-clean'],
+            extraEnv: ['RABBIT_RS_STUB_MODE' => 'crash'],
             once: true,
             maxWorkers: 3,
             depth: 100,
@@ -482,13 +482,12 @@ describe('WorkerSupervisor integration', function () {
 
         $exit = $supervisor->run();
 
-        // 1 initial child + 2 admitted on the first scale pass (depth 100 vs
-        // 1 live) + 3 bounded re-arms of the initial fleet after the final
-        // depth check keeps finding work — a gauge that NEVER decreases hits
-        // the absolute cap. Every index spawned exactly once: dynamic spawns
-        // never collide on --name or the worker env index.
+        // Crashed children consumed nothing, so they never renew the re-arm
+        // budget: 1 initial child + 2 admitted on the first scale pass +
+        // 3 bounded re-arms, then the supervisor gives up and propagates the
+        // crash exit status instead of spinning against a broken fleet.
         ksort($calls);
-        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+        expect($exit)->toBeGreaterThan(WorkerSupervisor::EXIT_CLEAN)
             ->and(array_keys($calls))->toBe([0, 1, 2, 3, 4, 5])
             ->and($calls)->each->toBe(1);
     });
