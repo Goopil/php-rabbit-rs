@@ -63,5 +63,10 @@ name = "consumer_delivery"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "consumer_hops"
+harness = false
+required-features = ["bench"]
+
 [lints]
 workspace = true
