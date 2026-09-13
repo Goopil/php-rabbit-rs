@@ -596,7 +596,7 @@ mod real_broker {
         ));
 
         pool.publish_batch(vec![(
-            "primary".to_owned(),
+            "primary".into(),
             poison_request(&format!("poison-dlx-{suffix}"), &source),
         )])
         .await
@@ -641,7 +641,7 @@ mod real_broker {
         let pool = ClientPool::production(pool_config(&source, None));
 
         pool.publish_batch(vec![(
-            "primary".to_owned(),
+            "primary".into(),
             poison_request(&format!("poison-ack-{suffix}"), &source),
         )])
         .await
@@ -693,7 +693,7 @@ mod real_broker {
         // Poison the SECOND subscription: it must be dead-lettered into the
         // shared DLQ through the second (dlq, routing_key) binding.
         pool.publish_batch(vec![(
-            "primary".to_owned(),
+            "primary".into(),
             poison_request(&format!("dlq-share-{suffix}"), &source_two),
         )])
         .await

@@ -93,7 +93,7 @@ async fn a_live_pool_keeps_working_after_a_probe_pool_closes() {
 
     // The live pool publishes through the shared connection.
     let first = client
-        .publish_batch(vec![("default".to_owned(), request("live"))])
+        .publish_batch(vec![("default".into(), request("live"))])
         .await
         .expect("live publish");
     assert!(confirmed(&first, "live"));
@@ -106,7 +106,7 @@ async fn a_live_pool_keeps_working_after_a_probe_pool_closes() {
         .expect("probe close");
 
     let second = client
-        .publish_batch(vec![("default".to_owned(), request("after-probe"))])
+        .publish_batch(vec![("default".into(), request("after-probe"))])
         .await
         .expect("live pool must keep working after the probe pool closed");
     assert!(confirmed(&second, "after-probe"));
@@ -151,7 +151,7 @@ async fn releasing_the_last_claim_without_a_close_keeps_the_connection_for_reuse
     let handle = registry.acquire(key).expect("pool handle");
     let client = Arc::new(ClientPool::new(config(), transport.clone()));
     let outcomes = client
-        .publish_batch(vec![("default".to_owned(), request("warm"))])
+        .publish_batch(vec![("default".into(), request("warm"))])
         .await
         .expect("warm publish");
     assert!(confirmed(&outcomes, "warm"));
