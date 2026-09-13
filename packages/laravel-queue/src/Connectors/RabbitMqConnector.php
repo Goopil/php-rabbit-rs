@@ -8,6 +8,7 @@ use Closure;
 use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
+use Goopil\RabbitRs\Laravel\Support\DelayPluginGuard;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Illuminate\Queue\Connectors\ConnectorInterface;
@@ -43,6 +44,17 @@ final class RabbitMqConnector implements ConnectorInterface
         $name = $this->connectionName($config);
         $compiled = ConnectionCompiler::compile($name, $config, $this->defaults);
 
+        // Auto resolves against the broker before the pool compiles: on a
+        // broker without the delayed-message plugin the native plugin
+        // strategy publishes deferred jobs into the main queue until a sweep
+        // re-buckets them (early-execution window), so auto degrades to the
+        // ttl bucket queues here. The effective mode rides into the pool
+        // fingerprint and the queue's publish-time plugin guard.
+        $compiled['native']['delay']['mode'] = DelayPluginGuard::resolveAutoMode(
+            $name,
+            $compiled['native']['delay']['mode'],
+        );
+
         $this->warnOnUnboundedRedeliveryDefaults($config, $compiled);
 
         $defaultQueue = $config['queue'] ?? 'default';
@@ -73,6 +85,7 @@ final class RabbitMqConnector implements ConnectorInterface
             publisherConfig: $compiled['publisher'],
             autoSubscribe: $compiled['auto_subscribe'],
             hasDeadLetter: $compiled['topology']['dead_letter'] !== null,
+            delayMode: $compiled['native']['delay']['mode'],
         );
     }
 
