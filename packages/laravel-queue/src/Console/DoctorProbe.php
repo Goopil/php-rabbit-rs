@@ -153,6 +153,7 @@ class DoctorProbe
         string $dlq,
         string $workerProfile,
         array $config,
+        bool $competingConsumersExpected = false,
     ): ?RuntimeException {
         $pool = new Pool(self::declareConfig($nativeConfig));
         $messageId = '';
@@ -213,6 +214,15 @@ class DoctorProbe
                     // not a dead-letter failure.
                     throw new CanaryInconclusiveException(
                         "canary never reached this consumer — competing consumers processed {$foreign} message(s) first; re-run in a quiet window",
+                    );
+                }
+
+                if ($competingConsumersExpected) {
+                    // Running workers (e.g. Horizon) can consume the probe
+                    // outright — the doctor's consumer sees no foreign
+                    // traffic at all. Still an environment property.
+                    throw new CanaryInconclusiveException(
+                        'canary never reached this consumer — running consumers on this connection likely claimed the probe; pause the workers and re-run',
                     );
                 }
 

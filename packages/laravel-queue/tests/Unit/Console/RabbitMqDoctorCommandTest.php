@@ -9,7 +9,6 @@ use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
-use RuntimeException;
 
 const HORIZON_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue';
 const BASE_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\RabbitMqQueue';
@@ -53,6 +52,7 @@ function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.3', ?s
             string $dlq,
             string $workerProfile,
             array $config,
+            bool $competingConsumersExpected = false,
         ): ?RuntimeException {
             return $this->canaryError;
         }
