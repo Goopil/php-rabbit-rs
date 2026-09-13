@@ -468,12 +468,12 @@ describe('WorkerSupervisor integration', function () {
             ->and($calls)->toBe([0 => 1]);
     });
 
-    it('once mode re-arms children while broker depth remains, with unique worker indexes', function () {
+    it('once mode caps re-arms when children crash without consuming, instead of looping forever', function () {
         $calls = [];
         $supervisor = makeSupervisor(
             workers: 1,
             maxRestarts: 3,
-            extraEnv: ['RABBIT_RS_STUB_MODE' => 'exit-clean'],
+            extraEnv: ['RABBIT_RS_STUB_MODE' => 'crash'],
             once: true,
             maxWorkers: 3,
             depth: 100,
@@ -482,14 +482,49 @@ describe('WorkerSupervisor integration', function () {
 
         $exit = $supervisor->run();
 
-        // 1 initial child + 2 admitted on the first scale pass (depth 100 vs
-        // 1 live) + 3 bounded re-arms of the initial fleet after the final
-        // depth check keeps finding work. Every index spawned exactly once:
-        // dynamic spawns never collide on --name or the worker env index.
+        // Crashed children consumed nothing, so they never renew the re-arm
+        // budget: 1 initial child + 2 admitted on the first scale pass +
+        // 3 bounded re-arms, then the supervisor gives up and propagates the
+        // crash exit status instead of spinning against a broken fleet.
         ksort($calls);
-        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+        expect($exit)->toBeGreaterThan(WorkerSupervisor::EXIT_CLEAN)
             ->and(array_keys($calls))->toBe([0, 1, 2, 3, 4, 5])
             ->and($calls)->each->toBe(1);
+    });
+
+    it('once mode drains a queue far deeper than the fleet by renewing the re-arm budget on progress', function () {
+        // Each child processes one job and exits clean, so the pending depth
+        // decreases by exactly one per spawn — the observable progress that
+        // must renew the re-arm budget past its absolute cap (issue #269).
+        $jobs = 10;
+        $spawned = 0;
+        $indexes = [];
+        $factory = static function (int $workerIndex) use (&$spawned, &$indexes): Process {
+            $spawned++;
+            $indexes[] = $workerIndex;
+
+            return new Process([PHP_BINARY, '-r', 'exit(0);']);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            minWorkers: 1,
+            maxWorkers: 3,
+            once: true,
+            depthCallback: static function () use (&$spawned, $jobs): array {
+                return ['rabbit-rs' => max(0, $jobs - $spawned)];
+            },
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($spawned)->toBe($jobs)
+            ->and($indexes)->toBe(range(0, $jobs - 1));
     });
 
     it('once mode without a depth source never scales or re-arms', function () {

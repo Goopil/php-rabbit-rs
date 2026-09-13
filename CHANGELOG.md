@@ -8,6 +8,10 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Fixed
+
+- `rabbit-rs:work --once` now drains deep queues (#269): the one-shot re-arm budget renews on observed progress — a clean child exit (the child consumed a job) or a decrease of the reported depth between re-arms — instead of capping at 3 re-arms. Quorum-queue gauges lag seconds behind consumption, so the old cap fired while the fleet was still working and the supervisor exited clean with most of the queue pending; the cap now only binds a crash loop (crashed children never renew the budget, and their exit status still fails the command). Signal handlers are now installed before the initial fleet spawns, closing the orphan window on SIGTERM/SIGINT during spawn. `--stop-when-empty` remains the authoritative drain mode (quorum-queue `messages_ready` lags seconds behind reality after a burst).
+
 ## [0.3.2] - 2026-09-12
 
 ### Added
