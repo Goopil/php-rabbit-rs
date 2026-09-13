@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Config;
 
+use Goopil\RabbitRs\Laravel\Support\DelayPluginGuard;
 use InvalidArgumentException;
 
 /**
@@ -98,20 +99,36 @@ final class ConnectionCompiler
             ],
         ];
 
+        $native = [
+            'brokers' => [$broker],
+            'workers' => [$worker],
+            'topology_mode' => self::topologyMode($config['topology_mode'] ?? 'declare', $path.'.topology_mode'),
+            'delay' => self::delay($config['delay'] ?? [], $path.'.delay'),
+            'dead_letter' => $topology['dead_letter'],
+            'delivery_limit' => $topology['queue']['delivery_limit'],
+            'publisher' => $publisher,
+            'consumer' => self::consumer($config, $path),
+            'queue_type' => $topology['queue']['type'],
+            'queue_durable' => $topology['queue']['durable'],
+            'routes' => $routes,
+        ];
+
+        // Auto resolves against the broker here — not in the connector — so
+        // every compile site (doctor, status, topology, the depth sampler,
+        // runtime apps re-deriving a pool from raw config) lands on the same
+        // effective mode and therefore the same pool fingerprint: on a broker
+        // without the delayed-message plugin the native plugin strategy
+        // publishes deferred jobs into the main queue until a sweep re-buckets
+        // them (early-execution window), so auto degrades to the ttl bucket
+        // queues. The effective mode also arms the queue's publish-time
+        // plugin guard.
+        $native['delay']['mode'] = DelayPluginGuard::resolveAutoMode(
+            $name,
+            $native['delay']['mode'],
+        );
+
         return [
-            'native' => [
-                'brokers' => [$broker],
-                'workers' => [$worker],
-                'topology_mode' => self::topologyMode($config['topology_mode'] ?? 'declare', $path.'.topology_mode'),
-                'delay' => self::delay($config['delay'] ?? [], $path.'.delay'),
-                'dead_letter' => $topology['dead_letter'],
-                'delivery_limit' => $topology['queue']['delivery_limit'],
-                'publisher' => $publisher,
-                'consumer' => self::consumer($config, $path),
-                'queue_type' => $topology['queue']['type'],
-                'queue_durable' => $topology['queue']['durable'],
-                'routes' => $routes,
-            ],
+            'native' => $native,
             'routes' => $routes,
             'publisher' => $publisher,
             'topology' => $topology,

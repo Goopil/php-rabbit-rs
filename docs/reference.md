@@ -830,6 +830,12 @@ rabbitmq-plugins list | grep delay
 # Should show: rabbitmq_delayed_message_exchange
 ```
 
+The driver guards this for you: with a `management_url` configured, `plugin`
+mode throws `DelayPluginMissingException` on the first delayed publish when
+the management API proves the plugin absent, and `auto` mode degrades to the
+`ttl` bucket queues at connection compile time — deferred jobs are never
+published into the main queue or silently lost.
+
 3. If using `ttl` mode, check the TTL queues exist:
 
 ```bash
