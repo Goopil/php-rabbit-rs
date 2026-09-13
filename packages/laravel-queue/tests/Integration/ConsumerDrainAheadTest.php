@@ -11,7 +11,8 @@ declare(strict_types=1);
  * drained. These invariants must hold before and after the amortization.
  */
 
-it('delivers buffered siblings in FIFO order with per-job acks', function () {    $this->queueName = uniqueQueue('rabbit-rs-it-drain');
+it('delivers buffered siblings in FIFO order with per-job acks', function () {
+    $this->queueName = uniqueQueue('rabbit-rs-it-drain');
     declareQueue($this->queueName);
     grantRabbitRsConfigure(ORDERS_VHOST);
 
