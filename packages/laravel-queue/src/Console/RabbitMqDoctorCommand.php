@@ -395,10 +395,17 @@ final class RabbitMqDoctorCommand extends Command
             (string) $deadLetter['queue'],
             $workerProfile,
             $config,
+            $this->horizonConsumersConfigured($name, $compiled),
         );
 
         if ($error !== null) {
-            $this->emit('fail', "dead-letter canary failed: {$error} — dead-lettered messages would vanish (real broker traffic was produced)");
+            if ($error instanceof CanaryInconclusiveException) {
+                $this->emit('warn', "dead-letter canary inconclusive: {$error->getMessage()}");
+
+                return;
+            }
+
+            $this->emit('fail', "dead-letter canary failed: {$error->getMessage()} — dead-lettered messages would vanish (real broker traffic was produced)");
 
             return;
         }
@@ -473,6 +480,37 @@ final class RabbitMqDoctorCommand extends Command
         if ($ok) {
             $this->emit('ok', 'horizon supervisors aligned with the connection subscriptions');
         }
+    }
+
+    /**
+     * Whether any Horizon supervisor of the current environment is configured
+     * to consume this connection's queues. Running consumers can claim the
+     * canary probe before the doctor's own consumer — knowledge the canary
+     * needs to report an inconclusive run instead of a dead-letter failure.
+     *
+     * @param  array<string, mixed>  $compiled
+     */
+    private function horizonConsumersConfigured(string $name, array $compiled): bool
+    {
+        if (! class_exists(Horizon::class)) {
+            return false;
+        }
+
+        $horizonConfig = config('horizon');
+        if (! is_array($horizonConfig)) {
+            return false;
+        }
+
+        $environment = $this->laravel->environment();
+        $environments = $horizonConfig['environments'] ?? [];
+        $envSupervisors = is_array($environments) ? ($environments[$environment] ?? []) : [];
+        if (! is_array($envSupervisors) || $envSupervisors === []) {
+            return false;
+        }
+
+        $queues = array_column($compiled['native']['workers'][0]['subscriptions'] ?? [], 'queue');
+
+        return $this->auditSupervisors($name, $envSupervisors, $queues)['matched'];
     }
 
     /**
