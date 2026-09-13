@@ -66,6 +66,12 @@ it('surfaces an unroutable mandatory publish at the next pop', function () {
     // operation (issue #252): the publisher actor records the broker
     // return in the metrics snapshot read by stats().
     expect($this->pool->stats()['returns_total'])->toBeGreaterThan(0);
+
+    // Userland surface (issue #290): the queue's stats() passthrough reads
+    // the same snapshot, and no publication was dropped in this scenario —
+    // a mandatory return is never a closed-client drop.
+    expect($this->queue->stats()['returns_total'])->toBeGreaterThan(0)
+        ->and($this->queue->stats()['dropped_publications_total'])->toBe(0);
 });
 
 it('surfaces a returned batch through drainSettlementErrors', function () {
