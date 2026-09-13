@@ -1209,6 +1209,92 @@ async fn admin_operations_fail_fast_when_the_connection_failed_permanently() {
     pool.close().await.expect("close pool");
 }
 
+/// Issue #285: when the pool has published `FailedPermanent { reason }`, admin
+/// operations must surface that published reason — the actual refusal text —
+/// instead of a bare state notice, and never raw lapin state text like
+/// `invalid connection state: Closed`.
+#[tokio::test(start_paused = true)]
+async fn admin_operations_surface_the_permanent_failure_reason() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_connect_result(Err(TransportError::authentication(
+        "credentials rejected by the broker",
+    )));
+
+    let pool = ClientPool::new(
+        config(
+            vec![broker("primary", "/", "guest")],
+            vec![worker_profile("main", "primary", "jobs", 4)],
+        ),
+        transport.clone() as Arc<dyn Transport>,
+    );
+
+    let error = tokio::time::timeout(Duration::from_secs(5), pool.queue_size("primary", "jobs"))
+        .await
+        .expect("queue_size must fail instead of hanging on a permanently failed actor")
+        .expect_err("queue_size must fail on a permanently failed actor");
+    let error = format!("{error}");
+    assert!(
+        error.contains("broker connection failed permanently: credentials rejected by the broker"),
+        "the published permanent-failure reason must be surfaced, got: {error}"
+    );
+    assert!(
+        !error.contains("invalid connection state"),
+        "raw lapin state text must not leak: {error}"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
+/// Issue #285: when the admin readiness wait times out, the last typed
+/// coordinator error is appended to the fabricated timeout text instead of
+/// being discarded, so the caller sees why the channel never became ready.
+#[tokio::test(start_paused = true)]
+async fn admin_operation_timeout_reports_the_typed_coordinator_error() {
+    let transport = Arc::new(MockTransport::default());
+    // The connect gate is never released: the actor stays in Connecting, so
+    // every admin-channel attempt fails with the typed "connection is not
+    // ready" transport error until the readiness deadline elapses.
+    let _gate = transport.push_connect_gate();
+
+    let config = Config {
+        brokers: vec![broker("primary", "/", "guest")],
+        workers: vec![worker_profile("main", "primary", "jobs", 4)],
+        topology_mode: TopologyMode::Declare,
+        routes: BTreeMap::new(),
+        delay: DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        consumer: ConsumerConfigSection {
+            wait_timeout: Duration::from_secs(1),
+            max_attempts: None,
+        },
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+    };
+
+    let pool = ClientPool::new(
+        Arc::new(config.validate().expect("valid config")),
+        transport,
+    );
+
+    let error = pool
+        .queue_size("primary", "jobs")
+        .await
+        .expect_err("the admin operation must time out against a black-holed broker");
+    let error = format!("{error}");
+    assert!(
+        error.contains("did not become ready for the admin operation within"),
+        "the fabricated timeout prefix must be preserved, got: {error}"
+    );
+    assert!(
+        error.contains(": connection is not ready"),
+        "the typed coordinator error must be appended, got: {error}"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
 // ---------------------------------------------------------------------------
 // Delay bucket queue keep-alive (issue #211): RabbitMQ deletes a queue after
 // `x-expires` of idleness, and publishing does not count as use — only

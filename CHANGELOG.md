@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- Admin operations and consumer acquisition no longer discard the coordinator's typed errors (issue #285): a permanently failed pool fails admin calls immediately with its published permanent-failure reason instead of waiting out a timeout and surfacing raw lapin state text (`invalid connection state: Closed`), and timed-out consumer establishment now reports the underlying coordinator error after the existing readiness message.
+
 ## [0.3.4] - 2026-09-13
 
 ### Fixed
