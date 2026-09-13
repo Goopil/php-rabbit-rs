@@ -25,7 +25,7 @@ use crate::{
     metrics::Metrics,
     publisher::{MessageProperties, PublishOutcome, PublishRequest, delay::DelayRouter},
     topology::delay::DelayStrategy,
-    transport::{Delivery as TransportDelivery, TransportResult},
+    transport::{Delivery as TransportDelivery, TransportError, TransportResult},
 };
 
 type ChannelKey = (SubscriptionId, u16, u64);
@@ -124,6 +124,10 @@ struct ActorState {
     settlement_in_flight: HashSet<ChannelKey>,
     settlement_queues: HashMap<ChannelKey, VecDeque<SettleParams>>,
     settle_through_queues: HashMap<ChannelKey, VecDeque<SettleThroughParams>>,
+    /// Plain acks recorded but not yet flushed to the wire, per channel.
+    /// Bounded by the ledger, which is bounded by the in-flight budget and
+    /// prefetch. Drained by `flush_acked` at the top of every loop pass.
+    acked_batch: HashMap<ChannelKey, std::collections::BTreeMap<u64, Arc<DeliveryTokenInner>>>,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
     commands: mpsc::Sender<ConsumerCommand>,
@@ -210,6 +214,7 @@ impl ActorState {
             settlement_in_flight: HashSet::new(),
             settlement_queues: HashMap::new(),
             settle_through_queues: HashMap::new(),
+            acked_batch: HashMap::new(),
             source_errors: VecDeque::new(),
             scheduler,
             commands,
@@ -589,6 +594,30 @@ pub(crate) async fn run_actor(
     let mut prefetch_interval = tokio::time::interval(PREFETCH_TICK);
     prefetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
+        // Drain every ready command before flushing acks: settlements
+        // recorded in one burst must coalesce into one wire ack, not leak
+        // out one per select pass. Same backpressure gate as the select arm.
+        while state.pending_incoming.len() < state.pending_capacity {
+            match receiver.try_recv() {
+                Ok(ConsumerCommand::Incoming {
+                    subscription,
+                    result,
+                }) => {
+                    handle_incoming(&mut state, subscription, result);
+                }
+                Ok(ConsumerCommand::Settle { token, settlement }) => {
+                    handle_settle(&mut state, token, settlement);
+                }
+                Ok(ConsumerCommand::SettleThrough { token }) => {
+                    handle_settle_through(&mut state, token);
+                }
+                Ok(ConsumerCommand::GetPrefetchStats { completed }) => {
+                    let _ = completed.send(state.prefetch_stats());
+                }
+                Err(_) => break,
+            }
+        }
+        flush_acked(&mut state);
         tokio::select! {
             command = receiver.recv(),
                 if state.pending_incoming.len() < state.pending_capacity =>
@@ -596,55 +625,7 @@ pub(crate) async fn run_actor(
                 Some(ConsumerCommand::Incoming {
                     subscription,
                     result,
-                }) => match result {
-                    Ok(delivery) => {
-                        let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
-                        if let Some(channel_key) = state.channel_key_for(&subscription) {
-                            state.channel_ledgers
-                                .entry(channel_key)
-                                .or_default()
-                                .pending
-                                .insert(delivery.delivery_tag, ChannelLedgerEntry {
-                                    state: DeliveryState::Pending,
-                                    token: None,
-                                });
-                        }
-                        let over_budget = if let Some(max) = state.max_buffered_bytes.get(&subscription) {
-                            let current = state.buffered_bytes.get(&subscription).copied().unwrap_or(0);
-                            current.saturating_add(delivery_bytes) > *max
-                        } else {
-                            false
-                        };
-                        if over_budget {
-                            state.pending_incoming.push_back((subscription.clone(), delivery));
-                            state.metrics.record_backpressure();
-                        } else if state.pending_incoming.is_empty() {
-                            if let Some(buffer) = state.buffers.get_mut(&subscription) {
-                                buffer.push_back(delivery);
-                                state.scheduler.mark_ready(&subscription);
-                            }
-                            if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
-                                *bytes = bytes.saturating_add(delivery_bytes);
-                            }
-                            state.dispatch();
-                        } else {
-                            state.pending_incoming.push_back((subscription.clone(), delivery));
-                            state.drain_pending();
-                            state.dispatch();
-                        }
-                    }
-                    Err(error) => {
-                        state.record_source_error(ConsumerError::new(
-                            ConsumerErrorKind::Transport,
-                            error.to_string(),
-                        ));
-                        // Surface retained errors without waiting for an
-                        // unrelated wake-up: a terminal error arriving after
-                        // the embedder is already parked in `next()` must
-                        // still reach it.
-                        state.dispatch();
-                    }
-                },
+                }) => handle_incoming(&mut state, subscription, result),
                 Some(ConsumerCommand::Settle {
                     token,
                     settlement,
@@ -930,12 +911,86 @@ pub(crate) async fn run_actor(
     close_set(&mut state, &mut receiver).await;
 }
 
-/// Enqueues one settlement command into the actor's per-channel settlement
-/// machinery. Shared by the live command loop and the close-time sweep.
+/// Handles one incoming delivery command: ledger claim, byte-budget
+/// backpressure, buffering and dispatch. Shared by the live select arm and
+/// the loop-top command drain.
+fn handle_incoming(
+    state: &mut ActorState,
+    subscription: SubscriptionId,
+    result: Result<TransportDelivery, TransportError>,
+) {
+    match result {
+        Ok(delivery) => {
+            let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
+            if let Some(channel_key) = state.channel_key_for(&subscription) {
+                state
+                    .channel_ledgers
+                    .entry(channel_key)
+                    .or_default()
+                    .pending
+                    .insert(
+                        delivery.delivery_tag,
+                        ChannelLedgerEntry {
+                            state: DeliveryState::Pending,
+                            token: None,
+                        },
+                    );
+            }
+            let over_budget = if let Some(max) = state.max_buffered_bytes.get(&subscription) {
+                let current = state
+                    .buffered_bytes
+                    .get(&subscription)
+                    .copied()
+                    .unwrap_or(0);
+                current.saturating_add(delivery_bytes) > *max
+            } else {
+                false
+            };
+            if over_budget {
+                state.pending_incoming.push_back((subscription, delivery));
+                state.metrics.record_backpressure();
+            } else if state.pending_incoming.is_empty() {
+                if let Some(buffer) = state.buffers.get_mut(&subscription) {
+                    buffer.push_back(delivery);
+                    state.scheduler.mark_ready(&subscription);
+                }
+                if let Some(bytes) = state.buffered_bytes.get_mut(&subscription) {
+                    *bytes = bytes.saturating_add(delivery_bytes);
+                }
+                state.dispatch();
+            } else {
+                state.pending_incoming.push_back((subscription, delivery));
+                state.drain_pending();
+                state.dispatch();
+            }
+        }
+        Err(error) => {
+            state.record_source_error(ConsumerError::new(
+                ConsumerErrorKind::Transport,
+                error.to_string(),
+            ));
+            // Surface retained errors without waiting for an unrelated
+            // wake-up: a terminal error arriving after the embedder is
+            // already parked in `next()` must still reach it.
+            state.dispatch();
+        }
+    }
+}
+
 fn handle_settle(state: &mut ActorState, token: Arc<DeliveryTokenInner>, settlement: Settlement) {
     let Some(channel_key) = claim_settlement(state, &token) else {
         return;
     };
+    if matches!(settlement, Settlement::Ack) {
+        // Plain acks coalesce: record only — `flush_acked` bursts the
+        // contiguous prefix into one cumulative wire ack.
+        state
+            .acked_batch
+            .entry(channel_key)
+            .or_default()
+            .insert(token.delivery_tag, token);
+        return;
+    }
     let params = SettleParams { token, settlement };
     if state.settlement_in_flight.contains(&channel_key) {
         state
@@ -1013,6 +1068,97 @@ fn settlement_error(
     }
 }
 
+/// Flushes recorded plain acks to the wire, called at the top of every actor
+/// pass after the command drain. The contiguous run of acked delivery tags
+/// above the settled watermark lands as one cumulative
+/// `ack(watermark, multiple=true)` through the existing settle-through
+/// machinery; acks beyond a hole flush individually so a stalled tag never
+/// delays downstream acknowledgements on the wire. Channels with a
+/// settlement in flight keep their batch for the next pass. Tokens absent
+/// from the ledger are already terminal (double acks) and drop without a
+/// wire op.
+fn flush_acked(state: &mut ActorState) {
+    if state.acked_batch.is_empty() {
+        return;
+    }
+    let channels: Vec<ChannelKey> = state.acked_batch.keys().cloned().collect();
+    for channel_key in channels {
+        if state.settlement_in_flight.contains(&channel_key) {
+            continue;
+        }
+        let Some(batch) = state.acked_batch.get(&channel_key) else {
+            continue;
+        };
+        let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
+            // The ledger dies with the channel generation; the broker
+            // redelivers what was never acknowledged on the wire.
+            state.acked_batch.remove(&channel_key);
+            continue;
+        };
+
+        // Walk the contiguous run of recorded acks above the settled
+        // watermark. The first unacked (or terminal) tag ends the run —
+        // that hole does not invalidate the run before it.
+        let mut prefix_tokens: Vec<Arc<DeliveryTokenInner>> = Vec::new();
+        for (&tag, entry) in ledger.pending.range(ledger.acked_prefix + 1..) {
+            match batch.get(&tag) {
+                Some(token) if entry.state == DeliveryState::Pending => {
+                    prefix_tokens.push(token.clone());
+                }
+                _ => break,
+            }
+        }
+        let watermark = prefix_tokens.last().map(|token| token.delivery_tag);
+
+        // Stragglers: acked tags beyond the hole (or the whole batch when
+        // the run is empty). Already-terminal tags drop without a wire op.
+        let scan_from = watermark.map_or(ledger.acked_prefix + 1, |w| w + 1);
+        let mut stragglers: Vec<SettleParams> = Vec::new();
+        for (tag, token) in batch.range(scan_from..) {
+            if let Some(entry) = ledger.pending.get(tag)
+                && entry.state == DeliveryState::Pending
+            {
+                stragglers.push(SettleParams {
+                    token: token.clone(),
+                    settlement: Settlement::Ack,
+                });
+            }
+        }
+        state.acked_batch.remove(&channel_key);
+        if let Some(target_token) = prefix_tokens.pop() {
+            prefix_tokens.push(target_token.clone());
+            launch_settle_through(
+                state,
+                channel_key.clone(),
+                SettleThroughParams {
+                    token: target_token,
+                    affected_tokens: prefix_tokens,
+                },
+            );
+            // In flight now: stragglers queue behind the burst.
+            for params in stragglers {
+                state
+                    .settlement_queues
+                    .entry(channel_key.clone())
+                    .or_default()
+                    .push_back(params);
+            }
+        } else {
+            for params in stragglers {
+                if state.settlement_in_flight.contains(&channel_key) {
+                    state
+                        .settlement_queues
+                        .entry(channel_key.clone())
+                        .or_default()
+                        .push_back(params);
+                } else {
+                    launch_settlement(state, channel_key.clone(), params);
+                }
+            }
+        }
+    }
+}
+
 /// Bounded budget for the close-time settlement flush (issue #233). Mirrors
 /// the publish side's teardown flush budget: long enough to land queued
 /// settlements on a healthy broker, short enough that a stalled transport
@@ -1040,6 +1186,8 @@ async fn close_set(state: &mut ActorState, receiver: &mut mpsc::Receiver<Consume
             ConsumerCommand::Incoming { .. } | ConsumerCommand::GetPrefetchStats { .. } => {}
         }
     }
+    // Recorded acks join the bounded drain like any queued settlement.
+    flush_acked(state);
 
     // Drive in-flight and queued settlements to the transport within the
     // bounded budget — same sequencing as the actor's completion arms,

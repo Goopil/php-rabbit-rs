@@ -18,7 +18,11 @@
 //! fresh connection per purge) is the mechanism that would degrade pops;
 //! these tests fail if it ever appears.
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
@@ -122,6 +126,28 @@ fn connect_count(transport: &MockTransport) -> usize {
     })
 }
 
+/// Every delivery tag the wire acks settle: a cumulative
+/// `Ack { multiple: true }` covers the whole contiguous range up to its tag.
+fn settled_tags(transport: &MockTransport) -> BTreeSet<u64> {
+    let mut settled = BTreeSet::new();
+    let mut acked_upto = 0_u64;
+    for operation in transport.operations() {
+        if let TransportOperation::Ack {
+            delivery_tag,
+            multiple,
+        } = operation
+        {
+            if multiple {
+                settled.extend(acked_upto + 1..=delivery_tag);
+                acked_upto = acked_upto.max(delivery_tag);
+            } else {
+                settled.insert(delivery_tag);
+            }
+        }
+    }
+    settled
+}
+
 #[tokio::test(start_paused = true)]
 async fn purge_between_rounds_keeps_a_pre_existing_consumer_delivering() {
     let transport = Arc::new(MockTransport::default());
@@ -149,11 +175,8 @@ async fn purge_between_rounds_keeps_a_pre_existing_consumer_delivering() {
     // Every popped message was settled on its broker channel, and the
     // consumer never surfaced a stale-generation error.
     assert_eq!(
-        count(&transport, |op| matches!(
-            op,
-            TransportOperation::Ack { .. }
-        )),
-        9,
+        settled_tags(&transport),
+        BTreeSet::from([1, 2, 3, 4, 5, 6, 7, 8, 9]),
         "all nine deliveries must be acknowledged"
     );
     assert!(
@@ -298,10 +321,8 @@ async fn deliveries_after_a_purge_carry_the_pre_existing_generation() {
         "acks after a purge must settle without stale-generation errors"
     );
     assert_eq!(
-        count(&transport, |op| matches!(
-            op,
-            TransportOperation::Ack { .. }
-        )),
-        6
+        settled_tags(&transport),
+        BTreeSet::from([1, 2, 3, 4, 5, 6]),
+        "acks after a purge must settle without stale-generation errors"
     );
 }

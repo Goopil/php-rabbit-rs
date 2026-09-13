@@ -413,7 +413,7 @@ async fn ack_uses_the_delivery_generation_and_channel() {
     assert_eq!(item.state(), DeliveryState::Acked);
     assert!(transport.operations().contains(&TransportOperation::Ack {
         delivery_tag: 42,
-        multiple: false,
+        multiple: true,
     }));
 }
 
@@ -2270,17 +2270,135 @@ async fn close_flushes_queued_settlements_within_a_bounded_budget() {
     handle.close().await.expect("close drains settlements");
     releaser.await.expect("releaser task");
 
-    let acked_tags: BTreeSet<u64> = transport
-        .operations()
-        .iter()
-        .filter_map(|operation| match operation {
-            TransportOperation::Ack { delivery_tag, .. } => Some(*delivery_tag),
-            _ => None,
-        })
-        .collect();
+    // Cumulative acks cover contiguous ranges: expand them so the set holds
+    // every settled delivery tag, not just the batch watermarks.
+    let mut acked_upto = 0_u64;
+    let mut acked_tags = BTreeSet::new();
+    for operation in transport.operations() {
+        if let TransportOperation::Ack {
+            delivery_tag,
+            multiple,
+        } = operation
+        {
+            if multiple {
+                acked_tags.extend(acked_upto + 1..=delivery_tag);
+            } else {
+                acked_tags.insert(delivery_tag);
+            }
+            acked_upto = acked_upto.max(delivery_tag);
+        }
+    }
     assert_eq!(
         acked_tags,
         BTreeSet::from([1, 2]),
         "close must flush queued settlements to the transport"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn coalesces_a_sequential_ack_burst_into_one_wire_ack() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"first")));
+    transport.push_delivery(Ok(delivery(2, b"second")));
+    transport.push_delivery(Ok(delivery(3, b"third")));
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    let first = consumer.next().await.expect("first delivery");
+    let second = consumer.next().await.expect("second delivery");
+    let third = consumer.next().await.expect("third delivery");
+
+    first.try_ack().expect("ack 1");
+    second.try_ack().expect("ack 2");
+    third.try_ack().expect("ack 3");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+    let_actor_process().await;
+
+    let operations = transport.operations();
+    let acks: Vec<&TransportOperation> = operations
+        .iter()
+        .filter(|operation| matches!(operation, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(
+        acks,
+        vec![&TransportOperation::Ack {
+            delivery_tag: 3,
+            multiple: true,
+        }],
+        "a contiguous ack burst must land as one cumulative wire ack"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn flushes_acks_beyond_a_hole_individually() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"first")));
+    transport.push_delivery(Ok(delivery(2, b"second")));
+    transport.push_delivery(Ok(delivery(3, b"third")));
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    let first = consumer.next().await.expect("first delivery");
+    let second = consumer.next().await.expect("second delivery");
+    let third = consumer.next().await.expect("third delivery");
+
+    // Ack 1 and 3, leave 2 unacked: 1 is the contiguous prefix (batched),
+    // 3 sits beyond the hole and must not wait for it.
+    first.try_ack().expect("ack 1");
+    third.try_ack().expect("ack 3");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+    let_actor_process().await;
+
+    let acks: BTreeSet<(u64, bool)> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Ack {
+                delivery_tag,
+                multiple,
+            } => Some((*delivery_tag, *multiple)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        acks,
+        BTreeSet::from([(1, true), (3, false)]),
+        "prefix acks batch, hole-downstream acks flush individually"
+    );
+
+    // Acking 2 fills the hole: 2 lands as a cumulative ack on its own.
+    second.try_ack().expect("ack 2");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+    let_actor_process().await;
+
+    let acks: BTreeSet<(u64, bool)> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Ack {
+                delivery_tag,
+                multiple,
+            } => Some((*delivery_tag, *multiple)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        acks,
+        BTreeSet::from([(1, true), (3, false), (2, true)]),
+        "the hole-fill ack resumes the contiguous watermark"
     );
 }
