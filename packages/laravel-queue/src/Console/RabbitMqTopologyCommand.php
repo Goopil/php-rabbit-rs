@@ -87,11 +87,9 @@ final class RabbitMqTopologyCommand extends Command
         $ok = $this->verifyQueues($name, $compiled, $probe);
         $ok = $this->verifyManagement($name, $config, $compiled) && $ok;
 
-        if (! (bool) $this->option('fix')) {
-            return $ok;
-        }
-
-        return $this->applyFix($name, $config, $compiled, $probe);
+        return ! (bool) $this->option('fix')
+            ? $ok
+            : $this->applyFix($name, $config, $compiled, $probe);
     }
 
     /**
@@ -368,15 +366,13 @@ final class RabbitMqTopologyCommand extends Command
         // passive queue probe carries the existence confirmation; the
         // management checks stay advisory when the api is unreachable, as
         // in verify.
-        $verified = $this->verifyQueues($name, $compiled, $probe);
-        $verified = $this->verifyManagement($name, $config, $compiled) && $verified;
-        if (! $verified) {
-            return false;
+        $verified = $this->verifyQueues($name, $compiled, $probe)
+            && $this->verifyManagement($name, $config, $compiled);
+        if ($verified) {
+            $this->info("topology declared (worker profile '{$workerProfile}')");
         }
 
-        $this->info("topology declared (worker profile '{$workerProfile}')");
-
-        return true;
+        return $verified;
     }
 
     /**
