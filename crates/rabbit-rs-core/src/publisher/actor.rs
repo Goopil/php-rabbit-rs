@@ -549,28 +549,52 @@ async fn run_actor(
 
     loop {
         tokio::select! {
-            command = commands.recv() => match command {
-                Some(Command::Publish(retained)) => {
-                    accept_publish(&mut state, *retained).await;
-                }
-                Some(Command::ConnectionEvent(event, completed)) => {
-                    let result = handle_connection_event(&mut state, event).await;
-                    let _ = completed.send(result);
-                }
-                Some(Command::Close(completed)) => {
-                    quiesce_and_close(&mut state).await;
-                    let _ = completed.send(());
-                    return;
-                }
-                None => {
+            command = commands.recv() => {
+                let Some(command) = command else {
                     let error = PublishError::new(
                         PublishErrorKind::Closed,
                         "all publisher handles were dropped",
                     );
                     state.fail_all(&error);
                     return;
+                };
+                // Coalesce every already-queued publish command into one
+                // drain: one clock read and one task wakeup for the whole
+                // ready batch instead of one per publication (the pump hot
+                // path). The drain stops at the first non-publish command so
+                // suspend and close keep their FIFO position; that command
+                // is deferred, never dropped.
+                let mut deferred = None;
+                if let Command::Publish(retained) = command {
+                    let mut pending = VecDeque::from([*retained]);
+                    while deferred.is_none() {
+                        match commands.try_recv() {
+                            Ok(Command::Publish(next)) => pending.push_back(*next),
+                            Ok(other) => deferred = Some(other),
+                            Err(_) => break,
+                        }
+                    }
+                    accept_publish(&mut state, pending).await;
+                } else {
+                    deferred = Some(command);
                 }
-            },
+                if let Some(command) = deferred {
+                    match command {
+                        Command::Publish(retained) => {
+                            accept_publish(&mut state, VecDeque::from([*retained])).await;
+                        }
+                        Command::ConnectionEvent(event, completed) => {
+                            let result = handle_connection_event(&mut state, event).await;
+                            let _ = completed.send(result);
+                        }
+                        Command::Close(completed) => {
+                            quiesce_and_close(&mut state).await;
+                            let _ = completed.send(());
+                            return;
+                        }
+                    }
+                }
+            }
             () = wait_for_deadline(state.next_deadline()) => {
                 match state.phase {
                     Phase::Ready | Phase::FailedPermanent => {}
@@ -589,26 +613,27 @@ async fn run_actor(
     }
 }
 
-async fn accept_publish(state: &mut ActorState, retained: RetainedPublish) {
+async fn accept_publish(state: &mut ActorState, pending: VecDeque<RetainedPublish>) {
     match state.phase {
         Phase::Ready => {
-            let pending = VecDeque::from([retained]);
             publish_queue(state, pending).await;
         }
         Phase::Suspended => {
-            state.replay.push_back(retained);
+            state.replay.extend(pending);
         }
         Phase::FailedPermanent => {
-            state.byte_budget.release(retained.payload_bytes);
-            complete_error(
-                retained,
-                state.permanent_error.clone().unwrap_or_else(|| {
-                    PublishError::new(
-                        PublishErrorKind::Transport,
-                        "publisher connection failed permanently",
-                    )
-                }),
-            );
+            for retained in pending {
+                state.byte_budget.release(retained.payload_bytes);
+                complete_error(
+                    retained,
+                    state.permanent_error.clone().unwrap_or_else(|| {
+                        PublishError::new(
+                            PublishErrorKind::Transport,
+                            "publisher connection failed permanently",
+                        )
+                    }),
+                );
+            }
         }
     }
 }
@@ -671,8 +696,14 @@ async fn flush_replay(state: &mut ActorState) {
 }
 
 async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPublish>) {
+    // One clock read per drain stretch: between items the loop is CPU-only,
+    // so a per-publication read bought nothing. Re-read after the only
+    // in-loop await (delay topology) — real time may pass there, and a
+    // publication whose deadline lapsed during the wait must fail Timeout
+    // instead of being attempted.
+    let mut now = time::Instant::now();
     while let Some(mut retained) = pending.pop_front() {
-        if retained.request.deadline <= time::Instant::now() {
+        if retained.request.deadline <= now {
             state.byte_budget.release(retained.payload_bytes);
             complete_error(
                 retained,
@@ -687,7 +718,9 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             return;
         };
 
-        match ensure_delay_topology(state, &channel, &retained).await {
+        let topology = ensure_delay_topology(state, &channel, &retained).await;
+        now = time::Instant::now();
+        match topology {
             DelayTopologyOutcome::Ready => {}
             DelayTopologyOutcome::Failed(error) => {
                 state.byte_budget.release(retained.payload_bytes);
