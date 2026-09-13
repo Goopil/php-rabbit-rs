@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- The doctor's dead-letter canary no longer self-sandbags behind DLQ backlog (issue #288): the check now also binds a doctor-owned `rabbit-rs.canary.*` DLQ to the configured dead-letter exchange, purges and deletes it after every run, and tiers the verdict — found on the configured DLQ → ok, found only in the canary DLQ (configured DLQ backlog deeper than the 100-message scan window, foreign count reported) → warn, never reaching the canary DLQ → hard fail.
+
 ## [0.3.4] - 2026-09-13
 
 ### Fixed
