@@ -581,6 +581,8 @@ namespace Goopil\RabbitRs {
                     'deliveries_total' => 50,
                     'acks_total' => 48,
                     'rejects_total' => 2,
+                    'dropped_publications_total' => 0,
+                    'dropped_error_records_total' => 0,
                     'confirmation_latency_p50' => 12,
                     'confirmation_latency_p95' => 45,
                     'confirmation_latency_p99' => 120,
