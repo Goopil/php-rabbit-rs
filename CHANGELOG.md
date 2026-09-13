@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- `rabbit-rs:work --once` no longer ends its drain on a memoized stale reading (issue #287): the depth sampler's 2 s window (failures included) could report a cached 0 to the final drain check while the broker still held work — the exit decision now re-probes uncached once before concluding, and a fully failed fresh probe retries within the existing re-arm budget instead of reporting a drained plan.
+
 ## [0.3.4] - 2026-09-13
 
 ### Fixed

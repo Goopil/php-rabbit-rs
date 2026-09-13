@@ -159,6 +159,23 @@ describe('native depth caching', function () {
             ->and($calls)->toBe([['mq', 'default'], ['mq', 'default']]);
     });
 
+    it('bypasses the native cache when asked for a fresh read', function () {
+        $calls = 0;
+        $answers = [0, 3];   // probe 1 the memoized empty read, probe 2 the fresh re-probe revealing the real depth
+        $native = static function (string $connection, string $queue) use (&$calls, &$answers): ?int {
+            $calls++;
+
+            return $answers[$calls - 1] ?? null;
+        };
+        $sampler = sampler([['connection' => 'mq', 'queues' => ['default']]], $native, 60.0);
+
+        expect($sampler->depths())->toBe(['mq' => 0])            // probe 1, cached
+            ->and($sampler->depths())->toBe(['mq' => 0])         // still cached, no second probe
+            ->and($sampler->depths(fresh: true))->toBe(['mq' => 3]) // bypasses the cache, probe 3
+            ->and($calls)->toBe(2)
+            ->and($sampler->depths())->toBe(['mq' => 3]);        // fresh read re-primed the cache
+    });
+
     it('caches a failed native probe for the ttl so a slow broker is not retried on every pass', function () {
         $calls = [];
         $native = seamRecorder([], $calls);
