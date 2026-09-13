@@ -80,15 +80,20 @@ final class QueueDepthSampler
 
     /**
      * Ready depth per plan connection, null when none of its queues
-     * reported a readable depth.
+     * reported a readable depth. Native lookups are memoized per
+     * connection and queue for {@see NATIVE_CACHE_TTL_SECONDS}: pass
+     * fresh: true to bypass the memoized read for a single call — the
+     * supervisor's final once-mode drain check uses this so a stale 0 or
+     * a memoized failed probe cannot end the drain with work pending
+     * (issue #287).
      *
      * @return array<string, int|null>
      */
-    public function depths(): array
+    public function depths(bool $fresh = false): array
     {
         $depths = [];
         foreach ($this->plan as $entry) {
-            $depths[$entry['connection']] = $this->depthFor($entry['connection'], $entry['queues']);
+            $depths[$entry['connection']] = $this->depthFor($entry['connection'], $entry['queues'], $fresh);
         }
 
         return $depths;
@@ -101,14 +106,14 @@ final class QueueDepthSampler
      *
      * @param  list<string>  $queues
      */
-    private function depthFor(string $connection, array $queues): ?int
+    private function depthFor(string $connection, array $queues, bool $fresh = false): ?int
     {
         $depth = 0;
         $known = false;
         foreach ($queues as $queue) {
             $queueDepth = $this->hasManagementUrl($connection)
                 ? ManagementApi::queueDepth($connection, $queue)
-                : $this->probeQueueDepth($connection, $queue);
+                : $this->probeQueueDepth($connection, $queue, $fresh);
             if ($queueDepth !== null) {
                 $known = true;
                 $depth += $queueDepth;
@@ -135,10 +140,10 @@ final class QueueDepthSampler
      * scratch instead of riding a broken socket, and the memoized null
      * keeps the supervision loop from retrying sooner.
      */
-    private function probeQueueDepth(string $connection, string $queue): ?int
+    private function probeQueueDepth(string $connection, string $queue, bool $fresh = false): ?int
     {
         $cached = $this->nativeCache[$key = $connection.'|'.$queue] ?? null;
-        if ($cached !== null && microtime(true) < $cached['expiresAt']) {
+        if (! $fresh && $cached !== null && microtime(true) < $cached['expiresAt']) {
             return $cached['depth'];
         }
 
