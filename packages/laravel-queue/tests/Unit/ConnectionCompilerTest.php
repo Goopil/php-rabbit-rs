@@ -865,7 +865,9 @@ function referenceCompiled(string $name): array
                 'scheduler' => ['strategy' => 'weighted_fair'],
             ]],
             'topology_mode' => 'declare',
-            'delay' => ['mode' => 'auto', 'buckets' => [1, 5, 30, 120], 'max_buckets' => 8, 'queue_expiry_margin' => 60],
+            // 'auto' resolves inside compile() now; no management_url in this
+            // fixture means the plugin cannot be verified, so it degrades.
+            'delay' => ['mode' => 'ttl', 'buckets' => [1, 5, 30, 120], 'max_buckets' => 8, 'queue_expiry_margin' => 60],
             'dead_letter' => null,
             'delivery_limit' => null,
             'publisher' => ['safety' => 'safe', 'confirms' => true, 'mandatory' => true, 'confirm_timeout' => 30000, 'flush_interval' => 1],
