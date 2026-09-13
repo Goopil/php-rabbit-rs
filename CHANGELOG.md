@@ -8,10 +8,12 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Fixed
+
+- The doctor's dead-letter canary no longer self-sandbags behind DLQ backlog (issue #288): the check now also binds a doctor-owned `rabbit-rs.canary.*` DLQ to the configured dead-letter exchange, purges and deletes it after every run, and tiers the verdict — found on the configured DLQ → ok, found only in the canary DLQ (configured DLQ backlog deeper than the 100-message scan window, foreign count reported) → warn, never reaching the canary DLQ → hard fail.
 ### Added
 
 - `RabbitMqQueue::stats()` exposes the process-local native pool counters to userland — including `returns_total` (unroutable mandatory publications) and `dropped_publications_total` (publications dropped on a closed client) — and `rabbit-rs:status` now reports the drop counter and warns when it is non-zero (issue #290).
-### Fixed
 
 - `rabbit-rs:work --once` no longer ends its drain on a memoized stale reading (issue #287): the depth sampler's 2 s window (failures included) could report a cached 0 to the final drain check while the broker still held work — the exit decision now re-probes uncached once before concluding, and a fully failed fresh probe retries within the existing re-arm budget instead of reporting a drained plan.
 

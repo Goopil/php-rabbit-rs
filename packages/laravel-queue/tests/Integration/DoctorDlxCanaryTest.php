@@ -61,7 +61,7 @@ it('proves the configured dead-letter wiring end-to-end through the doctor canar
     Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
     $output = Artisan::output();
 
-    expect($output)->toContain('dead-letter canary: delivered')
+    expect($output)->toContain('dead-letter canary: delivered, rejected, and received on the configured DLQ')
         ->and($output)->not->toContain('dead-letter canary failed')
         ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
 });
@@ -80,19 +80,40 @@ it('finds the canary behind a foreign DLQ backlog', function () {
         ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
 });
 
-it('reports inconclusive instead of failing when the DLQ backlog outgrows the scan window', function () {
+it('verifies the wiring through the canary DLQ when the configured DLQ backlog outgrows the scan window', function () {
     declareCanaryTopology($this->connectionName, $this->config);
     seedForeignDeadLetters($this->dlq, 110);
 
     Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
     $output = Artisan::output();
 
-    // 110 foreign messages wall off the canary beyond the 100-message scan
-    // window. The wiring was not disproven and foreign traffic was not
-    // touched — that is an inconclusive run, not dead-letter data loss.
+    // 110 foreign messages wall the canary off beyond the configured DLQ's
+    // 100-message scan window, but the doctor-owned canary DLQ — purged and
+    // deleted on every run, so a backlog can never wall it off (#288) —
+    // proves the DLX wiring is alive: the verdict is now a precise warn
+    // (wiring verified, foreign count reported) instead of the old opaque
+    // "the backlog outgrew the scan; dead-letter delivery unverified".
     expect($output)->toContain('dead-letter canary inconclusive')
+        ->and($output)->toContain('wiring verified through the canary DLQ')
         ->and($output)->not->toContain('dead-letter canary failed')
         ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
+});
+
+it('purges and deletes its canary DLQ after the check so nothing accumulates', function () {
+    declareCanaryTopology($this->connectionName, $this->config);
+
+    Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
+
+    // The canary DLQ is doctor-owned hygiene: once the check is over, no
+    // rabbit-rs.canary.* queue may remain on the broker (#288). The test's
+    // own topology (main queue, DLQ, DLX) is torn down by afterEach; the
+    // canary DLQ is deliberately not, so this assertion is the proof.
+    $queues = json_decode((string) managementRequest('GET', 'http://localhost:15672/api/queues'), true) ?: [];
+    $canaryQueues = array_values(array_filter(
+        is_array($queues) ? $queues : [],
+        static fn (array $queue): bool => str_starts_with((string) ($queue['name'] ?? ''), 'rabbit-rs.canary.'),
+    ));
+    expect($canaryQueues)->toBe([]);
 });
 
 /**
@@ -127,5 +148,6 @@ it('fails loud when the dead-letter wiring is broken', function () {
     $output = Artisan::output();
 
     expect($output)->toContain('dead-letter canary failed')
+        ->and($output)->toContain('never reached the DLX')
         ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(1);
 });
