@@ -17,14 +17,15 @@ const BASE_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\RabbitMqQueue';
  * and without a broker, so the doctor's extension and broker probes are
  * substituted with configurable fakes.
  */
-function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.2', ?string $brokerError = null): void
+function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.2', ?string $brokerError = null, ?string $canaryError = null): void
 {
-    $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError) extends DoctorProbe
+    $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError, $canaryError) extends DoctorProbe
     {
         public function __construct(
             private readonly bool $loaded,
             private readonly ?string $version,
             private readonly ?string $brokerError,
+            private readonly ?string $canaryError = null,
         ) {}
 
         public function extensionLoaded(): bool
@@ -40,6 +41,18 @@ function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.2', ?s
         public function broker(array $nativeConfig): ?string
         {
             return $this->brokerError;
+        }
+
+        public function deadLetterCanary(
+            array $nativeConfig,
+            string $broker,
+            string $exchange,
+            string $routingKey,
+            string $dlq,
+            string $workerProfile,
+            array $config,
+        ): ?string {
+            return $this->canaryError;
         }
     });
 }
@@ -233,6 +246,144 @@ describe('rabbit-rs:doctor management api check', function () {
         Artisan::call('rabbit-rs:doctor');
 
         expect(Artisan::output())->not->toContain('management api');
+    });
+});
+
+describe('rabbit-rs:doctor publish outcomes', function () {
+    function doctorExchangeFake(int $returned): void
+    {
+        Http::fake([
+            'http://localhost:15672/api/overview' => Http::response(['listening_port' => 5672], 200),
+            '*/api/exchanges/*' => Http::response([
+                'name' => 'laravel.jobs',
+                'message_stats' => ['return_unroutable' => $returned],
+            ], 200),
+        ]);
+    }
+
+    it('fails when safe mode has unroutable publishes on the publish exchange', function () {
+        doctorConnection(overrides: [
+            'safety' => 'safe',
+            'management_url' => 'http://localhost:15672',
+        ]);
+        doctorExchangeFake(3);
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain("3 unroutable publish(es) returned by the broker on exchange 'laravel.jobs'")
+            ->and($output)->toContain('fix the exchange')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(1);
+    });
+
+    it('warns for unroutable publishes under a fire-and-forget safety mode', function () {
+        doctorConnection(overrides: [
+            'safety' => 'blind',
+            'management_url' => 'http://localhost:15672',
+        ]);
+        doctorExchangeFake(2);
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain('2 unroutable publish(es)')
+            ->and($output)->toContain('fire-and-forget')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
+    it('reports ok when the broker recorded no unroutable publishes', function () {
+        doctorConnection(overrides: ['management_url' => 'http://localhost:15672']);
+        doctorExchangeFake(0);
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain("no unroutable publishes on exchange 'laravel.jobs'")
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
+    it('skips the check when no management_url is configured', function () {
+        doctorConnection();
+        Http::fake(); // any request would throw — the check must not run at all
+
+        Artisan::call('rabbit-rs:doctor');
+
+        expect(Artisan::output())->not->toContain('unroutable')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
+    it('stays silent when the exchange is missing from the management api', function () {
+        doctorConnection(overrides: ['management_url' => 'http://localhost:15672']);
+        Http::fake([
+            'http://localhost:15672/api/overview' => Http::response([], 200),
+            '*/api/exchanges/*' => Http::response([], 404),
+        ]);
+
+        Artisan::call('rabbit-rs:doctor');
+
+        expect(Artisan::output())->not->toContain('unroutable')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+});
+
+describe('rabbit-rs:doctor dead-letter canary', function () {
+    function doctorDeadLetterConnection(): void
+    {
+        doctorConnection(overrides: [
+            'exchange' => 'laravel.jobs',
+            'management_url' => 'http://localhost:15672',
+            'dead_letter' => ['exchange' => 'laravel.dlx', 'queue' => 'laravel.dead'],
+            'topology_mode' => 'declare',
+        ]);
+        Http::fake([
+            'http://localhost:15672/api/overview' => Http::response([], 200),
+            '*/api/exchanges/*' => Http::response(['message_stats' => ['return_unroutable' => 0]], 200),
+        ]);
+    }
+
+    it('reports the canary as delivered when the probe succeeds', function () {
+        bindFakeProbe($this->app, canaryError: null);
+        doctorDeadLetterConnection();
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain('dead-letter canary: delivered')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
+    it('fails when the canary does not land in the dead-letter queue', function () {
+        bindFakeProbe($this->app, canaryError: 'canary message not found in DLQ within the verification window');
+        doctorDeadLetterConnection();
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain('dead-letter canary failed')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(1);
+    });
+
+    it('skips the canary when no dead_letter is configured', function () {
+        bindFakeProbe($this->app, canaryError: null);
+        doctorConnection(overrides: ['management_url' => 'http://localhost:15672']);
+        Http::fake(['*' => Http::response([], 200)]);
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->not->toContain('dead-letter canary')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
+    });
+
+    it('skips the canary when the broker is unreachable', function () {
+        bindFakeProbe($this->app, brokerError: 'connection refused', canaryError: null);
+        doctorDeadLetterConnection();
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain('connection refused')
+            ->and($output)->not->toContain('dead-letter canary');
     });
 });
 

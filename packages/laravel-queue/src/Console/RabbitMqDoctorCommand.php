@@ -106,8 +106,10 @@ final class RabbitMqDoctorCommand extends Command
         $workerClass = $this->checkWorker($config);
         $this->checkWorkerCapacity($compiled);
         $brokerError = $this->checkBroker($compiled, $probe, $extensionUsable);
-        $this->checkManagement($config);
+        $managementUsable = $this->checkManagement($config);
+        $this->checkPublishOutcomes($compiled, $config, $managementUsable);
         $this->checkTopology($compiled, $brokerError);
+        $this->checkDeadLetterCanary($name, $compiled, $config, $probe, $brokerError, $managementUsable);
         $this->checkSafety($compiled);
         $this->checkHorizon($name, $workerClass, $compiled);
         $this->checkEvents();
@@ -207,15 +209,17 @@ final class RabbitMqDoctorCommand extends Command
 
     /**
      * Optional management API check: reachable when configured, advisory
-     * only (the API is not needed by the driver itself).
+     * only (the API is not needed by the driver itself). Returns whether a
+     * configured management API answered, so outcome checks that read broker
+     * truth from it can skip cleanly when it is absent or unreachable.
      *
      * @param  array<string, mixed>  $config
      */
-    private function checkManagement(array $config): void
+    private function checkManagement(array $config): bool
     {
         $url = $config['management_url'] ?? null;
         if (! is_string($url) || trim($url) === '') {
-            return;
+            return false;
         }
 
         $username = is_string($config['username'] ?? null) ? $config['username'] : 'guest';
@@ -229,16 +233,78 @@ final class RabbitMqDoctorCommand extends Command
         } catch (\Throwable $e) {
             $this->emit('warn', 'management api unreachable: '.$e->getMessage());
 
-            return;
+            return false;
         }
 
         if (! $response->successful()) {
             $this->emit('warn', 'management api returned HTTP '.$response->status());
 
-            return;
+            return false;
         }
 
         $this->emit('ok', 'management api reachable');
+
+        return true;
+    }
+
+    /**
+     * Reports broker-truth unroutable publishes on the connection's publish
+     * exchange, read from the management API. The pool's process-local
+     * `returns_total`/`dropped_publications_total` counters cannot answer
+     * this in a one-shot CLI (its own pool publishes nothing), and a
+     * short-lived publishing process takes them to the grave; the exchange
+     * counter is cross-process and survives process exit. Severity follows
+     * the compiled safety mode: under safe, an unroutable publish that
+     * surfaced nowhere is a contract break.
+     *
+     * @param  array<string, mixed>  $compiled
+     * @param  array<string, mixed>  $config
+     */
+    private function checkPublishOutcomes(array $compiled, array $config, bool $managementUsable): void
+    {
+        if (! $managementUsable) {
+            return;
+        }
+
+        $exchange = $compiled['routes']['default']['exchange'] ?? '';
+        if (! is_string($exchange) || $exchange === '') {
+            return; // the default exchange has no management-api counter of its own
+        }
+
+        $vhost = $compiled['native']['brokers'][0]['vhost'] ?? '/';
+        $username = is_string($config['username'] ?? null) ? $config['username'] : 'guest';
+        $password = is_string($config['password'] ?? null) ? $config['password'] : 'guest';
+
+        try {
+            $response = Http::withBasicAuth($username, $password)
+                ->timeout(5)
+                ->acceptJson()
+                ->get(rtrim(trim((string) $config['management_url']), '/').'/api/exchanges/'.rawurlencode((string) $vhost).'/'.rawurlencode($exchange));
+        } catch (\Throwable $e) {
+            $this->emit('warn', 'publish outcomes not verified: management api unreachable — '.$e->getMessage());
+
+            return;
+        }
+
+        if (! $response->successful()) {
+            return; // a missing exchange is the topology check's finding, not an outcome
+        }
+
+        $returned = (int) ($response->json('message_stats.return_unroutable') ?? 0);
+        if ($returned === 0) {
+            $this->emit('ok', "no unroutable publishes on exchange '{$exchange}'");
+
+            return;
+        }
+
+        $message = sprintf("%d unroutable publish(es) returned by the broker on exchange '%s'", $returned, $exchange);
+        if (($compiled['publisher']['safety'] ?? 'safe') === 'safe') {
+            $this->emit('fail', $message.' — safe mode published them as lost; fix the exchange→queue binding');
+
+            return;
+        }
+
+        $this->emit('warn', $message.' — the safety mode is fire-and-forget: returns are silent by contract');
     }
 
     /**
@@ -287,6 +353,57 @@ final class RabbitMqDoctorCommand extends Command
         } else {
             $this->emit('warn', 'no dead_letter configured: a worker crash before settlement redelivers the message forever');
         }
+    }
+
+    /**
+     * Behavioral dead-letter probe: publishes, terminally rejects, and
+     * asserts DLQ delivery — the only check that exercises the whole chain
+     * (queue args → DLX → binding → DLQ) instead of inspecting its parts.
+     * Skipped without a reachable broker, without a usable management API
+     * (DLQ delivery is verified through it), or when no dead_letter topology
+     * is configured (checkTopology already warns about that gap).
+     *
+     * @param  array<string, mixed>  $compiled
+     * @param  array<string, mixed>  $config
+     */
+    private function checkDeadLetterCanary(
+        string $name,
+        array $compiled,
+        array $config,
+        DoctorProbe $probe,
+        ?string $brokerError,
+        bool $managementUsable,
+    ): void {
+        $deadLetter = $compiled['topology']['dead_letter'] ?? null;
+        if (! is_array($deadLetter) || $brokerError !== null || ! $managementUsable) {
+            return;
+        }
+
+        $broker = $compiled['native']['brokers'][0]['name'] ?? 'default';
+        $route = $compiled['routes']['default'];
+        $queue = $compiled['native']['workers'][0]['subscriptions'][0]['queue'] ?? null;
+        $workerProfile = (string) ($compiled['native']['workers'][0]['name'] ?? $name);
+        if ($queue === null) {
+            return;
+        }
+
+        $error = $probe->deadLetterCanary(
+            $compiled['native'],
+            (string) $broker,
+            (string) ($route['exchange'] ?? ''),
+            str_replace('{queue}', (string) $queue, (string) ($route['routing_key'] ?? '{queue}')),
+            (string) $deadLetter['queue'],
+            $workerProfile,
+            $config,
+        );
+
+        if ($error !== null) {
+            $this->emit('fail', "dead-letter canary failed: {$error} — dead-lettered messages would vanish (real broker traffic was produced)");
+
+            return;
+        }
+
+        $this->emit('ok', 'dead-letter canary: delivered, rejected, and received on the DLQ');
     }
 
     /**
