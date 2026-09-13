@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Laravel\Console\CanaryInconclusiveException;
 use Goopil\RabbitRs\Laravel\Console\DoctorProbe;
 use Goopil\RabbitRs\Laravel\Events\BackpressureDetected;
 use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
@@ -17,7 +18,7 @@ const BASE_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\RabbitMqQueue';
  * and without a broker, so the doctor's extension and broker probes are
  * substituted with configurable fakes.
  */
-function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.3', ?string $brokerError = null, ?string $canaryError = null): void
+function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.3', ?string $brokerError = null, ?RuntimeException $canaryError = null): void
 {
     $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError, $canaryError) extends DoctorProbe
     {
@@ -25,7 +26,7 @@ function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.3', ?s
             private readonly bool $loaded,
             private readonly ?string $version,
             private readonly ?string $brokerError,
-            private readonly ?string $canaryError = null,
+            private readonly ?RuntimeException $canaryError = null,
         ) {}
 
         public function extensionLoaded(): bool
@@ -51,7 +52,8 @@ function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.3', ?s
             string $dlq,
             string $workerProfile,
             array $config,
-        ): ?string {
+            bool $competingConsumersExpected = false,
+        ): ?RuntimeException {
             return $this->canaryError;
         }
     });
@@ -353,7 +355,7 @@ describe('rabbit-rs:doctor dead-letter canary', function () {
     });
 
     it('fails when the canary does not land in the dead-letter queue', function () {
-        bindFakeProbe($this->app, canaryError: 'canary message not found in DLQ within the verification window');
+        bindFakeProbe($this->app, canaryError: new RuntimeException('canary message not found in DLQ — the whole queue was scanned and the dead-lettered canary is gone'));
         doctorDeadLetterConnection();
 
         Artisan::call('rabbit-rs:doctor');
@@ -361,6 +363,19 @@ describe('rabbit-rs:doctor dead-letter canary', function () {
 
         expect($output)->toContain('dead-letter canary failed')
             ->and(Artisan::call('rabbit-rs:doctor'))->toBe(1);
+    });
+
+    it('warns instead of failing when the canary is inconclusive', function () {
+        bindFakeProbe($this->app, canaryError: new CanaryInconclusiveException('canary never reached this consumer — competing consumers processed 3 message(s) first; re-run in a quiet window'));
+        doctorDeadLetterConnection();
+
+        Artisan::call('rabbit-rs:doctor');
+        $output = Artisan::output();
+
+        expect($output)->toContain('dead-letter canary inconclusive')
+            ->and($output)->not->toContain('dead-letter canary failed')
+            ->and($output)->not->toContain('dead-lettered messages would vanish')
+            ->and(Artisan::call('rabbit-rs:doctor'))->toBe(0);
     });
 
     it('skips the canary when no dead_letter is configured', function () {
