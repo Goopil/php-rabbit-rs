@@ -403,24 +403,25 @@ class WorkerSupervisor
     }
 
     /**
-     * Whether the one-shot final depth check still finds work on any plan
-     * connection (the late-async-flush guard): a null depth (no management
-     * url, or a failed request) never counts as pending.
+     * Total pending depth across the plan connections (the summed non-null
+     * gauge values): 0 without a depth callback, when every lookup failed,
+     * or when the broker reports empty queues.
      */
-    private function hasPendingWork(): bool
+    private function pendingDepth(): int
     {
         $depthCallback = $this->depthCallback;
         if ($depthCallback === null) {
-            return false;
+            return 0;
         }
 
+        $pending = 0;
         foreach ($depthCallback() as $depth) {
             if (is_int($depth) && $depth > 0) {
-                return true;
+                $pending += $depth;
             }
         }
 
-        return false;
+        return $pending;
     }
 
     /**
@@ -428,19 +429,24 @@ class WorkerSupervisor
      * clean exit removes its slot, a crash is remembered as the command's
      * exit status without touching the other children. When the fleet drains,
      * a final depth check re-arms the initial fleet while work remains on the
-     * broker (bounded re-arms), otherwise the supervisor returns with the
-     * highest child exit status. On SIGTERM/SIGINT, children are stopped
-     * gracefully and the command exits clean.
+     * broker: the absolute re-arm cap only bounds a depth gauge that never
+     * decreases (stale or lying gauge); as long as the reported depth
+     * decreases between re-arms, the fleet is demonstrably making progress
+     * and keeps re-arming (issue #269). Without a depth source, or once the
+     * gauge stops decreasing, the supervisor returns with the highest child
+     * exit status. On SIGTERM/SIGINT, children are stopped gracefully and
+     * the command exits clean.
      */
     private function runOneShot(): int
     {
+        $isShutdown = $this->installSignalHandlers();
+
         $slots = [];
         $this->spawnInitialChildren($slots);
 
-        $isShutdown = $this->installSignalHandlers();
-
         $maxExit = null;
         $reArms = 0;
+        $lastReArmDepth = 0;
         $scaleStates = $this->newScaleStates();
         $lastScalePass = 0.0;
 
@@ -462,8 +468,11 @@ class WorkerSupervisor
             }
 
             if ($slots === []) {
-                if ($this->hasPendingWork() && $reArms < self::MAX_ONE_SHOT_REARMS) {
+                $pending = $this->pendingDepth();
+                if ($pending > 0
+                    && ($reArms < self::MAX_ONE_SHOT_REARMS || $pending < $lastReArmDepth)) {
                     $reArms++;
+                    $lastReArmDepth = $pending;
                     $this->spawnInitialChildren($slots);
 
                     continue;
@@ -496,10 +505,10 @@ class WorkerSupervisor
      */
     private function runSupervised(): int
     {
+        $isShutdown = $this->installSignalHandlers();
+
         $slots = [];
         $this->spawnInitialChildren($slots);
-
-        $isShutdown = $this->installSignalHandlers();
 
         $scaleStates = $this->newScaleStates();
         $lastScalePass = 0.0;
