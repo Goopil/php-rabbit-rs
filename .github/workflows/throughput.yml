@@ -75,8 +75,14 @@ jobs:
           args=""
           if [[ -n "${{ inputs.drivers }}" ]]; then args="$args --driver=${{ inputs.drivers }}"; fi
           if [[ -n "${{ inputs.scenarios }}" ]]; then args="$args --scenario=${{ inputs.scenarios }}"; fi
+          # A bunny driver destructor can fatal (Broken pipe) at script
+          # shutdown, after every result is written. Tolerate a non-zero
+          # exit here: the integrity assert below is the real gate —
+          # benchmark-results.json only exists if the runner reached the
+          # end, and a mid-run crash leaves no JSON for it to accept.
           php -d xdebug.mode=off -d extension=target/release/librabbit_rs_php.so \
-            benchmarks/src/run-benchmarks.php $args 2>&1 | tee benchmark-output.log
+            benchmarks/src/run-benchmarks.php $args 2>&1 | tee benchmark-output.log \
+            || echo "::warning::runner exited non-zero (teardown artifact); integrity asserted from the JSON"
 
       # run-benchmarks.php exits 0 even with losses, duplicates, or a SKIPped
       # combo (it only prints WARNING/SKIP lines), so the integrity contract
