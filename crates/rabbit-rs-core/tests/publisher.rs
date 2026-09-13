@@ -1640,6 +1640,60 @@ async fn ttl_mode_declares_delay_queue_lazily_on_first_delayed_publish() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_deadline_expired_during_a_gated_delay_declare_fails_timeout() {
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Ok(()));
+    let plan = TtlBucketPlan::compile(&ttl_config()).expect("TTL plan");
+    let strategy = DelayStrategy::TtlBuckets(plan);
+    let actor = spawn_actor_delay(&transport, publisher_config_delay(), strategy).await;
+
+    // The first publication's lazy TTL bucket declaration parks on a gate:
+    // real (paused) time passes and the second publication's deadline
+    // lapses while the drain is suspended. It must fail Timeout and never
+    // reach the wire — whichever way the drain batches its clock reads.
+    let gate = transport.push_declare_queue_gate();
+
+    let first = actor
+        .try_publish(delayed_request("first", 5_000))
+        .expect("first accepted");
+    let second = actor
+        .try_publish(request_recovery(
+            "second",
+            Instant::now() + Duration::from_millis(100),
+        ))
+        .expect("second accepted");
+
+    gate.wait_entered().await;
+    tokio::time::advance(Duration::from_millis(200)).await;
+    assert!(gate.release());
+
+    assert!(
+        matches!(first.wait().await, Ok(PublishOutcome::Confirmed { .. })),
+        "first publication must confirm once its declare unblocks"
+    );
+    assert_eq!(
+        second
+            .wait()
+            .await
+            .expect_err("second deadline expired during the drain")
+            .kind(),
+        PublishErrorKind::Timeout
+    );
+
+    let publish_count = transport
+        .operations()
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Publish(_)))
+        .count();
+    assert_eq!(
+        publish_count, 1,
+        "the expired publication must never be attempted"
+    );
+}
+
 #[test]
 fn delay_config_is_validated_and_deserialized_from_config() {
     let json = serde_json::json!({
