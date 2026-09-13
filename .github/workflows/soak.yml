@@ -57,16 +57,7 @@ jobs:
         run: ./scripts/lab-up.sh with-plugin
 
       - name: Wait for lab readiness
-        run: |
-          for i in $(seq 1 120); do
-            if ./scripts/lab-ready.sh; then
-              echo "Lab is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Lab did not become ready after 120s." >&2
-          exit 1
+        run: ./scripts/lab-wait.sh
 
       - name: Prepare artifacts directory
         run: mkdir -p benchmarks/results/round-k-soak

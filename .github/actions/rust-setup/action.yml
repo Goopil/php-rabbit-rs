@@ -16,3 +16,9 @@ runs:
 
     - name: Cache Cargo
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        # Share one cache namespace across all host-side jobs (they are
+        # job-scoped by default, verified via the Actions caches API: ten
+        # disjoint v0-rust-<job> keys). The lockfile hash stays in the key,
+        # so lockfile changes still invalidate.
+        shared-key: rabbit-rs

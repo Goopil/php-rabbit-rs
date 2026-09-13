@@ -27,7 +27,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked --quiet || true
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
+        with:
+          tool: cargo-nextest
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -53,7 +55,9 @@ jobs:
           components: clippy
 
       - name: Install clippy-sarif
-        run: cargo install clippy-sarif --locked --quiet || true
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
+        with:
+          tool: clippy-sarif
 
       - name: Run clippy
         run: |
@@ -79,7 +83,9 @@ jobs:
         uses: ./.github/actions/rust-setup
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --quiet || true
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
+        with:
+          tool: cargo-deny
 
       - name: Run cargo-deny
         run: cargo deny check
@@ -221,6 +227,14 @@ jobs:
           coverage: none
           extensions: json, mbstring
 
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/composer
+          key: composer-deps-${{ hashFiles('packages/laravel-queue/composer.json') }}
+          restore-keys: |
+            composer-deps-
+
       - name: Install Laravel package dependencies
         run: |
           cd packages/laravel-queue
@@ -246,7 +260,9 @@ jobs:
           components: clippy
 
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked --quiet || true
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
+        with:
+          tool: cargo-nextest
 
       - name: Setup PHP 8.4
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
@@ -257,6 +273,14 @@ jobs:
 
       - name: Install system dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/composer
+          key: composer-deps-${{ hashFiles('packages/laravel-queue/composer.json') }}
+          restore-keys: |
+            composer-deps-
 
       - name: Build PHP extension
         run: cargo build --release --manifest-path crates/rabbit-rs-php/Cargo.toml --features extension-tests
@@ -270,16 +294,7 @@ jobs:
         run: ./scripts/lab-up.sh with-plugin
 
       - name: Wait for lab readiness
-        run: |
-          for i in $(seq 1 120); do
-            if ./scripts/lab-ready.sh; then
-              echo "Lab is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Lab did not become ready after 120s." >&2
-          exit 1
+        run: ./scripts/lab-wait.sh
 
       - name: Run Rust integration tests
         # tls_integration runs in its own step below against the with-tls lab
@@ -294,18 +309,7 @@ jobs:
           # Fresh lab with the TLS profile: regenerates the lab certs, boots
           # the TLS node and the client-cert-mandatory mTLS node.
           ./scripts/lab-up.sh with-tls
-
-          for i in $(seq 1 120); do
-            if ./scripts/lab-ready.sh; then
-              echo "Lab is ready."
-              break
-            fi
-            if [[ "${i}" == 120 ]]; then
-              echo "Lab did not become ready after 120s." >&2
-              exit 1
-            fi
-            sleep 1
-          done
+          ./scripts/lab-wait.sh
 
           # The SAN-negative test connects to a hostname that resolves to the
           # TLS node but is absent from its certificate SANs.
@@ -423,16 +427,7 @@ jobs:
         run: ./scripts/lab-up.sh with-plugin
 
       - name: Wait for lab readiness
-        run: |
-          for i in $(seq 1 120); do
-            if ./scripts/lab-ready.sh; then
-              echo "Lab is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Lab did not become ready after 120s." >&2
-          exit 1
+        run: ./scripts/lab-wait.sh
 
       - name: Run FPM certification in Docker
         run: |
@@ -483,7 +478,16 @@ jobs:
 
       # Neither composer.lock is committed (both are gitignored), so resolve
       # the dependency tree first, then audit it. `composer audit` exits
-      # non-zero on security advisories — that failure blocks the PR.
+      # non-zero on security advisories — that failure blocks the PR. The
+      # cache covers downloaded package archives, not the resolved tree.
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/composer
+          key: composer-deps-${{ hashFiles('packages/laravel-queue/composer.json') }}
+          restore-keys: |
+            composer-deps-
+
       - name: Audit Laravel package dependencies
         run: |
           cd packages/laravel-queue

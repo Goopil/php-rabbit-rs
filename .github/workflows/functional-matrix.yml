@@ -52,16 +52,7 @@ jobs:
         run: ./scripts/lab-up.sh with-plugin
 
       - name: Wait for lab readiness
-        run: |
-          for i in $(seq 1 120); do
-            if ./scripts/lab-ready.sh >/dev/null 2>&1; then
-              echo "Lab is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Lab did not become ready after 120s." >&2
-          exit 1
+        run: ./scripts/lab-wait.sh
 
       - name: AMQP smoke (publish/confirm, consume, outage/recovery)
         run: ./scripts/amqp-smoke.sh --php php --ext "$(pwd)/target/release/librabbit_rs_php.so"
@@ -102,16 +93,7 @@ jobs:
         run: ./scripts/lab-up.sh with-plugin
 
       - name: Wait for lab readiness
-        run: |
-          for i in $(seq 1 120); do
-            if ./scripts/lab-ready.sh >/dev/null 2>&1; then
-              echo "Lab is ready."
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Lab did not become ready after 120s." >&2
-          exit 1
+        run: ./scripts/lab-wait.sh
 
       - name: Build extension and run AMQP smoke in Docker
         run: |
