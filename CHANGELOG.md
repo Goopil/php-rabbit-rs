@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- `rabbit-rs:topology --fix` now verifies the declared objects before reporting success (#273): after the declare pass, the command re-runs its verification probes — each subscription queue through the passive probe, and (with `management_url`) the route exchange, its per-queue bindings and each queue's `x-queue-type` through the management API — and prints `topology declared` only when every object is confirmed to exist on the broker. Previously the command exited 0 on the declare's aggregate result alone while the target queue never landed (observed live on a fresh vhost), turning the incident repair path into a silent outage. An object that failed to declare keeps the `declaration failed` contract (non-zero exit); an object the declare failed to leave on the broker prints its own failure line with its config path and fails the command — which also surfaces a route-binding declare gap per object instead of hiding it behind the success line. The consumer-readiness soft warning is unchanged: a readiness timeout still warns and exits 0 when verification confirms the topology (the bootstrap scenario).
+
 ## [0.3.3] - 2026-09-13
 
 ### Added

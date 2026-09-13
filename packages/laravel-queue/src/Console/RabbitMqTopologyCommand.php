@@ -19,8 +19,10 @@ use InvalidArgumentException;
  * API. Exits non-zero when anything is missing.
  *
  * With --fix the missing topology is declared by opening a transient consumer
- * on the worker profile (full declare in declare mode); in verify/external
- * mode --fix is refused unless --force is passed.
+ * on the worker profile (full declare in declare mode); the declared objects
+ * are then re-verified and success is only reported for objects confirmed to
+ * exist (issue #273). In verify/external mode --fix is refused unless --force
+ * is passed.
  */
 final class RabbitMqTopologyCommand extends Command
 {
@@ -85,10 +87,11 @@ final class RabbitMqTopologyCommand extends Command
         $ok = $this->verifyQueues($name, $compiled, $probe);
         $ok = $this->verifyManagement($name, $config, $compiled) && $ok;
 
-        // A successful declare resolves the missing items verify reported:
-        // report the connection as fixed instead of carrying pre-fix
-        // failures (the bootstrap scenario --fix exists for, issue #195).
-        return ((bool) $this->option('fix')) ? $this->applyFix($name, $compiled, $probe) : $ok;
+        if (! (bool) $this->option('fix')) {
+            return $ok;
+        }
+
+        return $this->applyFix($name, $config, $compiled, $probe);
     }
 
     /**
@@ -318,9 +321,18 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
+     * Declares the missing topology through a transient consumer, then
+     * re-runs the verification pass so success is reported only for objects
+     * confirmed to exist (issue #273): the declare's aggregate result says
+     * nothing about each object landing on the broker — a false "topology
+     * declared" turns the repair path into a silent outage. A declare gap
+     * (e.g. an object the declare pass never wired) prints its own failure
+     * line and fails the command.
+     *
+     * @param  array<string, mixed>  $config
      * @param  array<string, mixed>  $compiled
      */
-    private function applyFix(string $name, array $compiled, DoctorProbe $probe): bool
+    private function applyFix(string $name, array $config, array $compiled, DoctorProbe $probe): bool
     {
         $mode = (string) $compiled['native']['topology_mode'];
         if ($mode !== 'declare' && ! (bool) $this->option('force')) {
@@ -345,11 +357,24 @@ final class RabbitMqTopologyCommand extends Command
             // generation declares the topology before consumer channels
             // start, so a readiness timeout (e.g. no worker running for the
             // profile) leaves the declaration successful with readiness
-            // unconfirmed. Warn instead of failing the bootstrap scenario.
-            $this->warn("topology declared (worker profile '{$workerProfile}'); consumer readiness not confirmed: {$error}");
-        } else {
-            $this->info("topology declared (worker profile '{$workerProfile}')");
+            // unconfirmed. Warn instead of failing the bootstrap scenario;
+            // the success line below only prints once verification confirms
+            // the objects on the broker.
+            $this->warn("consumer readiness not confirmed: {$error}");
         }
+
+        // Post-condition verification: the same probes verify ran pre-fix,
+        // now confirming what the declare actually left on the broker. The
+        // passive queue probe carries the existence confirmation; the
+        // management checks stay advisory when the api is unreachable, as
+        // in verify.
+        $verified = $this->verifyQueues($name, $compiled, $probe);
+        $verified = $this->verifyManagement($name, $config, $compiled) && $verified;
+        if (! $verified) {
+            return false;
+        }
+
+        $this->info("topology declared (worker profile '{$workerProfile}')");
 
         return true;
     }

@@ -1815,8 +1815,17 @@ php artisan rabbit-rs:doctor
 Both exit non-zero on failure and name the exact config path of anything
 missing — wire them into your deploy pipeline before the workers roll. In
 `declare` mode, `rabbit-rs:topology --fix` declares missing items through a
-transient consumer; in `verify`/`external` mode it is refused without
-`--force`, because those modes promise externally managed topology.
+transient consumer, then re-verifies every declared object before reporting
+success: each subscription queue through the passive probe, and (with
+`management_url`) the route exchange, its bindings and each queue's
+`x-queue-type` through the management API. `topology declared` is only
+printed once those checks confirm the objects on the broker — any object the
+declare failed to land prints its own failure line and fails the command
+(non-zero exit), so a repair run can never report a fix it did not make. A
+consumer-readiness timeout still only warns: the declaration lands before
+consumer channels start, so `--fix` stays usable before any worker exists.
+In `verify`/`external` mode `--fix` is refused without `--force`, because
+those modes promise externally managed topology.
 
 #### Which `topology_mode` per environment
 
