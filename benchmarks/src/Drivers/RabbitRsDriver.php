@@ -31,6 +31,14 @@ class RabbitRsDriver extends AbstractBenchmark
         };
     }
 
+    /// Fire-and-forget and auto-ack share best-effort consume semantics
+    /// across drivers (bunny and amqplib auto-ack both scenarios).
+    private function autoAckConsume(): bool
+    {
+        return $this->scenarioMode === ScenarioMode::AUTO_ACK
+            || $this->scenarioMode === ScenarioMode::FIRE_AND_FORGET;
+    }
+
     public function reconnects(): ?int
     {
         try {
@@ -62,12 +70,17 @@ class RabbitRsDriver extends AbstractBenchmark
                         ScenarioMode::LARAVEL_WORKER => Config::PREFETCH_LARAVEL,
                         default => Config::PREFETCH_COUNT,
                     },
+                    // Fire-and-forget and auto-ack share the same consume
+                    // semantics across drivers: best-effort delivery, no
+                    // acks on the wire (bunny and amqplib both auto-ack this
+                    // scenario). Manual acks here measured the ack round
+                    // trip, not the consume path, and skewed the comparison.
                     'early_ack' => match ($this->scenarioMode) {
-                        ScenarioMode::AUTO_ACK => true,
+                        ScenarioMode::AUTO_ACK, ScenarioMode::FIRE_AND_FORGET => true,
                         default => false,
                     },
                     'no_ack' => match ($this->scenarioMode) {
-                        ScenarioMode::AUTO_ACK => true,
+                        ScenarioMode::AUTO_ACK, ScenarioMode::FIRE_AND_FORGET => true,
                         default => false,
                     },
                 ]],
@@ -239,7 +252,7 @@ class RabbitRsDriver extends AbstractBenchmark
             $this->recordReceived($metadata['message_id']);
             $this->recordLatencyFromPayload($payload);
 
-            if ($this->scenarioMode !== ScenarioMode::AUTO_ACK) {
+            if (!$this->autoAckConsume()) {
                 $delivery->ack();
             }
             $consumed++;
