@@ -73,6 +73,7 @@ final class RabbitMqConnector implements ConnectorInterface
             publisherConfig: $compiled['publisher'],
             autoSubscribe: $compiled['auto_subscribe'],
             hasDeadLetter: $compiled['topology']['dead_letter'] !== null,
+            delayMode: $compiled['native']['delay']['mode'],
         );
     }
 
