@@ -2,9 +2,11 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Exceptions\DelayPluginMissingException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\DelayPluginGuard;
+use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Support\Facades\Http;
 
 const GUARD_MGMT_URL = 'http://mq.local:15672';
@@ -90,6 +92,30 @@ describe('auto-mode resolution (compile-level routing decision)', function () {
 
         Http::assertNothingSent();
         expect(guardPool($queue)->config['delay']['mode'])->toBe('ttl');
+    });
+
+    it('resolves the effective mode inside raw compiles so recompile sites share the connector fingerprint', function () {
+        // The Octane /stats pattern: ConnectionCompiler::compile() called
+        // directly on raw config, bypassing the connector. Before the mode
+        // resolution moved into compile() this returned the unresolved 'auto'
+        // while the connector path resolved 'ttl' — two native fingerprints,
+        // two pools, and the stats endpoint read an empty pool forever.
+        Http::fake([GUARD_MGMT_URL.'/api/overview' => Http::response(guardOverview(false))]);
+
+        config()->set('queue.connections.guard-raw-compile', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'orders',
+            'management_url' => GUARD_MGMT_URL,
+            'delay' => ['mode' => 'auto'],
+        ]);
+
+        $compiled = ConnectionCompiler::compile(
+            'guard-raw-compile',
+            config('queue.connections.guard-raw-compile'),
+            RabbitRsConnections::packageDefaults(),
+        );
+
+        expect($compiled['native']['delay']['mode'])->toBe('ttl');
     });
 
     it('never rewrites explicit plugin and ttl modes', function () {

@@ -99,6 +99,13 @@ final class DelayPluginGuard
 
     private static function probeBroker(string $connection): ?bool
     {
+        // compile() runs in contexts without a booted container too (early
+        // config validation); an unresolvable config helper means the broker
+        // cannot be probed here, same verdict as an unreachable API.
+        if (! app()->bound('config')) {
+            return null;
+        }
+
         $config = config('queue.connections.'.$connection);
         if (! is_array($config)) {
             return null;
