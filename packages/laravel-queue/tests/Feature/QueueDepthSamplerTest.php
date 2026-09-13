@@ -11,9 +11,9 @@ const SAMPLER_MGMT_URL = 'http://mq.local:15672';
  * @param  list<array{connection: string, queues: list<string>}>  $plan
  * @param  (Closure(string, string): int|null)|null  $nativeDepth
  */
-function sampler(array $plan, ?Closure $nativeDepth = null): QueueDepthSampler
+function sampler(array $plan, ?Closure $nativeDepth = null, float $nativeCacheTtlSeconds = 2.0): QueueDepthSampler
 {
-    return new QueueDepthSampler($plan, $nativeDepth);
+    return new QueueDepthSampler($plan, $nativeDepth, $nativeCacheTtlSeconds);
 }
 
 /**
@@ -126,5 +126,46 @@ describe('QueueDepthSampler source selection', function () {
 
         expect($depths)->toBe(['mq' => 5, 'local' => 2]);
         Http::assertSentCount(1);
+    });
+});
+
+describe('native depth caching', function () {
+    it('probes once and reuses the cached depth while the ttl has not expired', function () {
+        $calls = [];
+        $native = seamRecorder(['mq' => ['default' => 3]], $calls);
+        $sampler = sampler([['connection' => 'mq', 'queues' => ['default']]], $native, 60.0);
+
+        expect($sampler->depths())->toBe(['mq' => 3])
+            ->and($sampler->depths())->toBe(['mq' => 3])
+            ->and($sampler->depths())->toBe(['mq' => 3])
+            ->and($calls)->toBe([['mq', 'default']]);
+    });
+
+    it('re-probes a queue once its ttl has expired and serves the fresh answer', function () {
+        $answers = ['mq' => ['default' => 3]];
+        $calls = [];
+        $native = function (string $connection, string $queue) use (&$answers, &$calls): ?int {
+            $calls[] = [$connection, $queue];
+
+            return $answers[$connection][$queue] ?? null;
+        };
+        $sampler = sampler([['connection' => 'mq', 'queues' => ['default']]], $native, 0.0);
+
+        expect($sampler->depths())->toBe(['mq' => 3]);
+
+        $answers = ['mq' => ['default' => 7]];
+
+        expect($sampler->depths())->toBe(['mq' => 7])
+            ->and($calls)->toBe([['mq', 'default'], ['mq', 'default']]);
+    });
+
+    it('caches a failed native probe for the ttl so a slow broker is not retried on every pass', function () {
+        $calls = [];
+        $native = seamRecorder([], $calls);
+        $sampler = sampler([['connection' => 'mq', 'queues' => ['default']]], $native, 60.0);
+
+        expect($sampler->depths())->toBe(['mq' => null])
+            ->and($sampler->depths())->toBe(['mq' => null])
+            ->and($calls)->toBe([['mq', 'default']]);
     });
 });

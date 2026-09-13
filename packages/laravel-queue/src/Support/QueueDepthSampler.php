@@ -35,14 +35,32 @@ use Goopil\RabbitRs\Pool;
  * Native probe pools are created lazily on first lookup and reused for the
  * sampler's lifetime; a failed lookup closes and drops the pool so the
  * next pass reconnects from scratch.
+ *
+ * Native lookups (seam and real probe alike) are memoized per connection
+ * and queue for {@see NATIVE_CACHE_TTL_SECONDS}: the supervisor samples on
+ * every scale pass and once-mode drain check, so an unmemoized fallback
+ * would pay one blocking AMQP round-trip per pass — and a slow or half-open
+ * broker would turn the failure path's reconnect into a blocking retry
+ * spin (issue #272). A failed probe is memoized for the TTL as well, so
+ * the loop retries at most once per window; the management API path is
+ * never cached (its HTTP client is already bounded).
  */
 final class QueueDepthSampler
 {
+    /**
+     * How long a native probe result (a depth or a failure) is reused
+     * before the next blocking round-trip.
+     */
+    private const NATIVE_CACHE_TTL_SECONDS = 2.0;
+
     /** @var array<string, Pool> */
     private array $pools = [];
 
     /** @var array<string, array<string, mixed>|null> compiled native config per connection; null when unusable */
     private array $nativeConfigs = [];
+
+    /** @var array<string, array{depth: int|null, expiresAt: float}> last native probe result per connection and queue, trusted until expiresAt */
+    private array $nativeCache = [];
 
     /**
      * @param  list<array{connection: string, queues: list<string>}>  $plan
@@ -50,10 +68,14 @@ final class QueueDepthSampler
      *                                                                 ready depth of one queue through the native path (connection
      *                                                                 name, queue name); when given, the real passive probe is
      *                                                                 bypassed entirely
+     * @param  float  $nativeCacheTtlSeconds  how long a native probe result is
+     *                                        reused; tests pass 0 to force a probe on every lookup or a long
+     *                                        TTL to pin one window
      */
     public function __construct(
         private readonly array $plan,
         private readonly ?Closure $nativeDepth = null,
+        private readonly float $nativeCacheTtlSeconds = self::NATIVE_CACHE_TTL_SECONDS,
     ) {}
 
     /**
@@ -104,18 +126,40 @@ final class QueueDepthSampler
     }
 
     /**
-     * Ready depth of one queue through the native path: the injected seam
-     * when present (tests), otherwise a lazily created, cached passive-declare
-     * pool. Any native failure (unreachable broker, auth, missing queue)
-     * closes and drops the pool and reads as null: the next pass reconnects
-     * from scratch instead of riding a broken socket.
+     * Ready depth of one queue through the native path, memoized for
+     * {@see NATIVE_CACHE_TTL_SECONDS} (the injected seam when present —
+     * wrapped by the same memo so tests exercise it — otherwise a lazily
+     * created, cached passive-declare pool). Any native failure
+     * (unreachable broker, auth, missing queue) closes and drops the pool
+     * and reads as null: the next probe after the TTL reconnects from
+     * scratch instead of riding a broken socket, and the memoized null
+     * keeps the supervision loop from retrying sooner.
      */
     private function probeQueueDepth(string $connection, string $queue): ?int
     {
-        if ($this->nativeDepth !== null) {
-            return ($this->nativeDepth)($connection, $queue);
+        $cached = $this->nativeCache[$key = $connection.'|'.$queue] ?? null;
+        if ($cached !== null && microtime(true) < $cached['expiresAt']) {
+            return $cached['depth'];
         }
 
+        $depth = $this->nativeDepth !== null
+            ? ($this->nativeDepth)($connection, $queue)
+            : $this->probeNativePool($connection, $queue);
+
+        $this->nativeCache[$key] = [
+            'depth' => $depth,
+            'expiresAt' => microtime(true) + $this->nativeCacheTtlSeconds,
+        ];
+
+        return $depth;
+    }
+
+    /**
+     * One blocking native round-trip for a queue's ready depth through the
+     * connection's probe pool.
+     */
+    private function probeNativePool(string $connection, string $queue): ?int
+    {
         if (! extension_loaded('rabbit_rs')) {
             return null;
         }
