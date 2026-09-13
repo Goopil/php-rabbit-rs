@@ -27,10 +27,14 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked --quiet || true
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
+        with:
+          tool: cargo-nextest
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked --quiet || true
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375
+        with:
+          tool: cargo-llvm-cov
 
       - name: Run coverage
         run: |
@@ -104,6 +108,14 @@ jobs:
 
       - name: Install system deps
         run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/composer
+          key: composer-deps-${{ hashFiles('packages/laravel-queue/composer.json') }}
+          restore-keys: |
+            composer-deps-
 
       - name: Install Laravel deps
         run: |
