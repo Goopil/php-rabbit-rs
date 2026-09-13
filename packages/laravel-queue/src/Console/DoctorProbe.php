@@ -27,6 +27,9 @@ class DoctorProbe
 
     private const CANARY_DLQ_POLL_MS = 300_000;
 
+    /** Bulk DLQ scan window, in messages, per verification attempt. */
+    private const CANARY_DLQ_SCAN_WINDOW = 100;
+
     public function extensionLoaded(): bool
     {
         return extension_loaded('rabbit_rs');
@@ -129,12 +132,15 @@ class DoctorProbe
      * DLX → binding → DLQ, which static topology checks cannot prove.
      *
      * Foreign messages encountered in the main queue are released untouched
-     * (never acked, never dropped); on a DLQ backlog the verification loop
-     * requeues non-matching messages and stays bounded. Most meaningful in
-     * quiet windows: a running worker on the same queue can pick the probe
-     * up first.
+     * (never acked, never dropped); on a DLQ backlog the verification scans
+     * a bounded window in bulk and stays passive towards foreign traffic.
+     * Most meaningful in quiet windows: a running worker on the same queue
+     * can pick the probe up first — that case is reported as inconclusive,
+     * not as a dead-letter failure.
      *
-     * Returns the error message, or null when the canary was delivered.
+     * Returns null when the canary was delivered, or the thrown exception so
+     * the caller can distinguish a genuine dead-letter failure from an
+     * inconclusive run (CanaryInconclusiveException).
      *
      * @param  array<string, mixed>  $nativeConfig
      * @param  array<string, mixed>  $config  connection config (management_url, credentials)
@@ -147,8 +153,11 @@ class DoctorProbe
         string $dlq,
         string $workerProfile,
         array $config,
-    ): ?string {
-        return $this->probePool(self::declareConfig($nativeConfig), function (Pool $pool) use ($nativeConfig, $broker, $exchange, $routingKey, $dlq, $workerProfile, $config): void {
+    ): ?RuntimeException {
+        $pool = new Pool(self::declareConfig($nativeConfig));
+        $messageId = '';
+
+        try {
             $mainQueue = self::queueName($nativeConfig);
             $messageId = 'doctor-dlx-canary-'.bin2hex(random_bytes(8));
 
@@ -166,6 +175,7 @@ class DoctorProbe
             $pool->size($broker, $mainQueue);
 
             $rejected = false;
+            $foreign = 0;
             $consumer = $pool->consumer($workerProfile);
             try {
                 $deadline = microtime(true) + 10.0;
@@ -181,6 +191,7 @@ class DoctorProbe
                         break;
                     }
                     $delivery->release(); // foreign traffic: never acked, never dropped
+                    $foreign++;
                 }
 
                 // Verify while the consumer is still open: the reject is a
@@ -196,16 +207,38 @@ class DoctorProbe
             }
 
             if (! $rejected) {
+                if ($foreign > 0) {
+                    // Real consumers beat the probe to the queue: the wiring
+                    // was not exercised, and that is an environment property,
+                    // not a dead-letter failure.
+                    throw new CanaryInconclusiveException(
+                        "canary never reached this consumer — competing consumers processed {$foreign} message(s) first; re-run in a quiet window",
+                    );
+                }
+
                 throw new RuntimeException('canary message was not consumed from the main queue within 10s');
             }
-        });
+        } finally {
+            $pool->close();
+        }
+
+        return null;
     }
 
     /**
-     * Asserts the canary reached the DLQ via the management API. The probe
-     * is pulled with `ack_requeue_true` and removed with `ack_requeue_false`
-     * so only the canary is consumed; foreign dead-lettered messages are
-     * requeued untouched. Bounded loop tolerates a DLQ backlog.
+     * Asserts the canary reached the DLQ via the management API. Each
+     * attempt scans a bounded window in bulk with `ack_requeue_true` (pure
+     * inspection: every message is requeued untouched, foreign traffic
+     * included) and passes when the canary appears anywhere in the batch —
+     * position is irrelevant, so a DLQ backlog cannot hide it. The canary
+     * itself is deliberately left in the DLQ: removing it would take an
+     * `ack_requeue_false` pull, which drops every other message in the
+     * window.
+     *
+     * When no attempt finds the canary, the verdict depends on coverage:
+     * fewer messages returned than the window means the whole DLQ was seen
+     * and the canary is genuinely gone (hard failure); a full window means
+     * the backlog outgrew the scan and the run is inconclusive.
      *
      * @param  array<string, mixed>  $config
      */
@@ -222,33 +255,42 @@ class DoctorProbe
         $queueUrl = "{$base}/api/queues/".rawurlencode($vhost).'/'.rawurlencode($dlq).'/get';
 
         for ($attempt = 0; $attempt < self::CANARY_DLQ_ATTEMPTS; $attempt++) {
-            $messages = $this->pullFromQueue($queueUrl, $username, $password, 'ack_requeue_true');
-            $first = $messages[0] ?? null;
-            $firstMessageId = is_array($first['properties'] ?? null) ? (string) ($first['properties']['message_id'] ?? '') : '';
-            if ($firstMessageId === $messageId) {
-                $this->pullFromQueue($queueUrl, $username, $password, 'ack_requeue_false');
-
-                return;
+            $messages = $this->pullFromQueue($queueUrl, $username, $password, 'ack_requeue_true', self::CANARY_DLQ_SCAN_WINDOW);
+            foreach ($messages as $message) {
+                $candidate = is_array($message['properties'] ?? null) ? (string) ($message['properties']['message_id'] ?? '') : '';
+                if ($candidate === $messageId) {
+                    return;
+                }
             }
+
+            if (count($messages) >= self::CANARY_DLQ_SCAN_WINDOW) {
+                // A full window is a wall of foreign backlog at the head;
+                // re-reading it can never reveal the canary behind it, and
+                // requeuing preserved its position. Inconclusive, not failed.
+                throw new CanaryInconclusiveException('canary not located within the '.self::CANARY_DLQ_SCAN_WINDOW.'-message DLQ scan window — the backlog outgrew the scan; dead-letter delivery unverified');
+            }
+
+            // The whole DLQ was visible: keep polling for the canary's async
+            // arrival, then report a genuine absence.
             usleep(self::CANARY_DLQ_POLL_MS);
         }
 
-        throw new RuntimeException('canary message not found in DLQ within the verification window');
+        throw new RuntimeException('canary message not found in DLQ — the whole queue was scanned and the dead-lettered canary is gone');
     }
 
     /**
-     * Pulls one message from a queue via the management API with the given
-     * ack mode (ack_requeue_true inspects without consuming, ack_requeue_false
-     * removes).
+     * Pulls up to `$count` messages from a queue via the management API with
+     * the given ack mode (`ack_requeue_true` inspects without consuming,
+     * `ack_requeue_false` removes everything pulled).
      *
      * @return list<array<string, mixed>>
      */
-    private function pullFromQueue(string $url, string $username, string $password, string $ackMode): array
+    private function pullFromQueue(string $url, string $username, string $password, string $ackMode, int $count): array
     {
         $response = Http::withBasicAuth($username, $password)
             ->timeout(5)
             ->acceptJson()
-            ->post($url, ['count' => 1, 'ackmode' => $ackMode, 'encoding' => 'auto', 'truncate' => 50_000]);
+            ->post($url, ['count' => $count, 'ackmode' => $ackMode, 'encoding' => 'auto', 'truncate' => 50_000]);
 
         if (! $response->successful()) {
             throw new RuntimeException('management api returned HTTP '.$response->status()." reading the DLQ ({$ackMode})");

@@ -398,7 +398,13 @@ final class RabbitMqDoctorCommand extends Command
         );
 
         if ($error !== null) {
-            $this->emit('fail', "dead-letter canary failed: {$error} — dead-lettered messages would vanish (real broker traffic was produced)");
+            if ($error instanceof CanaryInconclusiveException) {
+                $this->emit('warn', "dead-letter canary inconclusive: {$error->getMessage()}");
+
+                return;
+            }
+
+            $this->emit('fail', "dead-letter canary failed: {$error->getMessage()} — dead-lettered messages would vanish (real broker traffic was produced)");
 
             return;
         }
