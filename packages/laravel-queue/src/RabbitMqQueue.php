@@ -596,7 +596,10 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      * returned). These are per-process; a short-lived process takes them to
      * the grave, so drain them before exit when they matter.
      *
-     * @return array<string, int>
+     * @return array<string, int|string|bool>
+     * Counter keys: deliveries_total, acks_total, rejects_total, returns_total,
+     * dropped_publications_total, dropped_error_records_total. Pool identity
+     * keys: handle (string), pid (int), closed (bool).
      */
     public function stats(): array
     {
