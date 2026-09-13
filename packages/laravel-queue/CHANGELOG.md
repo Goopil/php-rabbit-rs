@@ -4,6 +4,44 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.4] - 2026-09-13
+
+### Fixed
+
+- The doctor's dead-letter canary no longer false-fails behind a dead-letter
+  backlog (#275): verification pulled one message at the DLQ head and never
+  advanced past foreign traffic, reporting healthy wiring as failed. The probe
+  now scans a bounded window per poll (`CANARY_DLQ_SCAN_WINDOW`, default 100)
+  and classifies by coverage — found in the window = delivered; the whole DLQ
+  visible and the probe absent after the poll budget = genuine failure; a full
+  window or competing consumers on the connection (Horizon running) =
+  `CanaryInconclusiveException` warning instead of a fail.
+- Safe mode no longer loses unroutable publishes at process teardown (probe F
+  of the 0.2.2 safety-mode matrix): `RabbitMqQueue::__destruct()` drains
+  pending publish errors and logs each one at `error` level with native
+  `kind`/`message_id`/`message` context — a lone `push()` in a CLI one-shot or
+  an FPM request that never touches the queue again can no longer bury a
+  `Returned` outcome silently.
+- The `rabbit-rs:work` supervision loop no longer blocks on the native depth
+  fallback (#272): without a `management_url`, every scale pass paid a
+  blocking `Pool::size()` round-trip inside the 100 ms loop and a slow broker
+  stalled the whole supervision. The sampler memoizes the native probe per
+  connection and queue for a short TTL (2 s), failures included.
+- `rabbit-rs:topology --fix` verifies the declared objects before reporting
+  success (#273): the command re-runs its verification probes after the
+  declare pass and prints `topology declared` only when every object is
+  confirmed on the broker — the repair path can no longer exit 0 while the
+  target queue never landed.
+- Delay modes refuse or degrade correctly when the broker lacks the
+  `rabbitmq_delayed_message_exchange` plugin: `delay.mode=auto` verifies the
+  plugin at connection compile time (once per connection per process, only
+  with a `management_url`) and degrades to the `ttl` bucket queues when absent
+  or unverifiable — deferred jobs are never published into the main queue
+  where they could run early; `delay.mode=plugin` throws the new
+  `DelayPluginMissingException` on the first delayed publish when the
+  management API proves the plugin absent, and publishes through with a
+  one-time warning when the state cannot be verified.
+
 ## [0.3.3] - 2026-09-13
 
 ### Added
