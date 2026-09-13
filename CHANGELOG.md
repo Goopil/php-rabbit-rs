@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Fixed
+
+- Safe mode no longer loses unroutable publishes at process teardown (probe F of the 0.2.2 safety-mode matrix): the broker's mandatory return already resolved the publication to a definitive `Returned` outcome — thrown from synchronous paths (`bulk()`, explicit `flush()`) and recorded for the next operation on the pipelined path — but a process whose final publish was returned and that performed no further queue operation (a lone `push()` in a CLI one-shot or an FPM request that never touches the queue again) took the pending record to the grave: HTTP 200, message lost, no exception, no log, in the mode that exists to prevent exactly that. `RabbitMqQueue::__destruct()` now drains pending publish errors and logs each one at `error` level (`rabbit-rs: publication outcome never surfaced before process teardown`, with the native `kind`/`message_id`/`message` context) — a throw is impossible from a destructor, so the log entry plus `stats()['returns_total']` is the guaranteed floor of the safe-mode contract. The 0.1.x lab's loud `QueueException` was not a regression: its probe called `size()` after the unroutable dispatch, and `size()` force-flushes — the 0.2.2 matrix probe pushed and exited, which is the shape this fix closes. The typed-throw contract stays where it exists; forcing one on the pipelined path would break the documented replay-on-recovery behavior (a publish during a broker outage buffers and replays instead of throwing).
+
 ## [0.3.3] - 2026-09-13
 
 ### Added

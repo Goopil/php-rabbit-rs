@@ -602,7 +602,41 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
     public function __destruct()
     {
+        $this->logPendingPublishErrors();
         $this->closeConsumers();
+    }
+
+    /**
+     * Last-resort net at process teardown: pipelined publish outcomes surface
+     * at the next operation, and a process whose final publish was returned
+     * as unroutable (or otherwise failed) without a follow-up operation would
+     * otherwise take the record to the grave — a lone safe-mode dispatch in a
+     * CLI one-shot or an FPM request that never touches the queue again was
+     * lost silently (probe F of the 0.2.2 safety-mode matrix). Destructors
+     * cannot propagate exceptions, so each unsurfaced record is logged at
+     * error level with its native context instead of being thrown.
+     */
+    private function logPendingPublishErrors(): void
+    {
+        // Same typed-property initialization check as drainSettlementErrors:
+        // unit tests construct the queue without a container.
+        if (! isset($this->container)) { // @phpstan-ignore-line
+            return;
+        }
+
+        try {
+            $errors = $this->pool->drainErrors();
+            foreach ($errors as $error) {
+                $this->container->make('log')->error(
+                    'rabbit-rs: publication outcome never surfaced before process teardown',
+                    $error,
+                );
+            }
+        } catch (\Throwable) {
+            // Best-effort: the pool may already be closed or the container
+            // partially torn down. The record is lost either way — surfacing
+            // it must never fail the process teardown.
+        }
     }
 
     /**
