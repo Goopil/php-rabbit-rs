@@ -8,6 +8,7 @@
 
 **Verdict: 2 HIGH, 6 MEDIUM, 4 LOW.** The config compiler and the queue/attempts semantics are remarkably clean and well tested — it's `bulk()` and signal handling that break the documented promises.
 **v0.3.2 status**: v0.3.2 ships the auto-scaling supervisor (#262 — `--min-workers/--max-workers/--once/--stop-when-empty`, non-blocking downscale SIGTERM) plus tests/benches/deps; **no fix for any finding below** — `RabbitMqQueue.php` is untouched (HIGH 1, HIGH 2 still open), the new supervisor's own shutdown path keeps the sequential blocking stop (MEDIUM 6, re-anchored below). MEDIUM 3 superseded by the BREAKING `auto_subscribe` removal (#228); MEDIUM 4 and 7 partially improved; HIGH 1, HIGH 2, MEDIUM 5, 6, 8 still open (re-verified at the tag). Note: `RabbitMqServiceProvider::EXTENSION_CONSTRAINT` is now `^0.3.2` — the laravel and native packages must move together.
+**Post-v0.3.3 status**: none of the findings below are fixed yet; additionally, `rabbit-rs:topology --fix` now re-verifies every declared object (passive queue probe + management API) before printing `topology declared` and exits non-zero per object otherwise (#273) — hardening the repair path the "Verified clean" section covered, not one of these findings.
 
 ---
 

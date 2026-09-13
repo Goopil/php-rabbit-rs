@@ -9,22 +9,29 @@ use Illuminate\Support\Facades\Http;
 /**
  * Binds a fake environment probe: the unit suite runs without ext-rabbit_rs
  * and without a broker, so the topology command's extension, queue, and
- * declare probes are substituted with configurable fakes.
+ * declare probes are substituted with configurable fakes. A declare that
+ * does not fail (no error, or a consumer-readiness timeout — the declaration
+ * lands before the readiness wait) models the queues as present afterwards;
+ * $undeclarable queues stay missing even then, modelling the #273 native bug
+ * shape: declare reports success, the object never lands on the broker.
  */
-function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null, ?string $queueProbeError = null): object
+function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null, ?string $queueProbeError = null, array $undeclarable = []): object
 {
-    $probe = new class($missingQueues, $declareError, $queueProbeError) extends DoctorProbe
+    $probe = new class($missingQueues, $declareError, $queueProbeError, $undeclarable) extends DoctorProbe
     {
         public int $declareCalls = 0;
 
         /** @var array<string, mixed>|null config declareTopology received */
         public ?array $declareConfig = null;
 
-        /** @param list<string> $missingQueues */
+        private bool $declared = false;
+
+        /** @param list<string> $missingQueues @param list<string> $undeclarable */
         public function __construct(
             private readonly array $missingQueues,
             private readonly ?string $declareError,
             private readonly ?string $queueProbeError,
+            private readonly array $undeclarable,
         ) {}
 
         public function extensionLoaded(): bool
@@ -43,7 +50,8 @@ function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declare
                 return $this->queueProbeError;
             }
 
-            if (! in_array($queue, $this->missingQueues, true)) {
+            $missing = $this->declared ? $this->undeclarable : $this->missingQueues;
+            if (! in_array($queue, $missing, true)) {
                 return null;
             }
 
@@ -60,6 +68,9 @@ function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declare
             // Runs the real bounding so the captured config is the one a
             // genuine probe pool would use.
             $this->declareConfig = DoctorProbe::declareConfig($nativeConfig);
+            if ($this->declareError === null || str_contains($this->declareError, 'did not become ready within')) {
+                $this->declared = true;
+            }
 
             return $this->declareError;
         }
@@ -485,6 +496,50 @@ describe('rabbit-rs:topology fix', function () {
             ->assertExitCode(0);
 
         expect($probe->declareCalls)->toBe(1);
+    });
+
+    it('re-verifies the declared objects and reports each one before success', function () {
+        // Issue #273: "topology declared" is an aggregate claim that says
+        // nothing about each object landing on the broker — the declare pass
+        // is re-verified and success is only reported for confirmed objects.
+        bindFakeTopologyProbe($this->app, missingQueues: ['orders']);
+        topologyConnection();
+
+        $this->artisan('rabbit-rs:topology', ['--fix' => true])
+            ->expectsOutputToContain("queue 'orders' exists")
+            ->expectsOutputToContain('topology declared')
+            ->assertExitCode(0);
+    });
+
+    it('does not report success when a queue cannot be declared', function () {
+        // Issue #273 negative control: the declare reports success while the
+        // queue never lands on the broker — the post-condition verification
+        // must catch it with a per-object failure and a non-zero exit.
+        bindFakeTopologyProbe($this->app, missingQueues: ['orders'], undeclarable: ['orders']);
+        topologyConnection();
+
+        Artisan::call('rabbit-rs:topology', ['--fix' => true]);
+        $output = Artisan::output();
+
+        expect($output)->toContain("queue 'orders' is missing")
+            ->not->toContain('topology declared')
+            ->and(Artisan::call('rabbit-rs:topology', ['--fix' => true]))->toBe(1);
+    });
+
+    it('fails per object when the management api shows a declare gap', function () {
+        // Bug 14 visibility: a declare that reports success while the route
+        // exchange never lands must surface as a per-object failure instead
+        // of exiting green behind the aggregate declare result.
+        bindFakeTopologyProbe($this->app);
+        topologyConnectionWithManagement('rabbitmq', ['exchange' => 'orders_exchange', 'routing_key' => '{queue}']);
+        fakeManagementApi();
+
+        Artisan::call('rabbit-rs:topology', ['--fix' => true]);
+        $output = Artisan::output();
+
+        expect($output)->toContain("exchange 'orders_exchange' is missing")
+            ->not->toContain('topology declared')
+            ->and(Artisan::call('rabbit-rs:topology', ['--fix' => true]))->toBe(1);
     });
 
     it('bounds the declare probe readiness wait to two seconds', function () {
