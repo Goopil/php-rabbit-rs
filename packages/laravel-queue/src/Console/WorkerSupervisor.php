@@ -82,8 +82,10 @@ class WorkerSupervisor
      *                               terminated (also honored through $options for backwards compatibility).
      * @param  bool  $once  Once mode: children receive `--once` (a single job
      *                      each) under the same supervision semantics.
-     * @param  (\Closure(): DepthSample)|null  $depthCallback  Samples the ready
-     *                                                         depth per connection name (null when unknown). Injected so tests
+     * @param  (\Closure(bool $fresh = false): DepthSample)|null  $depthCallback  Samples the ready
+     *                                                         depth per connection name (null when unknown); pass
+     *                                                         fresh: true for an uncached read — only the one-shot
+     *                                                         final drain check does (issue #287). Injected so tests
      *                                                         can fake it without HTTP; when absent, scaling and the one-shot
      *                                                         final depth check never fire.
      */
@@ -403,11 +405,13 @@ class WorkerSupervisor
     }
 
     /**
-     * Total pending depth across the plan connections (the summed non-null
-     * gauge values): 0 without a depth callback, when every lookup failed,
-     * or when the broker reports empty queues.
+     * Total pending depth across the plan connections: the summed non-null
+     * gauge values, or -1 when every lookup failed (inconclusive). Pass
+     * fresh: true to bypass the depth sampler's memoized window — the final
+     * once-mode drain check must not trust a cached 0 or a memoized failed
+     * probe (issue #287).
      */
-    private function pendingDepth(): int
+    private function pendingDepth(bool $fresh = false): int
     {
         $depthCallback = $this->depthCallback;
         if ($depthCallback === null) {
@@ -415,13 +419,17 @@ class WorkerSupervisor
         }
 
         $pending = 0;
-        foreach ($depthCallback() as $depth) {
-            if (is_int($depth) && $depth > 0) {
-                $pending += $depth;
+        $known = false;
+        foreach ($depthCallback($fresh) as $depth) {
+            if (is_int($depth)) {
+                $known = true;
+                if ($depth > 0) {
+                    $pending += $depth;
+                }
             }
         }
 
-        return $pending;
+        return $known ? $pending : -1;
     }
 
     /**
@@ -480,6 +488,11 @@ class WorkerSupervisor
 
             if ($slots === []) {
                 $pending = $this->pendingDepth();
+                if ($pending === 0) {
+                    // The memoized read can be a stale 0 or a memoized failed probe:
+                    // re-probe uncached before concluding the plan is drained (#287).
+                    $pending = $this->pendingDepth(fresh: true);
+                }
                 if ($pending > 0
                     && ($reArms < self::MAX_ONE_SHOT_REARMS
                         || $cleanExitsSinceReArm > 0
@@ -488,6 +501,14 @@ class WorkerSupervisor
                     $lastReArmDepth = $pending;
                     $cleanExitsSinceReArm = 0;
                     $this->spawnInitialChildren($slots);
+
+                    continue;
+                }
+                if ($pending < 0 && $reArms < self::MAX_ONE_SHOT_REARMS) {
+                    // Every fresh lookup failed: inconclusive, retry within the same
+                    // bounded budget instead of reporting a drained plan.
+                    $reArms++;
+                    $cleanExitsSinceReArm = 0;
 
                     continue;
                 }

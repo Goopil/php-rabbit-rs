@@ -528,6 +528,76 @@ describe('WorkerSupervisor integration', function () {
             ->and($indexes)->toBe(range(0, $jobs - 1));
     });
 
+    it('once mode re-probes the depth fresh before its final drain check so a stale cached zero does not strand work', function () {
+        // 10 jobs, one per child. The memoized window keeps answering a stale
+        // 0 (its cached snapshot), the fresh exit re-check sees the real
+        // remaining depth and re-arms (issue #287).
+        $jobs = 10;
+        $spawned = 0;
+        $factory = static function (int $workerIndex) use (&$spawned): Process {
+            $spawned++;
+
+            return new Process([PHP_BINARY, '-r', 'exit(0);']);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            minWorkers: 1,
+            maxWorkers: 3,
+            once: true,
+            depthCallback: static function (bool $fresh = false) use (&$spawned, $jobs): array {
+                return ['rabbit-rs' => $fresh ? max(0, $jobs - $spawned) : 0];
+            },
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($spawned)->toBe($jobs);   // the stale 0 alone would have exited after the first spawn
+    });
+
+    it('once mode retries a fully failed fresh probe within the re-arm budget instead of reporting a drained plan', function () {
+        $probes = 0;
+        $sampler = new QueueDepthSampler(
+            [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            static function () use (&$probes): ?int {
+                $probes++;
+
+                return null;   // every probe fails
+            },
+            0.0,
+        );
+        $spawned = 0;
+        $factory = static function (int $workerIndex) use (&$spawned): Process {
+            $spawned++;
+
+            return new Process([PHP_BINARY, '-r', 'exit(0);']);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            minWorkers: 1,
+            maxWorkers: 3,
+            once: true,
+            depthCallback: static function (bool $fresh = false) use ($sampler): array {
+                return $sampler->depths($fresh);
+            },
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)   // bounded: retries, then a clean stop
+            ->and($probes)->toBeLessThanOrEqual(20);         // no unbounded probe loop
+    });
+
     it('once mode without a depth source never scales or re-arms', function () {
         $calls = [];
         $supervisor = makeSupervisor(
