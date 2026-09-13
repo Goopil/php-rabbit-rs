@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Console;
 
 use Goopil\RabbitRs\Pool;
+use Illuminate\Support\Facades\Http;
+use RuntimeException;
 
 /**
  * Environment probes for rabbit-rs:doctor. Resolved from the container so
@@ -19,6 +21,11 @@ class DoctorProbe
      * ConnectionCompiler::consumer()), mirroring the core's ms deserialization.
      */
     public const DECLARE_READINESS_TIMEOUT_MS = 2_000;
+
+    /** Upper bound on the canary's DLQ verification loop (attempts × interval). */
+    private const CANARY_DLQ_ATTEMPTS = 30;
+
+    private const CANARY_DLQ_POLL_MS = 300_000;
 
     public function extensionLoaded(): bool
     {
@@ -112,6 +119,144 @@ class DoctorProbe
         $probed['consumer'] = $consumer;
 
         return $probed;
+    }
+
+    /**
+     * Dead-letter canary: publishes a uniquely marked probe into the
+     * connection's main queue, consumes it, rejects it terminally, and
+     * asserts the broker dead-letters it into the configured DLQ. This is a
+     * behavioral check with real broker traffic — it exercises queue args →
+     * DLX → binding → DLQ, which static topology checks cannot prove.
+     *
+     * Foreign messages encountered in the main queue are released untouched
+     * (never acked, never dropped); on a DLQ backlog the verification loop
+     * requeues non-matching messages and stays bounded. Most meaningful in
+     * quiet windows: a running worker on the same queue can pick the probe
+     * up first.
+     *
+     * Returns the error message, or null when the canary was delivered.
+     *
+     * @param  array<string, mixed>  $nativeConfig
+     * @param  array<string, mixed>  $config  connection config (management_url, credentials)
+     */
+    public function deadLetterCanary(
+        array $nativeConfig,
+        string $broker,
+        string $exchange,
+        string $routingKey,
+        string $dlq,
+        string $workerProfile,
+        array $config,
+    ): ?string {
+        return $this->probePool(self::declareConfig($nativeConfig), function (Pool $pool) use ($nativeConfig, $broker, $exchange, $routingKey, $dlq, $workerProfile, $config): void {
+            $mainQueue = self::queueName($nativeConfig);
+            $messageId = 'doctor-dlx-canary-'.bin2hex(random_bytes(8));
+
+            $pool->publish([
+                'broker' => $broker,
+                'exchange' => $exchange,
+                'routing_key' => $routingKey,
+                'payload' => 'rabbit-rs doctor dead-letter canary',
+                'message_id' => $messageId,
+                'headers' => ['x-canary' => 'rabbit-rs-doctor'],
+                'timeout_ms' => 5000,
+            ]);
+            // size() is a synchronous flush barrier: the buffered canary is
+            // confirmed (or its failure raised) before the consume loop starts.
+            $pool->size($broker, $mainQueue);
+
+            $rejected = false;
+            $consumer = $pool->consumer($workerProfile);
+            try {
+                $deadline = microtime(true) + 10.0;
+                while (microtime(true) < $deadline) {
+                    $delivery = $consumer->next(2000);
+                    if ($delivery === null) {
+                        continue;
+                    }
+                    if (($delivery->metadata()['message_id'] ?? '') === $messageId) {
+                        $delivery->reject(false); // terminal reject → dead-lettered to the DLQ
+                        $rejected = true;
+
+                        break;
+                    }
+                    $delivery->release(); // foreign traffic: never acked, never dropped
+                }
+
+                // Verify while the consumer is still open: the reject is a
+                // fire-and-forget settlement, and closing the consumer before
+                // it reaches the wire would requeue the delivery instead of
+                // dead-lettering it.
+                if ($rejected) {
+                    $vhost = is_string($nativeConfig['brokers'][0]['vhost'] ?? null) ? $nativeConfig['brokers'][0]['vhost'] : '/';
+                    $this->assertCanaryOnDlq($config, $vhost, $dlq, $messageId);
+                }
+            } finally {
+                $consumer->close();
+            }
+
+            if (! $rejected) {
+                throw new RuntimeException('canary message was not consumed from the main queue within 10s');
+            }
+        });
+    }
+
+    /**
+     * Asserts the canary reached the DLQ via the management API. The probe
+     * is pulled with `ack_requeue_true` and removed with `ack_requeue_false`
+     * so only the canary is consumed; foreign dead-lettered messages are
+     * requeued untouched. Bounded loop tolerates a DLQ backlog.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function assertCanaryOnDlq(array $config, string $vhost, string $dlq, string $messageId): void
+    {
+        $url = $config['management_url'] ?? null;
+        if (! is_string($url) || trim($url) === '') {
+            throw new RuntimeException('no management_url configured — the canary cannot verify DLQ delivery');
+        }
+
+        $username = is_string($config['username'] ?? null) ? $config['username'] : 'guest';
+        $password = is_string($config['password'] ?? null) ? $config['password'] : 'guest';
+        $base = rtrim(trim($url), '/');
+        $queueUrl = "{$base}/api/queues/".rawurlencode($vhost).'/'.rawurlencode($dlq).'/get';
+
+        for ($attempt = 0; $attempt < self::CANARY_DLQ_ATTEMPTS; $attempt++) {
+            $messages = $this->pullFromQueue($queueUrl, $username, $password, 'ack_requeue_true');
+            $first = $messages[0] ?? null;
+            $firstMessageId = is_array($first['properties'] ?? null) ? (string) ($first['properties']['message_id'] ?? '') : '';
+            if ($firstMessageId === $messageId) {
+                $this->pullFromQueue($queueUrl, $username, $password, 'ack_requeue_false');
+
+                return;
+            }
+            usleep(self::CANARY_DLQ_POLL_MS);
+        }
+
+        throw new RuntimeException('canary message not found in DLQ within the verification window');
+    }
+
+    /**
+     * Pulls one message from a queue via the management API with the given
+     * ack mode (ack_requeue_true inspects without consuming, ack_requeue_false
+     * removes).
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function pullFromQueue(string $url, string $username, string $password, string $ackMode): array
+    {
+        $response = Http::withBasicAuth($username, $password)
+            ->timeout(5)
+            ->acceptJson()
+            ->post($url, ['count' => 1, 'ackmode' => $ackMode, 'encoding' => 'auto', 'truncate' => 50_000]);
+
+        if (! $response->successful()) {
+            throw new RuntimeException('management api returned HTTP '.$response->status()." reading the DLQ ({$ackMode})");
+        }
+
+        $messages = $response->json();
+
+        return is_array($messages) ? $messages : [];
     }
 
     /**

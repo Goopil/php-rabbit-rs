@@ -109,6 +109,7 @@ final class RabbitMqDoctorCommand extends Command
         $managementUsable = $this->checkManagement($config);
         $this->checkPublishOutcomes($compiled, $config, $managementUsable);
         $this->checkTopology($compiled, $brokerError);
+        $this->checkDeadLetterCanary($name, $compiled, $config, $probe, $brokerError, $managementUsable);
         $this->checkSafety($compiled);
         $this->checkHorizon($name, $workerClass, $compiled);
         $this->checkEvents();
@@ -352,6 +353,57 @@ final class RabbitMqDoctorCommand extends Command
         } else {
             $this->emit('warn', 'no dead_letter configured: a worker crash before settlement redelivers the message forever');
         }
+    }
+
+    /**
+     * Behavioral dead-letter probe: publishes, terminally rejects, and
+     * asserts DLQ delivery — the only check that exercises the whole chain
+     * (queue args → DLX → binding → DLQ) instead of inspecting its parts.
+     * Skipped without a reachable broker, without a usable management API
+     * (DLQ delivery is verified through it), or when no dead_letter topology
+     * is configured (checkTopology already warns about that gap).
+     *
+     * @param  array<string, mixed>  $compiled
+     * @param  array<string, mixed>  $config
+     */
+    private function checkDeadLetterCanary(
+        string $name,
+        array $compiled,
+        array $config,
+        DoctorProbe $probe,
+        ?string $brokerError,
+        bool $managementUsable,
+    ): void {
+        $deadLetter = $compiled['topology']['dead_letter'] ?? null;
+        if (! is_array($deadLetter) || $brokerError !== null || ! $managementUsable) {
+            return;
+        }
+
+        $broker = $compiled['native']['brokers'][0]['name'] ?? 'default';
+        $route = $compiled['routes']['default'];
+        $queue = $compiled['native']['workers'][0]['subscriptions'][0]['queue'] ?? null;
+        $workerProfile = (string) ($compiled['native']['workers'][0]['name'] ?? $name);
+        if ($queue === null) {
+            return;
+        }
+
+        $error = $probe->deadLetterCanary(
+            $compiled['native'],
+            (string) $broker,
+            (string) ($route['exchange'] ?? ''),
+            str_replace('{queue}', (string) $queue, (string) ($route['routing_key'] ?? '{queue}')),
+            (string) $deadLetter['queue'],
+            $workerProfile,
+            $config,
+        );
+
+        if ($error !== null) {
+            $this->emit('fail', "dead-letter canary failed: {$error} — dead-lettered messages would vanish (real broker traffic was produced)");
+
+            return;
+        }
+
+        $this->emit('ok', 'dead-letter canary: delivered, rejected, and received on the DLQ');
     }
 
     /**
