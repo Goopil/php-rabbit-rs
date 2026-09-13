@@ -84,7 +84,15 @@ describe('topology --fix post-condition verification', function () {
         Artisan::call('rabbit-rs:topology', ['--fix' => true, '--connection' => [INTEGRATION_CONNECTION]]);
         $output = Artisan::output();
 
-        expect($output)->toContain("queue '{$this->queueName}' is missing")
+        // The verify probe races the declare bring-up's doomed retries: when
+        // the bring-up's FailedPermanent teardown closes the connection
+        // first, the probe reports "probe failed" instead of a clean 404
+        // "is missing" (issue #285). Either way the per-object failure is
+        // reported and success is never claimed.
+        $missingOrUnverifiable = str_contains($output, "queue '{$this->queueName}' is missing")
+            || str_contains($output, "queue '{$this->queueName}' probe failed:");
+
+        expect($missingOrUnverifiable)->toBeTrue('expected a per-object queue failure, got: '.$output)
             ->and($output)->toContain('declaration failed')
             ->and($output)->not->toContain('topology declared')
             ->and(Artisan::call('rabbit-rs:topology', ['--fix' => true, '--connection' => [INTEGRATION_CONNECTION]]))->toBe(1);
