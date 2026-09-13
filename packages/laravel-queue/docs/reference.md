@@ -36,7 +36,7 @@ ProcessOrder::dispatch($order)->onQueue('orders.high');
 ProcessOrder::dispatch($order)->delay(now()->addMinutes(5));
 ```
 
-Delayed jobs use the configured delay mode: `auto` and `plugin` publish through the `x-delayed-message` exchange, `ttl` uses bucketed TTL queues (use `ttl` when the plugin is not installed). See [Topology — Delay routing](#delay-routing).
+Delayed jobs use the configured delay mode: `auto` verifies the `rabbitmq_delayed_message_exchange` plugin against the management API at connection compile time and publishes through the `x-delayed-message` exchange only when present (otherwise it degrades to `ttl` bucket queues), `plugin` refuses the delayed publish loudly when the management API proves the plugin absent, and `ttl` uses bucketed TTL queues. See [Topology — Delay routing](#delay-routing).
 
 #### Dispatch in bulk
 
@@ -787,8 +787,8 @@ Delay configuration is per connection, with `mode`, `buckets`,
 ],
 ```
 
-- `auto` — publish delayed messages through the `x-delayed-message` exchange (same as `plugin`); use `ttl` when the plugin is not installed
-- `plugin` — require the plugin; fail if it is not installed
+- `auto` — publish delayed messages through the `x-delayed-message` exchange when the broker confirms the plugin (checked once per connection through the management API at connection compile time), degrading to the `ttl` bucket queues when the plugin is absent or unverifiable
+- `plugin` — require the plugin: the first delayed publish throws `DelayPluginMissingException` when the management API proves it absent
 - `ttl` — always use TTL queue buckets
 
 > **Note:** when `safety` is `blind`, delayed jobs are **not** honored — the
@@ -1026,7 +1026,7 @@ Rabbit RS supports delayed message delivery via two strategies, selected by the 
 ],
 ```
 
-In `auto` mode, delayed messages are published through the `x-delayed-message` exchange, same as `plugin` mode (including its declare-mode topology, see below). Use `ttl` mode when the `rabbitmq_delayed_message_exchange` plugin is not installed.
+In `auto` mode the driver checks the broker for the `rabbitmq_delayed_message_exchange` plugin (management API overview, once per connection per process — only when a `management_url` is configured). With the plugin present, delayed messages are published through the `x-delayed-message` exchange, same as `plugin` mode (including its declare-mode topology, see below). Without the plugin — or when the plugin state cannot be verified (no `management_url`, or the management API is unreachable) — `auto` degrades to the `ttl` bucket queues at connection compile time, so a deferred job is never routed through the main queue and never silently lost to a missing plugin.
 
 #### Plugin mode
 
@@ -1050,6 +1050,8 @@ rabbitmq-plugins enable rabbitmq_delayed_message_exchange
 ```
 
 If the plugin is not installed, the exchange declare fails with a permanent error: in `declare` mode the pool connection fails during topology reconciliation, while in `external` and `verify` modes delayed publishes fail terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working. Use `ttl` mode when the plugin cannot be installed.
+
+On the first delayed publish the driver additionally re-checks the plugin through the management API (verdict cached per connection for the process lifetime): when the API proves the plugin absent, the publish throws `DelayPluginMissingException` instead of losing the message — without the plugin every deferred publish is silently lost. When the plugin state cannot be verified (no `management_url`, or the management API is unreachable), the publish goes through unchanged with a one-time warning, so an unrelated management outage never breaks a working plugin setup.
 
 #### TTL mode (explicit)
 
