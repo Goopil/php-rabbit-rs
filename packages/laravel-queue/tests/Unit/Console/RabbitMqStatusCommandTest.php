@@ -19,6 +19,22 @@ function bindFailingPoolFactory($app): void
     ));
 }
 
+/**
+ * Binds a NativePoolFactory whose pool reports the default fake stats with
+ * the dropped-publications counter forced to $droppedPublications.
+ */
+function bindDroppingPoolFactory($app, int $droppedPublications): void
+{
+    $app->instance(NativePoolFactory::class, new NativePoolFactory(
+        createPool: static function () use ($droppedPublications): Pool {
+            $pool = new Pool;
+            $pool->statsResult = [...$pool->stats(), 'dropped_publications_total' => $droppedPublications];
+
+            return $pool;
+        },
+    ));
+}
+
 beforeEach(function () {
     config()->set('queue.connections.rabbit-rs', [
         'driver' => 'rabbit-rs',
@@ -63,5 +79,22 @@ describe('RabbitMqStatusCommand exit codes', function () {
         $this->artisan('rabbit-rs:status')
             ->assertFailed()
             ->expectsOutputToContain(FAILED_TO_COLLECT_STATS);
+    });
+});
+
+describe('RabbitMqStatusCommand drop counter (issue #290)', function () {
+    it('reports the dropped publications counter in human output', function () {
+        $this->artisan('rabbit-rs:status')
+            ->assertSuccessful()
+            ->expectsOutputToContain('dropped publications: 0');
+    });
+
+    it('warns when publications were dropped on a closed client', function () {
+        bindDroppingPoolFactory($this->app, 3);
+
+        $this->artisan('rabbit-rs:status')
+            ->assertSuccessful()
+            ->expectsOutputToContain('dropped publications: 3')
+            ->expectsOutputToContain('dropped_publications_total is 3');
     });
 });

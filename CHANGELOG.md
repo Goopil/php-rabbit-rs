@@ -8,6 +8,9 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Added
+
+- `RabbitMqQueue::stats()` exposes the process-local native pool counters to userland — including `returns_total` (unroutable mandatory publications) and `dropped_publications_total` (publications dropped on a closed client) — and `rabbit-rs:status` now reports the drop counter and warns when it is non-zero (issue #290).
 ### Fixed
 
 - `rabbit-rs:work --once` no longer ends its drain on a memoized stale reading (issue #287): the depth sampler's 2 s window (failures included) could report a cached 0 to the final drain check while the broker still held work — the exit decision now re-probes uncached once before concluding, and a fully failed fresh probe retries within the existing re-arm budget instead of reporting a drained plan.

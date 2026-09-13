@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `RabbitMqQueue::stats()` exposes the process-local native pool counters to
+  userland — including `returns_total` (unroutable mandatory publications) and
+  `dropped_publications_total` (publications dropped on a closed client) — and
+  `rabbit-rs:status` now reports the drop counter and warns when it is non-zero
+  (issue #290).
 ### Fixed
 
 - `rabbit-rs:work --once` no longer ends its drain on a memoized stale reading
