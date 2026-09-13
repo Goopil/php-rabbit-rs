@@ -66,6 +66,54 @@ it('proves the configured dead-letter wiring end-to-end through the doctor canar
         ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
 });
 
+it('finds the canary behind a foreign DLQ backlog', function () {
+    declareCanaryTopology($this->connectionName, $this->config);
+    seedForeignDeadLetters($this->dlq, 40);
+
+    Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
+    $output = Artisan::output();
+
+    // The bulk scan sees the whole (sub-window) DLQ: the canary dead-letters
+    // behind 40 foreign messages and is still found — this was a hard fail
+    // when the verification pulled one message at a time (#275).
+    expect($output)->toContain('dead-letter canary: delivered')
+        ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
+});
+
+it('reports inconclusive instead of failing when the DLQ backlog outgrows the scan window', function () {
+    declareCanaryTopology($this->connectionName, $this->config);
+    seedForeignDeadLetters($this->dlq, 110);
+
+    Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
+    $output = Artisan::output();
+
+    // 110 foreign messages wall off the canary beyond the 100-message scan
+    // window. The wiring was not disproven and foreign traffic was not
+    // touched — that is an inconclusive run, not dead-letter data loss.
+    expect($output)->toContain('dead-letter canary inconclusive')
+        ->and($output)->not->toContain('dead-letter canary failed')
+        ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
+});
+
+/**
+ * Seeds foreign dead-lettered messages directly into a queue through the
+ * default exchange (routing key = queue name), so the DLQ holds a backlog
+ * the canary verification has to see past. `properties` must be a JSON
+ * object — an empty PHP array encodes as [] and the API answers 500.
+ */
+function seedForeignDeadLetters(string $queue, int $count): void
+{
+    for ($i = 0; $i < $count; $i++) {
+        $response = managementRequest('POST', 'http://localhost:15672/api/exchanges/'.rawurlencode(ORDERS_VHOST).'/amq.default/publish', json_encode([
+            'properties' => new stdClass,
+            'routing_key' => $queue,
+            'payload' => 'foreign dead-letter backlog filler '.$i,
+            'payload_encoding' => 'string',
+        ]));
+        expect($response)->toContain('"routed":true');
+    }
+}
+
 it('fails loud when the dead-letter wiring is broken', function () {
     // External mode + a manually declared main queue: the wiring is never
     // declared, the DLX does not exist, so the terminal reject cannot

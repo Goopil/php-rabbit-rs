@@ -603,7 +603,7 @@ impl PublishBuffer {
     async fn run_drain(
         &self,
         publishes: Vec<NativePublish>,
-        requests: Vec<(String, PublishRequest)>,
+        requests: Vec<(Arc<str>, PublishRequest)>,
     ) {
         let message_id = publishes
             .first()
@@ -702,7 +702,11 @@ impl PublishBuffer {
 
     /// Clones the batch into the wire-level request list a failed flush
     /// re-buffers (shared by the sync, pipelined, and teardown drains).
-    fn drain_requests(publishes: &[NativePublish]) -> Vec<(String, PublishRequest)> {
+    ///
+    /// The broker key is an `Arc<str>` bump and `PublishRequest` clones are
+    /// zero-copy (payload `Bytes`, `Arc`-held properties), so this is
+    /// allocation-free for the common single-headerless case (issue #261).
+    fn drain_requests(publishes: &[NativePublish]) -> Vec<(Arc<str>, PublishRequest)> {
         publishes
             .iter()
             .map(|publish| (publish.broker.clone(), publish.request.clone()))

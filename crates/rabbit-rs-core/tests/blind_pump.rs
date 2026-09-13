@@ -91,10 +91,10 @@ fn request(message_id: &str) -> PublishRequest {
     )
 }
 
-fn batch(message_ids: &[&str]) -> Vec<(String, PublishRequest)> {
+fn batch(message_ids: &[&str]) -> Vec<(std::sync::Arc<str>, PublishRequest)> {
     message_ids
         .iter()
-        .map(|id| ("default".to_owned(), request(id)))
+        .map(|id| ("default".into(), request(id)))
         .collect()
 }
 
@@ -199,7 +199,7 @@ async fn blind_single_publish_resolves_confirmed_without_waiting_for_the_transpo
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(1),
-        pool.publish_batch(vec![("default".to_owned(), request("m0"))]),
+        pool.publish_batch(vec![("default".into(), request("m0"))]),
     )
     .await
     .expect("blind publish must resolve at hand-off, not on the transport")
@@ -279,7 +279,7 @@ async fn flush_blind_resolves_immediately_on_non_blind_clients() {
         .expect("flush must not hang on an empty pool")
         .expect("flush on an empty pool succeeds");
 
-    pool.publish_batch(vec![("default".to_owned(), request("m0"))])
+    pool.publish_batch(vec![("default".into(), request("m0"))])
         .await
         .expect("safe publish");
     tokio::time::timeout(Duration::from_secs(1), pool.flush_blind())
@@ -299,7 +299,7 @@ async fn blind_publish_respects_the_byte_budget() {
     let pool = Arc::new(blind_pool_with_byte_budget(&transport, 8, 1024 * 1024));
 
     pool.publish_batch(vec![(
-        "default".to_owned(),
+        "default".into(),
         oversized_request("m0", 600 * 1024),
     )])
     .await
@@ -308,7 +308,7 @@ async fn blind_publish_respects_the_byte_budget() {
 
     let error = pool
         .publish_batch(vec![(
-            "default".to_owned(),
+            "default".into(),
             oversized_request("m1", 600 * 1024),
         )])
         .await
@@ -328,7 +328,7 @@ async fn blind_publish_respects_the_byte_budget() {
     assert!(gates[0].release());
     wait_for_publishes(&transport, 1).await;
     pool.publish_batch(vec![(
-        "default".to_owned(),
+        "default".into(),
         oversized_request("m1", 600 * 1024),
     )])
     .await
@@ -385,10 +385,10 @@ async fn blind_batch_applies_backpressure_then_completes_without_error() {
     let batch = tokio::spawn({
         let pool = Arc::clone(&pool);
         async move {
-            let requests: Vec<(String, PublishRequest)> = (0..131)
+            let requests: Vec<(std::sync::Arc<str>, PublishRequest)> = (0..131)
                 .map(|i| {
                     let id = i.to_string();
-                    ("default".to_owned(), request(&id))
+                    ("default".into(), request(&id))
                 })
                 .collect();
             pool.publish_batch(requests).await
@@ -492,7 +492,7 @@ async fn blind_mode_routes_delayed_publishes_through_the_plugin_strategy() {
         PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Blind),
     );
 
-    pool.publish_batch(vec![("default".to_owned(), delayed_request("m0", 5_000))])
+    pool.publish_batch(vec![("default".into(), delayed_request("m0", 5_000))])
         .await
         .expect("blind delayed publish accepted");
     wait_for_publishes(&transport, 1).await;
@@ -531,7 +531,7 @@ async fn blind_mode_routes_delayed_publishes_through_ttl_buckets() {
         PublisherConfig::with_safety(8, Duration::from_secs(5), SafetyMode::Blind),
     );
 
-    pool.publish_batch(vec![("default".to_owned(), delayed_request("m0", 5_000))])
+    pool.publish_batch(vec![("default".into(), delayed_request("m0", 5_000))])
         .await
         .expect("blind delayed publish accepted");
     wait_for_publishes(&transport, 1).await;
