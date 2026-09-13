@@ -82,12 +82,12 @@ class WorkerSupervisor
      *                               terminated (also honored through $options for backwards compatibility).
      * @param  bool  $once  Once mode: children receive `--once` (a single job
      *                      each) under the same supervision semantics.
-     * @param  (\Closure(bool $fresh = false): DepthSample)|null  $depthCallback  Samples the ready
-     *                                                         depth per connection name (null when unknown); pass
-     *                                                         fresh: true for an uncached read — only the one-shot
-     *                                                         final drain check does (issue #287). Injected so tests
-     *                                                         can fake it without HTTP; when absent, scaling and the one-shot
-     *                                                         final depth check never fire.
+     * @param  (\Closure(bool): DepthSample)|null  $depthCallback  Samples the ready
+     *                                                             depth per connection name (null when unknown); pass
+     *                                                             fresh: true for an uncached read — only the one-shot
+     *                                                             final drain check does (issue #287). Injected so tests
+     *                                                             can fake it without HTTP; when absent, scaling and the one-shot
+     *                                                             final depth check never fire.
      */
     public function __construct(
         private readonly array $plan,
@@ -612,7 +612,7 @@ class WorkerSupervisor
             return;
         }
 
-        $depths = $depthCallback();
+        $depths = $depthCallback(false);
 
         foreach (array_keys($this->plan) as $entryIndex) {
             $entry = $this->plan[$entryIndex];

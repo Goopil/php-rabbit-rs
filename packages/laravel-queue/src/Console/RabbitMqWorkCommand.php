@@ -124,9 +124,9 @@ class RabbitMqWorkCommand extends Command
      * and reused for the supervisor's lifetime.
      *
      * @param  list<array{connection: string, queues: list<string>}>  $plan
-     * @return \Closure(bool $fresh = false): array<string, int|null> pass
-     *                fresh: true to bypass the sampler's memoized window for a
-     *                single call (the once-mode final drain check, issue #287)
+     * @return \Closure(bool): array<string, int|null> pass
+     *                                                 fresh: true to bypass the sampler's memoized window for a
+     *                                                 single call (the once-mode final drain check, issue #287)
      */
     private function depthCallback(array $plan): \Closure
     {
