@@ -53,7 +53,6 @@ struct SettleParams {
 struct SettlementResult {
     channel_key: ChannelKey,
     token: Arc<DeliveryTokenInner>,
-    is_plain_ack: bool,
     result: Result<DeliveryState, ConsumerError>,
 }
 
@@ -81,9 +80,15 @@ pub(crate) enum ConsumerCommand {
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
+        /// Job latency measured embedder-side (pop stamp -> ack send): the
+        /// adaptive controller's sample. Measured at send time because the
+        /// actor-side record time is delayed by command queueing behind
+        /// incoming floods, which grows with the prefetch window.
+        job_latency: Duration,
     },
     SettleThrough {
         token: Arc<DeliveryTokenInner>,
+        job_latency: Duration,
     },
     GetPrefetchStats {
         completed: oneshot::Sender<Vec<PrefetchStat>>,
@@ -637,11 +642,15 @@ pub(crate) async fn run_actor(
                 }) => {
                     handle_incoming(&mut state, subscription, result);
                 }
-                Ok(ConsumerCommand::Settle { token, settlement }) => {
-                    handle_settle(&mut state, token, settlement);
+                Ok(ConsumerCommand::Settle {
+                    token,
+                    settlement,
+                    job_latency,
+                }) => {
+                    handle_settle(&mut state, token, settlement, job_latency);
                 }
-                Ok(ConsumerCommand::SettleThrough { token }) => {
-                    handle_settle_through(&mut state, token);
+                Ok(ConsumerCommand::SettleThrough { token, job_latency }) => {
+                    handle_settle_through(&mut state, token, job_latency);
                 }
                 Ok(ConsumerCommand::GetPrefetchStats { completed }) => {
                     let _ = completed.send(state.prefetch_stats());
@@ -667,9 +676,13 @@ pub(crate) async fn run_actor(
                 Some(ConsumerCommand::Settle {
                     token,
                     settlement,
-                }) => handle_settle(&mut state, token, settlement),
-                Some(ConsumerCommand::SettleThrough { token }) => {
-                    handle_settle_through(&mut state, token);
+                    job_latency,
+                }) => handle_settle(&mut state, token, settlement, job_latency),
+                Some(ConsumerCommand::SettleThrough {
+                    token,
+                    job_latency,
+                }) => {
+                    handle_settle_through(&mut state, token, job_latency);
                 }
                 Some(ConsumerCommand::GetPrefetchStats { completed }) => {
                     let _ = completed.send(state.prefetch_stats());
@@ -730,15 +743,6 @@ pub(crate) async fn run_actor(
                     if let Ok(terminal) = &settlement_result.result {
                         match terminal {
                             DeliveryState::Acked => {
-                                if settlement_result.is_plain_ack
-                                    && let Some(controller) = state
-                                        .adaptive_prefetch
-                                        .get_mut(&settlement_result.token.subscription)
-                                {
-                                    controller.observe(
-                                        settlement_result.token.reserved_at.elapsed(),
-                                    );
-                                }
                                 state
                                     .metrics
                                     .record_ack(settlement_result.token.reserved_at.elapsed());
@@ -870,17 +874,6 @@ pub(crate) async fn run_actor(
 
                 if is_terminal {
                     if let Ok(DeliveryState::Acked) = &settle_through_result.result {
-                        if let Some(controller) = state
-                            .adaptive_prefetch
-                            .get_mut(&channel_key.0)
-                        {
-                            controller.observe(
-                                settle_through_result
-                                    .affected_tokens
-                                    .last()
-                                    .map_or(Duration::ZERO, |token| token.reserved_at.elapsed()),
-                            );
-                        }
                         for token in &settle_through_result.affected_tokens {
                             let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
                             if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
@@ -1015,13 +1008,28 @@ fn handle_incoming(
     }
 }
 
-fn handle_settle(state: &mut ActorState, token: Arc<DeliveryTokenInner>, settlement: Settlement) {
+fn handle_settle(
+    state: &mut ActorState,
+    token: Arc<DeliveryTokenInner>,
+    settlement: Settlement,
+    job_latency: Duration,
+) {
     let Some(channel_key) = claim_settlement(state, &token) else {
         return;
     };
     if matches!(settlement, Settlement::Ack) {
         // Plain acks coalesce: record only — `flush_acked` bursts the
         // contiguous prefix into one cumulative wire ack.
+        //
+        // The adaptive controller learns the embedder-side job latency
+        // measured at ack-send time, not at settlement completion: the
+        // completion latency folds in the coalescing delay and the command
+        // queueing behind incoming floods, both of which grow with the
+        // prefetch window and would make the controller shrink the very
+        // window the coalescing feeds on.
+        if let Some(controller) = state.adaptive_prefetch.get_mut(&token.subscription) {
+            controller.observe(job_latency);
+        }
         state
             .acked_batch
             .entry(channel_key)
@@ -1043,7 +1051,11 @@ fn handle_settle(state: &mut ActorState, token: Arc<DeliveryTokenInner>, settlem
 
 /// Enqueues a contiguous-prefix multi-ack. Shared by the live command loop
 /// and the close-time sweep.
-fn handle_settle_through(state: &mut ActorState, token: Arc<DeliveryTokenInner>) {
+fn handle_settle_through(
+    state: &mut ActorState,
+    token: Arc<DeliveryTokenInner>,
+    job_latency: Duration,
+) {
     let Some(channel_key) = claim_settlement(state, &token) else {
         return;
     };
@@ -1064,6 +1076,11 @@ fn handle_settle_through(state: &mut ActorState, token: Arc<DeliveryTokenInner>)
                 affected
                     .settling
                     .store(true, std::sync::atomic::Ordering::Release);
+            }
+            // Embedder-side job latency sampling for the adaptive
+            // controller: see the plain-ack branch in `handle_settle`.
+            if let Some(controller) = state.adaptive_prefetch.get_mut(&token.subscription) {
+                controller.observe(job_latency);
             }
             let params = SettleThroughParams {
                 token,
@@ -1217,10 +1234,16 @@ async fn close_set(state: &mut ActorState, receiver: &mut mpsc::Receiver<Consume
     // (at-least-once); stats callers observe a closed error.
     while let Ok(command) = receiver.try_recv() {
         match command {
-            ConsumerCommand::Settle { token, settlement } => {
-                handle_settle(state, token, settlement);
+            ConsumerCommand::Settle {
+                token,
+                settlement,
+                job_latency,
+            } => {
+                handle_settle(state, token, settlement, job_latency);
             }
-            ConsumerCommand::SettleThrough { token } => handle_settle_through(state, token),
+            ConsumerCommand::SettleThrough { token, job_latency } => {
+                handle_settle_through(state, token, job_latency);
+            }
             ConsumerCommand::Incoming { .. } | ConsumerCommand::GetPrefetchStats { .. } => {}
         }
     }
@@ -1419,7 +1442,6 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
     };
     let delivery_tag = params.token.delivery_tag;
     let settlement = params.settlement;
-    let is_plain_ack = matches!(settlement, Settlement::Ack);
     let token = params.token.clone();
     drop(params);
 
@@ -1440,7 +1462,6 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
         SettlementResult {
             channel_key,
             token,
-            is_plain_ack,
             result,
         }
     }));

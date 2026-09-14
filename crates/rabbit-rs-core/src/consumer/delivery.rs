@@ -2,8 +2,8 @@ use std::{
     error::Error,
     fmt,
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -306,6 +306,9 @@ impl DeliveryToken {
         match self.inner.commands.try_send(ConsumerCommand::Settle {
             token: self.inner.clone(),
             settlement,
+            // Measured embedder-side (pop stamp -> now): the adaptive
+            // controller's sample must not absorb actor-internal queueing.
+            job_latency: self.inner.controller_latency(),
         }) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -339,6 +342,20 @@ pub struct DeliveryTokenInner {
     pub(crate) commands: mpsc::Sender<ConsumerCommand>,
     pub(crate) state: AtomicU8,
     pub(crate) settling: AtomicBool,
+    /// Wall-clock nanoseconds since [`POPPED_EPOCH`] at the moment the
+    /// embedder received the delivery, `0` until then. The adaptive
+    /// controller learns the job latency (pop -> ack record) from this stamp:
+    /// measuring from `reserved_at` would fold the flume queueing delay into
+    /// the signal, and that delay grows with the prefetch window the
+    /// controller is trying to size.
+    popped_at: AtomicU64,
+}
+
+/// Process-start anchor for [`DeliveryTokenInner::popped_at`].
+static POPPED_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+fn pop_epoch() -> Instant {
+    *POPPED_EPOCH.get_or_init(Instant::now)
 }
 
 #[derive(Clone)]
@@ -382,7 +399,34 @@ impl DeliveryTokenInner {
             commands,
             state: AtomicU8::new(state as u8),
             settling: AtomicBool::new(false),
+            popped_at: AtomicU64::new(0),
         }
+    }
+
+    /// Stamps the wall-clock moment the embedder received this delivery.
+    /// Called from the hand-off paths in `set.rs` (embedder thread); read by
+    /// the actor at ack-record time.
+    pub(crate) fn mark_popped(&self) {
+        let nanos = u64::try_from(Instant::now().duration_since(pop_epoch()).as_nanos())
+            .unwrap_or(u64::MAX);
+        self.popped_at.store(nanos, Ordering::Release);
+    }
+
+    /// The job latency for the adaptive controller: ack-record time minus the
+    /// pop stamp, falling back to the dispatch-to-now span for tokens that
+    /// never travelled through a pop (defensive; tokens are only obtainable
+    /// through pop paths).
+    pub(crate) fn controller_latency(&self) -> Duration {
+        let nanos = self.popped_at.load(Ordering::Acquire);
+        if nanos == 0 {
+            return self.reserved_at.elapsed();
+        }
+        let Some(popped) = pop_epoch().checked_add(Duration::from_nanos(nanos)) else {
+            return self.reserved_at.elapsed();
+        };
+        Instant::now()
+            .checked_duration_since(popped)
+            .unwrap_or_default()
     }
 
     pub(crate) fn pending(

@@ -446,7 +446,12 @@ impl ConsumerSetHandle {
         token: Arc<DeliveryTokenInner>,
     ) -> Result<(), SettlementErrorKind> {
         self.commands
-            .try_send(ConsumerCommand::SettleThrough { token })
+            .try_send(ConsumerCommand::SettleThrough {
+                // Measured embedder-side (pop stamp -> now): the adaptive
+                // controller's sample must not absorb actor-internal queueing.
+                job_latency: token.controller_latency(),
+                token,
+            })
             .map_err(|e| map_try_send_error(&e))
     }
 
@@ -461,6 +466,7 @@ impl ConsumerSetHandle {
     pub fn try_next(&self) -> Result<Option<Delivery>, ConsumerError> {
         match self.buffer_rx.try_recv() {
             Ok(Ok(delivery)) => {
+                delivery.inner_token().mark_popped();
                 self.dispatch_notify.notify_one();
                 Ok(Some(delivery))
             }
@@ -501,7 +507,10 @@ impl ConsumerSetHandle {
         let mut batch = Vec::with_capacity(max);
         for _ in 0..max {
             match self.buffer_rx.try_recv() {
-                Ok(Ok(delivery)) => batch.push(delivery),
+                Ok(Ok(delivery)) => {
+                    delivery.inner_token().mark_popped();
+                    batch.push(delivery);
+                }
                 Ok(Err(error)) => {
                     self.dispatch_notify.notify_one();
                     if !batch.is_empty() {
@@ -556,6 +565,7 @@ impl ConsumerSetHandle {
         self.dispatch_notify.notify_one();
         match self.buffer_rx.recv_async().await {
             Ok(Ok(delivery)) => {
+                delivery.inner_token().mark_popped();
                 self.dispatch_notify.notify_one();
                 Ok(delivery)
             }
