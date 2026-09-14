@@ -679,7 +679,13 @@ async fn handle_connection_event(
         }
         PublisherConnectionEvent::FailedPermanent { generation, error } => {
             state.generation = state.generation.max(generation);
-            let error = transport_publish_error(&error);
+            // Same contract as the acquisition readiness wait (issue #285,
+            // see #297): every publication failing through the actor must
+            // identify the permanent failure and carry the published reason.
+            let error = PublishError::new(
+                PublishErrorKind::Transport,
+                format!("publisher connection failed permanently: {error}"),
+            );
             state.fail_all(&error);
             state.phase = Phase::FailedPermanent;
             state.channel = None;

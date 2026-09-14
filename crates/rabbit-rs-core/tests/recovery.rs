@@ -1283,6 +1283,81 @@ async fn publisher_acquisition_surfaces_the_permanent_failure_reason() {
     pool.close().await.expect("close pool");
 }
 
+/// Issue #285 follow-up: once the pool has published `FailedPermanent { reason }`,
+/// publications resolved through the publisher actor's failure path must surface
+/// that published reason too — the same contract the acquisition path already
+/// honors (see #297) — instead of a bare reason with no permanent-failure notice.
+#[tokio::test(start_paused = true)]
+async fn publisher_actor_failure_path_surfaces_the_permanent_failure_reason() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_connect_result(Ok(()));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+
+    let pool = ClientPool::new(
+        config(
+            vec![broker("primary", "/", "guest")],
+            vec![worker_profile("main", "primary", "jobs", 4)],
+        ),
+        transport.clone() as Arc<dyn Transport>,
+    );
+
+    // Install the publisher while the connection is healthy: the follow-up
+    // publish must then be resolved by the actor's failure path, not by
+    // publisher acquisition.
+    pool.publish_batch(vec![(
+        "primary".into(),
+        publish_request("m0", Instant::now() + Duration::from_secs(30)),
+    )])
+    .await
+    .expect("publish must succeed on a healthy connection");
+
+    pool.simulate_connection_loss_for_tests(
+        "primary",
+        TransportError::authentication("credentials rejected by the broker"),
+    )
+    .await
+    .expect("permanent loss reported");
+
+    // The connection actor publishes the failure synchronously, but the
+    // coordinator forwards it to the publisher actor in its own loop pass:
+    // wait for the published state, then yield a scheduling window so the
+    // actor has consumed the event before the follow-up publish (paused
+    // time, no timers involved — pure task scheduling).
+    for _ in 0..300 {
+        tokio::task::yield_now().await;
+        if pool
+            .connection_states()
+            .get("primary")
+            .is_some_and(|state| matches!(state, ConnectionState::FailedPermanent { .. }))
+        {
+            break;
+        }
+    }
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        pool.publish_batch(vec![(
+            "primary".into(),
+            publish_request("m1", Instant::now() + Duration::from_secs(30)),
+        )]),
+    )
+    .await
+    .expect("publish_batch must fail instead of hanging on a permanently failed actor")
+    .expect_err("publish_batch must fail on a permanently failed actor");
+    let error = format!("{error}");
+    assert!(
+        error.contains(
+            "publisher connection failed permanently: credentials rejected by the broker"
+        ),
+        "the published permanent-failure reason must be surfaced, got: {error}"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
 /// Issue #285: when the admin readiness wait times out, the last typed
 /// coordinator error is appended to the fabricated timeout text instead of
 /// being discarded, so the caller sees why the channel never became ready.
