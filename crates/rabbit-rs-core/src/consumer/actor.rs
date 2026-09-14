@@ -129,6 +129,17 @@ struct ActorState {
     buffered_bytes: HashMap<SubscriptionId, u64>,
     max_buffered_bytes: HashMap<SubscriptionId, u64>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
+    /// Delivery tags early-acked on the wire, per channel, in dispatch order.
+    /// Bounded: a re-dispatch of an early-acked delivery only happens while
+    /// the delivery is still held in actor memory (`self.buffers` re-push), so
+    /// a ring sized to the in-flight bound (`pending_capacity`, total
+    /// prefetch) is always sufficient. Guards against a second `basic_ack`
+    /// for the same tag — `RabbitMQ` answers a duplicate ack with
+    /// `PRECONDITION_FAILED` (406) and closes the channel (audit 2026-09-14 #3).
+    /// Same lifecycle as `channel_ledgers`: entries live for the actor's
+    /// lifetime; recovery spawns a fresh actor with fresh state.
+    early_acked_tags: HashMap<ChannelKey, VecDeque<u64>>,
+    early_acked_capacity: usize,
     /// Over-budget deliveries waiting for the byte budget to free up. Count
     /// bounded by `pending_capacity`: in `no_ack` mode the broker auto-acks,
     /// so broker `QoS` does not bound delivery and this deque would otherwise
@@ -181,6 +192,11 @@ impl ActorState {
         let mut buffered_bytes = HashMap::new();
         let mut max_buffered_bytes = HashMap::new();
         let mut channel_ledgers = HashMap::new();
+        let total_prefetch: usize = subscriptions
+            .iter()
+            .map(|subscription| usize::from(subscription.prefetch.ceiling()))
+            .sum();
+        let early_acked_capacity = pending_capacity.max(total_prefetch);
         for subscription in subscriptions {
             scheduler.register(subscription.id.clone(), subscription.policy);
             buffers.insert(subscription.id.clone(), VecDeque::new());
@@ -231,6 +247,8 @@ impl ActorState {
             buffered_bytes,
             max_buffered_bytes,
             channel_ledgers,
+            early_acked_tags: HashMap::new(),
+            early_acked_capacity,
             pending_incoming: VecDeque::new(),
             pending_capacity,
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
@@ -255,6 +273,26 @@ impl ActorState {
         self.subscriptions
             .get(subscription)
             .map(|runtime| (subscription.clone(), runtime.channel_id, runtime.generation))
+    }
+
+    /// Whether `tag` was already early-acked on the wire for this channel.
+    /// Linear scan over a bounded ring.
+    fn early_acked(&self, tag: u64, key: &ChannelKey) -> bool {
+        self.early_acked_tags
+            .get(key)
+            .is_some_and(|ring| ring.contains(&tag))
+    }
+
+    /// Records `tag` as early-acked on the wire. Bounded ring: the oldest
+    /// entry is dropped at capacity — safe because a re-dispatch of an
+    /// early-acked delivery only happens while the delivery is still held in
+    /// actor memory, so the ring never needs to outlive its oldest entry.
+    fn remember_early_acked(&mut self, tag: u64, key: ChannelKey) {
+        let ring = self.early_acked_tags.entry(key).or_default();
+        if ring.len() >= self.early_acked_capacity {
+            ring.pop_front();
+        }
+        ring.push_back(tag);
     }
 
     fn has_adaptive_prefetch(&self) -> bool {
@@ -392,10 +430,17 @@ impl ActorState {
             if early_ack {
                 let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
                 if !no_ack {
+                    // At most one wire ack per tag across re-dispatches: the
+                    // re-pushed delivery must not be acked again (channel 406,
+                    // audit 2026-09-14 #3).
                     let tag = delivery.delivery_tag;
-                    tokio::spawn(async move {
-                        let _ = channel.ack(tag, false).await;
-                    });
+                    let channel_key = (subscription.clone(), channel_id, generation);
+                    if !self.early_acked(tag, &channel_key) {
+                        self.remember_early_acked(tag, channel_key);
+                        tokio::spawn(async move {
+                            let _ = channel.ack(tag, false).await;
+                        });
+                    }
                 }
                 let item = Delivery::new_auto_acked(
                     DeliveryIdentity {

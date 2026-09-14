@@ -1748,6 +1748,51 @@ async fn early_ack_acks_before_dispatch_to_buffer() {
     consumer.close().await.expect("close");
 }
 
+/// Regression (audit 2026-09-14 #3): in `early_ack` mode the network ack is
+/// spawned before the PHP handoff. If the handoff fails, the delivery is
+/// re-pushed and re-dispatched — the same tag must NOT be acked on the wire a
+/// second time (`RabbitMQ` answers the duplicate with `PRECONDITION_FAILED` /
+/// 406 and closes the channel).
+#[tokio::test(start_paused = true)]
+async fn early_ack_fires_at_most_once_per_delivery_tag_across_redispatches() {
+    let transport = MockTransport::default();
+    // Prefetch 1 sizes the embedder buffer at `total_prefetch × 2` = 2: tags 1
+    // and 2 fill it, tag 3's handoff fails and the delivery is re-pushed, and
+    // tag 4's arrival re-runs dispatch over the re-pushed tag 3. No `next()`
+    // call: the buffer stays saturated for the whole test.
+    let mut sub = subscription(&transport, "once", connection_key("once", "/"), 1).await;
+    sub = sub.early_ack(true);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    transport.push_delivery(Ok(delivery(3, b"msg3")));
+    transport.push_delivery(Ok(delivery(4, b"msg4")));
+
+    let_sources_fill().await;
+    for _ in 0..8 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+
+    let ops = transport.operations();
+    for tag in 1..=3 {
+        let ack_count = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    TransportOperation::Ack { delivery_tag, .. } if *delivery_tag == tag
+                )
+            })
+            .count();
+        assert_eq!(ack_count, 1, "tag {tag} must be acked exactly once");
+    }
+
+    consumer.close().await.expect("close");
+}
+
 #[tokio::test(start_paused = true)]
 async fn early_ack_does_not_block_subsequent_deliveries() {
     let transport = MockTransport::default();
