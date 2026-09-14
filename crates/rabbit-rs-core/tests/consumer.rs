@@ -1233,6 +1233,148 @@ async fn settle_progresses_while_pending_incoming_is_saturated() {
     consumer.close().await.expect("close");
 }
 
+/// Regression (audit 2026-09-14 #2): a delivery whose size alone exceeds
+/// `max_buffered_bytes` can never satisfy the capacity predicate; it must be
+/// settled terminally (poison contract) instead of blocking the shared
+/// `pending_incoming` deque head-of-line forever.
+#[tokio::test(start_paused = true)]
+async fn oversized_message_is_settled_terminally_and_never_blocks_the_pipeline() {
+    const LARGE: &[u8] = b"0123456789abcdef"; // 16 bytes > 8-byte budget
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let mut sub = subscription(&transport, "big", connection_key("big", "/"), 4).await;
+    sub = sub.max_buffered_bytes(8);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    // Hold a small delivery first so the oversized settlement happens while
+    // `buffered_bytes` is non-zero: the count-then-release accounting must
+    // leave the budget intact for subsequent deliveries.
+    transport.push_delivery(Ok(delivery(2, b"tiny")));
+    let_sources_fill().await;
+    let held = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 2 dispatches")
+        .expect("delivery 2");
+    assert_eq!(held.delivery_tag(), 2);
+
+    transport.push_delivery(Ok(delivery(1, LARGE))); // oversized
+    transport.push_delivery(Ok(delivery(3, b"tiny")));
+    let_sources_fill().await;
+
+    let d3 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 3 dispatches (no head-of-line blocking)")
+        .expect("delivery 3");
+    assert_eq!(d3.delivery_tag(), 3);
+
+    // No dead-letter target in the default helper config: the documented
+    // ack-and-log policy applies — an explicit acknowledge on the wire.
+    let mut acked = false;
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        acked = transport.operations().iter().any(|op| {
+            matches!(
+                op,
+                TransportOperation::Ack {
+                    delivery_tag: 1,
+                    ..
+                }
+            )
+        });
+        if acked {
+            break;
+        }
+    }
+    assert!(
+        acked,
+        "oversized delivery must be acknowledged terminally, never parked"
+    );
+
+    // The embedder observes a typed settlement error.
+    let errors = consumer.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("exceeds max_buffered_bytes")),
+        "oversized settlement must surface a typed error, got {errors:?}"
+    );
+
+    // Byte accounting invariant: the embedder still holds two tiny deliveries
+    // (4 bytes each = 8 = the whole budget). A fourth tiny delivery must
+    // therefore be parked as backpressure — if the oversized settlement had
+    // corrupted the budget downward, it would flow instead.
+    transport.push_delivery(Ok(delivery(4, b"tiny")));
+    let_sources_fill().await;
+    let snapshot = consumer.metrics_snapshot();
+    assert_eq!(
+        snapshot.backpressure_total, 1,
+        "held bytes must stay within the budget after oversized settlement"
+    );
+
+    consumer.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #2, dead-letter variant): with a dead-letter
+/// target configured, the oversized delivery is rejected with `requeue=false`
+/// so the broker routes it to the DLX — mirroring `settle_poison`'s policy.
+#[tokio::test(start_paused = true)]
+async fn oversized_message_with_dead_letter_target_is_rejected_without_requeue() {
+    const LARGE: &[u8] = b"0123456789abcdef"; // 16 bytes > 8-byte budget
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let sub = subscription(&transport, "bigdlx", connection_key("bigdlx", "/"), 4)
+        .await
+        .max_buffered_bytes(8)
+        .dead_letter(true);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, LARGE))); // oversized
+    transport.push_delivery(Ok(delivery(2, b"tiny")));
+    transport.push_delivery(Ok(delivery(3, b"tiny")));
+    let_sources_fill().await;
+
+    let d2 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 2 dispatches (no head-of-line blocking)")
+        .expect("delivery 2");
+    assert_eq!(d2.delivery_tag(), 2);
+
+    let mut rejected = false;
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        rejected = transport.operations().iter().any(|op| {
+            matches!(
+                op,
+                TransportOperation::Reject {
+                    delivery_tag: 1,
+                    requeue: false
+                }
+            )
+        });
+        if rejected {
+            break;
+        }
+    }
+    assert!(
+        rejected,
+        "oversized delivery must be rejected with requeue=false toward the DLX"
+    );
+
+    let errors = consumer.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("exceeds max_buffered_bytes")),
+        "oversized settlement must surface a typed error, got {errors:?}"
+    );
+
+    consumer.close().await.expect("close");
+}
+
 /// At-least-once delivery permits duplicates, but they must remain measurable:
 /// a delivery that the broker flags as redelivered is counted exactly once as
 /// a duplicate when it is dispatched to the caller.

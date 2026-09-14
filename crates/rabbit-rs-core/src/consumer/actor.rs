@@ -552,6 +552,40 @@ impl ActorState {
         });
     }
 
+    /// Settles a delivery whose size alone exceeds the subscription's byte
+    /// budget. Reuses the poison contract: `reject(requeue=false)` toward the
+    /// dead-letter exchange when one is configured, otherwise an explicit
+    /// acknowledge recorded as a typed settlement error (`MaxAttempts` kind,
+    /// the oversized detail as discriminator). The delivery is parked in
+    /// `pending_incoming` without being counted in `buffered_bytes`, so it is
+    /// counted here before `settle_poison` releases it — keeping
+    /// `buffered_bytes` equal to the sum of held sizes.
+    fn settle_oversized(&mut self, subscription: &SubscriptionId, delivery: &TransportDelivery) {
+        let payload_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
+        // Count-then-release: `settle_poison` subtracts `payload_bytes` below,
+        // and the delivery was not yet counted in `buffered_bytes`.
+        if let Some(bytes) = self.buffered_bytes.get_mut(subscription) {
+            *bytes = bytes.saturating_add(payload_bytes);
+        }
+        let has_dead_letter = self
+            .subscriptions
+            .get(subscription)
+            .is_some_and(|runtime| runtime.has_dead_letter);
+        let message_id = delivery.message_id.clone().map_or_else(
+            || MessageId::new(delivery.delivery_tag.to_string()),
+            MessageId::new,
+        );
+        self.settle_poison(
+            subscription,
+            has_dead_letter,
+            delivery.delivery_tag,
+            &message_id,
+            payload_bytes,
+            "message size exceeds max_buffered_bytes",
+            Duration::ZERO,
+        );
+    }
+
     fn record_poison_metrics(&mut self, has_dead_letter: bool, settled_for: Duration) {
         if has_dead_letter {
             self.metrics.record_reject(settled_for);
@@ -563,13 +597,24 @@ impl ActorState {
     fn drain_pending(&mut self) {
         while let Some((subscription, delivery)) = self.pending_incoming.front() {
             let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
-            let over_budget = if let Some(max) = self.max_buffered_bytes.get(subscription) {
+            let max = self.max_buffered_bytes.get(subscription).copied();
+            let over_budget = max.is_some_and(|max| {
                 let current = self.buffered_bytes.get(subscription).copied().unwrap_or(0);
-                current.saturating_add(delivery_bytes) > *max
-            } else {
-                false
-            };
+                current.saturating_add(delivery_bytes) > max
+            });
             if over_budget {
+                if delivery_bytes > max.unwrap_or(u64::MAX) {
+                    // Defensive: an oversized delivery must already have been
+                    // settled at arrival in `handle_incoming`. If it ever
+                    // reaches the head of the deque anyway, settle it
+                    // terminally instead of blocking the pipeline forever.
+                    let (subscription, delivery) = self
+                        .pending_incoming
+                        .pop_front()
+                        .expect("front checked above");
+                    self.settle_oversized(&subscription, &delivery);
+                    continue;
+                }
                 break;
             }
             let (subscription, delivery) = self
@@ -997,17 +1042,24 @@ fn handle_incoming(
                         },
                     );
             }
-            let over_budget = if let Some(max) = state.max_buffered_bytes.get(&subscription) {
+            let max = state.max_buffered_bytes.get(&subscription).copied();
+            let over_budget = max.is_some_and(|max| {
                 let current = state
                     .buffered_bytes
                     .get(&subscription)
                     .copied()
                     .unwrap_or(0);
-                current.saturating_add(delivery_bytes) > *max
-            } else {
-                false
-            };
+                current.saturating_add(delivery_bytes) > max
+            });
             if over_budget {
+                if delivery_bytes > max.unwrap_or(u64::MAX) {
+                    // A delivery whose size alone exceeds the budget can never
+                    // satisfy the capacity predicate: settle it terminally via
+                    // the poison contract instead of parking it forever
+                    // (audit 2026-09-14 #2).
+                    state.settle_oversized(&subscription, &delivery);
+                    return;
+                }
                 state.pending_incoming.push_back((subscription, delivery));
                 state.metrics.record_backpressure();
             } else if state.pending_incoming.is_empty() {
