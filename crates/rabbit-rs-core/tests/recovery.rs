@@ -13,6 +13,8 @@ use rabbit_rs_core::{
         Config, ConsumerConfigSection, DelayConfig, DelayMode, PublisherConfigSection, RouteConfig,
         SafetyMode, TopologyMode,
     },
+    consumer::ConsumerErrorKind,
+    consumer::SettlementErrorKind,
     pool::connection_actor::ConnectionActor,
     pool::recovery_coordinator::{
         RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle,
@@ -27,7 +29,8 @@ use rabbit_rs_core::{
     },
     topology::delay::TtlBucketPlan,
     transport::{
-        PublishConfirmation, QueueKind, QueueSpec, Transport, TransportError, TransportErrorKind,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind, QueueSpec, Transport,
+        TransportError, TransportErrorKind,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -53,6 +56,43 @@ mod helper {
             properties,
             deadline,
         )
+    }
+
+    pub fn delivery(tag: u64, payload: &'static [u8]) -> TransportDelivery {
+        TransportDelivery {
+            delivery_tag: tag,
+            exchange: "jobs".to_owned(),
+            routing_key: "jobs".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: Arc::new(BTreeMap::new()),
+            payload: Bytes::from_static(payload),
+        }
+    }
+
+    /// Advances paused time until `expected` deliveries have been dispatched
+    /// into the consumer's set buffer.
+    pub async fn wait_until_dispatched(
+        handle: &rabbit_rs_core::consumer::ConsumerSetHandle,
+        expected: u64,
+    ) {
+        for _ in 0..200 {
+            if handle.metrics_snapshot().deliveries_total >= expected {
+                return;
+            }
+            tokio::time::advance(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
+        }
+        panic!("deliveries did not reach the set buffer within the advanced window");
+    }
+
+    /// Lets pending tasks run for a few paused-time slices.
+    pub async fn flush_tasks() {
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
+        }
     }
 
     pub fn coordinator_config(
@@ -371,6 +411,113 @@ async fn stale_consumer_handle_evicted_after_recovery() {
 
     drop(consumer1);
     drop(consumer2);
+
+    coordinator.close().await.expect("close");
+}
+
+/// Issue #248: a consumer handle retained across a recovery (the embedder's
+/// consumer cache) must never serve deliveries from the retired generation:
+/// their settlement tokens route to the dead actor, so the embedder observes
+/// a bare closed error on ack instead of the recoverable pop-time error its
+/// retry contract catches. The retired set must refuse its buffered
+/// deliveries, and recovery must re-establish a working generation.
+#[tokio::test(start_paused = true)]
+async fn retired_consumer_set_refuses_its_buffered_deliveries_after_recovery() {
+    let transport = Arc::new(MockTransport::default());
+    // Keep subscription streams open between pushes (like a live broker) so
+    // the generation-1 pump does not end its stream on the startup drain.
+    transport.keep_delivery_stream_open();
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    let stale = coordinator.consumer("main").await.expect("consumer handle");
+
+    // Buffer three deliveries into the generation-1 set (prefetch 4 → the
+    // flume holds up to 8), mirroring the kill-mid-consume race: the retired
+    // generation holds deliveries nobody consumed yet.
+    for tag in 1..=3 {
+        transport.push_delivery(Ok(delivery(tag, b"orphan")));
+    }
+    wait_until_dispatched(&stale, 3).await;
+
+    // A live set still serves its buffer normally.
+    let live = stale
+        .try_next()
+        .expect("live set serves its buffer")
+        .expect("a buffered delivery is available");
+    assert_eq!(live.delivery_tag(), 1);
+
+    // Cut and reconnect instantly: recovery establishes generation 2 and
+    // closes the generation-1 set (`establish_requested_profile` runs
+    // `old.close()`).
+    transport.push_connect_result(Ok(()));
+    coordinator
+        .connection_lost(TransportError::connection("socket reset"))
+        .await
+        .expect("loss reported");
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 2 })
+    })
+    .await;
+
+    // The retired handle must refuse every entry point instead of serving
+    // its buffered orphans. The unserviced orphans stay unacked, so the
+    // broker redelivers them on generation 2 (at-least-once preserved).
+    let error = stale
+        .try_next()
+        .expect_err("retired set must refuse try_next");
+    assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+    let error = tokio::time::timeout(Duration::from_secs(5), stale.next())
+        .await
+        .expect("next must not park on a retired set")
+        .expect_err("retired set must refuse next");
+    assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+    let error = stale
+        .try_next_batch(4)
+        .expect_err("retired set must refuse try_next_batch");
+    assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+
+    // The mechanism the guard prevents: a served orphan's settlement routes
+    // to the dead actor and fails terminally.
+    assert_eq!(live.try_ack(), Err(SettlementErrorKind::Closed));
+
+    // Retire the parked generation-1 pump: the delivery it forwards cannot
+    // reach the closed set's actor, so its pump exits and the shared mock
+    // queue belongs to the next generation's stream.
+    transport.push_delivery(Ok(delivery(0, b"pump-retire")));
+    flush_tasks().await;
+
+    // Recovery re-establishes: a fresh handle on generation 2 delivers and
+    // settles normally, and never leaks the closed error.
+    let fresh = coordinator.consumer("main").await.expect("fresh handle");
+    assert_eq!(fresh.generation(), 2);
+    assert!(!fresh.is_closed());
+    transport.push_delivery(Ok(delivery(4, b"after-recovery")));
+    wait_until_dispatched(&fresh, 4).await;
+    let fresh_delivery = tokio::time::timeout(Duration::from_secs(5), fresh.next())
+        .await
+        .expect("fresh handle must deliver")
+        .expect("fresh handle must deliver after recovery");
+    assert_eq!(fresh_delivery.delivery_tag(), 4);
+    fresh_delivery
+        .try_ack()
+        .expect("an ack on the live generation must be accepted");
+    flush_tasks().await;
+    assert!(
+        fresh.drain_errors().is_empty(),
+        "an ack on the live generation must settle cleanly"
+    );
 
     coordinator.close().await.expect("close");
 }

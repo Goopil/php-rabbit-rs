@@ -459,6 +459,14 @@ impl ConsumerSetHandle {
     ///
     /// Returns a typed error when the consumer is closed.
     pub fn try_next(&self) -> Result<Option<Delivery>, ConsumerError> {
+        // A closed set must not serve its buffered deliveries: their
+        // settlement tokens route to the dead actor, so the caller would
+        // observe a terminal settlement error instead of the recoverable
+        // closed error its retry contract handles (issue #248). The broker
+        // redelivers the unserviced deliveries (at-least-once).
+        if self.is_closed() {
+            return Err(ConsumerError::closed());
+        }
         match self.buffer_rx.try_recv() {
             Ok(Ok(delivery)) => {
                 self.dispatch_notify.notify_one();
@@ -497,6 +505,11 @@ impl ConsumerSetHandle {
     /// Returns a typed error when the consumer is closed or a source error is
     /// encountered mid-drain.
     pub fn try_next_batch(&self, max: usize) -> Result<Vec<Delivery>, ConsumerError> {
+        // Same closed-set guard as `try_next` (issue #248): buffered
+        // deliveries of a closed set are not servable.
+        if self.is_closed() {
+            return Err(ConsumerError::closed());
+        }
         let max = max.clamp(1, 256);
         let mut batch = Vec::with_capacity(max);
         for _ in 0..max {
@@ -553,6 +566,11 @@ impl ConsumerSetHandle {
     ///
     /// Returns a typed source, transport, or closed-consumer error.
     pub async fn next(&self) -> Result<Delivery, ConsumerError> {
+        // Same closed-set guard as `try_next` (issue #248): the guard also
+        // unblocks callers parked ahead of the buffer's final values.
+        if self.is_closed() {
+            return Err(ConsumerError::closed());
+        }
         self.dispatch_notify.notify_one();
         match self.buffer_rx.recv_async().await {
             Ok(Ok(delivery)) => {
@@ -598,11 +616,25 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+    use crate::consumer::ConsumerErrorKind;
     use crate::transport::Transport;
     use crate::{
         config::{BrokerConfig, Credentials, Endpoint, TlsConfig},
         transport::{Delivery as TransportDelivery, mock::MockTransport, mock::TransportOperation},
     };
+
+    /// Advances paused time until the actor has dispatched `expected`
+    /// deliveries into the set's buffer.
+    async fn wait_until_dispatched(handle: &ConsumerSetHandle, expected: u64) {
+        for _ in 0..200 {
+            if handle.metrics_snapshot().deliveries_total >= expected {
+                return;
+            }
+            tokio::time::advance(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
+        }
+        panic!("deliveries did not reach the set buffer within the advanced window");
+    }
 
     fn test_broker() -> BrokerConfig {
         BrokerConfig {
@@ -720,5 +752,91 @@ mod tests {
         assert_eq!(fixed.initial_value(), 16);
         assert_eq!(adaptive.ceiling(), 256);
         assert_eq!(adaptive.initial_value(), 16);
+    }
+
+    /// Issue #248: recovery closes the retired consumer set while its buffer
+    /// still holds deliveries (`establish_requested_profile` runs
+    /// `old.close()` on the replaced generation). A closed set must refuse to
+    /// serve them: a served orphan's settlement routes to the dead actor and
+    /// fails terminally, leaking a bare closed error to the embedder instead
+    /// of the recoverable pop-time error its retry contract catches. The
+    /// unserviced orphans stay unacked, so the broker redelivers them on the
+    /// next generation (at-least-once preserved).
+    #[tokio::test(start_paused = true)]
+    async fn closed_set_refuses_to_serve_its_buffered_deliveries() {
+        let transport = MockTransport::default();
+        let channel = transport
+            .connect(&test_broker())
+            .await
+            .expect("connection")
+            .open_consumer()
+            .await
+            .expect("consumer channel");
+        let handle = ConsumerSet::spawn_with_generation(
+            vec![Subscription::new(
+                "jobs",
+                crate::pool::ConnectionKey::from_bytes([7; 32]),
+                "queue.jobs",
+                Arc::from(channel),
+            )],
+            Metrics::default(),
+            1,
+        )
+        .await
+        .expect("spawn");
+
+        // Buffer three deliveries into the set's flume, mirroring the
+        // recovery race: the retired generation holds deliveries nobody
+        // consumed yet.
+        let transport_delivery = || TransportDelivery {
+            delivery_tag: 1,
+            exchange: "jobs".to_owned(),
+            routing_key: "jobs".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: Arc::new(BTreeMap::new()),
+            payload: Bytes::from_static(b"payload"),
+        };
+        for _ in 0..3 {
+            transport.push_delivery(Ok(transport_delivery()));
+        }
+        wait_until_dispatched(&handle, 3).await;
+
+        // A live set still serves its buffer normally.
+        let live = handle
+            .try_next()
+            .expect("live set serves its buffer")
+            .expect("a buffered delivery is available");
+        assert_eq!(live.delivery_tag(), 1);
+
+        // `establish_requested_profile` closes the retired set
+        // (recovery_coordinator.rs:918).
+        handle.close().await.expect("close");
+        // Let the actor task finish so its command receiver is dropped.
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
+        }
+
+        // The closed set must refuse every entry point instead of serving
+        // the two still-buffered orphaned deliveries.
+        let error = handle
+            .try_next()
+            .expect_err("closed set must refuse try_next");
+        assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+        let error = tokio::time::timeout(Duration::from_secs(1), handle.next())
+            .await
+            .expect("next must not park on a closed set")
+            .expect_err("closed set must refuse next");
+        assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+        let error = handle
+            .try_next_batch(8)
+            .expect_err("closed set must refuse try_next_batch");
+        assert_eq!(error.kind(), ConsumerErrorKind::Closed);
+
+        // The mechanism the guard prevents: a served orphan's settlement
+        // routes to the dead actor and fails terminally.
+        assert_eq!(live.try_ack(), Err(SettlementErrorKind::Closed));
     }
 }
