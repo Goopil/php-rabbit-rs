@@ -168,6 +168,9 @@ struct ActorState {
     /// slightly earlier flush, never a lost or duplicated ack).
     flume_error_items: usize,
     source_errors: VecDeque<ConsumerError>,
+    /// Per-subscription resize watches: the adaptive controller publishes
+    /// window changes here; each pump performs the cancel + re-consume.
+    qos_txs: HashMap<SubscriptionId, tokio::sync::watch::Sender<u16>>,
     scheduler: WeightedFairScheduler,
     control_tx: mpsc::Sender<ControlCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
@@ -188,6 +191,7 @@ impl ActorState {
         close_completion: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
         metrics: Metrics,
         pending_capacity: usize,
+        qos_txs: HashMap<SubscriptionId, tokio::sync::watch::Sender<u16>>,
     ) -> Self {
         let mut scheduler = WeightedFairScheduler::default();
         let mut runtime = HashMap::new();
@@ -263,6 +267,7 @@ impl ActorState {
             acked_batch: HashMap::new(),
             flume_error_items: 0,
             source_errors: VecDeque::new(),
+            qos_txs,
             scheduler,
             control_tx,
             buffer_tx,
@@ -303,20 +308,13 @@ impl ActorState {
         !self.adaptive_prefetch.is_empty()
     }
 
-    /// Advances every adaptive controller and returns the `QoS` changes to apply.
-    fn collect_prefetch_updates(
-        &mut self,
-    ) -> Vec<(
-        SubscriptionId,
-        Arc<dyn crate::transport::ConsumerChannel>,
-        u16,
-    )> {
+    /// Advances every adaptive controller and returns the window changes to
+    /// publish on the per-subscription resize watches.
+    fn collect_prefetch_updates(&mut self) -> Vec<(SubscriptionId, u16)> {
         let mut updates = Vec::new();
         for (id, controller) in &mut self.adaptive_prefetch {
-            if let Some(value) = controller.tick()
-                && let Some(runtime) = self.subscriptions.get(id)
-            {
-                updates.push((id.clone(), Arc::clone(&runtime.channel), value));
+            if let Some(value) = controller.tick() {
+                updates.push((id.clone(), value));
             }
         }
         updates
@@ -758,6 +756,7 @@ pub(crate) async fn run_actor(
     mut close_rx: tokio::sync::watch::Receiver<bool>,
     close_completion: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>>,
     pending_capacity: usize,
+    qos_txs: HashMap<SubscriptionId, tokio::sync::watch::Sender<u16>>,
 ) {
     let mut state = ActorState::new(
         subscriptions,
@@ -768,6 +767,7 @@ pub(crate) async fn run_actor(
         close_completion,
         metrics,
         pending_capacity,
+        qos_txs,
     );
     // Allow pumps to push deliveries before the first dispatch.
     tokio::task::yield_now().await;
@@ -866,24 +866,15 @@ pub(crate) async fn run_actor(
                 state.dispatch();
             }
             _ = prefetch_interval.tick(), if has_adaptive => {
-                // The tick itself is pure; the network round trip of `set_qos`
-                // runs in a detached task so it never blocks dispatch and
-                // settlements during the RTT. Failures surface through the
-                // bounded error channel; the actor keeps going.
-                for (subscription, channel, value) in state.collect_prefetch_updates() {
-                    let error_tx = state.error_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = channel.set_qos(value).await {
-                            let _ = error_tx.send(SettlementError {
-                                delivery_tag: 0,
-                                subscription,
-                                kind: ConsumerErrorKind::Transport,
-                                message: format!(
-                                    "adaptive prefetch set_qos({value}) failed: {error}"
-                                ),
-                            });
-                        }
-                    });
+                // The controller tick is pure; the pump performs the cancel +
+                // set_qos + re-consume sequence on its own stream (never
+                // blocking dispatch or settlements). RabbitMQ applies
+                // per-consumer qos only to consumers created after the call,
+                // so a live resize needs the re-subscription (issue #300).
+                for (subscription, value) in state.collect_prefetch_updates() {
+                    if let Some(qos_tx) = state.qos_txs.get(&subscription) {
+                        let _ = qos_tx.send(value);
+                    }
                 }
             }
             Some(settlement_result) = state.pending_settlements.next(),

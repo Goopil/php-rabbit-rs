@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     num::NonZeroU32,
     sync::{
         Arc, Mutex,
@@ -212,7 +213,20 @@ impl ConsumerSet {
         // watch signal).
         let (incoming_tx, incoming_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (control_tx, control_rx) = mpsc::channel(COMMAND_CAPACITY);
-        let mut streams = Vec::with_capacity(subscriptions.len());
+        // Per-subscription resize watches: the actor's adaptive controller
+        // publishes window changes here; each pump performs the cancel +
+        // re-consume sequence on its own stream.
+        let mut qos_txs: HashMap<SubscriptionId, watch::Sender<u16>> =
+            HashMap::with_capacity(subscriptions.len());
+        let mut sources: Vec<(
+            SubscriptionId,
+            Box<dyn DeliveryStream>,
+            Arc<dyn ConsumerChannel>,
+            String,
+            String,
+            bool,
+            watch::Receiver<u16>,
+        )> = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
             if let Err(error) = subscription
@@ -245,7 +259,17 @@ impl ConsumerSet {
                     ));
                 }
             };
-            streams.push((subscription.id.clone(), stream));
+            let (qos_tx, qos_rx) = watch::channel(subscription.prefetch.initial_value());
+            qos_txs.insert(subscription.id.clone(), qos_tx);
+            sources.push((
+                subscription.id.clone(),
+                stream,
+                Arc::clone(&subscription.channel),
+                format!("rabbit-rs.{}", subscription.id.as_str()),
+                subscription.queue.clone(),
+                subscription.no_ack,
+                qos_rx,
+            ));
         }
 
         // With prefetch >= 128 the flume holds >= 256, so `try_next_batch(256)`
@@ -288,9 +312,19 @@ impl ConsumerSet {
             usize::try_from(total_prefetch)
                 .unwrap_or(usize::MAX)
                 .max(COMMAND_CAPACITY),
+            qos_txs,
         ));
-        for (subscription, stream) in streams {
-            spawn_source(subscription, stream, incoming_tx.clone());
+        for (subscription, stream, channel, consumer_tag, queue, no_ack, qos_rx) in sources {
+            spawn_source(
+                subscription,
+                stream,
+                incoming_tx.clone(),
+                channel,
+                consumer_tag,
+                queue,
+                no_ack,
+                qos_rx,
+            );
         }
 
         Ok(ConsumerSetHandle {
@@ -308,33 +342,124 @@ impl ConsumerSet {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_source(
     subscription: SubscriptionId,
     mut stream: Box<dyn DeliveryStream>,
     incoming_tx: mpsc::Sender<ConsumerCommand>,
+    channel: Arc<dyn ConsumerChannel>,
+    consumer_tag: String,
+    queue: String,
+    no_ack: bool,
+    mut qos_rx: watch::Receiver<u16>,
 ) {
     tokio::spawn(async move {
-        while let Some(result) = stream.next().await {
-            if incoming_tx
-                .send(ConsumerCommand::Incoming {
-                    subscription: subscription.clone(),
-                    result,
-                })
-                .await
-                .is_err()
-            {
-                return;
+        // A pending resize: the adaptive controller changed the window and
+        // the tag was cancelled. The old stream drains its in-flight
+        // deliveries (they stay ackable on the channel), then ends; the
+        // `None` triggers the re-consume with the new window.
+        let mut pending_qos: Option<u16> = None;
+        // Once the actor is gone the watch sender is dropped; `changed()`
+        // then returns `Err` immediately, which would spin this loop. Park
+        // the resize arm instead — close terminates the pump through the
+        // command channel.
+        let mut actor_alive = true;
+        loop {
+            tokio::select! {
+                result = stream.next() => match result {
+                    Some(result) => {
+                        if incoming_tx
+                            .send(ConsumerCommand::Incoming {
+                                subscription: subscription.clone(),
+                                result,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    None => match pending_qos.take() {
+                        // Deliberate cancellation: apply the new window and
+                        // re-subscribe. In-flight deliveries were drained
+                        // above; nothing is requeued or lost.
+                        Some(value) => {
+                            if let Err(error) = channel.set_qos(value).await {
+                                let _ = incoming_tx
+                                    .send(ConsumerCommand::Incoming {
+                                        subscription: subscription.clone(),
+                                        result: Err(TransportError::connection(format!(
+                                            "adaptive prefetch resize set_qos failed: {error}"
+                                        ))),
+                                    })
+                                    .await;
+                                return;
+                            }
+                            match channel
+                                .consume(ConsumerRequest {
+                                    queue: queue.clone(),
+                                    consumer_tag: consumer_tag.clone(),
+                                    exclusive: false,
+                                    no_ack,
+                                })
+                                .await
+                            {
+                                Ok(new_stream) => stream = new_stream,
+                                Err(error) => {
+                                    let _ = incoming_tx
+                                        .send(ConsumerCommand::Incoming {
+                                            subscription,
+                                            result: Err(TransportError::connection(format!(
+                                                "adaptive prefetch re-consume failed: {error}"
+                                            ))),
+                                        })
+                                        .await;
+                                    return;
+                                }
+                            }
+                        }
+                        // Unexpected stream termination: the subscription is
+                        // dead (connection lost, channel closed). Surface one
+                        // terminal error so `next()` unblocks instead of
+                        // parking forever.
+                        None => {
+                            let _ = incoming_tx
+                                .send(ConsumerCommand::Incoming {
+                                    subscription,
+                                    result: Err(TransportError::connection(
+                                        "consumer delivery stream ended",
+                                    )),
+                                })
+                                .await;
+                            return;
+                        }
+                    },
+                },
+                changed = qos_rx.changed(), if actor_alive => {
+                    if changed.is_err() {
+                        actor_alive = false;
+                        continue;
+                    }
+                    let value = *qos_rx.borrow();
+                    if pending_qos.is_none() {
+                        // First resize request of the cycle: stop the broker
+                        // from dispatching further deliveries to the old tag.
+                        if let Err(error) = channel.cancel(&consumer_tag).await {
+                            let _ = incoming_tx
+                                .send(ConsumerCommand::Incoming {
+                                    subscription: subscription.clone(),
+                                    result: Err(TransportError::connection(format!(
+                                        "adaptive prefetch cancel failed: {error}"
+                                    ))),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+                    pending_qos = Some(value);
+                }
             }
         }
-        // A terminated delivery stream means the subscription is dead
-        // (connection lost, channel closed). Surface one terminal error so
-        // `next()` unblocks instead of parking forever.
-        let _ = incoming_tx
-            .send(ConsumerCommand::Incoming {
-                subscription,
-                result: Err(TransportError::connection("consumer delivery stream ended")),
-            })
-            .await;
     });
 }
 
@@ -724,6 +849,7 @@ mod tests {
             close_rx,
             close_completion.clone(),
             COMMAND_CAPACITY,
+            HashMap::new(),
         ));
 
         let handle = ConsumerSetHandle {
