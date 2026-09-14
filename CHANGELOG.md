@@ -10,6 +10,7 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ### Fixed
 
+- Admin operations and consumer acquisition no longer discard the coordinator's typed errors (issue #285): a permanently failed pool fails admin calls immediately with its published permanent-failure reason instead of waiting out a timeout and surfacing raw lapin state text (`invalid connection state: Closed`), and timed-out consumer establishment now reports the underlying coordinator error after the existing readiness message.
 - The doctor's dead-letter canary no longer self-sandbags behind DLQ backlog (issue #288): the check now also binds a doctor-owned `rabbit-rs.canary.*` DLQ to the configured dead-letter exchange, purges and deletes it after every run, and tiers the verdict — found on the configured DLQ → ok, found only in the canary DLQ (configured DLQ backlog deeper than the 100-message scan window, foreign count reported) → warn, never reaching the canary DLQ → hard fail.
 ### Added
 

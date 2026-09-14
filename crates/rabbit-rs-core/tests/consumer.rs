@@ -1830,6 +1830,53 @@ async fn consumer_wait_deadline_expires_when_the_broker_never_becomes_ready() {
     assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
+/// Issue #285: the acquisition deadline must append the coordinator's typed
+/// error to the readiness text instead of discarding it with `.ok()`, so PHP
+/// surfaces the underlying cause after the preserved timeout prefix.
+#[tokio::test(start_paused = true)]
+async fn consumer_deadline_reports_the_typed_coordinator_error_after_the_readiness_text() {
+    let transport = Arc::new(MockTransport::default());
+    // Same black-holed broker as the deadline test above: the actor never
+    // leaves Connecting, so every acquisition round fails with the typed
+    // not-ready coordinator error while the deadline elapses.
+    let _gate = transport.push_connect_gate();
+
+    let config = Config {
+        brokers: vec![broker("b", "/")],
+        workers: vec![worker_profile("main", "b", "main.jobs")],
+        topology_mode: TopologyMode::External,
+        routes: BTreeMap::new(),
+        delay: rabbit_rs_core::config::DelayConfig::default(),
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        queue_type: QueueKind::Quorum,
+        queue_durable: true,
+        consumer: ConsumerConfigSection {
+            wait_timeout: Duration::from_secs(1),
+            max_attempts: None,
+        },
+    };
+
+    let pool = ClientPool::new(
+        Arc::new(config.validate().expect("valid config")),
+        transport,
+    );
+
+    let Err(error) = pool.consumer("main").await else {
+        panic!("acquisition must not succeed against a black-holed broker");
+    };
+    let error = format!("{error}");
+    assert!(
+        error.contains("did not become ready within"),
+        "the fabricated timeout prefix must be preserved, got: {error}"
+    );
+    assert!(
+        error.contains(": consumer profile 'main' is not ready"),
+        "the typed coordinator error must be appended, got: {error}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Lazy consumer establishment (issue #49)
 // ---------------------------------------------------------------------------

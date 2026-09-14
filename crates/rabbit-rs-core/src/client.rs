@@ -377,6 +377,11 @@ impl ClientPool {
         // subscriptions that belong to that broker (see `recover_generation`).
         let wait_timeout = self.config.consumer().wait_timeout;
         let profile_owned = profile.to_owned();
+        // The last typed coordinator error, shared with the acquisition
+        // future so a readiness timeout can surface the underlying cause
+        // (issue #285) instead of bare fabricated text.
+        let last_coordinator_error: StdMutex<Option<String>> = StdMutex::new(None);
+        let error_slot = &last_coordinator_error;
         let acquisition = async {
             let brokers = worker_brokers(&worker);
             for broker in &brokers {
@@ -393,7 +398,13 @@ impl ClientPool {
                 let profile_ref = &profile_owned;
                 let consumer = self
                     .wait_for_coordinator_ready(&coordinator, true, || async {
-                        coordinator.consumer(profile_ref).await.ok()
+                        match coordinator.consumer(profile_ref).await {
+                            Ok(consumer) => Some(consumer),
+                            Err(error) => {
+                                *lock(error_slot) = Some(error.to_string());
+                                None
+                            }
+                        }
                     })
                     .await?;
                 sources.push(consumer);
@@ -405,8 +416,9 @@ impl ClientPool {
         let consumer = tokio::time::timeout(wait_timeout, acquisition)
             .await
             .map_err(|_elapsed| {
+                let cause = last_reported_cause(&last_coordinator_error);
                 ClientError::transport(&TransportError::connection(format!(
-                    "consumer profile '{profile}' did not become ready within {wait_timeout:?}"
+                    "consumer profile '{profile}' did not become ready within {wait_timeout:?}{cause}"
                 )))
             })??;
 
@@ -538,17 +550,29 @@ impl ClientPool {
     async fn admin_channel(&self, broker: &str) -> Result<Box<dyn PublisherChannel>, ClientError> {
         let coordinator = self.coordinator(broker).await?;
         let wait_timeout = self.config.consumer().wait_timeout;
+        // The last typed coordinator error, shared with the acquisition
+        // future so a readiness timeout can surface the underlying cause
+        // (issue #285) instead of bare fabricated text.
+        let last_coordinator_error: StdMutex<Option<String>> = StdMutex::new(None);
+        let error_slot = &last_coordinator_error;
         let acquisition = async {
             self.wait_for_coordinator_ready(&coordinator, false, || async {
-                coordinator.admin_channel().await.ok()
+                match coordinator.admin_channel().await {
+                    Ok(channel) => Some(channel),
+                    Err(error) => {
+                        *lock(error_slot) = Some(error.to_string());
+                        None
+                    }
+                }
             })
             .await
         };
         tokio::time::timeout(wait_timeout, acquisition)
             .await
             .map_err(|_elapsed| {
+                let cause = last_reported_cause(&last_coordinator_error);
                 ClientError::transport(&TransportError::connection(format!(
-                    "broker '{broker}' did not become ready for the admin operation within {wait_timeout:?}"
+                    "broker '{broker}' did not become ready for the admin operation within {wait_timeout:?}{cause}"
                 )))
             })?
     }
@@ -581,9 +605,9 @@ impl ClientPool {
                 return Ok(value);
             }
             match coordinator.state() {
-                crate::recovery::ConnectionState::FailedPermanent { .. } => {
+                crate::recovery::ConnectionState::FailedPermanent { reason, .. } => {
                     return Err(ClientError::transport(&TransportError::connection(
-                        "broker connection failed permanently",
+                        format!("broker connection failed permanently: {reason}"),
                     )));
                 }
                 crate::recovery::ConnectionState::Closed => {
@@ -872,6 +896,14 @@ fn lock<T>(mutex: &StdMutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The formatted cause of the last failed acquisition attempt, empty when no
+/// attempt reported an error before the readiness timeout fired.
+fn last_reported_cause(slot: &StdMutex<Option<String>>) -> String {
+    lock(slot)
+        .as_ref()
+        .map_or(String::new(), |error| format!(": {error}"))
 }
 
 fn initializer(initializers: &Initializers, key: &str) -> Arc<AsyncMutex<()>> {
