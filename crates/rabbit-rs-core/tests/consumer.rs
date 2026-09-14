@@ -1162,6 +1162,77 @@ async fn no_ack_flood_is_bounded_and_every_delivery_still_arrives() {
     consumer.close().await.expect("close");
 }
 
+/// Regression (audit 2026-09-14 #1): when `pending_incoming` is saturated,
+/// the command channel must stay drained — a PHP settlement must still reach
+/// the wire and reopen the gate. Before the control-channel fix, the gated
+/// `receiver.recv()` arm starves Settle commands and the actor deadlocks.
+#[tokio::test(start_paused = true)]
+async fn settle_progresses_while_pending_incoming_is_saturated() {
+    let transport = MockTransport::default();
+    let mut sub = subscription(&transport, "sat", connection_key("sat", "/"), 1).await;
+    // Budget holds exactly one payload: after the first delivery dispatches,
+    // every further delivery is over-budget and lands in `pending_incoming`.
+    sub = sub.max_buffered_bytes(7);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, b"payload")));
+    let_sources_fill().await;
+    let held = consumer.next().await.expect("first delivery dispatched");
+    assert_eq!(held.delivery_tag(), 1);
+
+    // Saturate `pending_incoming` (capacity = max(256, total prefetch)) with
+    // over-budget deliveries so the incoming gate closes.
+    for tag in 2..=512u64 {
+        transport.push_delivery(Ok(delivery(tag, b"payload")));
+    }
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+
+    // The embedder settles the held delivery. This must reach the wire even
+    // though the incoming gate is closed.
+    held.ack().await.expect("settlement accepted");
+
+    let mut acked = false;
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        acked = transport.operations().iter().any(|op| {
+            matches!(
+                op,
+                TransportOperation::Ack {
+                    delivery_tag: 1,
+                    ..
+                }
+            )
+        });
+        if acked {
+            break;
+        }
+    }
+    assert!(
+        acked,
+        "settlement must reach the wire while pending_incoming is saturated"
+    );
+
+    // Liveness: freeing the budget must make flooded deliveries dispatchable.
+    let mut dispatched = 0;
+    for _ in 0..2_000 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        dispatched = consumer.metrics_snapshot().deliveries_total;
+        if dispatched > 1 {
+            break;
+        }
+    }
+    assert!(
+        dispatched > 1,
+        "drained budget must reopen the gate and dispatch flooded deliveries"
+    );
+
+    consumer.close().await.expect("close");
+}
+
 /// At-least-once delivery permits duplicates, but they must remain measurable:
 /// a delivery that the broker flags as redelivered is counted exactly once as
 /// a duplicate when it is dispatched to the caller.
