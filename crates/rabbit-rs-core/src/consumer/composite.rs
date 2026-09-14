@@ -176,7 +176,12 @@ impl ConsumerHandle {
     ) -> Result<(), SettlementErrorKind> {
         let commands = token.commands.clone();
         commands
-            .try_send(ConsumerCommand::SettleThrough { token })
+            .try_send(ConsumerCommand::SettleThrough {
+                // Measured embedder-side (pop stamp -> now): the adaptive
+                // controller's sample must not absorb actor-internal queueing.
+                job_latency: token.controller_latency(),
+                token,
+            })
             .map_err(|e| map_try_send_error(&e))
     }
 

@@ -2011,7 +2011,15 @@ async fn adaptive_prefetch_grows_to_max_after_fast_jobs() {
             _ => None,
         })
         .collect();
-    assert_eq!(qos_values, vec![16, 256]);
+    // Record-time samples carry real (std) clock latencies, so the exact
+    // desired value is machine-dependent; the clamp arithmetic itself is
+    // pinned by the prefetch.rs unit tests. Here only the mechanism must
+    // hold: the initial Qos plus one upward adjustment.
+    assert_eq!(qos_values.len(), 2, "one tick adjustment expected");
+    assert!(
+        qos_values[1] > qos_values[0],
+        "fast jobs must grow: {qos_values:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -2089,9 +2097,10 @@ async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
 
     let errors = consumer.drain_errors();
     assert!(
-        errors.iter().any(|error| error
-            .message
-            .contains("adaptive prefetch set_qos(256) failed")),
+        errors.iter().any(
+            |error| error.message.starts_with("adaptive prefetch set_qos(")
+                && error.message.contains("failed")
+        ),
         "expected the set_qos failure in drain_errors, got {errors:?}"
     );
 
@@ -2154,10 +2163,74 @@ async fn settle_through_observations_feed_the_adaptive_controller() {
         })
         .collect();
     assert_eq!(
-        qos_values,
-        vec![16, 256],
-        "SettleThrough completions feed the EWMA"
+        qos_values.len(),
+        2,
+        "SettleThrough records must feed the EWMA"
     );
+    assert!(
+        qos_values[1] > qos_values[0],
+        "SettleThrough record-time samples must grow the window: {qos_values:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn adaptive_controller_learns_at_ack_record_time_not_at_settlement_completion() {
+    let transport = MockTransport::default();
+    for tag in 1..=4 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![adaptive_subscription(&transport, "adaptive", connection_key("adaptive", "/")).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    // Three acks whose batched settle-through can never complete: no consumer
+    // result is pushed for the wire ack, so the completion never lands. With
+    // completion-time sampling the controller would never be fed (0 samples,
+    // no Qos adjustment); with record-time sampling every ack feeds the EWMA
+    // at the moment it is recorded, and the 1s tick adjusts the prefetch.
+    let d1 = consumer.next().await.expect("delivery");
+    let d2 = consumer.next().await.expect("delivery");
+    let d3 = consumer.next().await.expect("delivery");
+    d1.ack().await.expect("ack");
+    let_actor_process().await;
+    d2.ack().await.expect("ack");
+    let_actor_process().await;
+    let _ = consumer.next().await.expect("delivery");
+    d3.ack().await.expect("ack");
+    let_actor_process().await;
+    let_actor_process().await;
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let_actor_process().await;
+
+    let qos_values: Vec<u16> = transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::Qos { prefetch } => Some(*prefetch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        qos_values.len(),
+        2,
+        "record-time sampling must feed the controller even when the \
+         settlement completion never lands"
+    );
+    assert!(
+        qos_values[1] > qos_values[0],
+        "record-time samples must drive an upward adjustment: {qos_values:?}"
+    );
+
+    // Unblock the pending settle-through so the close sweep can drain it.
+    transport.push_consumer_result(Ok(()));
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+    let _ = consumer.close().await;
 }
 
 #[tokio::test]

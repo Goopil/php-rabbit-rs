@@ -74,7 +74,9 @@ impl AdaptivePrefetch {
         }
     }
 
-    /// Records one acknowledged settlement latency.
+    /// Records one acknowledged job latency (dispatch -> ack record), sampled
+    /// at record time so the coalescing delay of the stock-aware flush never
+    /// pollutes the signal the window sizing learns from.
     pub(crate) fn observe(&mut self, latency: Duration) {
         #[expect(
             clippy::cast_precision_loss,
