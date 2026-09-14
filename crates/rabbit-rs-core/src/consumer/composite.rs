@@ -666,38 +666,42 @@ mod tests {
         assert!(drained.contains(&Bytes::from_static(b"from-second-1")));
         assert!(drained.contains(&Bytes::from_static(b"from-first-2")));
 
-        // Closing one source must not discard a delivery already buffered in
-        // it: the composite drains it before retiring the source.
+        // Closing one source retires it immediately (issue #248): its
+        // buffered orphan is never served — a served orphan's ack would
+        // route to the dead actor — and the broker redelivers it on the
+        // re-fetched generation. The retire surfaces the one-shot re-fetch
+        // signal while the remaining source keeps delivering; both outcomes
+        // are ready at once, so either order is contract-correct.
         right.close().await.expect("close second source");
-        let drained_before_retire =
-            tokio::time::timeout(Duration::from_millis(100), consumer.next())
-                .await
-                .expect("a closed source with a buffered delivery must not hang the composite")
-                .expect("buffered delivery drains before retire");
-        assert_eq!(
-            drained_before_retire.payload,
-            Bytes::from_static(b"from-second-2")
+        let mut outcomes = Vec::new();
+        for _ in 0..2 {
+            outcomes.push(
+                tokio::time::timeout(Duration::from_millis(100), consumer.next())
+                    .await
+                    .expect("retire must not hang the composite"),
+            );
+        }
+        assert!(
+            !outcomes.iter().any(
+                |outcome| matches!(outcome, Ok(delivery) if delivery.payload.as_ref() == b"from-second-2")
+            ),
+            "a closed source's buffered delivery must not be served"
         );
-
-        // The closed source is retired from the rotation while the remaining
-        // source keeps delivering.
-        let live = tokio::time::timeout(Duration::from_millis(100), consumer.next())
-            .await
-            .expect("no hang after retire")
-            .expect("remaining source keeps delivering");
-        assert_eq!(live.payload, Bytes::from_static(b"from-first-3"));
-
-        // The retire surfaces a one-shot re-fetch signal: exactly one error,
-        // then the composite goes quiet again.
-        let refetch = tokio::time::timeout(Duration::from_millis(100), consumer.next())
-            .await
-            .expect("retire must not hang the composite")
-            .expect_err("retire must surface a one-shot re-fetch signal");
-        assert_eq!(refetch.kind(), ConsumerErrorKind::SourceReplaced);
+        let refetch = outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .find(|error| error.kind() == ConsumerErrorKind::SourceReplaced)
+            .expect("retire must surface a one-shot re-fetch signal");
         assert!(
             refetch.to_string().contains("re-fetch"),
             "signal must tell the caller to re-fetch, got: {refetch}"
         );
+        let live = outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().ok())
+            .find(|delivery| delivery.payload == Bytes::from_static(b"from-first-3"))
+            .expect("remaining source keeps delivering");
+        assert_eq!(live.payload, Bytes::from_static(b"from-first-3"));
 
         // With the retired source gone and the remaining source idle, next()
         // parks waiting for work instead of failing closed (the retire is
