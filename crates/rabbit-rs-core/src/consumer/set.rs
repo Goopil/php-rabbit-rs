@@ -11,7 +11,7 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 use super::{
     ConsumerError, Delivery, DeliveryTokenInner, PrefetchStat, SettlementError,
     SettlementErrorKind, SubscriptionId, SubscriptionPolicy,
-    actor::{ConsumerCommand, run_actor},
+    actor::{ConsumerCommand, ControlCommand, run_actor},
     attempts::DEFAULT_MAX_ATTEMPTS_NON_ZERO,
 };
 use crate::{
@@ -204,13 +204,14 @@ impl ConsumerSet {
             .iter()
             .map(|subscription| u64::from(subscription.prefetch.ceiling()))
             .sum();
-        // The command channel carries Incoming delivery commands from the
-        // per-subscription pumps plus settlement commands. Size it from the
-        // total prefetch so a large prefetch does not turn every delivery
-        // handoff into pump backpressure.
-        let channel_capacity =
-            COMMAND_CAPACITY.max(usize::try_from(total_prefetch).unwrap_or(usize::MAX));
-        let (commands, receiver) = mpsc::channel(channel_capacity);
+        // Two bounded command channels: the per-subscription pumps push
+        // deliveries on the incoming channel, while settlements and stats
+        // ride a dedicated control channel the actor always drains — a
+        // saturated `pending_incoming` can gate deliveries but never starve
+        // control commands (audit 2026-09-14 #1, same lesson as the close
+        // watch signal).
+        let (incoming_tx, incoming_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (control_tx, control_rx) = mpsc::channel(COMMAND_CAPACITY);
         let mut streams = Vec::with_capacity(subscriptions.len());
 
         for subscription in &subscriptions {
@@ -268,8 +269,9 @@ impl ConsumerSet {
 
         tokio::spawn(run_actor(
             subscriptions,
-            receiver,
-            commands.clone(),
+            incoming_rx,
+            control_rx,
+            control_tx.clone(),
             buffer_tx,
             error_tx,
             // The actor keeps its own receiver for drop-oldest; the handle
@@ -279,14 +281,14 @@ impl ConsumerSet {
             dispatch_notify.clone(),
             close_rx,
             close_completion.clone(),
-            channel_capacity,
+            COMMAND_CAPACITY,
         ));
         for (subscription, stream) in streams {
-            spawn_source(subscription, stream, commands.clone());
+            spawn_source(subscription, stream, incoming_tx.clone());
         }
 
         Ok(ConsumerSetHandle {
-            commands,
+            control: control_tx,
             buffer_rx,
             error_rx,
             metrics,
@@ -303,11 +305,11 @@ impl ConsumerSet {
 fn spawn_source(
     subscription: SubscriptionId,
     mut stream: Box<dyn DeliveryStream>,
-    commands: mpsc::Sender<ConsumerCommand>,
+    incoming_tx: mpsc::Sender<ConsumerCommand>,
 ) {
     tokio::spawn(async move {
         while let Some(result) = stream.next().await {
-            if commands
+            if incoming_tx
                 .send(ConsumerCommand::Incoming {
                     subscription: subscription.clone(),
                     result,
@@ -321,7 +323,7 @@ fn spawn_source(
         // A terminated delivery stream means the subscription is dead
         // (connection lost, channel closed). Surface one terminal error so
         // `next()` unblocks instead of parking forever.
-        let _ = commands
+        let _ = incoming_tx
             .send(ConsumerCommand::Incoming {
                 subscription,
                 result: Err(TransportError::connection("consumer delivery stream ended")),
@@ -336,10 +338,10 @@ async fn close_subscription_channels(subscriptions: &[Subscription]) {
     }
 }
 
-/// Maps a command-channel  failure to the settlement error kind
+/// Maps a control-channel failure to the settlement error kind
 /// (shared by the set handle and the composite router).
 pub(crate) fn map_try_send_error(
-    error: &mpsc::error::TrySendError<ConsumerCommand>,
+    error: &mpsc::error::TrySendError<ControlCommand>,
 ) -> SettlementErrorKind {
     match error {
         mpsc::error::TrySendError::Full(_) => SettlementErrorKind::ChannelFull,
@@ -355,7 +357,7 @@ pub(crate) fn map_try_send_error(
 /// several per-broker sets into one multi-broker consumer.
 #[derive(Clone, Debug)]
 pub struct ConsumerSetHandle {
-    commands: mpsc::Sender<ConsumerCommand>,
+    control: mpsc::Sender<ControlCommand>,
     buffer_rx: flume::Receiver<Result<Delivery, ConsumerError>>,
     error_rx: flume::Receiver<SettlementError>,
     metrics: Metrics,
@@ -406,8 +408,8 @@ impl ConsumerSetHandle {
     /// Returns a typed error when the consumer is closed.
     pub async fn prefetch_stats(&self) -> Result<Vec<PrefetchStat>, ConsumerError> {
         let (completed, receiver) = oneshot::channel();
-        self.commands
-            .send(ConsumerCommand::GetPrefetchStats { completed })
+        self.control
+            .send(ControlCommand::GetPrefetchStats { completed })
             .await
             .map_err(|_| ConsumerError::closed())?;
         receiver.await.map_err(|_| ConsumerError::closed())
@@ -445,8 +447,8 @@ impl ConsumerSetHandle {
         &self,
         token: Arc<DeliveryTokenInner>,
     ) -> Result<(), SettlementErrorKind> {
-        self.commands
-            .try_send(ConsumerCommand::SettleThrough {
+        self.control
+            .try_send(ControlCommand::SettleThrough {
                 // Measured embedder-side (pop stamp -> now): the adaptive
                 // controller's sample must not absorb actor-internal queueing.
                 job_latency: token.controller_latency(),
@@ -671,7 +673,8 @@ mod tests {
             .await
             .expect("consumer channel");
 
-        let (commands, receiver) = mpsc::channel::<ConsumerCommand>(COMMAND_CAPACITY);
+        let (incoming_tx, incoming_rx) = mpsc::channel::<ConsumerCommand>(COMMAND_CAPACITY);
+        let (control_tx, control_rx) = mpsc::channel::<ControlCommand>(COMMAND_CAPACITY);
         let subscription = SubscriptionId::new("jobs");
         let delivery = || TransportDelivery {
             delivery_tag: 1,
@@ -684,7 +687,7 @@ mod tests {
             payload: Bytes::from_static(b"payload"),
         };
         for _ in 0..COMMAND_CAPACITY {
-            commands
+            incoming_tx
                 .try_send(ConsumerCommand::Incoming {
                     subscription: subscription.clone(),
                     result: Ok(delivery()),
@@ -704,8 +707,9 @@ mod tests {
                 "queue.jobs",
                 Arc::from(channel),
             )],
-            receiver,
-            commands.clone(),
+            incoming_rx,
+            control_rx,
+            control_tx.clone(),
             buffer_tx,
             error_tx,
             error_rx.clone(),
@@ -717,7 +721,7 @@ mod tests {
         ));
 
         let handle = ConsumerSetHandle {
-            commands: commands.clone(),
+            control: control_tx,
             buffer_rx,
             error_rx,
             metrics: Metrics::default(),

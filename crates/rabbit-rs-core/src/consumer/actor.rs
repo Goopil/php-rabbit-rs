@@ -77,6 +77,17 @@ pub(crate) enum ConsumerCommand {
         subscription: SubscriptionId,
         result: TransportResult<TransportDelivery>,
     },
+}
+
+/// Control-plane commands. These are never gated by backpressure: they are
+/// what frees the byte budget and what the embedder uses to observe and stop
+/// the consumer. They ride a dedicated channel so a saturated
+/// `pending_incoming` cannot starve them (audit 2026-09-14 #1, same lesson as
+/// the `close_rx` watch channel).
+///
+/// Liveness invariant: every control command accepted by the embedder is
+/// eventually consumed, regardless of delivery backpressure.
+pub(crate) enum ControlCommand {
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
@@ -143,7 +154,7 @@ struct ActorState {
     flume_error_items: usize,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
-    commands: mpsc::Sender<ConsumerCommand>,
+    control_tx: mpsc::Sender<ControlCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
     error_rx: flume::Receiver<SettlementError>,
@@ -155,7 +166,7 @@ impl ActorState {
     #[allow(clippy::too_many_arguments)]
     fn new(
         subscriptions: Vec<Subscription>,
-        commands: mpsc::Sender<ConsumerCommand>,
+        control_tx: mpsc::Sender<ControlCommand>,
         buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
         error_tx: flume::Sender<SettlementError>,
         error_rx: flume::Receiver<SettlementError>,
@@ -231,7 +242,7 @@ impl ActorState {
             flume_error_items: 0,
             source_errors: VecDeque::new(),
             scheduler,
-            commands,
+            control_tx,
             buffer_tx,
             error_tx,
             error_rx,
@@ -438,7 +449,7 @@ impl ActorState {
                 delivery.payload.clone(),
                 headers.clone(),
                 attempts,
-                self.commands.clone(),
+                self.control_tx.clone(),
             ));
             if let Some(channel_key) = self.channel_key_for(&subscription)
                 && let Some(ledger) = self.channel_ledgers.get_mut(&channel_key)
@@ -602,8 +613,9 @@ impl ActorState {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
-    mut receiver: mpsc::Receiver<ConsumerCommand>,
-    commands: mpsc::Sender<ConsumerCommand>,
+    mut incoming_rx: mpsc::Receiver<ConsumerCommand>,
+    mut control_rx: mpsc::Receiver<ControlCommand>,
+    control_tx: mpsc::Sender<ControlCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
     error_rx: flume::Receiver<SettlementError>,
@@ -615,7 +627,7 @@ pub(crate) async fn run_actor(
 ) {
     let mut state = ActorState::new(
         subscriptions,
-        commands,
+        control_tx,
         buffer_tx,
         error_tx,
         error_rx,
@@ -630,30 +642,46 @@ pub(crate) async fn run_actor(
     let has_adaptive = state.has_adaptive_prefetch();
     let mut prefetch_interval = tokio::time::interval(PREFETCH_TICK);
     prefetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The actor holds a control sender (cloned into delivery tokens), so the
+    // control channel cannot close while it runs; the flag only guards the
+    // defensive `None` path so a closed arm can never spin under `biased`.
+    // Same guard for the incoming channel: its senders (pumps) can all end
+    // while the set is still open, and the actor must keep serving control
+    // commands and the close signal instead of exiting past `close_set`.
+    let mut control_open = true;
+    let mut incoming_open = true;
     loop {
         // Drain every ready command before flushing acks: settlements
         // recorded in one burst must coalesce into one wire ack, not leak
-        // out one per select pass. Same backpressure gate as the select arm.
-        while state.pending_incoming.len() < state.pending_capacity {
-            match receiver.try_recv() {
-                Ok(ConsumerCommand::Incoming {
-                    subscription,
-                    result,
-                }) => {
-                    handle_incoming(&mut state, subscription, result);
-                }
-                Ok(ConsumerCommand::Settle {
+        // out one per select pass. Control commands drain ungated — they
+        // free the byte budget and must progress even when `pending_incoming`
+        // is saturated (audit 2026-09-14 #1); the incoming drain keeps the
+        // same backpressure gate as its select arm.
+        loop {
+            match control_rx.try_recv() {
+                Ok(ControlCommand::Settle {
                     token,
                     settlement,
                     job_latency,
                 }) => {
                     handle_settle(&mut state, token, settlement, job_latency);
                 }
-                Ok(ConsumerCommand::SettleThrough { token, job_latency }) => {
+                Ok(ControlCommand::SettleThrough { token, job_latency }) => {
                     handle_settle_through(&mut state, token, job_latency);
                 }
-                Ok(ConsumerCommand::GetPrefetchStats { completed }) => {
+                Ok(ControlCommand::GetPrefetchStats { completed }) => {
                     let _ = completed.send(state.prefetch_stats());
+                }
+                Err(_) => break,
+            }
+        }
+        while state.pending_incoming.len() < state.pending_capacity {
+            match incoming_rx.try_recv() {
+                Ok(ConsumerCommand::Incoming {
+                    subscription,
+                    result,
+                }) => {
+                    handle_incoming(&mut state, subscription, result);
                 }
                 Err(_) => break,
             }
@@ -666,28 +694,30 @@ pub(crate) async fn run_actor(
             flush_acked(&mut state);
         }
         tokio::select! {
-            command = receiver.recv(),
-                if state.pending_incoming.len() < state.pending_capacity =>
+            biased;
+            command = control_rx.recv(), if control_open => match command {
+                Some(ControlCommand::Settle {
+                    token,
+                    settlement,
+                    job_latency,
+                }) => handle_settle(&mut state, token, settlement, job_latency),
+                Some(ControlCommand::SettleThrough { token, job_latency }) => {
+                    handle_settle_through(&mut state, token, job_latency);
+                }
+                Some(ControlCommand::GetPrefetchStats { completed }) => {
+                    let _ = completed.send(state.prefetch_stats());
+                }
+                None => control_open = false,
+            },
+            command = incoming_rx.recv(),
+                if incoming_open
+                    && state.pending_incoming.len() < state.pending_capacity =>
             match command {
                 Some(ConsumerCommand::Incoming {
                     subscription,
                     result,
                 }) => handle_incoming(&mut state, subscription, result),
-                Some(ConsumerCommand::Settle {
-                    token,
-                    settlement,
-                    job_latency,
-                }) => handle_settle(&mut state, token, settlement, job_latency),
-                Some(ConsumerCommand::SettleThrough {
-                    token,
-                    job_latency,
-                }) => {
-                    handle_settle_through(&mut state, token, job_latency);
-                }
-                Some(ConsumerCommand::GetPrefetchStats { completed }) => {
-                    let _ = completed.send(state.prefetch_stats());
-                }
-                None => return,
+                None => incoming_open = false,
             },
             _ = close_rx.changed() => {
                 // Close signal from `close()` or `Drop`: independent of the
@@ -939,7 +969,7 @@ pub(crate) async fn run_actor(
         }
     }
 
-    close_set(&mut state, &mut receiver).await;
+    close_set(&mut state, &mut control_rx).await;
 }
 
 /// Handles one incoming delivery command: ledger claim, byte-budget
@@ -1227,24 +1257,24 @@ const CLOSE_SETTLEMENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::
 /// exits must not silently drop its acknowledgements), closes every
 /// subscription channel (bounded by a deadline so a stalled broker cannot
 /// block close), and resolves any awaiting `close()` caller.
-async fn close_set(state: &mut ActorState, receiver: &mut mpsc::Receiver<ConsumerCommand>) {
-    // Sweep the command channel first: a settlement enqueued right before
+async fn close_set(state: &mut ActorState, control_rx: &mut mpsc::Receiver<ControlCommand>) {
+    // Sweep the control channel first: a settlement enqueued right before
     // close raced the actor's command loop and must not die with it.
     // Incoming deliveries are left for the broker to redeliver
     // (at-least-once); stats callers observe a closed error.
-    while let Ok(command) = receiver.try_recv() {
+    while let Ok(command) = control_rx.try_recv() {
         match command {
-            ConsumerCommand::Settle {
+            ControlCommand::Settle {
                 token,
                 settlement,
                 job_latency,
             } => {
                 handle_settle(state, token, settlement, job_latency);
             }
-            ConsumerCommand::SettleThrough { token, job_latency } => {
+            ControlCommand::SettleThrough { token, job_latency } => {
                 handle_settle_through(state, token, job_latency);
             }
-            ConsumerCommand::Incoming { .. } | ConsumerCommand::GetPrefetchStats { .. } => {}
+            ControlCommand::GetPrefetchStats { .. } => {}
         }
     }
     // Recorded acks join the bounded drain like any queued settlement.
