@@ -1739,14 +1739,8 @@ async fn no_ack_defaults_to_false_in_consume_request() {
 #[tokio::test(start_paused = true)]
 async fn settlement_errors_never_stall_the_actor_when_never_drained() {
     let transport = MockTransport::default();
-    // 300 deliveries, each acknowledged with a failing ack. Each failure
-    // produces a SettlementError; 300 > 256 (error channel capacity).
     transport.push_consumer_result(Ok(())); // set_qos
     transport.push_consumer_result(Ok(())); // consume
-    for tag in 1..=300u64 {
-        transport.push_delivery(Ok(delivery(tag, b"payload")));
-        transport.push_consumer_result(Err(TransportError::connection("ack-failure")));
-    }
 
     let subscription = subscription(&transport, "jobs", connection_key("jobs", "/"), 4).await;
     let handle = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
@@ -1754,9 +1748,15 @@ async fn settlement_errors_never_stall_the_actor_when_never_drained() {
         .unwrap();
 
     // Consume and acknowledge the 300 messages without ever draining the
-    // errors. The bounded error channel must never stall the actor loop.
+    // errors. Each message is pushed one at a time so the dispatch stock
+    // drains between acknowledgements: the stock-aware flush then settles
+    // every ack against its own (failing) wire ack, producing the 300
+    // settlement errors that overflow the bounded buffer. The bounded error
+    // channel must never stall the actor loop.
     let consume_all = async {
         for tag in 1..=300u64 {
+            transport.push_delivery(Ok(delivery(tag, b"payload")));
+            transport.push_consumer_result(Err(TransportError::connection("ack-failure")));
             let delivery = handle.next().await.expect("delivery must keep flowing");
             assert_eq!(delivery.delivery_tag(), tag);
             delivery.ack().await.expect("ack enqueued");
@@ -1985,11 +1985,19 @@ async fn adaptive_prefetch_grows_to_max_after_fast_jobs() {
     .expect("consumer set");
     let_sources_fill().await;
 
-    for _ in 0..3 {
-        let delivery = consumer.next().await.expect("delivery");
+    // Drain the dispatch stock first: with the stock-aware flush, the
+    // cumulative ack only settles once nothing is buffered. Pop everything,
+    // then acknowledge sequentially so each ack settles through its own
+    // settle-through and feeds one EWMA sample per settlement.
+    let mut deliveries = Vec::new();
+    for _ in 0..4 {
+        deliveries.push(consumer.next().await.expect("delivery"));
+    }
+    for delivery in deliveries {
         delivery.ack().await.expect("ack");
         let_actor_process().await;
     }
+    let_actor_process().await;
     // Deterministically fire the 1s controller tick under paused time, then
     // let the detached set_qos task record its operation.
     tokio::time::advance(Duration::from_secs(1)).await;
@@ -2062,11 +2070,19 @@ async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
     .expect("consumer set");
     let_sources_fill().await;
 
-    for _ in 0..3 {
-        let delivery = consumer.next().await.expect("delivery");
+    // Drain the dispatch stock first (the stock-aware flush defers
+    // settlement while deliveries remain buffered), then acknowledge
+    // sequentially to accumulate the three samples the controller tick
+    // requires.
+    let mut deliveries = Vec::new();
+    for _ in 0..5 {
+        deliveries.push(consumer.next().await.expect("delivery"));
+    }
+    for delivery in deliveries.drain(..3) {
         delivery.ack().await.expect("ack");
         let_actor_process().await;
     }
+    let_actor_process().await;
     transport.push_consumer_result(Err(TransportError::connection("qos rejected")));
     tokio::time::advance(Duration::from_secs(1)).await;
     let_actor_process().await;
@@ -2080,8 +2096,9 @@ async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
     );
 
     // The actor keeps consuming and settling after the failed adjustment.
-    let fourth = consumer.next().await.expect("delivery after failure");
-    fourth.ack().await.expect("ack after failure");
+    transport.push_delivery(Ok(delivery(6, b"job")));
+    let sixth = consumer.next().await.expect("delivery after failure");
+    sixth.ack().await.expect("ack after failure");
     let_actor_process().await;
 }
 
@@ -2400,5 +2417,64 @@ async fn flushes_acks_beyond_a_hole_individually() {
         acks,
         BTreeSet::from([(1, true), (3, false), (2, true)]),
         "the hole-fill ack resumes the contiguous watermark"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn defers_the_cumulative_ack_until_the_dispatch_stock_is_drained() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"one")));
+    transport.push_delivery(Ok(delivery(2, b"two")));
+    transport.push_delivery(Ok(delivery(3, b"three")));
+    transport.push_delivery(Ok(delivery(4, b"four")));
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![subscription(&transport, "jobs", connection_key("jobs", "/"), 4).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    // Pop one and ack it while three deliveries are still stocked in the
+    // hand-off flume: holding the wire ack back lets later acks coalesce.
+    let first = consumer.next().await.expect("first delivery");
+    first.try_ack().expect("ack one");
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+    let_actor_process().await;
+
+    let operations = transport.operations();
+    let acks: Vec<&TransportOperation> = operations
+        .iter()
+        .filter(|operation| matches!(operation, TransportOperation::Ack { .. }))
+        .collect();
+    assert!(
+        acks.is_empty(),
+        "no wire ack while the dispatch stock still holds deliveries"
+    );
+
+    // Drain the stock: with nothing dispatchable left, the accumulated acks
+    // free their broker credits in one cumulative wire ack.
+    for _ in 2..=4_u64 {
+        let item = consumer.next().await.expect("stocked delivery");
+        item.try_ack().expect("ack");
+    }
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+    let_actor_process().await;
+
+    let operations = transport.operations();
+    let acks: Vec<&TransportOperation> = operations
+        .iter()
+        .filter(|operation| matches!(operation, TransportOperation::Ack { .. }))
+        .collect();
+    assert_eq!(
+        acks,
+        vec![&TransportOperation::Ack {
+            delivery_tag: 4,
+            multiple: true,
+        }],
+        "the ack batch flushes as one cumulative wire ack when the stock drains"
     );
 }
