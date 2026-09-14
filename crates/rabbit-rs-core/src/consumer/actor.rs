@@ -421,6 +421,7 @@ impl ActorState {
                         payload_bytes,
                         &error.to_string(),
                         Duration::ZERO,
+                        Some((connection_key, generation, channel_id)),
                     );
                     continue;
                 }
@@ -560,6 +561,15 @@ impl ActorState {
     ///
     /// The channel operation is fire-and-forget: a transient transport
     /// failure redelivers the message, which re-enters this path and retries.
+    ///
+    /// The channel operation is fenced: it only fires when the subscription
+    /// runtime still matches the generation identity the delivery arrived
+    /// under (`Some`), passed by the caller from where the delivery was
+    /// captured. After a reconnection the same numeric tag on the live
+    /// channel belongs to a different delivery, so a stale settlement is
+    /// skipped and the broker redelivers (audit 2026-09-14 #5). A delivery
+    /// with no runtime identity (`None`) settles like an unknown
+    /// subscription: no wire operation, typed error still recorded.
     #[allow(clippy::too_many_arguments)]
     fn settle_poison(
         &mut self,
@@ -570,16 +580,25 @@ impl ActorState {
         payload_bytes: u64,
         detail: &str,
         settled_for: Duration,
+        token_identity: Option<(crate::pool::ConnectionKey, u64, u16)>,
     ) {
         let channel = self
             .subscriptions
             .get(subscription)
+            .filter(|runtime| {
+                token_identity.is_some_and(|(connection_key, generation, channel_id)| {
+                    runtime.connection_key == connection_key
+                        && runtime.generation == generation
+                        && runtime.channel_id == channel_id
+                })
+            })
             .map(|runtime| Arc::clone(&runtime.channel));
         if let Some(channel) = channel {
             spawn_poison_settlement(channel, has_dead_letter, delivery_tag);
         }
-        // An unknown subscription has nothing to settle against the broker;
-        // the recorded error below still surfaces the poison condition.
+        // A stale generation or unknown subscription has nothing to settle
+        // against the broker; the recorded error below still surfaces the
+        // poison condition and the broker redelivers.
         self.record_poison_metrics(has_dead_letter, settled_for);
         if let Some(bytes) = self.buffered_bytes.get_mut(subscription) {
             *bytes = bytes.saturating_sub(payload_bytes);
@@ -612,14 +631,22 @@ impl ActorState {
         if let Some(bytes) = self.buffered_bytes.get_mut(subscription) {
             *bytes = bytes.saturating_add(payload_bytes);
         }
-        let has_dead_letter = self
-            .subscriptions
-            .get(subscription)
-            .is_some_and(|runtime| runtime.has_dead_letter);
+        let runtime = self.subscriptions.get(subscription);
+        let has_dead_letter = runtime.is_some_and(|runtime| runtime.has_dead_letter);
         let message_id = delivery.message_id.clone().map_or_else(
             || MessageId::new(delivery.delivery_tag.to_string()),
             MessageId::new,
         );
+        // The oversized delivery arrived through this runtime's pumps, so its
+        // identity is the runtime's own; `settle_poison` re-verifies it
+        // against the live runtime before any wire operation.
+        let token_identity = runtime.map(|runtime| {
+            (
+                runtime.connection_key,
+                runtime.generation,
+                runtime.channel_id,
+            )
+        });
         self.settle_poison(
             subscription,
             has_dead_letter,
@@ -628,6 +655,7 @@ impl ActorState {
             payload_bytes,
             "message size exceeds max_buffered_bytes",
             Duration::ZERO,
+            token_identity,
         );
     }
 
@@ -920,16 +948,39 @@ pub(crate) async fn run_actor(
                         ) =>
                     {
                         let subscription = settlement_result.token.subscription.clone();
-                        let runtime = state
-                            .subscriptions
-                            .get(&subscription)
-                            .map(|runtime| (Arc::clone(&runtime.channel), runtime.has_dead_letter));
-                        if let Some((channel, has_dead_letter)) = runtime {
-                            let delivery_tag = settlement_result.token.delivery_tag;
-                            let terminal =
-                                spawn_poison_settlement(channel, has_dead_letter, delivery_tag);
-                            let settled_for = settlement_result.token.reserved_at.elapsed();
-                            if terminal == DeliveryState::Acked {
+                        let runtime = state.subscriptions.get(&subscription).map(|runtime| {
+                            (
+                                Arc::clone(&runtime.channel),
+                                runtime.has_dead_letter,
+                                runtime.connection_key,
+                                runtime.generation,
+                                runtime.channel_id,
+                            )
+                        });
+                        if let Some(
+                            (channel, has_dead_letter, connection_key, generation, channel_id),
+                        ) = runtime
+                        {
+                            let token = &settlement_result.token;
+                            let delivery_tag = token.delivery_tag;
+                            // Generation fencing (audit 2026-09-14 #5): a token
+                            // from a superseded generation must never ack or
+                            // reject on the live channel — the same numeric tag
+                            // there belongs to a different delivery. Skip the
+                            // wire op; the broker redelivers and the typed
+                            // error below still surfaces the poison condition.
+                            let terminal = if connection_key == token.connection_key
+                                && generation == token.generation
+                                && channel_id == token.channel_id
+                            {
+                                spawn_poison_settlement(channel, has_dead_letter, delivery_tag)
+                            } else {
+                                DeliveryState::Lost
+                            };
+                            let settled_for = token.reserved_at.elapsed();
+                            if terminal == DeliveryState::Lost {
+                                state.record_poison_metrics(has_dead_letter, settled_for);
+                            } else if terminal == DeliveryState::Acked {
                                 state.metrics.record_ack(settled_for);
                             } else {
                                 state.metrics.record_reject(settled_for);

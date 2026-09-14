@@ -6,7 +6,9 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use rabbit_rs_core::consumer::{ConsumerErrorKind, ConsumerSet, Subscription, SubscriptionId};
 use rabbit_rs_core::metrics::Metrics;
+use rabbit_rs_core::pool::ConnectionKey;
 use rabbit_rs_core::{
     client::ClientPool,
     config::{
@@ -120,6 +122,44 @@ mod helper {
 
     pub fn dyn_transport(transport: &Arc<MockTransport>) -> Arc<dyn Transport> {
         transport.clone() as Arc<dyn Transport>
+    }
+
+    /// A directly-spawned subscription with an explicit connection generation,
+    /// mirroring what `establish_requested_profile` builds per recovery
+    /// generation: same subscription id, connection key, and channel id, only
+    /// the generation moves.
+    pub async fn direct_subscription(
+        transport: &Arc<MockTransport>,
+        connection_key: ConnectionKey,
+        generation: u64,
+    ) -> Subscription {
+        // Keep the delivery stream open like a live broker subscription so a
+        // delivery pushed after the pump parks still surfaces.
+        transport.keep_delivery_stream_open();
+        let channel = transport
+            .connect(&broker("primary", "/", "guest"))
+            .await
+            .expect("connection")
+            .open_consumer()
+            .await
+            .expect("consumer channel");
+        Subscription::new("jobs", connection_key, "jobs", Arc::from(channel))
+            .generation(generation)
+            .prefetch(4)
+            .channel_id(1)
+    }
+
+    pub fn delivery(tag: u64, payload: &'static [u8]) -> TransportDelivery {
+        TransportDelivery {
+            delivery_tag: tag,
+            exchange: "jobs".to_owned(),
+            routing_key: "high".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: Arc::new(BTreeMap::new()),
+            payload: Bytes::from_static(payload),
+        }
     }
 
     /// A validated configuration with a custom delay strategy and publish
@@ -328,7 +368,7 @@ async fn publisher_replays_unconfirmed_messages_after_recovery() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn consumer_generation_updates_after_reconnection_rejects_stale_acks() {
+async fn consumer_generation_increments_after_reconnection() {
     let transport = Arc::new(MockTransport::default());
     let config = config(
         vec![broker("primary", "/", "guest")],
@@ -359,6 +399,97 @@ async fn consumer_generation_updates_after_reconnection_rejects_stale_acks() {
     drop(consumer);
 
     coordinator.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #5): a token captured before a reconnection
+/// (generation 1) and settled after the consumer was re-established
+/// (generation 2) must be rejected with `StaleGeneration` and produce ZERO
+/// wire operations — never an ack or reject on the new channel, where the
+/// same numeric delivery tag belongs to a different delivery.
+///
+/// The stale settlement rides the set-level `try_settle_through`, which
+/// routes by handle rather than by token origin — the one public entry point
+/// where a foreign token reaches a newer generation's actor and the
+/// `ensure_live_generation` fence must fire. The coordinator's composite
+/// consumer routes by token origin (retiring stale sources instead), so this
+/// reproduces the guarded scenario directly: two consumer sets share the
+/// subscription id, connection key, and channel id; only the generation
+/// moves, exactly as across a coordinator recovery.
+#[tokio::test(start_paused = true)]
+async fn stale_generation_token_is_rejected_without_any_wire_settlement() {
+    let stale_transport = Arc::new(MockTransport::default());
+    let live_transport = Arc::new(MockTransport::default());
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    let connection_key = ConnectionKey::from_config(&config);
+
+    // Generation 1: capture a delivery token, then retire the set the way
+    // recovery does when it replaces a consumer set with a newer generation.
+    let stale_set = ConsumerSet::spawn_with_metrics(
+        vec![direct_subscription(&stale_transport, connection_key, 1).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("generation 1 consumer set");
+    stale_transport.push_delivery(Ok(delivery(1, b"stale")));
+    let stale = stale_set.next().await.expect("generation 1 delivery");
+    assert_eq!(stale.delivery_tag(), 1);
+    stale_set.close().await.expect("close generation 1 set");
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+
+    // Generation 2: same subscription, same connection key, same numeric
+    // delivery tag — the delivery a stale ack would wrongly settle.
+    let live_set = ConsumerSet::spawn_with_metrics(
+        vec![direct_subscription(&live_transport, connection_key, 2).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("generation 2 consumer set");
+    live_transport.push_delivery(Ok(delivery(1, b"live")));
+    let live = live_set.next().await.expect("generation 2 delivery");
+    assert_eq!(live.delivery_tag(), 1);
+
+    // Route the generation-1 token into the generation-2 actor.
+    live_set
+        .try_settle_through(stale.inner_token().clone())
+        .expect("settle-through enqueued");
+
+    let mut errors = Vec::new();
+    for _ in 0..100 {
+        errors = live_set.drain_errors();
+        if !errors.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let stale_error = errors
+        .iter()
+        .find(|error| error.kind == ConsumerErrorKind::StaleGeneration)
+        .expect("stale-generation settlement error recorded");
+    assert_eq!(stale_error.delivery_tag, 1);
+    assert_eq!(stale_error.subscription, SubscriptionId::new("jobs"));
+
+    for transport in [&stale_transport, &live_transport] {
+        let settlements = transport
+            .operations()
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation,
+                    TransportOperation::Ack { .. } | TransportOperation::Reject { .. }
+                )
+            })
+            .count();
+        assert_eq!(settlements, 0, "stale token must never reach the wire");
+    }
+
+    drop(stale_set);
+    drop(live_set);
 }
 
 #[tokio::test(start_paused = true)]
