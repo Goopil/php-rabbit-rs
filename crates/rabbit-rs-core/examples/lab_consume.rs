@@ -10,6 +10,7 @@
 //! ```text
 //! cargo run -p rabbit-rs-core --example lab_consume -- --messages 100000
 //! cargo run -p rabbit-rs-core --example lab_consume -- --messages 100000 --no-ack
+//! cargo run -p rabbit-rs-core --example lab_consume -- --messages 100000 --nack
 //! ```
 //!
 //! Not part of CI or the tracked benchmark suite: a local measurement instrument.
@@ -47,6 +48,7 @@ fn main() {
     let mut messages: usize = 100_000;
     let mut seconds: f64 = 30.0;
     let mut no_ack = false;
+    let mut nack = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -65,9 +67,10 @@ fn main() {
                     .expect("--seconds must be a number");
             }
             "--no-ack" => no_ack = true,
-            other => {
-                panic!("unknown argument '{other}' (expected --messages, --seconds, --no-ack)")
-            }
+            "--nack" => nack = true,
+            other => panic!(
+                "unknown argument '{other}' (expected --messages, --seconds, --no-ack, --nack)"
+            ),
         }
     }
 
@@ -75,10 +78,15 @@ fn main() {
         .enable_all()
         .build()
         .expect("runtime")
-        .block_on(run(messages, Duration::from_secs_f64(seconds), no_ack));
+        .block_on(run(
+            messages,
+            Duration::from_secs_f64(seconds),
+            no_ack,
+            nack,
+        ));
 }
 
-async fn run(messages: usize, seconds: Duration, no_ack: bool) {
+async fn run(messages: usize, seconds: Duration, no_ack: bool, nack: bool) {
     let lab = lab_endpoint();
     let pool = ClientPool::production(config(&lab, no_ack));
 
@@ -118,7 +126,11 @@ async fn run(messages: usize, seconds: Duration, no_ack: bool) {
         let t0 = Instant::now();
         let delivery = consumer.next().await.expect("delivery");
         latencies_us.push(u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX));
-        if !no_ack {
+        if nack {
+            // requeue=false: the queue drains, so the run stays bounded —
+            // measures the negative-settlement wire path per message.
+            delivery.try_reject(false).expect("nack accepted");
+        } else if !no_ack {
             delivery.try_ack().expect("ack accepted");
         }
     }
@@ -129,11 +141,17 @@ async fn run(messages: usize, seconds: Duration, no_ack: bool) {
     let (p50_us, p99_us) = percentiles(&mut latencies_us);
     let throughput = f64::from(u32::try_from(delivered).expect("delivery count fits u32"))
         / consume_elapsed.as_secs_f64();
+    let ack_mode = if no_ack {
+        "no_ack"
+    } else if nack {
+        "nack"
+    } else {
+        "manual"
+    };
     println!(
-        "{{\"messages\": {delivered}, \"seconds\": {:.3}, \"msg_per_s\": {:.0}, \"p50_us\": {p50_us}, \"p99_us\": {p99_us}, \"ack_mode\": \"{}\"}}",
+        "{{\"messages\": {delivered}, \"seconds\": {:.3}, \"msg_per_s\": {:.0}, \"p50_us\": {p50_us}, \"p99_us\": {p99_us}, \"ack_mode\": \"{ack_mode}\"}}",
         consume_elapsed.as_secs_f64(),
         throughput,
-        if no_ack { "no_ack" } else { "manual" },
     );
     eprintln!(
         "publish phase: {messages} messages in {:.2}s (unmeasured)",

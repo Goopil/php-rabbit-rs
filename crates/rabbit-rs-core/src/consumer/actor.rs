@@ -126,8 +126,16 @@ struct ActorState {
     settle_through_queues: HashMap<ChannelKey, VecDeque<SettleThroughParams>>,
     /// Plain acks recorded but not yet flushed to the wire, per channel.
     /// Bounded by the ledger, which is bounded by the in-flight budget and
-    /// prefetch. Drained by `flush_acked` at the top of every loop pass.
+    /// prefetch. Drained by `flush_acked` whenever the dispatch stock is
+    /// drained (and unconditionally at close).
     acked_batch: HashMap<ChannelKey, std::collections::BTreeMap<u64, Arc<DeliveryTokenInner>>>,
+    /// Upper bound on source-error items currently sitting in the hand-off
+    /// flume. Source errors never produce acknowledgements, so they must not
+    /// hold the stock-aware flush back: the flush gate treats the flume as
+    /// drained once `len` drops to this count. Over-permissive only after an
+    /// embedder actually consumes an error item (rare; worst case is a
+    /// slightly earlier flush, never a lost or duplicated ack).
+    flume_error_items: usize,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
     commands: mpsc::Sender<ConsumerCommand>,
@@ -215,6 +223,7 @@ impl ActorState {
             settlement_queues: HashMap::new(),
             settle_through_queues: HashMap::new(),
             acked_batch: HashMap::new(),
+            flume_error_items: 0,
             source_errors: VecDeque::new(),
             scheduler,
             commands,
@@ -285,7 +294,11 @@ impl ActorState {
         self.drain_pending();
         loop {
             if let Some(error) = self.source_errors.front() {
-                if self.buffer_tx.try_send(Err(error.clone())).is_err() {
+                let err_sent = self.buffer_tx.try_send(Err(error.clone()));
+                if err_sent.is_ok() {
+                    self.flume_error_items = self.flume_error_items.saturating_add(1);
+                }
+                if err_sent.is_err() {
                     break;
                 }
                 self.source_errors.pop_front();
@@ -382,7 +395,8 @@ impl ActorState {
                     headers,
                     attempts,
                 );
-                if self.buffer_tx.try_send(Ok(item)).is_err() {
+                let noack_sent = self.buffer_tx.try_send(Ok(item));
+                if noack_sent.is_err() {
                     self.buffers
                         .entry(subscription.clone())
                         .or_default()
@@ -436,7 +450,8 @@ impl ActorState {
                 attempts,
                 token,
             );
-            if self.buffer_tx.try_send(Ok(item)).is_err() {
+            let sent = self.buffer_tx.try_send(Ok(item));
+            if sent.is_err() {
                 self.buffers
                     .entry(subscription.clone())
                     .or_default()
@@ -559,6 +574,23 @@ impl ActorState {
         self.drain_pending();
         self.dispatch();
     }
+
+    /// True when nothing dispatchable remains: no backpressured incoming, no
+    /// buffered deliveries, and the hand-off flume holds only source-error
+    /// items (which never produce acknowledgements). The embedder has (or is
+    /// about to run out of) work, so holding recorded acks back no longer
+    /// buys coalescing — flushing now frees broker credit exactly when the
+    /// next arrivals need it, and lets the acks recorded while the stock was
+    /// stocked land as one cumulative wire ack.
+    fn dispatch_stock_drained(&self) -> bool {
+        if !self.pending_incoming.is_empty() {
+            return false;
+        }
+        if self.buffers.values().any(|buffer| !buffer.is_empty()) {
+            return false;
+        }
+        self.buffer_tx.len() <= self.flume_error_items
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -617,7 +649,13 @@ pub(crate) async fn run_actor(
                 Err(_) => break,
             }
         }
-        flush_acked(&mut state);
+        // Flush recorded acks only when the dispatch stock is drained: while
+        // the embedder still has stocked deliveries, later acks can coalesce
+        // into the same cumulative wire ack, so freeing broker credit now
+        // would split the batch and keep the credit pipeline one-ack-per-RTT.
+        if state.dispatch_stock_drained() {
+            flush_acked(&mut state);
+        }
         tokio::select! {
             command = receiver.recv(),
                 if state.pending_incoming.len() < state.pending_capacity =>
