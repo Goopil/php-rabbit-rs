@@ -1190,6 +1190,13 @@ async fn settle_progresses_while_pending_incoming_is_saturated() {
     for _ in 0..500 {
         tokio::time::advance(Duration::from_millis(2)).await;
     }
+    // Pin the precondition: the settle phase below is only meaningful if
+    // saturation actually happened.
+    let snapshot = consumer.metrics_snapshot();
+    assert!(
+        snapshot.backpressure_total > 0,
+        "pending_incoming must be saturated (backpressure recorded) before settling"
+    );
 
     // The embedder settles the held delivery. This must reach the wire even
     // though the incoming gate is closed.
@@ -1371,6 +1378,81 @@ async fn oversized_message_with_dead_letter_target_is_rejected_without_requeue()
             .any(|e| e.message.contains("exceeds max_buffered_bytes")),
         "oversized settlement must surface a typed error, got {errors:?}"
     );
+
+    consumer.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #6): in `no_ack` mode the broker auto-acks at
+/// delivery, so any wire `basic_ack`/`basic.reject` for such a tag hits an
+/// unknown delivery tag — `PRECONDITION_FAILED` (406) closes the channel and
+/// the broker redelivers the same oversized message in a deterministic churn
+/// loop. The oversized terminal path must therefore skip the wire settlement
+/// entirely and surface only the typed error; subsequent deliveries keep
+/// flowing on a healthy channel.
+#[tokio::test(start_paused = true)]
+async fn oversized_delivery_in_no_ack_mode_never_touches_the_wire() {
+    const LARGE: &[u8] = b"0123456789abcdef"; // 16 bytes > 8-byte budget
+    let transport = MockTransport::default();
+    let mut sub = subscription(&transport, "bigack", connection_key("bigack", "/"), 4).await;
+    sub = sub.early_ack(true).no_ack(true).max_buffered_bytes(8);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, LARGE))); // oversized
+    transport.push_delivery(Ok(delivery(2, b"tiny")));
+    transport.push_delivery(Ok(delivery(3, b"tiny")));
+    let_sources_fill().await;
+
+    let d2 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 2 dispatches (no head-of-line blocking)")
+        .expect("delivery 2");
+    assert_eq!(d2.delivery_tag(), 2);
+
+    // Let the oversized settlement path run to completion.
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+
+    // The broker already auto-acked the delivery: zero wire settlement for
+    // the oversized tag.
+    let wire_settlements = transport
+        .operations()
+        .iter()
+        .filter(|op| {
+            matches!(
+                op,
+                TransportOperation::Ack {
+                    delivery_tag: 1,
+                    ..
+                } | TransportOperation::Reject {
+                    delivery_tag: 1,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        wire_settlements, 0,
+        "no_ack oversized settlement must not ack or reject on the wire (406 churn loop)"
+    );
+
+    // The terminal outcome is still surfaced as the typed settlement error.
+    let errors = consumer.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("exceeds max_buffered_bytes")),
+        "oversized settlement must surface a typed error, got {errors:?}"
+    );
+
+    // The channel stays healthy: subsequent small deliveries still dispatch.
+    let d3 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 3 dispatches after the oversized settlement")
+        .expect("delivery 3");
+    assert_eq!(d3.delivery_tag(), 3);
 
     consumer.close().await.expect("close");
 }
@@ -1775,6 +1857,17 @@ async fn early_ack_fires_at_most_once_per_delivery_tag_across_redispatches() {
     for _ in 0..8 {
         tokio::time::advance(Duration::from_millis(2)).await;
     }
+
+    // Pin the scenario precondition: the embedder buffer is exactly
+    // `total_prefetch × BUFFER_CAPACITY_MULTIPLIER` = 2, so tags 1 and 2 hand
+    // off, tag 3's handoff fails and the delivery is re-dispatched. If this
+    // count drifts (e.g. the multiplier grows), tag 3 is simply handed off
+    // and the at-most-once assertions below pass vacuously.
+    assert_eq!(
+        consumer.metrics_snapshot().deliveries_total,
+        2,
+        "buffer must saturate at 2 handoffs; tag 3 must have failed its handoff"
+    );
 
     let ops = transport.operations();
     for tag in 1..=3 {

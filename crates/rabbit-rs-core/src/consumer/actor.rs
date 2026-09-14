@@ -133,7 +133,11 @@ struct ActorState {
     /// Bounded: a re-dispatch of an early-acked delivery only happens while
     /// the delivery is still held in actor memory (`self.buffers` re-push), so
     /// a ring sized to the in-flight bound (`pending_capacity`, total
-    /// prefetch) is always sufficient. Guards against a second `basic_ack`
+    /// prefetch) is always sufficient. The real sufficiency proof is the
+    /// shared `buffer_tx` coupling: a re-dispatchable tag only exists while
+    /// the dispatch loop front is stuck on a failed handoff, which requires a
+    /// full `buffer_tx`, and a full `buffer_tx` blocks every new same-channel
+    /// ack from entering the ring. Guards against a second `basic_ack`
     /// for the same tag — `RabbitMQ` answers a duplicate ack with
     /// `PRECONDITION_FAILED` (406) and closes the channel (audit 2026-09-14 #3).
     /// Same lifecycle as `channel_ledgers`: entries live for the actor's
@@ -570,6 +574,13 @@ impl ActorState {
     /// skipped and the broker redelivers (audit 2026-09-14 #5). A delivery
     /// with no runtime identity (`None`) settles like an unknown
     /// subscription: no wire operation, typed error still recorded.
+    ///
+    /// In `no_ack` mode the broker auto-acks at delivery, so the wire op is
+    /// skipped as well: any ack or reject for the tag would hit an unknown
+    /// delivery tag (`PRECONDITION_FAILED` 406), close the channel, and
+    /// redeliver the same message in a deterministic churn loop (audit
+    /// 2026-09-14 #6). The typed error and metrics still record the terminal
+    /// outcome.
     #[allow(clippy::too_many_arguments)]
     fn settle_poison(
         &mut self,
@@ -586,11 +597,12 @@ impl ActorState {
             .subscriptions
             .get(subscription)
             .filter(|runtime| {
-                token_identity.is_some_and(|(connection_key, generation, channel_id)| {
-                    runtime.connection_key == connection_key
-                        && runtime.generation == generation
-                        && runtime.channel_id == channel_id
-                })
+                !runtime.no_ack
+                    && token_identity.is_some_and(|(connection_key, generation, channel_id)| {
+                        runtime.connection_key == connection_key
+                            && runtime.generation == generation
+                            && runtime.channel_id == channel_id
+                    })
             })
             .map(|runtime| Arc::clone(&runtime.channel));
         if let Some(channel) = channel {

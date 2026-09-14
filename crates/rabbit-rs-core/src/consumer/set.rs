@@ -281,7 +281,13 @@ impl ConsumerSet {
             dispatch_notify.clone(),
             close_rx,
             close_completion.clone(),
-            COMMAND_CAPACITY,
+            // `pending_incoming` must absorb every delivery the pumps can
+            // push for one full prefetch cycle: flat `COMMAND_CAPACITY` would
+            // shed under high prefetch. The control channel itself stays flat
+            // `COMMAND_CAPACITY` (see above).
+            usize::try_from(total_prefetch)
+                .unwrap_or(usize::MAX)
+                .max(COMMAND_CAPACITY),
         ));
         for (subscription, stream) in streams {
             spawn_source(subscription, stream, incoming_tx.clone());

@@ -442,7 +442,7 @@ Closing a consumer (or its pool) flushes pending and queued acknowledgements to 
 
 ### Oversized deliveries
 
-Deliveries whose size alone exceeds `max_buffered_bytes` are settled terminally using the poison policy: `basic.reject(requeue=false)` toward the dead-letter exchange when one is configured, otherwise an explicit acknowledge with a typed settlement error. They are never requeued and never parked indefinitely. Operators should align the broker's `max_message_size` with consumer `max_buffered_bytes` so oversized payloads are rejected at publish time; the consumer-side terminal path is the last line of defense.
+Deliveries whose size alone exceeds `max_buffered_bytes` are settled terminally using the poison policy: `basic.reject(requeue=false)` toward the dead-letter exchange when one is configured, otherwise an explicit acknowledge with a typed settlement error. In `no_ack` mode the broker has already auto-acked the delivery at hand-off, so no wire settlement is issued for it — a wire ack or reject would hit an unknown delivery tag (`PRECONDITION_FAILED` 406), close the channel, and redeliver the same message in a churn loop; the terminal outcome is recorded as the typed settlement error only. They are never requeued and never parked indefinitely. Operators should align the broker's `max_message_size` with consumer `max_buffered_bytes` so oversized payloads are rejected at publish time; the consumer-side terminal path is the last line of defense.
 
 ### Replay buffer
 
