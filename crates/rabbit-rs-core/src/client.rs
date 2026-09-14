@@ -762,12 +762,12 @@ impl ClientPool {
                 // the slot's own readiness signal and any state transition
                 // (terminal failures must fail fast, not at the timeout).
                 let observed = coordinator.state();
-                if matches!(
-                    observed,
-                    crate::recovery::ConnectionState::FailedPermanent { .. }
-                ) {
+                if let crate::recovery::ConnectionState::FailedPermanent { reason, .. } = observed {
+                    // Same contract as the consumer/admin readiness wait
+                    // (issue #285): surface the pool's published reason — the
+                    // actual refusal text — not a bare state notice.
                     return Err(ClientError::transport(&TransportError::connection(
-                        "broker connection failed permanently",
+                        format!("broker connection failed permanently: {reason}"),
                     )));
                 }
                 if matches!(observed, crate::recovery::ConnectionState::Closed) {
