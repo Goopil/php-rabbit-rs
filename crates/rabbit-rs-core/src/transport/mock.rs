@@ -30,6 +30,7 @@ pub enum TransportOperation {
     Publish(PublishRequest),
     Qos { prefetch: u16 },
     Consume(ConsumerRequest),
+    Cancel { consumer_tag: String },
     Ack { delivery_tag: u64, multiple: bool },
     Reject { delivery_tag: u64, requeue: bool },
     CloseChannel,
@@ -43,6 +44,10 @@ struct MockState {
     confirmations: VecDeque<MockConfirmation>,
     deliveries: VecDeque<TransportResult<Delivery>>,
     keep_delivery_stream_open: bool,
+    /// Bumped by `cancel`: delivery streams created before the bump end once
+    /// drained, mirroring a live broker that stops dispatching to a cancelled
+    /// consumer. Overrides `keep_delivery_stream_open` for stale streams.
+    stream_epoch: u64,
     /// Wakes delivery streams parked on an empty queue so a fill pushed
     /// after a stream parked still surfaces, like a live broker
     /// subscription. Only armed while `keep_delivery_stream_open` holds.
@@ -618,9 +623,30 @@ impl ConsumerChannel for MockConsumerChannel {
 
     async fn consume(&self, request: ConsumerRequest) -> TransportResult<Box<dyn DeliveryStream>> {
         self.record_consumer(TransportOperation::Consume(request))?;
+        let epoch = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stream_epoch;
         Ok(Box::new(MockDeliveryStream {
             state: self.state.clone(),
+            epoch,
         }))
+    }
+
+    async fn cancel(&self, consumer_tag: &str) -> TransportResult<()> {
+        self.record_consumer(TransportOperation::Cancel {
+            consumer_tag: consumer_tag.to_owned(),
+        })?;
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.stream_epoch += 1;
+            state.delivery_notify.notify_one();
+        }
+        Ok(())
     }
 
     async fn ack(&self, delivery_tag: u64, multiple: bool) -> TransportResult<()> {
@@ -652,13 +678,16 @@ impl ConsumerChannel for MockConsumerChannel {
 
 struct MockDeliveryStream {
     state: Arc<Mutex<MockState>>,
+    /// Stream creation epoch: once the mock bumps past this (via `cancel`),
+    /// the stream ends after draining instead of parking.
+    epoch: u64,
 }
 
 #[async_trait]
 impl DeliveryStream for MockDeliveryStream {
     async fn next(&mut self) -> Option<TransportResult<Delivery>> {
         loop {
-            let (gate, delivery, keep_open) = {
+            let (gate, delivery, keep_open, cancelled) = {
                 let mut state = self
                     .state
                     .lock()
@@ -667,11 +696,18 @@ impl DeliveryStream for MockDeliveryStream {
                     state.delivery_gates.pop_front(),
                     state.deliveries.pop_front(),
                     state.keep_delivery_stream_open,
+                    state.stream_epoch > self.epoch,
                 )
             };
             wait_for_gate(gate).await;
             if let Some(delivery) = delivery {
                 return Some(delivery);
+            }
+            if cancelled {
+                // A deliberately cancelled stream ends once drained, even in
+                // keep-open mode: the pump reads this as "apply the resize
+                // and re-consume".
+                return None;
             }
             if !keep_open {
                 return None;
@@ -690,5 +726,79 @@ impl DeliveryStream for MockDeliveryStream {
             );
             notified.notified().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_epoch_tests {
+    use std::collections::BTreeMap;
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::config::{Credentials, Endpoint, TlsConfig};
+    use std::time::Duration;
+
+    fn broker_config() -> BrokerConfig {
+        BrokerConfig {
+            name: "mock".to_owned(),
+            hosts: vec![Endpoint::new("localhost", 5672)],
+            vhost: "/".to_owned(),
+            credentials: Credentials::new("guest", "guest"),
+            tls: TlsConfig::disabled(),
+            heartbeat: Duration::from_secs(30),
+        }
+    }
+
+    fn delivery(tag: u64) -> Delivery {
+        Delivery {
+            delivery_tag: tag,
+            exchange: "jobs".to_owned(),
+            routing_key: "high".to_owned(),
+            redelivered: false,
+            message_id: None,
+            correlation_id: None,
+            headers: Arc::new(BTreeMap::new()),
+            payload: Bytes::from_static(b"job"),
+        }
+    }
+
+    /// A deliberately cancelled consumer stream must end after draining its
+    /// in-flight deliveries — even with `keep_delivery_stream_open` set — so
+    /// the pump can distinguish "cancel, then re-consume" from a dead
+    /// subscription. Mirrors the live lapin behavior of `basic.cancel`.
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_delivery_stream_ends_after_draining_in_flight() {
+        let transport = MockTransport::default();
+        transport.keep_delivery_stream_open();
+        let channel = transport
+            .connect(&broker_config())
+            .await
+            .expect("connection")
+            .open_consumer()
+            .await
+            .expect("consumer channel");
+        let mut stream = channel
+            .consume(ConsumerRequest {
+                queue: "queue.mock".to_owned(),
+                consumer_tag: "rabbit-rs.default".to_owned(),
+                exclusive: false,
+                no_ack: false,
+            })
+            .await
+            .expect("subscribe");
+
+        transport.push_delivery(Ok(delivery(1)));
+        channel.cancel("rabbit-rs.default").await.expect("cancel");
+
+        // The in-flight delivery still surfaces after the cancel request...
+        let first = stream.next().await.expect("in-flight delivery");
+        assert!(first.is_ok(), "in-flight delivery must survive the cancel");
+
+        // ...then the cancelled stream ends instead of parking forever.
+        assert!(
+            stream.next().await.is_none(),
+            "a cancelled stream must end once drained"
+        );
     }
 }

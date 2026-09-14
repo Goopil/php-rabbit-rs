@@ -409,6 +409,16 @@ pub trait ConsumerChannel: TopologyChannel {
     /// Returns an error when the consumer cannot be registered.
     async fn consume(&self, request: ConsumerRequest) -> TransportResult<Box<dyn DeliveryStream>>;
 
+    /// Cancels the consumer registered under `consumer_tag`. Deliveries
+    /// already dispatched remain acknowledged-able on the channel; only new
+    /// dispatches stop. The consumer's delivery stream ends once its
+    /// in-flight deliveries drained.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the cancellation cannot be sent or confirmed.
+    async fn cancel(&self, consumer_tag: &str) -> TransportResult<()>;
+
     /// # Errors
     ///
     /// Returns an error when the acknowledgement cannot be sent.
