@@ -721,17 +721,21 @@ impl ActorState {
         self.dispatch();
     }
 
-    /// True when nothing dispatchable remains: no backpressured incoming, no
-    /// buffered deliveries, and the hand-off flume holds only source-error
-    /// items (which never produce acknowledgements). The embedder has (or is
-    /// about to run out of) work, so holding recorded acks back no longer
-    /// buys coalescing — flushing now frees broker credit exactly when the
-    /// next arrivals need it, and lets the acks recorded while the stock was
-    /// stocked land as one cumulative wire ack.
+    /// True when nothing dispatchable remains: no buffered deliveries, and
+    /// the hand-off flume holds only source-error items (which never produce
+    /// acknowledgements). The embedder has (or is about to run out of) work,
+    /// so holding recorded acks back no longer buys coalescing — flushing now
+    /// frees broker credit exactly when the next arrivals need it, and lets
+    /// the acks recorded while the stock was stocked land as one cumulative
+    /// wire ack.
+    ///
+    /// `pending_incoming` is deliberately NOT part of the stock: those
+    /// deliveries cannot produce acknowledgements until they dispatch, and
+    /// dispatching requires the byte budget that only this flush's wire ack
+    /// frees. Waiting on them is circular and would hold recorded acks
+    /// hostage behind a saturated gate — the control-starvation deadlock
+    /// shape (audit 2026-09-14 #1) reintroduced through the flush deferral.
     fn dispatch_stock_drained(&self) -> bool {
-        if !self.pending_incoming.is_empty() {
-            return false;
-        }
         if self.buffers.values().any(|buffer| !buffer.is_empty()) {
             return false;
         }
