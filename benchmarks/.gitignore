@@ -4,6 +4,4 @@ results/*
 !results/round-d-safe-flush/
 !results/round-k-soak/
 !results/flush-timer-latency/
-composer.lock
-vendor/
-.phpunit.result.cache
+!results/round-l-post-302/

@@ -1,0 +1,51 @@
+{
+    "batch-confirm\/rabbit-rs": {
+        "name": "rabbit-rs",
+        "safety": "safe",
+        "reconnects": 0,
+        "stall_recoveries": 0,
+        "publish": {
+            "avg_time": 0.3128278017044067,
+            "min_time": 0.2833590507507324,
+            "max_time": 0.3973958492279053,
+            "avg_rate": 32220.961171632138,
+            "min_rate": 25163.825992216218,
+            "max_rate": 35290.91438408608,
+            "p99": 320.34045000000003
+        },
+        "consume": {
+            "avg_time": 0.2716549873352051,
+            "min_time": 0.22414302825927734,
+            "max_time": 0.3518970012664795,
+            "avg_rate": 37788.423405075526,
+            "min_rate": 28417.40612738937,
+            "max_rate": 44614.37001927405,
+            "p50": 289.9184585,
+            "p95": 313.737896,
+            "p99": 320.34045000000003,
+            "losses": 0,
+            "duplicates": 0
+        },
+        "config": {
+            "rabbitmq": {
+                "host": "127.0.0.1",
+                "port": 5672,
+                "vhost": "\/",
+                "user": "***"
+            },
+            "message_count": 10000,
+            "rounds": 10,
+            "warmup_rounds": 1,
+            "payload_bytes": 256
+        },
+        "meta": {
+            "php": "8.5.6",
+            "sapi": "cli",
+            "os": "Darwin 25.6.0",
+            "extensions": {
+                "rabbit_rs": "0.3.5",
+                "amqp": false
+            }
+        }
+    }
+}
