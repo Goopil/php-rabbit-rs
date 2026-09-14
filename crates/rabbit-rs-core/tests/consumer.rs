@@ -2671,7 +2671,7 @@ async fn prefetch_stats_reports_fixed_and_adaptive_state() {
 }
 
 /// The controller's window adjustment must actually reach the broker for the
-/// running consumer: RabbitMQ applies per-consumer qos only to consumers
+/// running consumer: `RabbitMQ` applies per-consumer qos only to consumers
 /// created after the call (and quorum queues reject global qos), so the pump
 /// cancels the tag, drains the in-flight stream, applies the new window and
 /// re-consumes. Deliveries pushed after the resize must flow without a
@@ -2719,7 +2719,7 @@ async fn adaptive_adjustment_cancels_and_reconsumes_with_the_new_window() {
         .iter()
         .filter(|op| matches!(op, TransportOperation::Cancel { .. }))
         .count();
-    let consumes = operations
+    let consume_ops = operations
         .iter()
         .filter(|op| matches!(op, TransportOperation::Consume(_)))
         .count();
@@ -2731,7 +2731,7 @@ async fn adaptive_adjustment_cancels_and_reconsumes_with_the_new_window() {
         })
         .collect();
     assert_eq!(cancels, 1, "exactly one deliberate cancel");
-    assert_eq!(consumes, 2, "initial subscribe plus re-consume");
+    assert_eq!(consume_ops, 2, "initial subscribe plus re-consume");
     assert_eq!(qos_values[0], 16, "initial window");
     assert!(qos_values[1] > 16, "resized window grows: {qos_values:?}");
 
