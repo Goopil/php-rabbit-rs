@@ -440,6 +440,10 @@ The job may be executed twice. This is expected and why jobs must be idempotent.
 
 Closing a consumer (or its pool) flushes pending and queued acknowledgements to the broker within a bounded 500 ms budget before the channels close; settlements still unacknowledged after the budget are abandoned to redelivery, preserving at-least-once.
 
+### Oversized deliveries
+
+Deliveries whose size alone exceeds `max_buffered_bytes` are settled terminally using the poison policy: `basic.reject(requeue=false)` toward the dead-letter exchange when one is configured, otherwise an explicit acknowledge with a typed settlement error. In `no_ack` mode the broker has already auto-acked the delivery at hand-off, so no wire settlement is issued for it — a wire ack or reject would hit an unknown delivery tag (`PRECONDITION_FAILED` 406), close the channel, and redeliver the same message in a churn loop; the terminal outcome is recorded as the typed settlement error only. They are never requeued and never parked indefinitely. Operators should align the broker's `max_message_size` with consumer `max_buffered_bytes` so oversized payloads are rejected at publish time; the consumer-side terminal path is the last line of defense.
+
 ### Replay buffer
 
 When a connection drops before a publish is confirmed, the state is ambiguous — the broker may or may not have received the message. Rabbit RS handles this by:

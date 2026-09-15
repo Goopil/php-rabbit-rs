@@ -1,0 +1,39 @@
+{
+  "generated": "2026-09-14",
+  "session": "fresh lab (lab-down -v + lab-up with-plugin), release cdylib rabbit_rs (PR #302 branch, rebased on main dff4ec3 + #301/#303/#304), PHP 8.5.6, macOS Apple Silicon",
+  "protocol": "3 interleaved passes; transport 10k msgs x 10 rounds (+1 warmup) per run; rabbit-rs/amqplib alternated within each pass",
+  "transport": {
+    "batch-confirm/rabbit-rs": {
+      "publish_median_rate": 32221,
+      "publish_min_max": [30831, 34139],
+      "consume_median_rate": 39359,
+      "consume_min_max": [37788, 42327],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "batch-confirm/amqplib": {
+      "publish_median_rate": 43811,
+      "publish_min_max": [41560, 44178],
+      "consume_median_rate": 29310,
+      "consume_min_max": [28500, 29617],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "laravel-worker/rabbit-rs": {
+      "publish_median_rate": 179981,
+      "publish_min_max": [169379, 181860],
+      "consume_median_rate": 17207,
+      "consume_min_max": [14715, 23328],
+      "losses": 0,
+      "duplicates": 0
+    },
+    "laravel-worker/amqplib": {
+      "publish_median_rate": 87379,
+      "publish_min_max": [84527, 87780],
+      "consume_median_rate": 2156,
+      "consume_min_max": [2001, 2372],
+      "losses": 0,
+      "duplicates": 0
+    }
+  }
+}

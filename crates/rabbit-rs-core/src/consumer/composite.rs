@@ -15,7 +15,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use super::{
     ConsumerError, ConsumerErrorKind, Delivery, DeliveryTokenInner, PrefetchStat, SettlementError,
     SettlementErrorKind,
-    actor::ConsumerCommand,
+    actor::ControlCommand,
     set::{ConsumerSetHandle, map_try_send_error},
 };
 use crate::metrics::MetricsSnapshot;
@@ -174,9 +174,9 @@ impl ConsumerHandle {
         &self,
         token: std::sync::Arc<DeliveryTokenInner>,
     ) -> Result<(), SettlementErrorKind> {
-        let commands = token.commands.clone();
-        commands
-            .try_send(ConsumerCommand::SettleThrough {
+        let control = token.control.clone();
+        control
+            .try_send(ControlCommand::SettleThrough {
                 // Measured embedder-side (pop stamp -> now): the adaptive
                 // controller's sample must not absorb actor-internal queueing.
                 job_latency: token.controller_latency(),

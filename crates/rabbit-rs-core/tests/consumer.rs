@@ -1162,6 +1162,301 @@ async fn no_ack_flood_is_bounded_and_every_delivery_still_arrives() {
     consumer.close().await.expect("close");
 }
 
+/// Regression (audit 2026-09-14 #1): when `pending_incoming` is saturated,
+/// the command channel must stay drained — a PHP settlement must still reach
+/// the wire and reopen the gate. Before the control-channel fix, the gated
+/// `receiver.recv()` arm starves Settle commands and the actor deadlocks.
+#[tokio::test(start_paused = true)]
+async fn settle_progresses_while_pending_incoming_is_saturated() {
+    let transport = MockTransport::default();
+    let mut sub = subscription(&transport, "sat", connection_key("sat", "/"), 1).await;
+    // Budget holds exactly one payload: after the first delivery dispatches,
+    // every further delivery is over-budget and lands in `pending_incoming`.
+    sub = sub.max_buffered_bytes(7);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, b"payload")));
+    let_sources_fill().await;
+    let held = consumer.next().await.expect("first delivery dispatched");
+    assert_eq!(held.delivery_tag(), 1);
+
+    // Saturate `pending_incoming` (capacity = max(256, total prefetch)) with
+    // over-budget deliveries so the incoming gate closes.
+    for tag in 2..=512u64 {
+        transport.push_delivery(Ok(delivery(tag, b"payload")));
+    }
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+    // Pin the precondition: the settle phase below is only meaningful if
+    // saturation actually happened.
+    let snapshot = consumer.metrics_snapshot();
+    assert!(
+        snapshot.backpressure_total > 0,
+        "pending_incoming must be saturated (backpressure recorded) before settling"
+    );
+
+    // The embedder settles the held delivery. This must reach the wire even
+    // though the incoming gate is closed.
+    held.ack().await.expect("settlement accepted");
+
+    let mut acked = false;
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        acked = transport.operations().iter().any(|op| {
+            matches!(
+                op,
+                TransportOperation::Ack {
+                    delivery_tag: 1,
+                    ..
+                }
+            )
+        });
+        if acked {
+            break;
+        }
+    }
+    assert!(
+        acked,
+        "settlement must reach the wire while pending_incoming is saturated"
+    );
+
+    // Liveness: freeing the budget must make flooded deliveries dispatchable.
+    let mut dispatched = 0;
+    for _ in 0..2_000 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        dispatched = consumer.metrics_snapshot().deliveries_total;
+        if dispatched > 1 {
+            break;
+        }
+    }
+    assert!(
+        dispatched > 1,
+        "drained budget must reopen the gate and dispatch flooded deliveries"
+    );
+
+    consumer.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #2): a delivery whose size alone exceeds
+/// `max_buffered_bytes` can never satisfy the capacity predicate; it must be
+/// settled terminally (poison contract) instead of blocking the shared
+/// `pending_incoming` deque head-of-line forever.
+#[tokio::test(start_paused = true)]
+async fn oversized_message_is_settled_terminally_and_never_blocks_the_pipeline() {
+    const LARGE: &[u8] = b"0123456789abcdef"; // 16 bytes > 8-byte budget
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let mut sub = subscription(&transport, "big", connection_key("big", "/"), 4).await;
+    sub = sub.max_buffered_bytes(8);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    // Hold a small delivery first so the oversized settlement happens while
+    // `buffered_bytes` is non-zero: the count-then-release accounting must
+    // leave the budget intact for subsequent deliveries.
+    transport.push_delivery(Ok(delivery(2, b"tiny")));
+    let_sources_fill().await;
+    let held = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 2 dispatches")
+        .expect("delivery 2");
+    assert_eq!(held.delivery_tag(), 2);
+
+    transport.push_delivery(Ok(delivery(1, LARGE))); // oversized
+    transport.push_delivery(Ok(delivery(3, b"tiny")));
+    let_sources_fill().await;
+
+    let d3 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 3 dispatches (no head-of-line blocking)")
+        .expect("delivery 3");
+    assert_eq!(d3.delivery_tag(), 3);
+
+    // No dead-letter target in the default helper config: the documented
+    // ack-and-log policy applies — an explicit acknowledge on the wire.
+    let mut acked = false;
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        acked = transport.operations().iter().any(|op| {
+            matches!(
+                op,
+                TransportOperation::Ack {
+                    delivery_tag: 1,
+                    ..
+                }
+            )
+        });
+        if acked {
+            break;
+        }
+    }
+    assert!(
+        acked,
+        "oversized delivery must be acknowledged terminally, never parked"
+    );
+
+    // The embedder observes a typed settlement error.
+    let errors = consumer.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("exceeds max_buffered_bytes")),
+        "oversized settlement must surface a typed error, got {errors:?}"
+    );
+
+    // Byte accounting invariant: the embedder still holds two tiny deliveries
+    // (4 bytes each = 8 = the whole budget). A fourth tiny delivery must
+    // therefore be parked as backpressure — if the oversized settlement had
+    // corrupted the budget downward, it would flow instead.
+    transport.push_delivery(Ok(delivery(4, b"tiny")));
+    let_sources_fill().await;
+    let snapshot = consumer.metrics_snapshot();
+    assert_eq!(
+        snapshot.backpressure_total, 1,
+        "held bytes must stay within the budget after oversized settlement"
+    );
+
+    consumer.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #2, dead-letter variant): with a dead-letter
+/// target configured, the oversized delivery is rejected with `requeue=false`
+/// so the broker routes it to the DLX — mirroring `settle_poison`'s policy.
+#[tokio::test(start_paused = true)]
+async fn oversized_message_with_dead_letter_target_is_rejected_without_requeue() {
+    const LARGE: &[u8] = b"0123456789abcdef"; // 16 bytes > 8-byte budget
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let sub = subscription(&transport, "bigdlx", connection_key("bigdlx", "/"), 4)
+        .await
+        .max_buffered_bytes(8)
+        .dead_letter(true);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, LARGE))); // oversized
+    transport.push_delivery(Ok(delivery(2, b"tiny")));
+    transport.push_delivery(Ok(delivery(3, b"tiny")));
+    let_sources_fill().await;
+
+    let d2 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 2 dispatches (no head-of-line blocking)")
+        .expect("delivery 2");
+    assert_eq!(d2.delivery_tag(), 2);
+
+    let mut rejected = false;
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+        rejected = transport.operations().iter().any(|op| {
+            matches!(
+                op,
+                TransportOperation::Reject {
+                    delivery_tag: 1,
+                    requeue: false
+                }
+            )
+        });
+        if rejected {
+            break;
+        }
+    }
+    assert!(
+        rejected,
+        "oversized delivery must be rejected with requeue=false toward the DLX"
+    );
+
+    let errors = consumer.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("exceeds max_buffered_bytes")),
+        "oversized settlement must surface a typed error, got {errors:?}"
+    );
+
+    consumer.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #6): in `no_ack` mode the broker auto-acks at
+/// delivery, so any wire `basic_ack`/`basic.reject` for such a tag hits an
+/// unknown delivery tag — `PRECONDITION_FAILED` (406) closes the channel and
+/// the broker redelivers the same oversized message in a deterministic churn
+/// loop. The oversized terminal path must therefore skip the wire settlement
+/// entirely and surface only the typed error; subsequent deliveries keep
+/// flowing on a healthy channel.
+#[tokio::test(start_paused = true)]
+async fn oversized_delivery_in_no_ack_mode_never_touches_the_wire() {
+    const LARGE: &[u8] = b"0123456789abcdef"; // 16 bytes > 8-byte budget
+    let transport = MockTransport::default();
+    let mut sub = subscription(&transport, "bigack", connection_key("bigack", "/"), 4).await;
+    sub = sub.early_ack(true).no_ack(true).max_buffered_bytes(8);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, LARGE))); // oversized
+    transport.push_delivery(Ok(delivery(2, b"tiny")));
+    transport.push_delivery(Ok(delivery(3, b"tiny")));
+    let_sources_fill().await;
+
+    let d2 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 2 dispatches (no head-of-line blocking)")
+        .expect("delivery 2");
+    assert_eq!(d2.delivery_tag(), 2);
+
+    // Let the oversized settlement path run to completion.
+    for _ in 0..500 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+
+    // The broker already auto-acked the delivery: zero wire settlement for
+    // the oversized tag.
+    let wire_settlements = transport
+        .operations()
+        .iter()
+        .filter(|op| {
+            matches!(
+                op,
+                TransportOperation::Ack {
+                    delivery_tag: 1,
+                    ..
+                } | TransportOperation::Reject {
+                    delivery_tag: 1,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        wire_settlements, 0,
+        "no_ack oversized settlement must not ack or reject on the wire (406 churn loop)"
+    );
+
+    // The terminal outcome is still surfaced as the typed settlement error.
+    let errors = consumer.drain_errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("exceeds max_buffered_bytes")),
+        "oversized settlement must surface a typed error, got {errors:?}"
+    );
+
+    // The channel stays healthy: subsequent small deliveries still dispatch.
+    let d3 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("small delivery 3 dispatches after the oversized settlement")
+        .expect("delivery 3");
+    assert_eq!(d3.delivery_tag(), 3);
+
+    consumer.close().await.expect("close");
+}
+
 /// At-least-once delivery permits duplicates, but they must remain measurable:
 /// a delivery that the broker flags as redelivered is counted exactly once as
 /// a duplicate when it is dispatched to the caller.
@@ -1531,6 +1826,62 @@ async fn early_ack_acks_before_dispatch_to_buffer() {
         .filter(|op| matches!(op, TransportOperation::Ack { .. }))
         .collect();
     assert_eq!(acks.len(), 1, "delivery should have been auto-acked");
+
+    consumer.close().await.expect("close");
+}
+
+/// Regression (audit 2026-09-14 #3): in `early_ack` mode the network ack is
+/// spawned before the PHP handoff. If the handoff fails, the delivery is
+/// re-pushed and re-dispatched — the same tag must NOT be acked on the wire a
+/// second time (`RabbitMQ` answers the duplicate with `PRECONDITION_FAILED` /
+/// 406 and closes the channel).
+#[tokio::test(start_paused = true)]
+async fn early_ack_fires_at_most_once_per_delivery_tag_across_redispatches() {
+    let transport = MockTransport::default();
+    // Prefetch 1 sizes the embedder buffer at `total_prefetch × 2` = 2: tags 1
+    // and 2 fill it, tag 3's handoff fails and the delivery is re-pushed, and
+    // tag 4's arrival re-runs dispatch over the re-pushed tag 3. No `next()`
+    // call: the buffer stays saturated for the whole test.
+    let mut sub = subscription(&transport, "once", connection_key("once", "/"), 1).await;
+    sub = sub.early_ack(true);
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    transport.push_delivery(Ok(delivery(3, b"msg3")));
+    transport.push_delivery(Ok(delivery(4, b"msg4")));
+
+    let_sources_fill().await;
+    for _ in 0..8 {
+        tokio::time::advance(Duration::from_millis(2)).await;
+    }
+
+    // Pin the scenario precondition: the embedder buffer is exactly
+    // `total_prefetch × BUFFER_CAPACITY_MULTIPLIER` = 2, so tags 1 and 2 hand
+    // off, tag 3's handoff fails and the delivery is re-dispatched. If this
+    // count drifts (e.g. the multiplier grows), tag 3 is simply handed off
+    // and the at-most-once assertions below pass vacuously.
+    assert_eq!(
+        consumer.metrics_snapshot().deliveries_total,
+        2,
+        "buffer must saturate at 2 handoffs; tag 3 must have failed its handoff"
+    );
+
+    let ops = transport.operations();
+    for tag in 1..=3 {
+        let ack_count = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    TransportOperation::Ack { delivery_tag, .. } if *delivery_tag == tag
+                )
+            })
+            .count();
+        assert_eq!(ack_count, 1, "tag {tag} must be acked exactly once");
+    }
 
     consumer.close().await.expect("close");
 }

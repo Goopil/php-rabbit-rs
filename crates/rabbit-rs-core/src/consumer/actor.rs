@@ -77,6 +77,17 @@ pub(crate) enum ConsumerCommand {
         subscription: SubscriptionId,
         result: TransportResult<TransportDelivery>,
     },
+}
+
+/// Control-plane commands. These are never gated by backpressure: they are
+/// what frees the byte budget and what the embedder uses to observe and stop
+/// the consumer. They ride a dedicated channel so a saturated
+/// `pending_incoming` cannot starve them (audit 2026-09-14 #1, same lesson as
+/// the `close_rx` watch channel).
+///
+/// Liveness invariant: every control command accepted by the embedder is
+/// eventually consumed, regardless of delivery backpressure.
+pub(crate) enum ControlCommand {
     Settle {
         token: Arc<DeliveryTokenInner>,
         settlement: Settlement,
@@ -118,6 +129,21 @@ struct ActorState {
     buffered_bytes: HashMap<SubscriptionId, u64>,
     max_buffered_bytes: HashMap<SubscriptionId, u64>,
     channel_ledgers: HashMap<ChannelKey, ChannelLedger>,
+    /// Delivery tags early-acked on the wire, per channel, in dispatch order.
+    /// Bounded: a re-dispatch of an early-acked delivery only happens while
+    /// the delivery is still held in actor memory (`self.buffers` re-push), so
+    /// a ring sized to the in-flight bound (`pending_capacity`, total
+    /// prefetch) is always sufficient. The real sufficiency proof is the
+    /// shared `buffer_tx` coupling: a re-dispatchable tag only exists while
+    /// the dispatch loop front is stuck on a failed handoff, which requires a
+    /// full `buffer_tx`, and a full `buffer_tx` blocks every new same-channel
+    /// ack from entering the ring. Guards against a second `basic_ack`
+    /// for the same tag — `RabbitMQ` answers a duplicate ack with
+    /// `PRECONDITION_FAILED` (406) and closes the channel (audit 2026-09-14 #3).
+    /// Same lifecycle as `channel_ledgers`: entries live for the actor's
+    /// lifetime; recovery spawns a fresh actor with fresh state.
+    early_acked_tags: HashMap<ChannelKey, VecDeque<u64>>,
+    early_acked_capacity: usize,
     /// Over-budget deliveries waiting for the byte budget to free up. Count
     /// bounded by `pending_capacity`: in `no_ack` mode the broker auto-acks,
     /// so broker `QoS` does not bound delivery and this deque would otherwise
@@ -143,7 +169,7 @@ struct ActorState {
     flume_error_items: usize,
     source_errors: VecDeque<ConsumerError>,
     scheduler: WeightedFairScheduler,
-    commands: mpsc::Sender<ConsumerCommand>,
+    control_tx: mpsc::Sender<ControlCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
     error_rx: flume::Receiver<SettlementError>,
@@ -155,7 +181,7 @@ impl ActorState {
     #[allow(clippy::too_many_arguments)]
     fn new(
         subscriptions: Vec<Subscription>,
-        commands: mpsc::Sender<ConsumerCommand>,
+        control_tx: mpsc::Sender<ControlCommand>,
         buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
         error_tx: flume::Sender<SettlementError>,
         error_rx: flume::Receiver<SettlementError>,
@@ -170,6 +196,11 @@ impl ActorState {
         let mut buffered_bytes = HashMap::new();
         let mut max_buffered_bytes = HashMap::new();
         let mut channel_ledgers = HashMap::new();
+        let total_prefetch: usize = subscriptions
+            .iter()
+            .map(|subscription| usize::from(subscription.prefetch.ceiling()))
+            .sum();
+        let early_acked_capacity = pending_capacity.max(total_prefetch);
         for subscription in subscriptions {
             scheduler.register(subscription.id.clone(), subscription.policy);
             buffers.insert(subscription.id.clone(), VecDeque::new());
@@ -220,6 +251,8 @@ impl ActorState {
             buffered_bytes,
             max_buffered_bytes,
             channel_ledgers,
+            early_acked_tags: HashMap::new(),
+            early_acked_capacity,
             pending_incoming: VecDeque::new(),
             pending_capacity,
             pending_settlements: futures_util::stream::FuturesUnordered::new(),
@@ -231,7 +264,7 @@ impl ActorState {
             flume_error_items: 0,
             source_errors: VecDeque::new(),
             scheduler,
-            commands,
+            control_tx,
             buffer_tx,
             error_tx,
             error_rx,
@@ -244,6 +277,26 @@ impl ActorState {
         self.subscriptions
             .get(subscription)
             .map(|runtime| (subscription.clone(), runtime.channel_id, runtime.generation))
+    }
+
+    /// Whether `tag` was already early-acked on the wire for this channel.
+    /// Linear scan over a bounded ring.
+    fn early_acked(&self, tag: u64, key: &ChannelKey) -> bool {
+        self.early_acked_tags
+            .get(key)
+            .is_some_and(|ring| ring.contains(&tag))
+    }
+
+    /// Records `tag` as early-acked on the wire. Bounded ring: the oldest
+    /// entry is dropped at capacity — safe because a re-dispatch of an
+    /// early-acked delivery only happens while the delivery is still held in
+    /// actor memory, so the ring never needs to outlive its oldest entry.
+    fn remember_early_acked(&mut self, tag: u64, key: ChannelKey) {
+        let ring = self.early_acked_tags.entry(key).or_default();
+        if ring.len() >= self.early_acked_capacity {
+            ring.pop_front();
+        }
+        ring.push_back(tag);
     }
 
     fn has_adaptive_prefetch(&self) -> bool {
@@ -372,6 +425,7 @@ impl ActorState {
                         payload_bytes,
                         &error.to_string(),
                         Duration::ZERO,
+                        Some((connection_key, generation, channel_id)),
                     );
                     continue;
                 }
@@ -381,10 +435,17 @@ impl ActorState {
             if early_ack {
                 let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
                 if !no_ack {
+                    // At most one wire ack per tag across re-dispatches: the
+                    // re-pushed delivery must not be acked again (channel 406,
+                    // audit 2026-09-14 #3).
                     let tag = delivery.delivery_tag;
-                    tokio::spawn(async move {
-                        let _ = channel.ack(tag, false).await;
-                    });
+                    let channel_key = (subscription.clone(), channel_id, generation);
+                    if !self.early_acked(tag, &channel_key) {
+                        self.remember_early_acked(tag, channel_key);
+                        tokio::spawn(async move {
+                            let _ = channel.ack(tag, false).await;
+                        });
+                    }
                 }
                 let item = Delivery::new_auto_acked(
                     DeliveryIdentity {
@@ -438,7 +499,7 @@ impl ActorState {
                 delivery.payload.clone(),
                 headers.clone(),
                 attempts,
-                self.commands.clone(),
+                self.control_tx.clone(),
             ));
             if let Some(channel_key) = self.channel_key_for(&subscription)
                 && let Some(ledger) = self.channel_ledgers.get_mut(&channel_key)
@@ -504,6 +565,22 @@ impl ActorState {
     ///
     /// The channel operation is fire-and-forget: a transient transport
     /// failure redelivers the message, which re-enters this path and retries.
+    ///
+    /// The channel operation is fenced: it only fires when the subscription
+    /// runtime still matches the generation identity the delivery arrived
+    /// under (`Some`), passed by the caller from where the delivery was
+    /// captured. After a reconnection the same numeric tag on the live
+    /// channel belongs to a different delivery, so a stale settlement is
+    /// skipped and the broker redelivers (audit 2026-09-14 #5). A delivery
+    /// with no runtime identity (`None`) settles like an unknown
+    /// subscription: no wire operation, typed error still recorded.
+    ///
+    /// In `no_ack` mode the broker auto-acks at delivery, so the wire op is
+    /// skipped as well: any ack or reject for the tag would hit an unknown
+    /// delivery tag (`PRECONDITION_FAILED` 406), close the channel, and
+    /// redeliver the same message in a deterministic churn loop (audit
+    /// 2026-09-14 #6). The typed error and metrics still record the terminal
+    /// outcome.
     #[allow(clippy::too_many_arguments)]
     fn settle_poison(
         &mut self,
@@ -514,16 +591,26 @@ impl ActorState {
         payload_bytes: u64,
         detail: &str,
         settled_for: Duration,
+        token_identity: Option<(crate::pool::ConnectionKey, u64, u16)>,
     ) {
         let channel = self
             .subscriptions
             .get(subscription)
+            .filter(|runtime| {
+                !runtime.no_ack
+                    && token_identity.is_some_and(|(connection_key, generation, channel_id)| {
+                        runtime.connection_key == connection_key
+                            && runtime.generation == generation
+                            && runtime.channel_id == channel_id
+                    })
+            })
             .map(|runtime| Arc::clone(&runtime.channel));
         if let Some(channel) = channel {
             spawn_poison_settlement(channel, has_dead_letter, delivery_tag);
         }
-        // An unknown subscription has nothing to settle against the broker;
-        // the recorded error below still surfaces the poison condition.
+        // A stale generation or unknown subscription has nothing to settle
+        // against the broker; the recorded error below still surfaces the
+        // poison condition and the broker redelivers.
         self.record_poison_metrics(has_dead_letter, settled_for);
         if let Some(bytes) = self.buffered_bytes.get_mut(subscription) {
             *bytes = bytes.saturating_sub(payload_bytes);
@@ -541,6 +628,49 @@ impl ActorState {
         });
     }
 
+    /// Settles a delivery whose size alone exceeds the subscription's byte
+    /// budget. Reuses the poison contract: `reject(requeue=false)` toward the
+    /// dead-letter exchange when one is configured, otherwise an explicit
+    /// acknowledge recorded as a typed settlement error (`MaxAttempts` kind,
+    /// the oversized detail as discriminator). The delivery is parked in
+    /// `pending_incoming` without being counted in `buffered_bytes`, so it is
+    /// counted here before `settle_poison` releases it — keeping
+    /// `buffered_bytes` equal to the sum of held sizes.
+    fn settle_oversized(&mut self, subscription: &SubscriptionId, delivery: &TransportDelivery) {
+        let payload_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
+        // Count-then-release: `settle_poison` subtracts `payload_bytes` below,
+        // and the delivery was not yet counted in `buffered_bytes`.
+        if let Some(bytes) = self.buffered_bytes.get_mut(subscription) {
+            *bytes = bytes.saturating_add(payload_bytes);
+        }
+        let runtime = self.subscriptions.get(subscription);
+        let has_dead_letter = runtime.is_some_and(|runtime| runtime.has_dead_letter);
+        let message_id = delivery.message_id.clone().map_or_else(
+            || MessageId::new(delivery.delivery_tag.to_string()),
+            MessageId::new,
+        );
+        // The oversized delivery arrived through this runtime's pumps, so its
+        // identity is the runtime's own; `settle_poison` re-verifies it
+        // against the live runtime before any wire operation.
+        let token_identity = runtime.map(|runtime| {
+            (
+                runtime.connection_key,
+                runtime.generation,
+                runtime.channel_id,
+            )
+        });
+        self.settle_poison(
+            subscription,
+            has_dead_letter,
+            delivery.delivery_tag,
+            &message_id,
+            payload_bytes,
+            "message size exceeds max_buffered_bytes",
+            Duration::ZERO,
+            token_identity,
+        );
+    }
+
     fn record_poison_metrics(&mut self, has_dead_letter: bool, settled_for: Duration) {
         if has_dead_letter {
             self.metrics.record_reject(settled_for);
@@ -552,13 +682,24 @@ impl ActorState {
     fn drain_pending(&mut self) {
         while let Some((subscription, delivery)) = self.pending_incoming.front() {
             let delivery_bytes = u64::try_from(delivery.payload.len()).unwrap_or(u64::MAX);
-            let over_budget = if let Some(max) = self.max_buffered_bytes.get(subscription) {
+            let max = self.max_buffered_bytes.get(subscription).copied();
+            let over_budget = max.is_some_and(|max| {
                 let current = self.buffered_bytes.get(subscription).copied().unwrap_or(0);
-                current.saturating_add(delivery_bytes) > *max
-            } else {
-                false
-            };
+                current.saturating_add(delivery_bytes) > max
+            });
             if over_budget {
+                if delivery_bytes > max.unwrap_or(u64::MAX) {
+                    // Defensive: an oversized delivery must already have been
+                    // settled at arrival in `handle_incoming`. If it ever
+                    // reaches the head of the deque anyway, settle it
+                    // terminally instead of blocking the pipeline forever.
+                    let (subscription, delivery) = self
+                        .pending_incoming
+                        .pop_front()
+                        .expect("front checked above");
+                    self.settle_oversized(&subscription, &delivery);
+                    continue;
+                }
                 break;
             }
             let (subscription, delivery) = self
@@ -580,17 +721,21 @@ impl ActorState {
         self.dispatch();
     }
 
-    /// True when nothing dispatchable remains: no backpressured incoming, no
-    /// buffered deliveries, and the hand-off flume holds only source-error
-    /// items (which never produce acknowledgements). The embedder has (or is
-    /// about to run out of) work, so holding recorded acks back no longer
-    /// buys coalescing — flushing now frees broker credit exactly when the
-    /// next arrivals need it, and lets the acks recorded while the stock was
-    /// stocked land as one cumulative wire ack.
+    /// True when nothing dispatchable remains: no buffered deliveries, and
+    /// the hand-off flume holds only source-error items (which never produce
+    /// acknowledgements). The embedder has (or is about to run out of) work,
+    /// so holding recorded acks back no longer buys coalescing — flushing now
+    /// frees broker credit exactly when the next arrivals need it, and lets
+    /// the acks recorded while the stock was stocked land as one cumulative
+    /// wire ack.
+    ///
+    /// `pending_incoming` is deliberately NOT part of the stock: those
+    /// deliveries cannot produce acknowledgements until they dispatch, and
+    /// dispatching requires the byte budget that only this flush's wire ack
+    /// frees. Waiting on them is circular and would hold recorded acks
+    /// hostage behind a saturated gate — the control-starvation deadlock
+    /// shape (audit 2026-09-14 #1) reintroduced through the flush deferral.
     fn dispatch_stock_drained(&self) -> bool {
-        if !self.pending_incoming.is_empty() {
-            return false;
-        }
         if self.buffers.values().any(|buffer| !buffer.is_empty()) {
             return false;
         }
@@ -602,8 +747,9 @@ impl ActorState {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_actor(
     subscriptions: Vec<Subscription>,
-    mut receiver: mpsc::Receiver<ConsumerCommand>,
-    commands: mpsc::Sender<ConsumerCommand>,
+    mut incoming_rx: mpsc::Receiver<ConsumerCommand>,
+    mut control_rx: mpsc::Receiver<ControlCommand>,
+    control_tx: mpsc::Sender<ControlCommand>,
     buffer_tx: flume::Sender<Result<Delivery, ConsumerError>>,
     error_tx: flume::Sender<SettlementError>,
     error_rx: flume::Receiver<SettlementError>,
@@ -615,7 +761,7 @@ pub(crate) async fn run_actor(
 ) {
     let mut state = ActorState::new(
         subscriptions,
-        commands,
+        control_tx,
         buffer_tx,
         error_tx,
         error_rx,
@@ -630,30 +776,46 @@ pub(crate) async fn run_actor(
     let has_adaptive = state.has_adaptive_prefetch();
     let mut prefetch_interval = tokio::time::interval(PREFETCH_TICK);
     prefetch_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // The actor holds a control sender (cloned into delivery tokens), so the
+    // control channel cannot close while it runs; the flag only guards the
+    // defensive `None` path so a closed arm can never spin under `biased`.
+    // Same guard for the incoming channel: its senders (pumps) can all end
+    // while the set is still open, and the actor must keep serving control
+    // commands and the close signal instead of exiting past `close_set`.
+    let mut control_open = true;
+    let mut incoming_open = true;
     loop {
         // Drain every ready command before flushing acks: settlements
         // recorded in one burst must coalesce into one wire ack, not leak
-        // out one per select pass. Same backpressure gate as the select arm.
-        while state.pending_incoming.len() < state.pending_capacity {
-            match receiver.try_recv() {
-                Ok(ConsumerCommand::Incoming {
-                    subscription,
-                    result,
-                }) => {
-                    handle_incoming(&mut state, subscription, result);
-                }
-                Ok(ConsumerCommand::Settle {
+        // out one per select pass. Control commands drain ungated — they
+        // free the byte budget and must progress even when `pending_incoming`
+        // is saturated (audit 2026-09-14 #1); the incoming drain keeps the
+        // same backpressure gate as its select arm.
+        loop {
+            match control_rx.try_recv() {
+                Ok(ControlCommand::Settle {
                     token,
                     settlement,
                     job_latency,
                 }) => {
                     handle_settle(&mut state, token, settlement, job_latency);
                 }
-                Ok(ConsumerCommand::SettleThrough { token, job_latency }) => {
+                Ok(ControlCommand::SettleThrough { token, job_latency }) => {
                     handle_settle_through(&mut state, token, job_latency);
                 }
-                Ok(ConsumerCommand::GetPrefetchStats { completed }) => {
+                Ok(ControlCommand::GetPrefetchStats { completed }) => {
                     let _ = completed.send(state.prefetch_stats());
+                }
+                Err(_) => break,
+            }
+        }
+        while state.pending_incoming.len() < state.pending_capacity {
+            match incoming_rx.try_recv() {
+                Ok(ConsumerCommand::Incoming {
+                    subscription,
+                    result,
+                }) => {
+                    handle_incoming(&mut state, subscription, result);
                 }
                 Err(_) => break,
             }
@@ -666,28 +828,30 @@ pub(crate) async fn run_actor(
             flush_acked(&mut state);
         }
         tokio::select! {
-            command = receiver.recv(),
-                if state.pending_incoming.len() < state.pending_capacity =>
+            biased;
+            command = control_rx.recv(), if control_open => match command {
+                Some(ControlCommand::Settle {
+                    token,
+                    settlement,
+                    job_latency,
+                }) => handle_settle(&mut state, token, settlement, job_latency),
+                Some(ControlCommand::SettleThrough { token, job_latency }) => {
+                    handle_settle_through(&mut state, token, job_latency);
+                }
+                Some(ControlCommand::GetPrefetchStats { completed }) => {
+                    let _ = completed.send(state.prefetch_stats());
+                }
+                None => control_open = false,
+            },
+            command = incoming_rx.recv(),
+                if incoming_open
+                    && state.pending_incoming.len() < state.pending_capacity =>
             match command {
                 Some(ConsumerCommand::Incoming {
                     subscription,
                     result,
                 }) => handle_incoming(&mut state, subscription, result),
-                Some(ConsumerCommand::Settle {
-                    token,
-                    settlement,
-                    job_latency,
-                }) => handle_settle(&mut state, token, settlement, job_latency),
-                Some(ConsumerCommand::SettleThrough {
-                    token,
-                    job_latency,
-                }) => {
-                    handle_settle_through(&mut state, token, job_latency);
-                }
-                Some(ConsumerCommand::GetPrefetchStats { completed }) => {
-                    let _ = completed.send(state.prefetch_stats());
-                }
-                None => return,
+                None => incoming_open = false,
             },
             _ = close_rx.changed() => {
                 // Close signal from `close()` or `Drop`: independent of the
@@ -800,16 +964,39 @@ pub(crate) async fn run_actor(
                         ) =>
                     {
                         let subscription = settlement_result.token.subscription.clone();
-                        let runtime = state
-                            .subscriptions
-                            .get(&subscription)
-                            .map(|runtime| (Arc::clone(&runtime.channel), runtime.has_dead_letter));
-                        if let Some((channel, has_dead_letter)) = runtime {
-                            let delivery_tag = settlement_result.token.delivery_tag;
-                            let terminal =
-                                spawn_poison_settlement(channel, has_dead_letter, delivery_tag);
-                            let settled_for = settlement_result.token.reserved_at.elapsed();
-                            if terminal == DeliveryState::Acked {
+                        let runtime = state.subscriptions.get(&subscription).map(|runtime| {
+                            (
+                                Arc::clone(&runtime.channel),
+                                runtime.has_dead_letter,
+                                runtime.connection_key,
+                                runtime.generation,
+                                runtime.channel_id,
+                            )
+                        });
+                        if let Some(
+                            (channel, has_dead_letter, connection_key, generation, channel_id),
+                        ) = runtime
+                        {
+                            let token = &settlement_result.token;
+                            let delivery_tag = token.delivery_tag;
+                            // Generation fencing (audit 2026-09-14 #5): a token
+                            // from a superseded generation must never ack or
+                            // reject on the live channel — the same numeric tag
+                            // there belongs to a different delivery. Skip the
+                            // wire op; the broker redelivers and the typed
+                            // error below still surfaces the poison condition.
+                            let terminal = if connection_key == token.connection_key
+                                && generation == token.generation
+                                && channel_id == token.channel_id
+                            {
+                                spawn_poison_settlement(channel, has_dead_letter, delivery_tag)
+                            } else {
+                                DeliveryState::Lost
+                            };
+                            let settled_for = token.reserved_at.elapsed();
+                            if terminal == DeliveryState::Lost {
+                                state.record_poison_metrics(has_dead_letter, settled_for);
+                            } else if terminal == DeliveryState::Acked {
                                 state.metrics.record_ack(settled_for);
                             } else {
                                 state.metrics.record_reject(settled_for);
@@ -939,7 +1126,7 @@ pub(crate) async fn run_actor(
         }
     }
 
-    close_set(&mut state, &mut receiver).await;
+    close_set(&mut state, &mut control_rx).await;
 }
 
 /// Handles one incoming delivery command: ledger claim, byte-budget
@@ -967,17 +1154,24 @@ fn handle_incoming(
                         },
                     );
             }
-            let over_budget = if let Some(max) = state.max_buffered_bytes.get(&subscription) {
+            let max = state.max_buffered_bytes.get(&subscription).copied();
+            let over_budget = max.is_some_and(|max| {
                 let current = state
                     .buffered_bytes
                     .get(&subscription)
                     .copied()
                     .unwrap_or(0);
-                current.saturating_add(delivery_bytes) > *max
-            } else {
-                false
-            };
+                current.saturating_add(delivery_bytes) > max
+            });
             if over_budget {
+                if delivery_bytes > max.unwrap_or(u64::MAX) {
+                    // A delivery whose size alone exceeds the budget can never
+                    // satisfy the capacity predicate: settle it terminally via
+                    // the poison contract instead of parking it forever
+                    // (audit 2026-09-14 #2).
+                    state.settle_oversized(&subscription, &delivery);
+                    return;
+                }
                 state.pending_incoming.push_back((subscription, delivery));
                 state.metrics.record_backpressure();
             } else if state.pending_incoming.is_empty() {
@@ -1227,24 +1421,24 @@ const CLOSE_SETTLEMENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::
 /// exits must not silently drop its acknowledgements), closes every
 /// subscription channel (bounded by a deadline so a stalled broker cannot
 /// block close), and resolves any awaiting `close()` caller.
-async fn close_set(state: &mut ActorState, receiver: &mut mpsc::Receiver<ConsumerCommand>) {
-    // Sweep the command channel first: a settlement enqueued right before
+async fn close_set(state: &mut ActorState, control_rx: &mut mpsc::Receiver<ControlCommand>) {
+    // Sweep the control channel first: a settlement enqueued right before
     // close raced the actor's command loop and must not die with it.
     // Incoming deliveries are left for the broker to redeliver
     // (at-least-once); stats callers observe a closed error.
-    while let Ok(command) = receiver.try_recv() {
+    while let Ok(command) = control_rx.try_recv() {
         match command {
-            ConsumerCommand::Settle {
+            ControlCommand::Settle {
                 token,
                 settlement,
                 job_latency,
             } => {
                 handle_settle(state, token, settlement, job_latency);
             }
-            ConsumerCommand::SettleThrough { token, job_latency } => {
+            ControlCommand::SettleThrough { token, job_latency } => {
                 handle_settle_through(state, token, job_latency);
             }
-            ConsumerCommand::Incoming { .. } | ConsumerCommand::GetPrefetchStats { .. } => {}
+            ControlCommand::GetPrefetchStats { .. } => {}
         }
     }
     // Recorded acks join the bounded drain like any queued settlement.

@@ -11,7 +11,7 @@ use std::{
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use super::{SubscriptionId, actor::ConsumerCommand};
+use super::{SubscriptionId, actor::ControlCommand};
 use crate::pool::ConnectionKey;
 
 pub use crate::transport::Headers;
@@ -303,7 +303,7 @@ impl DeliveryToken {
             )
             .map_err(|_| SettlementErrorKind::AlreadySettled)?;
 
-        match self.inner.commands.try_send(ConsumerCommand::Settle {
+        match self.inner.control.try_send(ControlCommand::Settle {
             token: self.inner.clone(),
             settlement,
             // Measured embedder-side (pop stamp -> now): the adaptive
@@ -339,7 +339,9 @@ pub struct DeliveryTokenInner {
     pub(crate) headers: Arc<Headers>,
     pub(crate) attempts: u32,
     pub(crate) reserved_at: Instant,
-    pub(crate) commands: mpsc::Sender<ConsumerCommand>,
+    /// Control sender of the originating set actor: settlements ride the
+    /// never-gated control channel, not the delivery channel.
+    pub(crate) control: mpsc::Sender<ControlCommand>,
     pub(crate) state: AtomicU8,
     pub(crate) settling: AtomicBool,
     /// Wall-clock nanoseconds since [`POPPED_EPOCH`] at the moment the
@@ -369,7 +371,7 @@ pub(crate) struct DeliveryIdentity {
 
 impl DeliveryTokenInner {
     /// Creates a token in the given terminal-or-pending state: `Pending` for
-    /// live deliveries (settle commands route through `commands`), or
+    /// live deliveries (settle commands route through `control`), or
     /// `AutoAcked` for auto-acked deliveries — any settlement attempt then
     /// returns [`ConsumerErrorKind::AlreadySettled`] because the
     /// `Pending → Transitioning` compare-exchange in `settle` fails.
@@ -382,7 +384,7 @@ impl DeliveryTokenInner {
         headers: Arc<Headers>,
         attempts: u32,
         state: DeliveryState,
-        commands: mpsc::Sender<ConsumerCommand>,
+        control: mpsc::Sender<ControlCommand>,
     ) -> Self {
         Self {
             subscription: identity.subscription,
@@ -396,7 +398,7 @@ impl DeliveryTokenInner {
             headers,
             attempts,
             reserved_at: Instant::now(),
-            commands,
+            control,
             state: AtomicU8::new(state as u8),
             settling: AtomicBool::new(false),
             popped_at: AtomicU64::new(0),
@@ -436,7 +438,7 @@ impl DeliveryTokenInner {
         payload: Bytes,
         headers: Arc<Headers>,
         attempts: u32,
-        commands: mpsc::Sender<ConsumerCommand>,
+        control: mpsc::Sender<ControlCommand>,
     ) -> Self {
         Self::new(
             identity,
@@ -446,7 +448,7 @@ impl DeliveryTokenInner {
             headers,
             attempts,
             DeliveryState::Pending,
-            commands,
+            control,
         )
     }
 
