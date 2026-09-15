@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.3.6] - 2026-09-15
+
+### Added
+
+- The adaptive prefetch controller now actually reaches the broker (issue #300): RabbitMQ applies per-consumer `basic.qos` only to consumers created after the call and quorum queues reject the `global` variant, so window updates were silently acknowledged without ever changing the effective prefetch — the controller believed it had grown the window while the broker kept the initial one, capping quorum-queue throughput near the 128-message floor. The consumer set now publishes window changes on a per-subscription watch and each pump performs the universal cancel → drain in-flight → `set_qos` → re-consume sequence (in-flight deliveries stay ackable, nothing requeued or lost; the worker observes nothing). A failed resize (cancel / set_qos / re-consume) leaves the channel suspect and surfaces one terminal error so recovery re-spawns the set. Measured on a quorum queue: adaptive 128→2000 rides from ~20k to a 42-48k msg/s cruise (previously pinned at ~20-23k by the no-op), with zero losses and zero duplicates; window sizes beyond 2000 plateau identically, so 2000 stays the recommended ceiling.
+
+### Changed
+
+- The Laravel driver's default prefetch rises from 64 to 1000: quorum-queue workers measured ~19-20k → ~47k msg/s consume throughput on the worker path. The adaptive 250→2000 profile is documented in the published config as the recommended high-throughput opt-in (it requires acknowledgements; the compiler rejects it with `early_ack`/`no_ack`, which is why it is not the default).
+- lapin is re-landed at 4.11.0.
+
+### Fixed
+
+- A closed consumer set no longer serves its buffered deliveries (issue #248): an orphan served after recovery routed its settlement to the dead actor and failed terminally, leaking a bare closed error to the embedder instead of the recoverable pop-time closed error its retry contract handles. Every entry point (`try_next`, `next`, `try_next_batch`) now refuses a closed set so the broker redelivers the unserviced orphans on the next generation (at-least-once preserved).
+- The publisher actor's permanent-failure path now surfaces the coordinator's published reason instead of a generic failure.
+
+### Security
+
+- rustls is bumped to 0.23.45, clearing RUSTSEC-2026-0285 (TLS 1.3 handshake cross-protocol state confusion).
+
 ## [0.3.5] - 2026-09-14
 
 ### Fixed
