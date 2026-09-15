@@ -103,6 +103,10 @@ class RabbitRsDriver extends AbstractBenchmark
                 },
                 'safety' => $this->safetyMode(),
                 'confirm_timeout' => 30000,
+                // Overridable for flush-cadence A/B measurements (e.g.
+                // RABBIT_RS_BENCH_FLUSH_INTERVAL_MS=100); default 1 ms is the
+                // validated config default.
+                'flush_interval' => (int) (getenv('RABBIT_RS_BENCH_FLUSH_INTERVAL_MS') ?: 1),
             ],
         ];
 
