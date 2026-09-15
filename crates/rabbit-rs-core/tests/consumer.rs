@@ -2463,7 +2463,7 @@ async fn adaptive_prefetch_holds_when_hysteresis_band_not_crossed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
+async fn adaptive_prefetch_resize_failure_surfaces_a_terminal_error() {
     let transport = MockTransport::default();
     for tag in 1..=5 {
         transport.push_delivery(Ok(delivery(tag, b"job")));
@@ -2489,24 +2489,31 @@ async fn adaptive_prefetch_set_qos_failure_surfaces_and_actor_survives() {
         let_actor_process().await;
     }
     let_actor_process().await;
-    transport.push_consumer_result(Err(TransportError::connection("qos rejected")));
+
+    // The resize's first broker call (the deliberate cancel) fails.
+    transport.push_consumer_result(Err(TransportError::connection("cancel rejected")));
     tokio::time::advance(Duration::from_secs(1)).await;
     let_actor_process().await;
 
-    let errors = consumer.drain_errors();
+    // A failed resize leaves the subscription's channel suspect: the pump
+    // surfaces a terminal error on next() instead of parking the consumer
+    // with a stale window. Recovery re-spawns the set (covered by the
+    // recovery suite).
+    let error = tokio::time::timeout(Duration::from_secs(30), consumer.next())
+        .await
+        .expect("next() must not park forever on a failed resize")
+        .expect_err("resize failure must surface a terminal error");
+    assert_eq!(error.kind(), ConsumerErrorKind::Transport);
     assert!(
-        errors.iter().any(
-            |error| error.message.starts_with("adaptive prefetch set_qos(")
-                && error.message.contains("failed")
-        ),
-        "expected the set_qos failure in drain_errors, got {errors:?}"
+        error.to_string().contains("adaptive prefetch"),
+        "terminal error must identify the failed resize, got: {error}"
     );
 
-    // The actor keeps consuming and settling after the failed adjustment.
-    transport.push_delivery(Ok(delivery(6, b"job")));
-    let sixth = consumer.next().await.expect("delivery after failure");
-    sixth.ack().await.expect("ack after failure");
-    let_actor_process().await;
+    // The actor itself survives: the set handle still answers stats calls.
+    let stats = consumer.prefetch_stats().await.expect("stats");
+    assert_eq!(stats.len(), 1);
+
+    let _ = consumer.close().await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -2661,6 +2668,74 @@ async fn prefetch_stats_reports_fixed_and_adaptive_state() {
     assert_eq!(fixed.mode, "fixed");
     assert_eq!(fixed.current, 16);
     assert_eq!(fixed.ewma, Duration::ZERO);
+}
+
+/// The controller's window adjustment must actually reach the broker for the
+/// running consumer: `RabbitMQ` applies per-consumer qos only to consumers
+/// created after the call (and quorum queues reject global qos), so the pump
+/// cancels the tag, drains the in-flight stream, applies the new window and
+/// re-consumes. Deliveries pushed after the resize must flow without a
+/// terminal error (issue #300).
+#[tokio::test(start_paused = true)]
+async fn adaptive_adjustment_cancels_and_reconsumes_with_the_new_window() {
+    let transport = MockTransport::default();
+    for tag in 1..=3 {
+        transport.push_delivery(Ok(delivery(tag, b"job")));
+    }
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            helper::adaptive_subscription(&transport, "adaptive", connection_key("adaptive", "/"))
+                .await,
+        ],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let_sources_fill().await;
+
+    // Feed the controller three record-time samples through sequential acks.
+    for _ in 0..3 {
+        let delivery = consumer.next().await.expect("delivery");
+        delivery.ack().await.expect("ack");
+        let_actor_process().await;
+    }
+
+    // Fire the controller tick under paused time; the pump performs the
+    // resize: cancel, drain the old stream, set_qos, re-consume.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let_actor_process().await;
+    let_actor_process().await;
+    let_actor_process().await;
+
+    // Deliveries published after the resize must flow through the new stream
+    // without surfacing a terminal stream-ended error.
+    transport.push_delivery(Ok(delivery(4, b"job")));
+    let_sources_fill().await;
+    let post_resize = consumer.next().await.expect("post-resize delivery");
+    post_resize.ack().await.expect("ack");
+
+    let operations = transport.operations();
+    let cancels = operations
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Cancel { .. }))
+        .count();
+    let consume_ops = operations
+        .iter()
+        .filter(|op| matches!(op, TransportOperation::Consume(_)))
+        .count();
+    let qos_values: Vec<u16> = operations
+        .iter()
+        .filter_map(|op| match op {
+            TransportOperation::Qos { prefetch } => Some(*prefetch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cancels, 1, "exactly one deliberate cancel");
+    assert_eq!(consume_ops, 2, "initial subscribe plus re-consume");
+    assert_eq!(qos_values[0], 16, "initial window");
+    assert!(qos_values[1] > 16, "resized window grows: {qos_values:?}");
+
+    let _ = consumer.close().await;
 }
 
 // ---------------------------------------------------------------------------

@@ -609,25 +609,28 @@ async fn retired_consumer_set_refuses_its_buffered_deliveries_after_recovery() {
     // to the dead actor and fails terminally.
     assert_eq!(live.try_ack(), Err(SettlementErrorKind::Closed));
 
-    // Retire the parked generation-1 pump: the delivery it forwards cannot
-    // reach the closed set's actor, so its pump exits and the shared mock
-    // queue belongs to the next generation's stream.
-    transport.push_delivery(Ok(delivery(0, b"pump-retire")));
-    flush_tasks().await;
-
-    // Recovery re-establishes: a fresh handle on generation 2 delivers and
-    // settles normally, and never leaks the closed error.
+    // Retire the parked generation-1 pump and prove the fresh generation
+    // delivers and settles. Both generations compete on the shared mock
+    // queue and the delivery `Notify` makes no ordering guarantee, so the
+    // parked generation-1 pump may receive a pushed delivery before its
+    // forward to the closed actor fails: each push either feeds the fresh
+    // set or retires the parked pump, so pushing one delivery at a time
+    // converges without depending on the wakeup order.
     let fresh = coordinator.consumer("main").await.expect("fresh handle");
     assert_eq!(fresh.generation(), 2);
     assert!(!fresh.is_closed());
-    transport.push_delivery(Ok(delivery(4, b"after-recovery")));
-    wait_until_dispatched(&fresh, 4).await;
-    let fresh_delivery = tokio::time::timeout(Duration::from_secs(5), fresh.next())
-        .await
-        .expect("fresh handle must deliver")
-        .expect("fresh handle must deliver after recovery");
-    assert_eq!(fresh_delivery.delivery_tag(), 4);
-    fresh_delivery
+
+    let mut delivered = None;
+    for tag in 0..=3u64 {
+        transport.push_delivery(Ok(delivery(tag, b"after-recovery")));
+        if let Ok(next) = tokio::time::timeout(Duration::from_millis(1), fresh.next()).await {
+            delivered = Some(next.expect("fresh handle must deliver after recovery"));
+            break;
+        }
+        flush_tasks().await;
+    }
+    let delivered = delivered.expect("fresh set must receive a delivery after recovery");
+    delivered
         .try_ack()
         .expect("an ack on the live generation must be accepted");
     flush_tasks().await;

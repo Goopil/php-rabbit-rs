@@ -6,9 +6,9 @@ use futures_util::StreamExt;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
     options::{
-        BasicAckOptions, BasicConsumeOptions, BasicPublishOptions, BasicQosOptions,
-        BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions, QueueBindOptions,
-        QueueDeclareOptions, QueueDeleteOptions, QueuePurgeOptions,
+        BasicAckOptions, BasicCancelOptions, BasicConsumeOptions, BasicPublishOptions,
+        BasicQosOptions, BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions,
+        QueueBindOptions, QueueDeclareOptions, QueueDeleteOptions, QueuePurgeOptions,
     },
     tcp::OwnedTLSConfig,
     types::{AMQPValue, FieldArray, FieldTable},
@@ -236,6 +236,16 @@ impl ConsumerChannel for LapinChannel {
     async fn set_qos(&self, prefetch: u16) -> TransportResult<()> {
         self.inner
             .basic_qos(prefetch, BasicQosOptions { global: false })
+            .await
+            .map_err(map_lapin_error)
+    }
+
+    async fn cancel(&self, consumer_tag: &str) -> TransportResult<()> {
+        self.inner
+            .basic_cancel(
+                lapin::types::ShortString::from(consumer_tag),
+                BasicCancelOptions::default(),
+            )
             .await
             .map_err(map_lapin_error)
     }

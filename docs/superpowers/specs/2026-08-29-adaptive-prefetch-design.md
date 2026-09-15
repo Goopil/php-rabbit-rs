@@ -125,15 +125,24 @@ prefetch 20; job 10 ms → 500 → clamped to `max`; job 30 s → 1.
 - **Application tick**: additional arm in the `tokio::select!` of
   `run_actor`, armed by the precondition `if has_adaptive` (no active interval
   when no subscription is adaptive — current behavior preserved identically otherwise). Each tick (1 s): for each subscription whose
-  `tick()` returns `Some(v)` → apply `set_qos(v)`.
-- **`set_qos` off the critical path**: it is a network round trip; running it
-  directly in the actor arm would block dispatch and settlements during
-  the RTT. Each application is therefore performed in a detached tokio task
-  (`tokio::spawn`), which pushes an error into `error_tx` on transport failure
-  (same error channel as settlements, bounded capacity 256, drop of the oldest).
-  The tick itself is pure and instantaneous.
-- Adjustments on a given channel are rare (25% hysteresis + 1 s tick);
-  no additional guard against concurrent QoS calls.
+  `tick()` returns `Some(v)` → publish `v` on that subscription's resize watch.
+- **Resize by cancel + re-consume (2026-09-14 revision)**: RabbitMQ applies
+  per-consumer `basic.qos` (`global: false`) only to consumers created
+  *after* the call — a mid-stream raise is a silent no-op on the running
+  consumer — and quorum queues reject `global: true` outright (proven
+  against RabbitMQ 4.2.9: `set_qos(2000)` returns `Ok` while unacked stays
+  pinned at the initial window). The tick therefore never touches the
+  channel: the controller publishes the new window on a per-subscription
+  `tokio::sync::watch`, and the delivery pump (`spawn_source`, consumer/set.rs)
+  performs the resize on its own stream — `basic.cancel` the tag, drain the
+  old stream until it ends (in-flight deliveries stay ackable on the same
+  channel: no requeue, no duplicates), `basic.qos` with the new value,
+  `basic.consume` again with the same tag. The tick and the actor's
+  dispatch/settlement paths are never blocked. A failed resize (`cancel`,
+  `set_qos`, or re-consume transport error) leaves the channel suspect: the
+  pump surfaces a terminal error through the source-error path so `next()`
+  unblocks and recovery can re-spawn the set. Adjustments on a given
+  channel are rare (25% hysteresis + 1 s tick).
 
 ## 4. Spawn, buffers, and recovery
 
@@ -194,11 +203,14 @@ prefetch 20; job 10 ms → 500 → clamped to `max`; job 30 s → 1.
 - **Rust integration** (`crates/rabbit-rs-core/tests/`, paused tokio time +
   scriptable mock transport):
   - deliveries + acks at scripted latencies → after advancing time past the
-    tick, assert the sequence `TransportOperation::Qos { prefetch: X }` on the
-    mocked channel;
-  - below the hysteresis threshold → no additional `Qos` operation;
-  - mocked `set_qos` failure → error present in `drain_errors()`, the actor
-    keeps going;
+    tick, assert the resize sequence on the mocked channel:
+    `TransportOperation::Cancel`, then `Qos { prefetch: new }`, then a second
+    `Consume` with the same tag — and deliveries pushed after the resize flow
+    through the re-consumed stream;
+  - below the hysteresis threshold → no additional `Qos`/`Cancel` operation;
+  - mocked resize failure (cancel/set_qos/consume rejected) → terminal error
+    surfaced on `next()`, the set handle still answers stats calls (recovery
+    re-spawn is the recovery suite's concern);
   - existing fixed set: no active tick arm (no Qos operation beyond spawn) —
     regression.
 - **PHP Pest (Laravel)**: `ConfigNormalizerTest` — fixed unchanged (regression),
