@@ -15,7 +15,6 @@ use rabbit_rs_core::{
         Config, ConsumerConfigSection, DelayConfig, DelayMode, PublisherConfigSection, RouteConfig,
         SafetyMode, TopologyMode,
     },
-    consumer::ConsumerErrorKind,
     consumer::SettlementErrorKind,
     pool::connection_actor::ConnectionActor,
     pool::recovery_coordinator::{
@@ -147,19 +146,6 @@ mod helper {
             .generation(generation)
             .prefetch(4)
             .channel_id(1)
-    }
-
-    pub fn delivery(tag: u64, payload: &'static [u8]) -> TransportDelivery {
-        TransportDelivery {
-            delivery_tag: tag,
-            exchange: "jobs".to_owned(),
-            routing_key: "high".to_owned(),
-            redelivered: false,
-            message_id: None,
-            correlation_id: None,
-            headers: Arc::new(BTreeMap::new()),
-            payload: Bytes::from_static(payload),
-        }
     }
 
     /// A validated configuration with a custom delay strategy and publish
