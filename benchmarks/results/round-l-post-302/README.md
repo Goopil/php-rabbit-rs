@@ -45,24 +45,76 @@ The laravel-worker consume cell shows a rising trend across passes
 (14.7k -> 17.2k -> 23.3k): fresh-cluster warmup, not a plateau. Reading the
 ratio against that median is conservative.
 
-## Comparison with Round I (2026-09-03)
+## Comparison across sessions (Round 2 → Round I → this session)
 
-Round I ratios: batch-confirm 1.03x publish / 4.3x consume; laravel-worker
-4.9x / 6.4x. Two session-level shifts prevent a like-for-like ratio read:
+| Session | Date | Code base | rs worker pub | amqplib control (worker pub) |
+|---|---|---|---|---|
+| Round 2 | 2026-08-31 | main `7707b5d` | 215,121 | 86,290 |
+| Round I | 2026-09-03 | main `a24ef44` | 191,913 | **38,643 — control degraded, session outlier** |
+| Round L (this archive) | 2026-09-14 | `dff4ec3` + #301/#303/#304 + #302 | 179,981 | 87,379 |
+| Flush-cadence A/B (2026-09-15, see below) | | same build as Round L | 188,329 @1ms | 81,457 |
 
-1. **php-amqplib moved**: its batch-confirm consume went 9.5k (Round I) ->
-   29.3k (this session) and its publish 31k -> 43.8k. When the comparator
-   driver shifts that much between sessions, cross-session ratio deltas are
-   session factors, not code signals (benchmarks/README.md framing).
-2. **rabbit-rs worker cells track Round I closely** on absolute values:
-   publish 180k vs 191.9k (-6%, single node of a 3-node fresh cluster),
-   consume 17.2k vs 12.1k (+42%, warmup trend). The fixed paths show no
-   regression on same-protocol cells.
+- **Round I is the outlier session, not this one.** Its own archive documents a
+  -69%/-70% collapse on the publish-heavy driver cells for BOTH drivers
+  (unchanged third-party code as the control), and its amqplib worker-publish
+  control halved (86.2k → 38.6k). Its absolute values are not cross-session
+  comparable; the earlier "php-amqplib moved" framing inverted the direction —
+  it was Round I's amqplib cells that collapsed.
+- **This session's comparator is healthy**: amqplib worker publish 87.4k ≈
+  Round 2's 86.2k, worker consume 2.2k ≈ 2.2k.
+- The one cell that still reads low against Round 2 is rabbit-rs worker
+  publish (180.0k vs 215.1k, -16%, with a stable control). That gap triggered
+  the investigation below; verdict there: session variance, not a code
+  regression.
+- All paths fixed by #302 show no regression in same-session data; CodSpeed
+  micro-benchmarks on the PR are green.
 
-The honest conclusion: **no throughput regression from the #302 reliability
-work is visible in same-session data**; CodSpeed micro-benchmarks on the PR
-are green as well. For a publication-grade ratio table, re-run both drivers
-in one session on the post-#305 main once the current wave lands.
+## Investigation: worker-publish gap vs Round 2 (flush-cadence A/B)
+
+Every commit touching the blind publish path between `7707b5d` (Round 2 base)
+and this branch was audited:
+
+- Blind byte budget (`1170da5`): 64 MiB default budget vs ≤3 MiB actually in
+  flight (1024 queued + 2048 in-flight × 1 KiB worker payload) — never binds;
+  its cost is two atomics per publish on a ~4.6 µs/publish budget.
+- Actor mailbox coalescing (#274, `5a6a635`): blind publishes route directly
+  to the pump and bypass the actor mailbox — not on this path (and it
+  measured ~13% faster on its own bench anyway).
+- `publisher.flush_interval` knob (5d9133b): default 1 ms reproduces the
+  pre-knob behavior.
+- lapin 4.10.0 → 4.11.0 (#303): upstream changelog is a single
+  initial-connection-retry fix; nothing in the publish path.
+- PHP-ext publish buffer: the only hot-loop-structure change is #218
+  (`0de7725`, Sep 11, this-session-only): a background timer now enforces the
+  1 ms age deadline that pre-#218 was only evaluated by the next publish
+  call. Hypothesis: in a hot loop the timer caps every batch at ~1 ms worth
+  of publications and multiplies timer + drain spawns at 180-215k msg/s.
+
+**A/B test** (2026-09-15, fresh 3-node lab, same release cdylib as Round L,
+`RABBIT_RS_BENCH_FLUSH_INTERVAL_MS` knob in the harness driver): interleaved
+laravel-worker runs at the default 1 ms interval vs 100 ms, plus amqplib
+controls. One cold warmup run (144k) excluded.
+
+| Config | n | pub median (range) | con median |
+|---|---|---|---|
+| flush_interval = 1 ms (default) | 3 | 188,329 (175,410–188,481) | 16,474 |
+| flush_interval = 100 ms | 3 | 172,760 (166,852–190,449) | 12,654 |
+| amqplib control | 2 | 81,457 (81,317–81,598) | 1,903 |
+
+**Result: #218 is exonerated.** Raising the interval 100× did not restore
+Round 2 throughput (if anything slightly lower; the knob demonstrably applied
+— the validated config schema is `deny_unknown_fields`, and the consume
+median moved with the interval as buffered publications linger longer before
+a pop drains them).
+
+**Verdict: session variance.** Three sessions with different code states
+(Round I predates #218/#274/#303 entirely) read 180–192k on this cell, while
+Round 2 alone reads 215.1k with a 240.9k top run and round-level peaks at
+252.3k in its raw data. Session controls drift -6..-8% vs Round 2 in the same
+direction (today 81.5k; Round L batch control 43.8k vs 47.5k). Every audited
+hot-path change is ns-scale against a ~4.6 µs/publish budget. Residual: a
+same-session interleaved A/B of the `7707b5d` build vs this build would make
+this publication-grade; not run.
 
 ## Session incidents (disclosed)
 
@@ -71,10 +123,12 @@ in one session on the post-#305 main once the current wave lands.
   mid-protocol (3 times, ~20:34 / ~20:39 / ~20:42 UTC). Passes were re-run on
   fresh labs; the 12 archived runs are the ones that completed with
   `losses == 0 && duplicates == 0`.
-- Absolute numbers differ from Round I more than usual because of the
-  comparator shift above; do not quote cross-session deltas.
+- Do not quote cross-session absolute deltas without the control-cell read
+  from the comparison section above.
 
 ## Raw data
 
 `raw/passN-runM-driver-scenario.json` — one JSON per interleaved run, as
 emitted by `benchmarks/src/run-benchmarks.php`.
+`flush-interval-ab/` — the nine JSONs of the flush-cadence A/B above
+(warmup, 3×1 ms, 3×100 ms, 2 amqplib controls).

@@ -1,0 +1,51 @@
+{
+    "laravel-worker\/amqplib": {
+        "name": "amqplib",
+        "safety": null,
+        "reconnects": null,
+        "stall_recoveries": 0,
+        "publish": {
+            "avg_time": 0.12397174835205078,
+            "min_time": 0.11492204666137695,
+            "max_time": 0.15604496002197266,
+            "avg_rate": 81317.10734901296,
+            "min_rate": 64084.094728800614,
+            "max_rate": 87015.5056450174,
+            "p99": 5222.5327957
+        },
+        "consume": {
+            "avg_time": 5.289444851875305,
+            "min_time": 4.663590908050537,
+            "max_time": 5.824364900588989,
+            "avg_rate": 1899.4416207758072,
+            "min_rate": 1716.9253937006504,
+            "max_rate": 2144.270412470672,
+            "p50": 2636.6735918000004,
+            "p95": 5030.5101667,
+            "p99": 5222.5327957,
+            "losses": 0,
+            "duplicates": 0
+        },
+        "config": {
+            "rabbitmq": {
+                "host": "127.0.0.1",
+                "port": 5672,
+                "vhost": "\/",
+                "user": "***"
+            },
+            "message_count": 10000,
+            "rounds": 10,
+            "warmup_rounds": 1,
+            "payload_bytes": 1024
+        },
+        "meta": {
+            "php": "8.5.6",
+            "sapi": "cli",
+            "os": "Darwin 25.6.0",
+            "extensions": {
+                "rabbit_rs": false,
+                "amqp": false
+            }
+        }
+    }
+}

@@ -1,0 +1,51 @@
+{
+    "laravel-worker\/rabbit-rs": {
+        "name": "rabbit-rs",
+        "safety": "blind",
+        "reconnects": 1,
+        "stall_recoveries": 0,
+        "publish": {
+            "avg_time": 0.08695628643035888,
+            "min_time": 0.05811309814453125,
+            "max_time": 0.2807199954986572,
+            "avg_rate": 144468.7969833787,
+            "min_rate": 35622.68509671529,
+            "max_rate": 172078.2460286202,
+            "p99": 747.3193083
+        },
+        "consume": {
+            "avg_time": 0.7492959260940552,
+            "min_time": 0.6072580814361572,
+            "max_time": 0.9545419216156006,
+            "avg_rate": 13565.704907189362,
+            "min_rate": 10476.229250439414,
+            "max_rate": 16467.463020582836,
+            "p50": 549.0997958,
+            "p95": 729.5551581,
+            "p99": 747.3193083,
+            "losses": 0,
+            "duplicates": 0
+        },
+        "config": {
+            "rabbitmq": {
+                "host": "127.0.0.1",
+                "port": 5672,
+                "vhost": "\/",
+                "user": "***"
+            },
+            "message_count": 10000,
+            "rounds": 10,
+            "warmup_rounds": 1,
+            "payload_bytes": 1024
+        },
+        "meta": {
+            "php": "8.5.6",
+            "sapi": "cli",
+            "os": "Darwin 25.6.0",
+            "extensions": {
+                "rabbit_rs": "0.3.5",
+                "amqp": false
+            }
+        }
+    }
+}
