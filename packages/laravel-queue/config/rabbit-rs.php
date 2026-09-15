@@ -29,7 +29,17 @@ return [
     // adaptive learns the job duration (EWMA of ack latency) and keeps about
     // target_buffer_seconds of ready work buffered between min and max;
     // requires acknowledgements (early_ack and no_ack must be false).
-    'prefetch' => env('RABBIT_RS_PREFETCH', 64),
+    //
+    // The integer default suits every ack mode. High-throughput workers on
+    // quorum queues measured ~2x more consume throughput with a wide window
+    // (prefetch 2000: +84% laravel-worker, ~3x batch-confirm). Recommended
+    // adaptive profile (opt-in, acknowledgements required):
+    //
+    //     'prefetch' => ['mode' => 'adaptive', 'initial' => 250, 'min' => 250,
+    //                    'max' => 2000, 'target_buffer_seconds' => 5],
+    //
+    // or via env: RABBIT_RS_PREFETCH='{"mode":"adaptive","initial":250,"min":250,"max":2000,"target_buffer_seconds":5}'
+    'prefetch' => env('RABBIT_RS_PREFETCH', 1000),
     'wait_timeout' => env('RABBIT_RS_CONSUMER_WAIT_TIMEOUT', 30000),
     // declare | verify | external
     'topology_mode' => env('RABBIT_RS_TOPOLOGY_MODE', 'declare'),
