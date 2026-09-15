@@ -4,6 +4,13 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.6] - 2026-09-15
+
+### Changed
+
+- The default prefetch rises from 64 to 1000: quorum-queue workers measured ~19-20k → ~47k msg/s consume throughput on the worker path between the two settings. The published config documents the adaptive 250→2000 profile as the recommended high-throughput opt-in (set `prefetch` to the array form or a `RABBIT_RS_PREFETCH` JSON string); adaptive requires acknowledgements — the compiler rejects it with `early_ack` or `no_ack`, which is why it is not the default.
+- The extension constraint pins `ext-rabbit_rs` to `^0.3.6`.
+
 ## [0.3.5] - 2026-09-14
 
 ### Fixed
