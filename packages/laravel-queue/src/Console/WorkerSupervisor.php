@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Console;
 
 use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
 /**
@@ -290,6 +291,10 @@ class WorkerSupervisor
         while (true) {
             $process->wait();
 
+            if (! $this->isCleanExit($process)) {
+                $this->reportNonCleanExit(0, $process);
+            }
+
             if ($this->isOneShot()) {
                 // Once mode: the child's exit is terminal, its status is the
                 // supervisor's.
@@ -477,6 +482,10 @@ class WorkerSupervisor
                 $exit = $slot['process']->getExitCode() ?? self::EXIT_CLEAN;
                 $maxExit = $maxExit === null ? $exit : max($maxExit, $exit);
                 unset($slots[$index]);
+
+                if ($exit !== self::EXIT_CLEAN) {
+                    $this->reportNonCleanExit($index, $slot['process']);
+                }
 
                 // A clean exit means the child consumed a job — observed
                 // progress the re-arm budget renews on. Crashed children
@@ -768,11 +777,17 @@ class WorkerSupervisor
                 $slot['restartAt'] = 0.0;
                 $slots[$index] = $this->restartSlot($index, $slot);
             }
-        } elseif (! $this->shouldRestart($slot['restarts'])) {
-            $this->stopAllSlots($slots);
-
-            return self::EXIT_MAX_RESTARTS;
         } else {
+            // First observation of this crash (the backoff-wait branch above
+            // only re-visits an already-reported one).
+            $this->reportNonCleanExit($index, $slot['process']);
+
+            if (! $this->shouldRestart($slot['restarts'])) {
+                $this->stopAllSlots($slots);
+
+                return self::EXIT_MAX_RESTARTS;
+            }
+
             // Schedule the restart with its backoff; the loop keeps
             // polling the other children meanwhile (non-blocking backoff).
             $slot['restartAt'] = $now + $this->backoffSeconds($slot['restarts']);
@@ -810,6 +825,20 @@ class WorkerSupervisor
                 $slot['process']->stop(10, SIGTERM);
             }
         }
+    }
+
+    /**
+     * A worker died on a non-clean exit: surface it loudly. Issue #310 — a
+     * misconfigured child (e.g. a broken env JSON value) used to die silently
+     * because the supervisor never emitted its stderr anywhere.
+     */
+    private function reportNonCleanExit(int $workerIndex, Process $process): void
+    {
+        $exit = $process->getExitCode() ?? self::EXIT_CLEAN;
+        Log::error("rabbit-rs: worker exited with status {$exit}", [
+            'worker_index' => $workerIndex,
+            'stderr' => trim($process->getErrorOutput()),
+        ]);
     }
 
     /**
