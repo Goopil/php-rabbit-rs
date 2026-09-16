@@ -205,6 +205,44 @@ it('evicts the cached consumer so the next pop re-fetches after the consumer clo
     expect($pool->consumerProfiles)->toHaveCount(2);
 });
 
+it('recovers inline from a transiently closed consumer set instead of throwing on every pop', function (): void {
+    // Issue #309: while the consumer set is closed (recovery suspension),
+    // every pop threw and Laravel's loop flooded the log with one ERROR per
+    // child per second. A closed window shorter than the inline retry budget
+    // must cost zero throws.
+    [$queue, $pool] = makePopQueue();
+    $pool->consumerFor('__auto__.orders-eu')->throwOnNext(
+        new NativeException('consumer set is closed'),
+    );
+    $delivery = new Delivery(json_encode([
+        'uuid' => '018f8f1a-closed-recovery',
+        'job' => 'stdClass',
+        'data' => [],
+    ], JSON_THROW_ON_ERROR), [
+        'message_id' => '018f8f1a-closed-recovery',
+        'subscription' => 'auto',
+        'attempts' => 1,
+        'state' => 'pending',
+    ]);
+    $pool->pushDelivery('__auto__.orders-eu', $delivery);
+
+    $job = $queue->pop('orders-eu');
+
+    expect($job)->not->toBeNull()
+        ->and($pool->consumerProfiles)->toHaveCount(2);
+});
+
+it('gives up with a single throw after the bounded inline retries when the set stays closed', function (): void {
+    [$queue, $pool] = makePopQueue();
+
+    $pool->consumerFor('__auto__.orders-eu')->throwOnEveryNext(
+        new NativeException('consumer set is closed'),
+    );
+
+    expect(fn () => $queue->pop('orders-eu'))->toThrow(QueueException::class)
+        ->and($pool->consumerProfiles)->toHaveCount(3);
+});
+
 /**
  * Binds a probe statefile writer with a fixed pid so statefile assertions
  * are deterministic.

@@ -282,6 +282,15 @@ namespace Goopil\RabbitRs {
                 $this->nextException = $exception;
             }
 
+            /** Arms a persistent next() failure (one-shot for throwOnNext). */
+            public function throwOnEveryNext(\Throwable $exception): void
+            {
+                $this->nextException = $exception;
+                $this->everyNextException = $exception;
+            }
+
+            public ?\Throwable $everyNextException = null;
+
             public function next(int $timeoutMs): ?Delivery
             {
                 if ($this->closed) {
@@ -292,6 +301,9 @@ namespace Goopil\RabbitRs {
                 }
 
                 $this->timeouts[] = $timeoutMs;
+                if ($this->everyNextException !== null) {
+                    throw $this->everyNextException;
+                }
                 if ($this->nextException !== null) {
                     $exception = $this->nextException;
                     $this->nextException = null;
