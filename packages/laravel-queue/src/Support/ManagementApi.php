@@ -17,10 +17,13 @@ use Illuminate\Support\Facades\Http;
 final class ManagementApi
 {
     /**
-     * Number of messages ready in one queue of the given connection, from
-     * the management API (`GET {management_url}/api/queues/{vhost}/{queue}`,
-     * top-level `messages_ready` gauge). Null without `management_url`, on
-     * request failure, or when the response carries no gauge.
+     * Number of messages pending in one queue of the given connection, from
+     * the management API (`GET {management_url}/api/queues/{vhost}/{queue}`):
+     * `messages_ready` plus `messages_unacknowledged` — an in-flight window
+     * must stay visible to the drain check, or --stop-when-empty strands it
+     * until the broker requeues it (issue #308). Null without
+     * `management_url`, on request failure, or when the response carries no
+     * gauge.
      */
     public static function queueDepth(string $connection, string $queue): ?int
     {
@@ -57,7 +60,11 @@ final class ManagementApi
         }
 
         $ready = $response->json('messages_ready');
+        $unacked = $response->json('messages_unacknowledged');
+        if (! is_numeric($ready) && ! is_numeric($unacked)) {
+            return null;
+        }
 
-        return is_numeric($ready) ? (int) $ready : null;
+        return (int) $ready + (int) $unacked;
     }
 }
