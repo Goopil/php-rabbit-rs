@@ -34,6 +34,22 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 {
     protected const CONTENT_TYPE_JSON = 'application/json';
 
+    /**
+     * Exact message the native consumer carries when the set is closed
+     * (core's `ConsumerError::closed()`): the seam used to recognize a
+     * closed-set pop without a dedicated exception kind.
+     */
+    private const CLOSED_SET_MESSAGE = 'consumer set is closed';
+
+    /**
+     * Bounded inline re-fetches after a closed-set pop (#309): the window
+     * usually outlasts the recovery suspension, so the episode costs zero
+     * throws instead of one per Laravel pop-loop iteration.
+     */
+    private const CLOSED_REFETCH_ATTEMPTS = 2;
+
+    private const CLOSED_REFETCH_BACKOFF_MICROSECONDS = 250_000;
+
     /** @var array<string, Consumer> */
     private array $consumers = [];
 
@@ -489,9 +505,16 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             throw $exception;
         } catch (NativeException $exception) {
             // Closed surfaces as the base native exception: the handle is
-            // terminal, the next pop must re-fetch.
+            // terminal, the next pop must re-fetch. Instead of throwing per
+            // pop — Laravel's pop loop then floods the log with one ERROR per
+            // child per second during a recovery suspension (#309) — evict and
+            // retry inline within a bounded budget first.
             unset($this->consumers[$profile]);
-            throw QueueException::fromNative($exception);
+            if (! $this->isClosedSetError($exception)) {
+                throw QueueException::fromNative($exception);
+            }
+
+            $delivery = $this->refetchAfterClosed($profile, $exception);
         }
         $probe?->markRunning();
         if ($delivery === null) {
@@ -514,6 +537,40 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
             return null;
         }
+    }
+
+    private function isClosedSetError(NativeException $exception): bool
+    {
+        return str_contains($exception->getMessage(), self::CLOSED_SET_MESSAGE);
+    }
+
+    /**
+     * Bounded inline re-fetch after a closed-set pop (#309): the fresh
+     * handle rides out the recovery suspension when it is shorter than the
+     * budget, so the episode costs zero throws. Every failed attempt evicts
+     * the handle it was given; a non-closed error keeps its terminal
+     * semantics; exhausting the budget rethrows the original exception.
+     */
+    private function refetchAfterClosed(string $profile, NativeException $original): ?Delivery
+    {
+        for ($attempt = 0; $attempt < self::CLOSED_REFETCH_ATTEMPTS; $attempt++) {
+            usleep(self::CLOSED_REFETCH_BACKOFF_MICROSECONDS * (2 ** $attempt));
+            try {
+                $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);
+
+                return $consumer->next($this->blockForMilliseconds);
+            } catch (ConnectionException $exception) {
+                unset($this->consumers[$profile]);
+                throw $exception;
+            } catch (NativeException $exception) {
+                unset($this->consumers[$profile]);
+                if (! $this->isClosedSetError($exception)) {
+                    throw QueueException::fromNative($exception);
+                }
+            }
+        }
+
+        throw QueueException::fromNative($original);
     }
 
     /**
