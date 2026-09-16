@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.3.7] - 2026-09-16
+
+### Fixed
+
+- The documented `RABBIT_RS_PREFETCH` env JSON form works (issue #310): a JSON object string decodes into the `fixed` or `adaptive` prefetch forms instead of being routed to the integer validator and throwing at child boot. Boot failures are no longer silent either — the supervisor logs a loud error carrying the worker index and the child stderr on every non-clean exit (one-shot, inline and supervised paths), and the depth sampler warns with the compiler message when a connection config fails to compile instead of silently dropping the connection from scaling.
+- `--stop-when-empty` no longer strands the in-flight window (issue #308): the drain check observed a ready gauge of 0 while the fleet's in-flight window was still unacked — the broker requeues it only seconds after the consumers leave, so the last messages were abandoned. The management API depth now reports pending messages (`messages_ready` + `messages_unacknowledged`) so an in-flight window stays visible to the drain check and to the auto-scaler, and the one-shot drain check polls the depth fresh for a bounded window (15 s) after a zero before concluding drained; shutdown interrupts the window immediately.
+- The closed-set pop storm is damped (issue #309): while the consumer set is closed (recovery suspension after a broker cut), every pop threw and Laravel's worker loop flooded the log with one ERROR per child per second for the whole episode (~889 ERROR lines per 12 s cut with 48 jobs). `pop()` now recognizes the closed-set error, evicts the terminal handle and retries inline within a bounded budget (2 refetches, 250 ms then 500 ms backoff): episodes shorter than the budget cost zero throws, longer ones cost one throw per ~1.75 s. Non-closed native errors and connection errors keep their exact terminal semantics.
+
 ## [0.3.6] - 2026-09-15
 
 ### Added
