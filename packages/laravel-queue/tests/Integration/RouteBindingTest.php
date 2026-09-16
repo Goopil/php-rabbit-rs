@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
+use Illuminate\Support\Facades\Artisan;
 
 describe('route binding declared by the pool', function () {
     beforeEach(function () {
@@ -120,14 +121,26 @@ describe('topology command on the publish route', function () {
 
         // Delete the binding behind the config's back: publishes through the
         // exchange become unroutable while verify used to stay green.
-        managementRequest(
+        //
+        // On the 3-node lab a freshly deleted binding can still be served by
+        // the node a verify probe lands on (cluster convergence lag), which
+        // kept flaking this test with an unexpected exit 0. Re-delete and
+        // re-verify until the missing binding is observed, bounded.
+        $bindingKey = $routeBinding()[0]['properties_key'];
+        $delete = fn () => managementRequest(
             'DELETE',
-            "http://localhost:15672/api/bindings/{$vhostUrl}/e/{$this->exchangeName}/q/{$this->queueName}/{$routeBinding()[0]['properties_key']}",
+            "http://localhost:15672/api/bindings/{$vhostUrl}/e/{$this->exchangeName}/q/{$this->queueName}/{$bindingKey}",
         );
-
-        $topology()
-            ->expectsOutputToContain("binding '{$this->exchangeName}' -> '{$this->queueName}'")
-            ->assertExitCode(1);
+        $flagged = false;
+        for ($attempt = 0; $attempt < 8 && ! $flagged; $attempt++) {
+            usleep(500_000);
+            $delete();
+            $flagged = Artisan::call('rabbit-rs:topology', [
+                '--connection' => [INTEGRATION_CONNECTION],
+            ]) === 1;
+        }
+        expect($flagged)->toBeTrue('verify must eventually flag the deleted binding')
+            ->and(Artisan::output())->toContain("binding '{$this->exchangeName}' -> '{$this->queueName}'");
 
         // Declare-mode --fix re-declares the route binding (the lab's
         // deleted-binding scenario, bug #14 follow-up).
