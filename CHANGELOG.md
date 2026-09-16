@@ -15,6 +15,7 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 ### Changed
 
 - The Laravel driver's default prefetch rises from 64 to 1000: quorum-queue workers measured ~19-20k → ~47k msg/s consume throughput on the worker path. The adaptive 250→2000 profile is documented in the published config as the recommended high-throughput opt-in (it requires acknowledgements; the compiler rejects it with `early_ack`/`no_ack`, which is why it is not the default).
+- Consumer ack flushes defer until the dispatch stock is drained (#296): acks recorded by the pump are handed to the wire when nothing dispatchable remains (no pending incoming, no buffered deliveries, no hand-off deliveries) instead of flushing on every actor pass — a pop-1/ack-1 embedder no longer parks every `next()` call on the broker credit round-trip (p50 pop+ack latency 40 µs → 18 µs; worker throughput ~19k → ~21k ops/s on the lab). Source-error items never produce acknowledgements and are excluded through a counter instead of holding the flush back.
 - lapin is re-landed at 4.11.0.
 
 ### Fixed
@@ -32,6 +33,11 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 - Admin operations and consumer acquisition no longer discard the coordinator's typed errors (issue #285): a permanently failed pool fails admin calls immediately with its published permanent-failure reason instead of waiting out a timeout and surfacing raw lapin state text (`invalid connection state: Closed`), and timed-out consumer establishment now reports the underlying coordinator error after the existing readiness message.
 - The doctor's dead-letter canary no longer self-sandbags behind DLQ backlog (issue #288): the check now also binds a doctor-owned `rabbit-rs.canary.*` DLQ to the configured dead-letter exchange, purges and deletes it after every run, and tiers the verdict — found on the configured DLQ → ok, found only in the canary DLQ (configured DLQ backlog deeper than the 100-message scan window, foreign count reported) → warn, never reaching the canary DLQ → hard fail.
+
+### Changed
+
+- Plain consumer acknowledgements are batched into cumulative wire acks (#289, closing the batching track of #282): acks recorded within one actor pass coalesce into a single `ack(watermark, multiple)` for the contiguous run above the settled watermark, while acks beyond a hole flush individually so a stalled delivery never delays downstream acks on the wire. Non-ack settlements (reject, release, poison) keep their dedicated path and the PHP/FFI boundary is unchanged. Real-broker lab consume (100k messages, manual ack): 23.7k → 49–68k msg/s.
+
 ### Added
 
 - `RabbitMqQueue::stats()` exposes the process-local native pool counters to userland — including `returns_total` (unroutable mandatory publications) and `dropped_publications_total` (publications dropped on a closed client) — and `rabbit-rs:status` now reports the drop counter and warns when it is non-zero (issue #290).
@@ -522,14 +528,29 @@ pipeline end to end after fixing the issues below.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.1.6...HEAD
-[0.1.6]: https://github.com/Goopil/rabbit-rs/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/Goopil/rabbit-rs/compare/v0.1.4...v0.1.5
-[0.1.0]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...v0.1.0
-[0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
-[0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8
-[0.0.7]: https://github.com/Goopil/rabbit-rs/compare/v0.0.6...v0.0.7
-[0.0.6]: https://github.com/Goopil/rabbit-rs/compare/v0.0.5...v0.0.6
-[0.0.5]: https://github.com/Goopil/rabbit-rs/compare/v0.0.4...v0.0.5
-[0.0.4]: https://github.com/Goopil/rabbit-rs/compare/v0.0.3...v0.0.4
-[0.0.3]: https://github.com/Goopil/rabbit-rs/compare/v0.0.2...v0.0.3
+[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...HEAD
+[0.0.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.2...v0.0.3
+[0.0.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.3...v0.0.4
+[0.0.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.4...v0.0.5
+[0.0.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.5...v0.0.6
+[0.0.7]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.6...v0.0.7
+[0.0.8]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.7...v0.0.8
+[0.0.9]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.8...v0.0.9
+[0.1.0]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.9...v0.1.0
+[0.1.1]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.0...v0.1.1
+[0.1.2]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.1...v0.1.2
+[0.1.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.2...v0.1.3
+[0.1.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.3...v0.1.4
+[0.1.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.4...v0.1.5
+[0.1.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.5...v0.1.6
+[0.2.0]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.6...v0.2.0
+[0.2.1]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.0...v0.2.1
+[0.2.2]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.1...v0.2.2
+[0.2.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.2...v0.2.3
+[0.3.0]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.3...v0.3.0
+[0.3.1]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.0...v0.3.1
+[0.3.2]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.1...v0.3.2
+[0.3.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.2...v0.3.3
+[0.3.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.3...v0.3.4
+[0.3.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.4...v0.3.5
+[0.3.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.5...v0.3.6

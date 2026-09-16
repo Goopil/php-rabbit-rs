@@ -36,7 +36,7 @@ Add one connection to `config/queue.php` — one connection = one broker/vhost =
 QUEUE_CONNECTION=rabbit-rs   # .env
 ```
 
-Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 64. Dispatch and consume:
+Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 1000. Dispatch and consume:
 
 ```php
 // app/Jobs/ProcessOrder.php — a standard Laravel job, nothing to change

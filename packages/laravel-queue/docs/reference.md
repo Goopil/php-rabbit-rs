@@ -122,7 +122,7 @@ Exit codes:
 php artisan rabbit-rs:status
 ```
 
-Displays pool state (handle, PID, closed), publisher counters (publishes, confirmations, returns, backpressure, reconnects, duplicates), consumer counters (deliveries, acks, rejects), and confirmation/settlement latency percentiles. For machine-readable output:
+Displays pool state (handle, PID, closed), publisher counters (publishes, confirmations, returns, dropped publications, backpressure, reconnects, duplicates), consumer counters (deliveries, acks, rejects), and confirmation/settlement latency percentiles. A non-zero `dropped publications` counter is called out with a warning — publications were dropped on a closed client. For machine-readable output:
 
 ```bash
 php artisan rabbit-rs:status --format=json
@@ -192,6 +192,14 @@ $purged = Queue::connection('rabbit-rs')->clear('orders.high');
 ```
 
 Purges all messages from the queue and returns the number of jobs removed (the pending count measured before the purge; messages racing the purge are counted but may survive). Requires configuration permissions on the broker. The `ClearableQueue` contract makes `php artisan queue:clear rabbit-rs` available.
+
+#### stats
+
+```php
+$stats = Queue::connection('rabbit-rs')->stats();
+```
+
+Returns the process-local native pool counters for the connection's pool — the same shape `rabbit-rs:status` prints. Alongside the delivery/settlement counters (`deliveries_total`, `acks_total`, `rejects_total`) it exposes `returns_total` (unroutable mandatory publications) and `dropped_publications_total` (publications dropped on a closed client, never handed off to the broker — drain them before a short-lived process exits when they matter). Counters are per-process by design: they count what *this* process published and settled — see [Reliability — Measuring duplicates](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#measuring-duplicates) for the cross-process signals.
 
 ### Events
 
@@ -418,7 +426,7 @@ Add one connection to `config/queue.php`:
         'confirm_timeout' => 30000,     // ms, >= 1000
 
         // Consumption
-        'prefetch' => 64,               // per subscription channel (see below)
+        'prefetch' => 1000,             // per subscription channel (see below)
         'wait_timeout' => 30000,        // ms, 1000..86400000
 
         // Topology (defaults inherited from config/rabbit-rs.php)
@@ -475,7 +483,8 @@ The minimal connection is therefore:
 | `routing_key` | ?string | `{queue}` | `{queue}` is replaced with the queue name at publish time; `null` means no routing key (default-exchange/fanout usage) |
 | `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (no confirms, no mandatory — synchronous socket write), `blind` (fire-and-forget) |
 | `confirm_timeout` | int (ms) | `30000` | Publisher confirm timeout, minimum `1000`; during a recovery, a publish parked in replay is retried once with a fresh deadline, while a confirm timeout on a live connection stays terminal |
-| `prefetch` | int | `64` | QoS prefetch per consumer channel, 1–65535 |
+| `flush_interval` | int (ms) | `1` | Age-flush deadline of the publish buffer: a lone publish is flushed to the broker this long after being buffered even if the process never publishes, pops, or flushes again. 0–3,600,000 |
+| `prefetch` | int | `1000` | QoS prefetch per consumer channel, 1–65535 |
 | `wait_timeout` | int (ms) | `30000` | Transport (broker connection) acquisition deadline, 1000–86400000 — **not** the `pop()` wait; use `block_for` to make `pop()` block for work |
 | `max_attempts` | int | `20` | Inclusive cap on resolved delivery attempts before terminal settlement |
 | `best_effort` | bool | `false` | Gates `early_ack`/`no_ack` on this connection's subscriptions |
@@ -569,7 +578,7 @@ A connection value — including an explicit `null` — always wins.
 | `tls.client_key` | `RABBIT_RS_TLS_CLIENT_KEY` | `null` |
 | `safety` | `RABBIT_RS_SAFETY` | `safe` |
 | `confirm_timeout` | `RABBIT_RS_CONFIRM_TIMEOUT` | `30000` |
-| `prefetch` | `RABBIT_RS_PREFETCH` | `64` |
+| `prefetch` | `RABBIT_RS_PREFETCH` | `1000` |
 | `wait_timeout` | `RABBIT_RS_CONSUMER_WAIT_TIMEOUT` | `30000` |
 | `topology_mode` | `RABBIT_RS_TOPOLOGY_MODE` | `declare` |
 | `delay.mode` | `RABBIT_RS_DELAY_MODE` | `auto` |
@@ -1175,7 +1184,7 @@ php artisan rabbit-rs:status
 Output includes:
 
 - **Pool state** — handle ID, PID, closed flag
-- **Publisher metrics** — publishes, confirmations, returns, backpressure, reconnects
+- **Publisher metrics** — publishes, confirmations, returns, dropped publications (warned when non-zero), backpressure, reconnects
 - **Consumer metrics** — deliveries, acks, rejects
 - **Latency** — confirmation and settlement latency at p50/p95/p99
 
@@ -1207,7 +1216,14 @@ php artisan rabbit-rs:doctor
 php artisan rabbit-rs:doctor --connection=rabbit-rs
 ```
 
-One-shot health report per rabbit-rs connection, resolved through the same config compilation the driver uses. Each check prints `ok`, `warn`, or `fail`; the command exits non-zero when any check fails (warnings are allowed), which makes it usable in CI. Checks cover: extension presence and version against the composer constraint, the resolved worker class (with a warning when `worker` is inherited from the package defaults instead of the connection), broker reachability (AMQP connect, auth, vhost; optional management API probe when `management_url` is set), publisher exchange/routing-key alignment and dead-letter wiring, effective safety settings, Horizon supervisors, and event listeners.
+One-shot health report per rabbit-rs connection, resolved through the same config compilation the driver uses. Each check prints `ok`, `warn`, or `fail`; the command exits non-zero when any check fails (warnings are allowed), which makes it usable in CI:
+
+- **Config & environment** — extension presence and version against the composer constraint; the resolved worker class (with a warning when `worker` is inherited from the package defaults instead of the connection).
+- **Broker** — reachability (AMQP connect, auth, vhost; optional management API probe when `management_url` is set), publisher exchange/routing-key alignment, dead-letter wiring, effective safety settings.
+- **Publish outcomes** (needs a reachable management API) — reads the publish exchange's broker-side `return_unroutable` counter: cross-process evidence that survives the death of the publishing process. `fail` under `safe` (messages were published as lost — fix the exchange→queue binding), `warn` under `unsafe`/`blind` (fire-and-forget by contract). Silently skipped without a management API; a missing exchange stays the topology check's finding.
+- **Dead-letter canary** (needs a reachable management API and a configured `dead_letter`) — publishes a uniquely marked probe, rejects it terminally through a transient consumer, and verifies its arrival through the management API. The verdict is tiered: received on the configured DLQ → `ok`; found only in the doctor-owned `rabbit-rs.canary.*` DLQ (the configured DLQ's backlog is deeper than the 100-message scan window; the foreign count is reported) → `warn`; never delivered → `fail` (dead-lettered messages would vanish — real broker traffic was produced). A contested run — a full scan window, or Horizon consumers configured on the connection — reports `warn` (`CanaryInconclusiveException`) instead of failing. The canary DLQ is purged and deleted after every run.
+- **Horizon supervisors** — supervisor/queue alignment with the checked connection.
+- **Event listeners** — registration of the driver's events.
 
 #### rabbit-rs:probe
 
@@ -1275,7 +1291,7 @@ One decision per connection, per pass (a pass runs at most every `--scale-cooldo
 
 - **Scale up** when the ready depth exceeds twice the live workers — at most 2 children per pass, never beyond `--max-workers`.
 - **Scale down** (long-running mode only) after the depth has stayed at zero for the whole `--scale-idle` window (hysteresis, so a queue draining in a burst does not flap the fleet) — at most 2 children per pass, never below `--min-workers`. The idlest children (highest index) receive a non-blocking `SIGTERM` and their slot is removed without touching the crash-restart budget (downscaling is not a crash); a child that outlives the 15 s grace period is escalated to `SIGKILL`.
-- In once mode (`--once` / `--stop-when-empty`) scaling is admission-only: children self-terminate and the supervisor admits more while the depth justifies it — it never signals a child. When the fleet drains, a final depth check re-arms the initial fleet while the broker still reports work. The re-arm budget renews on **observed progress**: a clean child exit (that child consumed a job) or a decrease of the reported depth between re-arms. Clean exits are the trustworthy signal — quorum-queue gauges lag seconds behind consumption, so `--once` drains queues far deeper than its own fleet even while the gauge sits flat. The absolute cap (3 re-arms) only binds a fleet producing neither clean exits nor a decreasing gauge — a crash loop (crashes propagate as the command's exit status) or a gauge that never converges. For an **authoritative** drain use `--stop-when-empty`: its children observe emptiness directly and never trust the gauge. Caveat on quorum queues: `messages_ready` is reported lazily (Raft/stats convergence takes seconds after a burst), so `--once`'s depth-driven exit decision can under-read right after a large publish — another reason drains belong on `--stop-when-empty`.
+- In once mode (`--once` / `--stop-when-empty`) scaling is admission-only: children self-terminate and the supervisor admits more while the depth justifies it — it never signals a child. When the fleet drains, a final depth check re-arms the initial fleet while the broker still reports work; that check re-probes the depth **uncached** once before concluding (the sampler's 2 s memoization window could otherwise report a stale 0 while the broker still held work), and a fully failed fresh probe retries within the existing re-arm budget instead of reporting a drained plan. The re-arm budget renews on **observed progress**: a clean child exit (that child consumed a job) or a decrease of the reported depth between re-arms. Clean exits are the trustworthy signal — quorum-queue gauges lag seconds behind consumption, so `--once` drains queues far deeper than its own fleet even while the gauge sits flat. The absolute cap (3 re-arms) only binds a fleet producing neither clean exits nor a decreasing gauge — a crash loop (crashes propagate as the command's exit status) or a gauge that never converges. For an **authoritative** drain use `--stop-when-empty`: its children observe emptiness directly and never trust the gauge. Caveat on quorum queues: `messages_ready` is reported lazily (Raft/stats convergence takes seconds after a burst), so the depth signal can still under-read right after a large publish — another reason drains belong on `--stop-when-empty`.
 
 The depth is sampled per queue from the first available source:
 

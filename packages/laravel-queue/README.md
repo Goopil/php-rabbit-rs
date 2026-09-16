@@ -13,7 +13,7 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 - **At-least-once delivery** — unconfirmed publishes survive connection recovery in bounded process memory and are replayed with the same `message_id` and original deadline
 - **Connection-generation-aware ACKs** — stale ACKs are rejected so RabbitMQ redelivers
 - **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers
-- **Weighted-fair scheduler** — multiple subscriptions per worker with configurable weights, priority classes, and starvation protection
+- **Weighted-fair scheduler** — multiple subscriptions per worker with configurable weights (weighted-fair cannot starve by construction)
 - **Backpressure events** — `BackpressureDetected` fires during publish and consume operations when the publisher's bounded buffer is full
 - **Octane support** — consumers are flushed per-request and pools reloaded on worker restart
 - **Quorum queues by default** — durable, delivery-limit-aware topology out of the box
@@ -110,14 +110,15 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | `RABBIT_RS_TLS_CLIENT_KEY` | — | Path to client key (mTLS) |
 | `RABBIT_RS_SAFETY` | `safe` | `safe`, `unsafe`, or `blind` |
 | `RABBIT_RS_CONFIRM_TIMEOUT` | `30000` | Publisher confirm timeout in ms |
-| `RABBIT_RS_PREFETCH` | `64` | QoS prefetch per consumer channel |
+| `RABBIT_RS_PREFETCH` | `1000` | QoS prefetch per consumer channel |
 | `RABBIT_RS_CONSUMER_WAIT_TIMEOUT` | `30000` | Consumer acquisition deadline in ms |
 | `RABBIT_RS_TOPOLOGY_MODE` | `declare` | `declare`, `verify`, or `external` |
 | `RABBIT_RS_DELAY_MODE` | `auto` | `auto`, `plugin`, or `ttl` |
 | `RABBIT_RS_DELAY_BUCKETS` | `1,5,30,120` | Comma-separated delay buckets in seconds |
 | `RABBIT_RS_DELAY_MAX_BUCKETS` | `8` | Max TTL bucket queues allowed |
 | `RABBIT_RS_DELAY_QUEUE_EXPIRY_MARGIN` | `60` | Extra `x-expires` margin for bucket queues, in seconds |
-| `RABBIT_RS_WORKER` | `default` | Worker mode: `default` or `horizon` || `RABBIT_RS_PRODUCTION_WARNING` | `true` | Warn about unbounded redeliveries without `delivery_limit` + dead-letter |
+| `RABBIT_RS_WORKER` | `default` | Worker mode: `default` or `horizon` |
+| `RABBIT_RS_PRODUCTION_WARNING` | `true` | Warn about unbounded redeliveries without `delivery_limit` + dead-letter |
 | `RABBIT_RS_BEST_EFFORT` | `false` | Gates `early_ack`/`no_ack` subscriptions on a connection |
 
 ## Commands

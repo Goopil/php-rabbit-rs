@@ -54,7 +54,7 @@ Expected output:
 rabbit_rs
 
 Rabbit RS - High-performance RabbitMQ transport for PHP and Laravel, powered by Rust
-Version => 0.1.2
+Version => 0.3.6
 ...
 ```
 
@@ -90,7 +90,7 @@ For a complete Dockerfile example, see [examples/laravel/Dockerfile](../examples
 composer require goopil/rabbit-rs-laravel
 ```
 
-Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.2.2`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.3.6`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 The package auto-discovers the service provider in Laravel 12 and 13. If you disabled auto-discovery, register it manually:
 
@@ -158,7 +158,7 @@ The separation is:
 | PIE | Downloads and installs the correct pre-compiled `.so` binary |
 | Composer | Installs the Laravel queue driver (PHP source); `ext-rabbit_rs` stays a suggestion — connections fail at connection resolution until the extension is loaded |
 
-The Laravel driver's `composer.json` declares `ext-rabbit_rs` as a *suggestion* (`^0.2.2`), not a requirement: `composer install` succeeds without the extension. The constraint is enforced at connection resolution — the driver fails with a typed error when the extension is missing or its version falls outside the constraint. Composer never installs the binary — that is PIE's role.
+The Laravel driver's `composer.json` declares `ext-rabbit_rs` as a *suggestion* (`^0.3.6`), not a requirement: `composer install` succeeds without the extension. The constraint is enforced at connection resolution — the driver fails with a typed error when the extension is missing or its version falls outside the constraint. Composer never installs the binary — that is PIE's role.
 
 ### Multiple PHP versions
 
@@ -179,13 +179,13 @@ PIE installs are versioned replacements: installing a different version swaps th
 Upgrade (or reinstall) an exact version:
 
 ```bash
-pie install goopil/rabbit-rs-native:v0.1.1
+pie install goopil/rabbit-rs-native:v0.3.5
 ```
 
 Rollback = install the previous tag:
 
 ```bash
-pie install goopil/rabbit-rs-native:v0.1.0
+pie install goopil/rabbit-rs-native:v0.3.4
 ```
 
 Check which version is active before and after:
@@ -194,7 +194,7 @@ Check which version is active before and after:
 php --ri rabbit_rs
 ```
 
-Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` tracks a specific `ext-rabbit_rs` constraint (`^0.2.2`). When moving across a version boundary — in either direction — upgrade or roll back the extension and the driver together. Composer cannot check loaded extensions (the constraint lives in `suggest`), so the driver enforces the constraint itself with a typed error at connection resolution: a half-upgraded system (new driver with old extension, or the reverse) fails loudly on the first connection instead of going unnoticed.
+Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` tracks a specific `ext-rabbit_rs` constraint (`^0.3.6`). When moving across a version boundary — in either direction — upgrade or roll back the extension and the driver together. Composer cannot check loaded extensions (the constraint lives in `suggest`), so the driver enforces the constraint itself with a typed error at connection resolution: a half-upgraded system (new driver with old extension, or the reverse) fails loudly on the first connection instead of going unnoticed.
 
 Every release exercises these paths in CI before it is finalized: the release pipeline installs the previous published release, upgrades it to the new release, and rolls back again (see [End-to-end PIE validation](#end-to-end-pie-validation)).
 
@@ -205,7 +205,7 @@ Rabbit RS distributes two packages in synchronized releases:
 - **`goopil/rabbit-rs-native`** — the native PHP extension, installed via [PIE](https://github.com/php/pie)
 - **`goopil/rabbit-rs-laravel`** — the Laravel queue driver, installed via [Composer](https://getcomposer.org)
 
-Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package suggests `ext-rabbit_rs ^0.2.2` — the constraint tracks the extension version until 1.0 and is enforced by a typed error at connection resolution (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package suggests `ext-rabbit_rs ^0.3.6` — the constraint tracks the extension version until 1.0 and is enforced by a typed error at connection resolution (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 #### PIE build matrix
 
@@ -438,7 +438,7 @@ This handles the race condition where:
 
 The job may be executed twice. This is expected and why jobs must be idempotent.
 
-Closing a consumer (or its pool) flushes pending and queued acknowledgements to the broker within a bounded 500 ms budget before the channels close; settlements still unacknowledged after the budget are abandoned to redelivery, preserving at-least-once.
+Closing a consumer (or its pool) flushes pending and queued acknowledgements to the broker within a bounded 500 ms budget before the channels close; settlements still unacknowledged after the budget are abandoned to redelivery, preserving at-least-once. A closed consumer set never serves deliveries again: every entry point (`next()`, `tryNext()`, `nextBatch()`) refuses a closed set with the recoverable pop-time closed error instead of handing out buffered deliveries whose settlements would route to a dead actor — unserviced orphans are left to the broker's redelivery on the next generation.
 
 ### Oversized deliveries
 
@@ -561,11 +561,13 @@ Rabbit RS runs as a native PHP extension: an uncaught Rust unwind crossing the F
 
 `CoordinatorError` is a typed enum (`Topology`/`Transport`/`Publisher`/`Consumer`/`Internal`) whose variants carry the typed source error; `Display` messages keep the previously surfaced context. Callers must classify through variants, never through string matching.
 
+Permanent failures surface their reason. A pool whose connection has failed permanently fails admin operations and consumer acquisition immediately with its published permanent-failure reason (instead of waiting out a timeout and surfacing raw transport state text such as `invalid connection state: Closed`), and a publish that fails on the publisher actor's permanent-failure path carries the same reason (`broker connection failed permanently: {reason}`) instead of a generic failure. The reason is what the typed error already carried internally — an authentication rejection, an incompatible topology, and so on — now visible at every entry point that reports the failure.
+
 ### TLS
 
 The AMQP transport always verifies the broker certificate (rustls, `verify: peer` — the only accepted value, and the default). A custom `ca_cert` chain extends the platform trust store, and a client identity (`client_cert` + `client_key`) enables mTLS: it is supported and certified by the lab test suite, which proves a connection with a client certificate succeeds against a broker listener that rejects anonymous clients (`fail_if_no_peer_cert = true`), and that the same listener rejects connections without one.
 
-TLS server name indication (SNI) and certificate hostname verification always use the AMQP connection host. A `server_name` override is not possible with the underlying AMQP transport (lapin 4.10) and is rejected at validation when it differs from the first configured host — a documented gap tracked for post-1.0 (#164, #166).
+TLS server name indication (SNI) and certificate hostname verification always use the AMQP connection host. A `server_name` override is not possible with the underlying AMQP transport (lapin 4.11) and is rejected at validation when it differs from the first configured host — a documented gap tracked for post-1.0 (#164, #166).
 
 ## Troubleshooting
 
@@ -575,7 +577,7 @@ TLS server name indication (SNI) and certificate hostname verification always us
 
 **Error:**
 ```
-The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.2.2 to be loaded.
+The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.3.6 to be loaded.
 ```
 
 **Solution:**

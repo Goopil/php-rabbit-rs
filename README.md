@@ -97,7 +97,7 @@ No extra configuration required: pop the queue directly — it is the connection
 | SAPIs | CLI, PHP-FPM, and Octane (FrankenPHP, RoadRunner, Open Swoole, Swoole) |
 | RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
 | Platforms | Linux x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE; macOS ARM64 — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and Homebrew |
-| Native extension | `ext-rabbit_rs ^0.2.2` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
+| Native extension | `ext-rabbit_rs ^0.3.6` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
 | Delivery | At-least-once: duplicates are permitted and measured (`duplicates_total`, `messages_redelivered`); silent loss after confirmed-path acceptance is a bug |
 
 - **Rust** 1.96.0 (contributors only — see [Contributing](#contributing))

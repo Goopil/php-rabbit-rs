@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - The doctor's dead-letter canary no longer self-sandbags behind DLQ backlog (issue #288): the check now also binds a doctor-owned `rabbit-rs.canary.*` DLQ to the configured dead-letter exchange, purges and deletes it after every run, and tiers the verdict — found on the configured DLQ → ok, found only in the canary DLQ (configured DLQ backlog deeper than the 100-message scan window, foreign count reported) → warn, never reaching the canary DLQ → hard fail.
+
 ### Added
 
 - `RabbitMqQueue::stats()` exposes the process-local native pool counters to
@@ -361,19 +362,29 @@ Packaging-only release: Laravel mirror split sequenced after native release publ
 - Pools are closed before clearing the cache in `flush` and `resetAfterFork`.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 
-[Unreleased]: https://github.com/Goopil/rabbit-rs/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/Goopil/rabbit-rs/compare/v0.1.6...v0.2.0
-[0.1.6]: https://github.com/Goopil/rabbit-rs/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/Goopil/rabbit-rs/compare/v0.1.4...v0.1.5
-[0.1.4]: https://github.com/Goopil/rabbit-rs/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/Goopil/rabbit-rs/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/Goopil/rabbit-rs/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/Goopil/rabbit-rs/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/Goopil/rabbit-rs/compare/v0.0.9...v0.1.0
-[0.0.9]: https://github.com/Goopil/rabbit-rs/compare/v0.0.8...v0.0.9
-[0.0.8]: https://github.com/Goopil/rabbit-rs/compare/v0.0.7...v0.0.8
-[0.0.7]: https://github.com/Goopil/rabbit-rs/compare/v0.0.6...v0.0.7
-[0.0.6]: https://github.com/Goopil/rabbit-rs/compare/v0.0.5...v0.0.6
-[0.0.5]: https://github.com/Goopil/rabbit-rs/compare/v0.0.4...v0.0.5
-[0.0.4]: https://github.com/Goopil/rabbit-rs/compare/v0.0.3...v0.0.4
-[0.0.3]: https://github.com/Goopil/rabbit-rs/compare/v0.0.2...v0.0.3
+[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.3...v0.3.0
+[0.2.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/Goopil/php-rabbit-rs/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.6...v0.2.0
+[0.1.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/Goopil/php-rabbit-rs/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.9...v0.1.0
+[0.0.9]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.8...v0.0.9
+[0.0.8]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.7...v0.0.8
+[0.0.7]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.6...v0.0.7
+[0.0.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.5...v0.0.6
+[0.0.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.4...v0.0.5
+[0.0.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.2...v0.0.3
