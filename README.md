@@ -4,8 +4,12 @@
 
 [![CI](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml)
 [![Release](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Codecov](https://img.shields.io/codecov/c/github/Goopil/php-rabbit-rs/main)](https://codecov.io/gh/Goopil/php-rabbit-rs)
+[![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/quality_gate?project=Goopil_php-rabbit-rs)](https://sonarcloud.io/summary/new_code?id=Goopil_php-rabbit-rs)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/Goopil/php-rabbit-rs?utm_source=badge)
+[![Packagist](https://img.shields.io/packagist/v/goopil/rabbit-rs-laravel)](https://packagist.org/packages/goopil/rabbit-rs-laravel)
+[![PHP](https://img.shields.io/badge/PHP-8.4%20%7C%208.5-informational)](https://www.php.net/supported-versions.php)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Rabbit RS is a native RabbitMQ runtime for PHP and Laravel workers, designed to stay alive. Your application keeps using Laravel's standard queue API; Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption in a native Rust runtime.
 
@@ -97,7 +101,7 @@ No extra configuration required: pop the queue directly — it is the connection
 | SAPIs | CLI, PHP-FPM, and Octane (FrankenPHP, RoadRunner, Open Swoole, Swoole) |
 | RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
 | Platforms | Linux x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE; macOS ARM64 — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and Homebrew |
-| Native extension | `ext-rabbit_rs ^0.2.2` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
+| Native extension | `ext-rabbit_rs ^0.3.6` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
 | Delivery | At-least-once: duplicates are permitted and measured (`duplicates_total`, `messages_redelivered`); silent loss after confirmed-path acceptance is a bug |
 
 - **Rust** 1.96.0 (contributors only — see [Contributing](#contributing))

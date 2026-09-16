@@ -104,6 +104,16 @@ is run integrity (a rabbit-rs result set present, 0 losses / 0 duplicates on
 every combo); per-run JSON + stdout are archived as the `throughput-results`
 artifact.
 
+#### Curated evidence archives
+
+Key result sets are archived under `benchmarks/results/` and referenced from
+the docs: `round-k-soak/` (stability and memory evidence — 60-min kill,
+30-min steady), `round-l-post-302/` (transport re-bench after the post-#302
+consumer reliability wave, demonstrating the fixed paths without a throughput
+tax, plus a publisher flush-cadence A/B), and `flush-timer-latency/`
+(lone-publish landing latency). Each archive README carries its own protocol,
+session context, and framing rules.
+
 #### Re-baselining
 
 The baseline is machine-specific: it records exactly which machine, versions and

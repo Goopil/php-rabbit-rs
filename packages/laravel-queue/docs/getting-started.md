@@ -36,7 +36,7 @@ Add one connection to `config/queue.php` — one connection = one broker/vhost =
 QUEUE_CONNECTION=rabbit-rs   # .env
 ```
 
-Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 64. Dispatch and consume:
+Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 1000. Dispatch and consume:
 
 ```php
 // app/Jobs/ProcessOrder.php — a standard Laravel job, nothing to change
@@ -147,14 +147,14 @@ Details: [Operations](reference.md#operations) (supervision, Kubernetes, metrics
 
 **Horizon** — set `RABBIT_RS_WORKER=horizon` (or `'worker' => 'horizon'` on the connection) and Rabbit RS jobs appear in the Horizon dashboard alongside Redis jobs — configured in `config/horizon.php` exactly like a Redis queue; Redis stores observability state while RabbitMQ stays the transport. Setup and the event contract: [Laravel usage — Horizon](reference.md#laravel-horizon).
 
-**Octane** — detected automatically: consumers are closed after each request, pools are flushed and re-normalized on worker reload, stopped on shutdown. No configuration needed — see [Octane](reference.md#octane-integration).
+**Octane** — detected automatically: consumers are closed after each request, pools are flushed and re-normalized on worker reload, stopped on shutdown. No configuration needed — see [Octane](octane.md).
 
 ## Going further
 
 - [Configuration](reference.md#configuration) — every connection key, subscriptions escape hatch, safety/delay/topology modes, validation
 - [Topology management](reference.md#topology) — declare/verify/external, dead-letter wiring
 - [Operations](reference.md#operations) — systemd/Supervisor/Kubernetes, metrics, backpressure
-- [Recipes](reference.md#recipes) — topology patterns, broker tuning, capacity planning
+- [Recipes](recipes.md) — topology patterns, broker tuning, capacity planning
 - [Laravel usage](reference.md#usage) — RabbitMqQueue API, events, job class, Horizon integration
 - [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability) — the at-least-once contract
 - [Native extension getting started](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/getting-started.md) — the engine underneath
