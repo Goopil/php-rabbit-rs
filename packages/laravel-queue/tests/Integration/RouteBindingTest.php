@@ -125,8 +125,20 @@ describe('topology command on the publish route', function () {
             "http://localhost:15672/api/bindings/{$vhostUrl}/e/{$this->exchangeName}/q/{$this->queueName}/{$routeBinding()[0]['properties_key']}",
         );
 
+        // The management listing is fed by broker events asynchronously, so
+        // immediately after the DELETE it can still list the binding and the
+        // verify pass below stays green — the CI flakes this guard fixes.
+        // Poll until the listing reflects the deletion: the deadline only
+        // widens the window, it never accepts a stale read (see
+        // ASYNC_BROKER_POLL_SECONDS in tests/Pest.php).
+        $deadline = microtime(true) + ASYNC_BROKER_POLL_SECONDS;
+        while ($routeBinding() !== [] && microtime(true) < $deadline) {
+            usleep(100_000);
+        }
+        expect($routeBinding())->toBeEmpty('binding deletion must be reflected by the management listing');
+
         $topology()
-            ->expectsOutputToContain("binding '{$this->exchangeName}' -> '{$this->queueName}'")
+            ->expectsOutputToContain("binding '{$this->exchangeName}' -> '{$this->queueName}' (routing key '{$this->queueName}') is missing")
             ->assertExitCode(1);
 
         // Declare-mode --fix re-declares the route binding (the lab's
