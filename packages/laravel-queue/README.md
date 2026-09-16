@@ -136,9 +136,9 @@ Details — dispatching, worker and queue resolution semantics, status counters,
 
 Task-oriented guides in the repository docs:
 
-- [Topology patterns](docs/reference.md#recipe-topology-patterns) — work queue vs pub-sub vs delayed, dead-letter wiring, gating topology in CI with `rabbit-rs:topology` / `rabbit-rs:doctor`
-- [Broker tuning](docs/reference.md#recipe-broker-tuning) — queue types, watermarks, max-length, heartbeat/confirm timeout, prefetch
-- [Capacity planning](docs/reference.md#recipe-capacity-planning) — sizing from the Round K soak evidence and the benchmark harness
+- [Topology patterns](docs/recipes.md#recipe-topology-patterns) — work queue vs pub-sub vs delayed, dead-letter wiring, gating topology in CI with `rabbit-rs:topology` / `rabbit-rs:doctor`
+- [Broker tuning](docs/recipes.md#recipe-broker-tuning) — queue types, watermarks, max-length, heartbeat/confirm timeout, prefetch
+- [Capacity planning](docs/recipes.md#recipe-capacity-planning) — sizing from the Round K soak evidence and the benchmark harness
 
 ## Laravel Horizon
 
@@ -146,7 +146,7 @@ Rabbit RS integrates with [Laravel Horizon](https://laravel.com/docs/horizon): s
 
 ## Octane
 
-When Laravel Octane is detected, the driver automatically closes cached consumers after each request, flushes all pools on worker reload (re-normalizing config so broker or credential rotation takes effect), and stops all pools on worker shutdown. No configuration needed — the lifecycle hooks are registered by the service provider. See [docs/reference.md — Octane](docs/reference.md#octane-integration).
+When Laravel Octane is detected, the driver automatically closes cached consumers after each request, flushes all pools on worker reload (re-normalizing config so broker or credential rotation takes effect), and stops all pools on worker shutdown. No configuration needed — the lifecycle hooks are registered by the service provider. See [docs/octane.md](docs/octane.md).
 
 ## Events
 
