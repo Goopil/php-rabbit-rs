@@ -15,7 +15,8 @@ use Illuminate\Support\Facades\Log;
  * Two sources, chosen per connection, summed over the connection's planned
  * queues:
  *
- * 1. The RabbitMQ management API (`messages_ready`) when the connection
+ * 1. The RabbitMQ management API (pending depth: `messages_ready` plus
+ *    `messages_unacknowledged`, #308) when the connection
  *    configures `management_url` — the zero-AMQP source, and the only one
  *    that still counts after every worker has exited (the one-shot final
  *    depth check).

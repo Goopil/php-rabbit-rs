@@ -19,7 +19,9 @@ beforeEach(function () {
 });
 
 describe('ManagementApi queue depth', function () {
-    it('reads messages_ready from the management api', function () {
+    it('adds messages_unacknowledged so an in-flight window is not invisible to the drain check', function () {
+        // Issue #308: --stop-when-empty saw ready=0 while the fleet's
+        // in-flight window was still unacked and stranded it.
         Http::fake([
             MGMT_API_URL.'/api/queues/*' => Http::response([
                 'messages' => 7,
@@ -28,7 +30,7 @@ describe('ManagementApi queue depth', function () {
             ]),
         ]);
 
-        expect(ManagementApi::queueDepth('rabbit-rs', 'default'))->toBe(5);
+        expect(ManagementApi::queueDepth('rabbit-rs', 'default'))->toBe(7);
     });
 
     it('requests the vhost-encoded queue endpoint with the connection credentials', function () {

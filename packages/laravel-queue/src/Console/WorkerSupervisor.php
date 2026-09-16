@@ -48,6 +48,19 @@ class WorkerSupervisor
      */
     private const STOP_ESCALATION_SECONDS = 15.0;
 
+    /**
+     * How long the one-shot drain check keeps polling the depth after it saw
+     * a fresh zero: the broker requeues an in-flight window seconds after the
+     * consumers leave, and quorum-queue gauges lag — concluding drained on
+     * the first zero strands that window (#308).
+     */
+    private const DRAIN_CONVERGENCE_SECONDS = 15.0;
+
+    /**
+     * Interval between the fresh depth polls of the drain convergence window.
+     */
+    private const DRAIN_CONVERGENCE_POLL_SECONDS = 1.0;
+
     private readonly int $initialWorkers;
 
     private readonly ?WorkScalePolicy $scalePolicy;
@@ -438,6 +451,28 @@ class WorkerSupervisor
     }
 
     /**
+     * Poll the depth fresh for a bounded window after the drain check saw a
+     * zero: the broker requeues an in-flight window seconds after the
+     * consumers leave, so the first zero can be a lag artifact, not a
+     * drained plan (#308). Returns early on the first non-zero reading (or
+     * a failed probe, which the inconclusive-retry budget handles) and on
+     * shutdown.
+     */
+    private function waitForDrainConvergence(\Closure $isShutdown): int
+    {
+        $deadline = microtime(true) + self::DRAIN_CONVERGENCE_SECONDS;
+        while (! $isShutdown() && microtime(true) < $deadline) {
+            usleep((int) (self::DRAIN_CONVERGENCE_POLL_SECONDS * 1_000_000));
+            $pending = $this->pendingDepth(fresh: true);
+            if ($pending !== 0) {
+                return $pending;
+            }
+        }
+
+        return 0;
+    }
+
+    /**
      * Once mode: every child runs exactly once and is never restarted — a
      * clean exit removes its slot, a crash is remembered as the command's
      * exit status without touching the other children. When the fleet drains,
@@ -501,6 +536,13 @@ class WorkerSupervisor
                     // The memoized read can be a stale 0 or a memoized failed probe:
                     // re-probe uncached before concluding the plan is drained (#287).
                     $pending = $this->pendingDepth(fresh: true);
+                }
+                if ($pending === 0) {
+                    // The ready gauge hits 0 while the fleet's in-flight window
+                    // is still unacked: the broker requeues it seconds after the
+                    // consumers leave and quorum gauges lag. Poll fresh for a
+                    // bounded window before concluding drained (#308).
+                    $pending = $this->waitForDrainConvergence($isShutdown);
                 }
                 if ($pending > 0
                     && ($reArms < self::MAX_ONE_SHOT_REARMS

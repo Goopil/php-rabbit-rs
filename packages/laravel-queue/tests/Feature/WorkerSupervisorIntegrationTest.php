@@ -584,6 +584,53 @@ describe('WorkerSupervisor integration', function () {
             ->and($spawned)->toBe($jobs);   // the stale 0 alone would have exited after the first spawn
     });
 
+    it('once mode re-arms when the broker requeues an in-flight window after the drain check saw zero', function () {
+        // Issue #308: --stop-when-empty observed a ready gauge of 0 while the
+        // in-flight window was still unacked; the broker requeues it seconds
+        // after the consumers leave, and the supervisor used to conclude
+        // drained on the first fresh zero — stranding the window.
+        $jobs = 10;     // 6 consumed live, 4 requeued by the broker with lag
+        $visible = 6;
+        $spawned = 0;
+        $freshZeroProbes = 0;
+        $factory = static function (int $workerIndex) use (&$spawned): Process {
+            $spawned++;
+
+            return new Process([PHP_BINARY, '-r', 'exit(0);']);
+        };
+
+        $supervisor = new WorkerSupervisor(
+            plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]],
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: $factory,
+            minWorkers: 1,
+            maxWorkers: 1,
+            once: true,
+            depthCallback: static function (bool $fresh = false) use (&$spawned, &$freshZeroProbes, $jobs, $visible): array {
+                $ready = max(0, $visible - $spawned);
+                if ($fresh && $ready === 0) {
+                    $freshZeroProbes++;
+                    // The requeued window only shows up on the third fresh
+                    // look: gauges lag behind the consumers' departure.
+                    if ($freshZeroProbes <= 2) {
+                        return ['rabbit-rs' => 0];
+                    }
+
+                    return ['rabbit-rs' => max(0, $jobs - $spawned)];
+                }
+
+                return ['rabbit-rs' => $ready];
+            },
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($spawned)->toBe($jobs);
+    });
+
     it('once mode retries a fully failed fresh probe within the re-arm budget instead of reporting a drained plan', function () {
         $probes = 0;
         $sampler = new QueueDepthSampler(
