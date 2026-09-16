@@ -4,6 +4,15 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.7] - 2026-09-16
+
+### Fixed
+
+- The documented `RABBIT_RS_PREFETCH` env JSON form works (issue #310): a JSON object string decodes into the `fixed` or `adaptive` prefetch forms instead of throwing at child boot. The supervisor logs a loud error carrying the worker index and the child stderr on every non-clean exit, and the depth sampler warns when a connection config fails to compile instead of silently dropping the connection from scaling.
+- `--stop-when-empty` no longer strands the in-flight window (issue #308): the management API depth reports pending messages (`messages_ready` + `messages_unacknowledged`), and the one-shot drain check polls the depth fresh for a bounded window (15 s) after a zero before concluding drained — the broker requeues an unacked window seconds after the consumers leave.
+- The closed-set pop storm is damped (issue #309): `pop()` recognizes the closed-set error and retries inline within a bounded budget (2 refetches, 250 ms then 500 ms backoff) before throwing — a recovery suspension shorter than the budget costs zero throws instead of one ERROR per pop-loop iteration.
+- The extension constraint pins `ext-rabbit_rs` to `^0.3.7`.
+
 ## [0.3.6] - 2026-09-15
 
 ### Changed

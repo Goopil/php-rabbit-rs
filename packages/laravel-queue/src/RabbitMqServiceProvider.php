@@ -29,7 +29,7 @@ class RabbitMqServiceProvider extends ServiceProvider
      * connection resolution. The `ext-rabbit_rs` suggest entry in
      * composer.json must reference this constraint.
      */
-    public const EXTENSION_CONSTRAINT = '^0.3.6';
+    public const EXTENSION_CONSTRAINT = '^0.3.7';
 
     public function register(): void
     {
