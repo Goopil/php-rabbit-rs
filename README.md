@@ -5,7 +5,7 @@
 [![CI](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/ci.yml)
 [![Release](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml/badge.svg)](https://github.com/Goopil/php-rabbit-rs/actions/workflows/release.yml)
 [![Codecov](https://img.shields.io/codecov/c/github/Goopil/php-rabbit-rs/main)](https://codecov.io/gh/Goopil/php-rabbit-rs)
-[![SonarCloud Quality Gate](https://sonarcloud.io/api/project_badges/quality_gate?project=Goopil_php-rabbit-rs)](https://sonarcloud.io/summary/new_code?id=Goopil_php-rabbit-rs)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=Goopil_php-rabbit-rs&metric=alert_status)](https://sonarcloud.io/dashboard?id=Goopil_php-rabbit-rs)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/Goopil/php-rabbit-rs?utm_source=badge)
 [![Packagist](https://img.shields.io/packagist/v/goopil/rabbit-rs-laravel)](https://packagist.org/packages/goopil/rabbit-rs-laravel)
 [![PHP](https://img.shields.io/badge/PHP-8.4%20%7C%208.5-informational)](https://www.php.net/supported-versions.php)
