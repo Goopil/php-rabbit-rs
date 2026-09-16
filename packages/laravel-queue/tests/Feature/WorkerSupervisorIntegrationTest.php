@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Console\WorkerSupervisor;
 use Goopil\RabbitRs\Laravel\Support\QueueDepthSampler;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
 const WORKER_STUB_PATH = '/Fixture/worker_stub.php';
@@ -491,6 +492,29 @@ describe('WorkerSupervisor integration', function () {
         expect($exit)->toBeGreaterThan(WorkerSupervisor::EXIT_CLEAN)
             ->and(array_keys($calls))->toBe([0, 1, 2, 3, 4, 5])
             ->and($calls)->each->toBe(1);
+    });
+
+    it('logs a loud error carrying the child stderr when a once-mode worker exits non-clean', function () {
+        // Issue #310: a misconfigured child used to die silently (supervisor
+        // never surfaced stderr), so boot failures were invisible to operators.
+        Log::shouldReceive('error')->atLeast()->once()->withArgs(
+            fn (string $message, array $context): bool => str_contains($message, 'worker exited with status 1')
+                && str_contains((string) ($context['stderr'] ?? ''), 'RABBIT_RS_STUB_LOUD'),
+        );
+
+        $calls = [];
+        $supervisor = makeSupervisor(
+            workers: 1,
+            maxRestarts: 3,
+            extraEnv: ['RABBIT_RS_STUB_MODE' => 'crash-loud'],
+            once: true,
+            calls: $calls,
+        );
+
+        $exit = $supervisor->run();
+
+        expect($exit)->toBe(1)
+            ->and($calls)->toBe([0 => 1]);
     });
 
     it('once mode drains a queue far deeper than the fleet by renewing the re-arm budget on progress', function () {

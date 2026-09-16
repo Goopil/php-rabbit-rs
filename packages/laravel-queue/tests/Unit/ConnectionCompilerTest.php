@@ -702,6 +702,37 @@ describe('adaptive prefetch', function (): void {
     });
 });
 
+describe('env json prefetch', function (): void {
+    it('decodes a JSON env string into the adaptive form', function (): void {
+        $adaptive = adaptivePrefetch();
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'prefetch' => json_encode($adaptive),
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe($adaptive);
+    });
+
+    it('decodes a JSON env string into the fixed form', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'prefetch' => '{"mode":"fixed","value":8}',
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'][0]['prefetch'])->toBe(8);
+    });
+
+    it('still enforces adaptive validation on the decoded JSON', function (): void {
+        expectCompileRejected([
+            'prefetch' => '{"mode":"adaptive","initial":16,"min":8,"max":4,"target_buffer_seconds":5}',
+        ], 'queue.connections.orders.prefetch.max');
+    });
+
+    it('rejects malformed JSON with the prefetch path', function (): void {
+        expectCompileRejected(['prefetch' => '{"mode":'], 'queue.connections.orders.prefetch');
+    });
+});
+
 /**
  * A valid adaptive prefetch config; $overrides patches individual keys
  * (e.g. to make it invalid for rejection tests).

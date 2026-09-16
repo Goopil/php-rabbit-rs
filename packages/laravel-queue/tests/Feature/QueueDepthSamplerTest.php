@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Goopil\RabbitRs\Laravel\Support\QueueDepthSampler;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 const SAMPLER_MGMT_URL = 'http://mq.local:15672';
 
@@ -105,6 +106,19 @@ describe('QueueDepthSampler source selection', function () {
 
         expect($depths)->toBe(['mq' => null])
             ->and($calls)->toBe([]);
+    });
+
+    it('warns loudly when a connection config fails to compile instead of silently skipping it', function () {
+        // Issue #310: an unusable config used to degrade to a silent null —
+        // scaling no-oped with no trace of why.
+        config()->set('queue.connections.mq.prefetch', 'definitely-not-a-number');
+        Log::shouldReceive('warning')->once()->withArgs(
+            fn (string $message): bool => str_contains($message, 'mq'),
+        );
+
+        $depths = sampler([['connection' => 'mq', 'queues' => ['default']]])->depths();
+
+        expect($depths)->toBe(['mq' => null]);
     });
 
     it('mixes strategies across connections: management api where configured, native elsewhere', function () {

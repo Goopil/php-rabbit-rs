@@ -67,6 +67,12 @@ namespace {
         exit(1);
     }
 
+    if ($mode === 'crash-loud') {
+        fwrite(STDERR, 'RABBIT_RS_STUB_LOUD: fatal config error');
+
+        exit(1);
+    }
+
     if ($mode === 'crash-after' && $invocation > $crashAfter) {
         exit(1);
     }

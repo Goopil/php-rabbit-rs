@@ -403,17 +403,30 @@ final class ConnectionCompiler
     }
 
     /**
-     * A plain integer compiles to a fixed prefetch (unchanged wire form); the
-     * `fixed` array form does the same, and the `adaptive` form rides through
-     * to the native config — which learns the job duration and adjusts the
-     * broker prefetch between min and max. Adaptive requires consumer
-     * acknowledgements: it is meaningless with early_ack or no_ack, where the
-     * settlement latency the EWMA learns does not exist.
+     * A plain integer compiles to a fixed prefetch (unchanged wire form); an
+     * env-style integer string casts the same way, and a JSON object string
+     * (the documented `RABBIT_RS_PREFETCH` env form) decodes into the `fixed`
+     * or `adaptive` array form. The `fixed` array form does the same, and the
+     * `adaptive` form rides through to the native config — which learns the
+     * job duration and adjusts the broker prefetch between min and max.
+     * Adaptive requires consumer acknowledgements: it is meaningless with
+     * early_ack or no_ack, where the settlement latency the EWMA learns does
+     * not exist.
      *
      * @return int|array{mode: string, initial: int, min: int, max: int, target_buffer_seconds: int}
      */
     private static function prefetch(mixed $prefetch, string $path, bool $earlyAck, bool $noAck): int|array
     {
+        if (is_string($prefetch) && str_starts_with(ltrim($prefetch), '{')) {
+            try {
+                $prefetch = json_decode($prefetch, true, 512, JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                self::invalid($path, 'must be an integer or a JSON object (fixed or adaptive prefetch)');
+            }
+            if (! is_array($prefetch) && ! is_int($prefetch)) {
+                self::invalid($path, 'must be an integer or a JSON object (fixed or adaptive prefetch)');
+            }
+        }
         if (is_int($prefetch) || is_string($prefetch)) {
             return self::positiveInt($prefetch, $path, 65535);
         }
