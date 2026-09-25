@@ -200,3 +200,25 @@ describe('native depth caching', function () {
             ->and($calls)->toBe([['mq', 'default']]);
     });
 });
+
+describe('ready-gauge reads (issue #318)', function () {
+    it('sums ready and unacked by default so the drain check sees the in-flight window', function () {
+        config()->set('queue.connections.mq.management_url', SAMPLER_MGMT_URL);
+        Http::fake([
+            SAMPLER_MGMT_URL.'/api/queues/*' => Http::response(['messages_ready' => 2, 'messages_unacknowledged' => 7]),
+        ]);
+
+        expect(sampler([['connection' => 'mq', 'queues' => ['default']]])->depths())->toBe(['mq' => 9]);
+    });
+
+    it('reports the ready gauge alone when the scaler requests readyOnly', function () {
+        config()->set('queue.connections.mq.management_url', SAMPLER_MGMT_URL);
+        Http::fake([
+            SAMPLER_MGMT_URL.'/api/queues/*' => Http::response(['messages_ready' => 0, 'messages_unacknowledged' => 3]),
+        ]);
+
+        // The scaler's admission read: work already claimed and in flight
+        // must not trigger admission for the fleet's own window (issue #318).
+        expect(sampler([['connection' => 'mq', 'queues' => ['default']]])->depths(readyOnly: true))->toBe(['mq' => 0]);
+    });
+});

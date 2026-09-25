@@ -972,6 +972,63 @@ describe('fan-out crash storms (issue #317)', function () {
             ->and($calls)->toBeLessThanOrEqual(8);
     });
 });
+describe('ready-gauge admission (issue #318)', function () {
+    it('admits scaled children on the ready gauge only, never on the fleet in-flight window', function () {
+        // One worker claims all 3 jobs instantly (prefetch covers them): the
+        // broker reports ready=0, unacked=3 — the summed drain gauge reads 3
+        // while the child works. The scaler used to read that summed gauge
+        // and admit to max-workers for work that was already claimed. The
+        // drain check must still see the full ready+unacked reading (issue
+        // #308) — so the scaler's reads must be explicitly flagged
+        // ready-only.
+        $stateDir = sys_get_temp_dir().'/rabbit-rs-ready-'.uniqid('', true);
+        @mkdir($stateDir, 0o777, true);
+        $readyOnlyFlagsFile = $stateDir.'/ready-only-flags.txt';
+        $spawned = 0;
+        $doneSeq = 0;
+        $factory = static function () use (&$spawned, &$doneSeq, $stateDir): Process {
+            $spawned++;
+            $doneFile = $stateDir.'/done-'.(++$doneSeq);
+
+            // The child claims its jobs at boot, works ~200ms, exits clean.
+            return new Process([PHP_BINARY, '-r', sprintf('usleep(200000); touch(%s); exit(0);', var_export($doneFile, true))]);
+        };
+
+        $supervisor = new class(plan: [['connection' => 'rabbit-rs', 'queues' => ['default']]], workers: 1, maxRestarts: 3, baseBackoffSeconds: 0, processFactory: $factory, minWorkers: 1, maxWorkers: 3, once: true, depthCallback: static function (bool $fresh = false, bool $readyOnly = false) use ($readyOnlyFlagsFile): array {
+            file_put_contents($readyOnlyFlagsFile, ($readyOnly ? '1' : '0'), FILE_APPEND);
+
+            if ($readyOnly) {
+                // The scaler's view: ready 0 — the fleet claimed everything.
+                return ['rabbit-rs' => 0];
+            }
+
+            // The drain check's view: ready 0 + unacked 3 until the
+            // claiming child completes its window, then fully drained.
+            $claimed = glob(dirname($readyOnlyFlagsFile).'/done-*') !== false
+                && glob(dirname($readyOnlyFlagsFile).'/done-*') !== [];
+
+            return ['rabbit-rs' => $claimed ? 0 : 3];
+        },
+        ) extends WorkerSupervisor {
+            protected function drainConvergenceSeconds(): float
+            {
+                return 0.5;
+            }
+        };
+
+        $exit = $supervisor->run();
+
+        // The scaler never admitted (ready 0): one child consumed its jobs,
+        // the fleet stayed at 1, the drain check concluded clean — while
+        // every drain read saw the in-flight 3.
+        $readyOnlyFlags = file_get_contents($readyOnlyFlagsFile) ?: '';
+        supervisorCleanupStateDir($stateDir);
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($spawned)->toBe(1)
+            ->and($readyOnlyFlags)->toContain('1');
+    });
+});
 /**
  * Bounded wait for a subprocess: a supervisor that never exits fails the
  * test on the deadline instead of hanging the suite.

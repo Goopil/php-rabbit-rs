@@ -81,40 +81,45 @@ final class QueueDepthSampler
     ) {}
 
     /**
-     * Ready depth per plan connection, null when none of its queues
+     * Pending depth per plan connection, null when none of its queues
      * reported a readable depth. Native lookups are memoized per
      * connection and queue for {@see NATIVE_CACHE_TTL_SECONDS}: pass
      * fresh: true to bypass the memoized read for a single call — the
      * supervisor's final once-mode drain check uses this so a stale 0 or
      * a memoized failed probe cannot end the drain with work pending
-     * (issue #287).
+     * (issue #287). With `readyOnly` the reading is `messages_ready`
+     * alone — the scaler's admission gauge, which must not count the
+     * fleet's own unacked in-flight window (issue #318); the drain check
+     * keeps the full ready + unacked reading (issue #308). The native
+     * probe path has no unacked concept (`Pool::size()` is ready-only)
+     * and ignores the flag.
      *
      * @return array<string, int|null>
      */
-    public function depths(bool $fresh = false): array
+    public function depths(bool $fresh = false, bool $readyOnly = false): array
     {
         $depths = [];
         foreach ($this->plan as $entry) {
-            $depths[$entry['connection']] = $this->depthFor($entry['connection'], $entry['queues'], $fresh);
+            $depths[$entry['connection']] = $this->depthFor($entry['connection'], $entry['queues'], $fresh, $readyOnly);
         }
 
         return $depths;
     }
 
     /**
-     * Ready depth of one connection: the sum over its planned queues of the
+     * Pending depth of one connection: the sum over its planned queues of the
      * first available source. Queues whose depth cannot be read contribute
      * nothing; a connection with no readable depth reports null.
      *
      * @param  list<string>  $queues
      */
-    private function depthFor(string $connection, array $queues, bool $fresh = false): ?int
+    private function depthFor(string $connection, array $queues, bool $fresh = false, bool $readyOnly = false): ?int
     {
         $depth = 0;
         $known = false;
         foreach ($queues as $queue) {
             $queueDepth = $this->hasManagementUrl($connection)
-                ? ManagementApi::queueDepth($connection, $queue)
+                ? ManagementApi::queueDepth($connection, $queue, $readyOnly)
                 : $this->probeQueueDepth($connection, $queue, $fresh);
             if ($queueDepth !== null) {
                 $known = true;

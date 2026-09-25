@@ -100,12 +100,14 @@ class WorkerSupervisor
      *                               terminated (also honored through $options for backwards compatibility).
      * @param  bool  $once  Once mode: children receive `--once` (a single job
      *                      each) under the same supervision semantics.
-     * @param  (\Closure(bool): DepthSample)|null  $depthCallback  Samples
+     * @param  (\Closure(bool, bool=): DepthSample)|null  $depthCallback  Samples
      *                                                                    the depth
      *                                                                    per connection name (null when unknown). The first
      *                                                                    argument is fresh: true for an uncached read — only
-     *                                                                    the one-shot final drain check does (issue #287).
-     *                                                                    Injected so
+     *                                                                    the one-shot final drain check does (issue #287). The
+     *                                                                    second is readyOnly: the scaler requests the ready
+     *                                                                    gauge only (issue #318), the drain check the full
+     *                                                                    pending reading (ready + unacked, #308). Injected so
      *                                                                    tests can fake it without HTTP; when absent, scaling
      *                                                                    and the one-shot final depth check never fire.
      */
@@ -762,7 +764,11 @@ class WorkerSupervisor
             return;
         }
 
-        $depths = $depthCallback(false);
+        // The scaler admits on the READY gauge only (second positional arg):
+        // the summed drain gauge includes this fleet's own unacked window, so
+        // every burst used to scale to max-workers for work that was already
+        // claimed (issue #318). The drain check keeps the summed reading.
+        $depths = $depthCallback(false, true);
 
         foreach (array_keys($this->plan) as $entryIndex) {
             $entryIndex = (int) $entryIndex;

@@ -21,11 +21,13 @@ final class ManagementApi
      * the management API (`GET {management_url}/api/queues/{vhost}/{queue}`):
      * `messages_ready` plus `messages_unacknowledged` — an in-flight window
      * must stay visible to the drain check, or --stop-when-empty strands it
-     * until the broker requeues it (issue #308). Null without
-     * `management_url`, on request failure, or when the response carries no
-     * gauge.
+     * until the broker requeues it (issue #308). With `readyOnly` the
+     * reading is `messages_ready` alone: the auto-scaler must not admit
+     * workers for the fleet's own unacked in-flight window (issue #318).
+     * Null without `management_url`, on request failure, or when the
+     * response carries no gauge.
      */
-    public static function queueDepth(string $connection, string $queue): ?int
+    public static function queueDepth(string $connection, string $queue, bool $readyOnly = false): ?int
     {
         $config = config('queue.connections.'.$connection);
         if (! is_array($config)) {
@@ -60,6 +62,10 @@ final class ManagementApi
         }
 
         $ready = $response->json('messages_ready');
+        if ($readyOnly) {
+            return is_numeric($ready) ? (int) $ready : null;
+        }
+
         $unacked = $response->json('messages_unacknowledged');
         if (! is_numeric($ready) && ! is_numeric($unacked)) {
             return null;
