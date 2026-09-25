@@ -14,6 +14,7 @@ use Symfony\Component\Process\Process;
  * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null, stop-when-empty?: bool}
  * @phpstan-type DepthSample array<string, int|null>
  * @phpstan-type ChildSlot array{process: Process, entry: int, restarts: int, restartAt: float, stopping: bool, stoppingAt: float}
+ * @phpstan-type EntryState array{reArms: int, lastDepth: int, cleanExits: int, closed: bool, convergenceDeadline: float, convergencePollAt: float}
  */
 class WorkerSupervisor
 {
@@ -36,9 +37,12 @@ class WorkerSupervisor
     private const PROPAGATED_OPTIONS = ['timeout', 'tries', 'memory', 'max-jobs', 'max-time'];
 
     /**
-     * How many times the one-shot final depth check may re-arm the initial
-     * fleet when it still finds work: bounds the pathological loop where
-     * late-async-flushed messages keep the fleet spinning.
+     * How many times one connection's once-mode final depth check may
+     * re-arm its own fleet when it still finds work: bounds the
+     * pathological loop where late-async-flushed messages keep the fleet
+     * spinning. The budget is PER CONNECTION (issue #317): a connection's
+     * re-arms are renewed only by that connection's own progress — another
+     * connection's clean exits or gauges must not renew it.
      */
     private const MAX_ONE_SHOT_REARMS = 3;
 
@@ -96,12 +100,14 @@ class WorkerSupervisor
      *                               terminated (also honored through $options for backwards compatibility).
      * @param  bool  $once  Once mode: children receive `--once` (a single job
      *                      each) under the same supervision semantics.
-     * @param  (\Closure(bool): DepthSample)|null  $depthCallback  Samples the ready
-     *                                                             depth per connection name (null when unknown); pass
-     *                                                             fresh: true for an uncached read — only the one-shot
-     *                                                             final drain check does (issue #287). Injected so tests
-     *                                                             can fake it without HTTP; when absent, scaling and the one-shot
-     *                                                             final depth check never fire.
+     * @param  (\Closure(bool): DepthSample)|null  $depthCallback  Samples
+     *                                                                    the depth
+     *                                                                    per connection name (null when unknown). The first
+     *                                                                    argument is fresh: true for an uncached read — only
+     *                                                                    the one-shot final drain check does (issue #287).
+     *                                                                    Injected so
+     *                                                                    tests can fake it without HTTP; when absent, scaling
+     *                                                                    and the one-shot final depth check never fire.
      */
     public function __construct(
         private readonly array $plan,
@@ -374,9 +380,20 @@ class WorkerSupervisor
     private function spawnInitialChildren(array &$slots): void
     {
         foreach (array_keys($this->plan) as $entryIndex) {
-            for ($i = 0; $i < $this->initialWorkers; $i++) {
-                $this->spawnSlot($slots, (int) $entryIndex);
-            }
+            $this->spawnEntryChildren($slots, (int) $entryIndex);
+        }
+    }
+
+    /**
+     * Spawns the initial fleet of ONE plan entry under fresh, never-reused
+     * indexes (the once-mode re-arm unit — issue #317).
+     *
+     * @param  array<int, ChildSlot>  $slots
+     */
+    private function spawnEntryChildren(array &$slots, int $entryIndex): void
+    {
+        for ($i = 0; $i < $this->initialWorkers; $i++) {
+            $this->spawnSlot($slots, $entryIndex);
         }
     }
 
@@ -414,6 +431,29 @@ class WorkerSupervisor
     }
 
     /**
+     * @return array<int, EntryState> once-mode drain bookkeeping per plan
+     *                                entry (issue #317: the re-arm budget,
+     *                                its progress signals, and the drain
+     *                                convergence window are per connection)
+     */
+    private function newEntryStates(): array
+    {
+        $states = [];
+        foreach (array_keys($this->plan) as $entryIndex) {
+            $states[(int) $entryIndex] = [
+                'reArms' => 0,
+                'lastDepth' => 0,
+                'cleanExits' => 0,
+                'closed' => false,
+                'convergenceDeadline' => 0.0,
+                'convergencePollAt' => 0.0,
+            ];
+        }
+
+        return $states;
+    }
+
+    /**
      * Whether auto-scaling is active: a max-workers bound and a depth source
      * are both required; anything less leaves the fleet static.
      */
@@ -423,70 +463,144 @@ class WorkerSupervisor
     }
 
     /**
-     * Total pending depth across the plan connections: the summed non-null
-     * gauge values, or -1 when every lookup failed (inconclusive). Pass
-     * fresh: true to bypass the depth sampler's memoized window — the final
-     * once-mode drain check must not trust a cached 0 or a memoized failed
-     * probe (issue #287).
+     * Pending depth of ONE plan entry's connection: the per-connection
+     * gauge from the depth callback, or -1 when that connection's lookup
+     * failed (inconclusive). The once-mode drain bookkeeping is per
+     * connection (issue #317): a crashing connection's re-arm budget must
+     * not be renewed or consumed by another connection's progress.
      */
-    private function pendingDepth(bool $fresh = false): int
+    private function pendingDepthFor(int $entryIndex, bool $fresh = false): int
     {
         $depthCallback = $this->depthCallback;
         if ($depthCallback === null) {
             return 0;
         }
 
-        $pending = 0;
-        $known = false;
-        foreach ($depthCallback($fresh) as $depth) {
-            if (is_int($depth)) {
-                $known = true;
-                if ($depth > 0) {
-                    $pending += $depth;
+        $depths = $depthCallback($fresh);
+        $depth = $depths[$this->plan[$entryIndex]['connection']] ?? null;
+
+        return is_int($depth) ? $depth : -1;
+    }
+
+    /**
+     * Seconds the per-entry drain check keeps polling the depth after it
+     * saw a fresh zero (hook overridable by tests). See
+     * {@see DRAIN_CONVERGENCE_SECONDS}.
+     */
+    protected function drainConvergenceSeconds(): float
+    {
+        return self::DRAIN_CONVERGENCE_SECONDS;
+    }
+
+    /**
+     * Resolves one empty-slots plan entry's drain state for the current
+     * loop tick: re-arms its fleet while work remains and its own budget
+     * allows, retries an inconclusive depth within the same budget, waits
+     * out the drain convergence window, or closes it when the budget burns
+     * out without progress. Returns true when the entry needs no further
+     * supervision (drained, or closed — issue #317).
+     *
+     * Non-blocking by design (issue #317): the convergence wait is deadline
+     * state on the entry, not a sleep, so the loop keeps supervising the
+     * other connections meanwhile.
+     *
+     * @param  array<int, ChildSlot>  $slots
+     * @param  array<int, EntryState>  $entryStates
+     */
+    private function settleEntry(int $entryIndex, array &$slots, array &$entryStates, float $now, \Closure $isShutdown): bool
+    {
+        $state = $entryStates[$entryIndex];
+
+        $pending = $this->pendingDepthFor($entryIndex);
+        if ($pending === 0) {
+            // The memoized read can be a stale 0 or a memoized failed probe:
+            // re-probe uncached before concluding the entry is drained (#287).
+            $pending = $this->pendingDepthFor($entryIndex, fresh: true);
+        }
+
+        if ($pending === 0) {
+            // The ready gauge hits 0 while the fleet's in-flight window is
+            // still unacked: the broker requeues it seconds after the
+            // consumers leave and quorum gauges lag. Poll fresh for a
+            // bounded window before concluding drained (#308) — per entry
+            // and without parking the loop (#317). A deadline of 0.0 means
+            // the window has not started yet.
+            if ($state['convergenceDeadline'] === 0.0) {
+                $state['convergenceDeadline'] = $now + $this->drainConvergenceSeconds();
+                $entryStates[$entryIndex] = $state;
+            }
+
+            if ($now >= $state['convergencePollAt']) {
+                $state['convergencePollAt'] = $now + self::DRAIN_CONVERGENCE_POLL_SECONDS;
+                $entryStates[$entryIndex] = $state;
+                $pending = $this->pendingDepthFor($entryIndex, fresh: true);
+            }
+
+            if ($pending !== 0) {
+                // Work came back inside the window: leave the re-arm
+                // decision below to handle it with a clean slate.
+                $state['convergenceDeadline'] = 0.0;
+                $entryStates[$entryIndex] = $state;
+            } elseif ($now < $state['convergenceDeadline']) {
+                if (! $isShutdown()) {
+                    return false;
                 }
             }
         }
 
-        return $known ? $pending : -1;
-    }
+        if ($pending > 0
+            && ($state['reArms'] < self::MAX_ONE_SHOT_REARMS
+                || $state['cleanExits'] > 0
+                || $pending < $state['lastDepth'])) {
+            $state['reArms']++;
+            $state['lastDepth'] = $pending;
+            $state['cleanExits'] = 0;
+            $state['closed'] = false;
+            $state['convergenceDeadline'] = 0.0;
+            $entryStates[$entryIndex] = $state;
+            $this->spawnEntryChildren($slots, $entryIndex);
 
-    /**
-     * Poll the depth fresh for a bounded window after the drain check saw a
-     * zero: the broker requeues an in-flight window seconds after the
-     * consumers leave, so the first zero can be a lag artifact, not a
-     * drained plan (#308). Returns early on the first non-zero reading (or
-     * a failed probe, which the inconclusive-retry budget handles) and on
-     * shutdown.
-     */
-    private function waitForDrainConvergence(\Closure $isShutdown): int
-    {
-        $deadline = microtime(true) + self::DRAIN_CONVERGENCE_SECONDS;
-        while (! $isShutdown() && microtime(true) < $deadline) {
-            usleep((int) (self::DRAIN_CONVERGENCE_POLL_SECONDS * 1_000_000));
-            $pending = $this->pendingDepth(fresh: true);
-            if ($pending !== 0) {
-                return $pending;
-            }
+            return false;
         }
 
-        return 0;
+        if ($pending < 0 && $state['reArms'] < self::MAX_ONE_SHOT_REARMS) {
+            // Every lookup failed for this connection: inconclusive, retry
+            // within the same bounded budget instead of reporting it drained.
+            $state['reArms']++;
+            $state['cleanExits'] = 0;
+            $entryStates[$entryIndex] = $state;
+
+            return false;
+        }
+
+        if ($pending !== 0) {
+            // The budget burned out without this connection showing progress
+            // (crash loop, or a gauge that never converges): the entry is
+            // closed — no further re-arms and no further scaler admissions
+            // for it (issue #317).
+            $state['closed'] = true;
+            $entryStates[$entryIndex] = $state;
+        }
+
+        return true;
     }
 
     /**
      * Once mode: every child runs exactly once and is never restarted — a
      * clean exit removes its slot, a crash is remembered as the command's
-     * exit status without touching the other children. When the fleet drains,
-     * a final depth check re-arms the initial fleet while work remains on the
-     * broker. The re-arm budget renews on observed progress: a clean child
-     * exit (the child consumed a job) or a decrease of the reported depth
-     * between re-arms — quorum-queue gauges lag seconds behind consumption,
-     * so completed children are the trustworthy progress signal (issue #269).
-     * The absolute cap then only binds a fleet that produces neither clean
-     * exits nor a decreasing gauge (crash loop, or a gauge that never
-     * converges). Without a depth source, or once progress stops, the
-     * supervisor returns with the highest child exit status. On
-     * SIGTERM/SIGINT, children are stopped gracefully and the command exits
-     * clean.
+     * exit status without touching the other children. When a connection's
+     * fleet drains, a final depth check re-arms that connection's initial
+     * fleet while work remains on its queues. Each plan entry carries its
+     * OWN re-arm budget, renewed only by that connection's progress (a
+     * clean child exit, or a decreasing gauge) — issue #317: the budget used
+     * to be global, so a healthy connection's clean exits kept renewing a
+     * crashing connection's re-arms and the fan-out supervisor spawn-stormed
+     * forever. The absolute cap then only binds an entry that produces
+     * neither clean exits nor a decreasing gauge; a closed entry receives no
+     * further re-arms and no further scaler admissions. Without a depth
+     * source, or once every entry stops progressing, the supervisor returns
+     * with the highest child exit status. On SIGTERM/SIGINT, children are
+     * stopped gracefully and the command exits clean.
      */
     private function runOneShot(): int
     {
@@ -496,9 +610,7 @@ class WorkerSupervisor
         $this->spawnInitialChildren($slots);
 
         $maxExit = null;
-        $reArms = 0;
-        $lastReArmDepth = 0;
-        $cleanExitsSinceReArm = 0;
+        $entryStates = $this->newEntryStates();
         $scaleStates = $this->newScaleStates();
         $lastScalePass = 0.0;
 
@@ -522,54 +634,36 @@ class WorkerSupervisor
                     $this->reportNonCleanExit($index, $slot['process']);
                 }
 
-                // A clean exit means the child consumed a job — observed
-                // progress the re-arm budget renews on. Crashed children
-                // consumed nothing, so they never renew the budget.
+                // A clean exit means this entry's child consumed a job —
+                // observed progress that renews THIS entry's re-arm budget
+                // (issue #317: never another connection's).
                 if ($exit === self::EXIT_CLEAN) {
-                    $cleanExitsSinceReArm++;
+                    $entryStates[$slot['entry']]['cleanExits']++;
                 }
             }
 
-            if ($slots === []) {
-                $pending = $this->pendingDepth();
-                if ($pending === 0) {
-                    // The memoized read can be a stale 0 or a memoized failed probe:
-                    // re-probe uncached before concluding the plan is drained (#287).
-                    $pending = $this->pendingDepth(fresh: true);
-                }
-                if ($pending === 0) {
-                    // The ready gauge hits 0 while the fleet's in-flight window
-                    // is still unacked: the broker requeues it seconds after the
-                    // consumers leave and quorum gauges lag. Poll fresh for a
-                    // bounded window before concluding drained (#308).
-                    $pending = $this->waitForDrainConvergence($isShutdown);
-                }
-                if ($pending > 0
-                    && ($reArms < self::MAX_ONE_SHOT_REARMS
-                        || $cleanExitsSinceReArm > 0
-                        || $pending < $lastReArmDepth)) {
-                    $reArms++;
-                    $lastReArmDepth = $pending;
-                    $cleanExitsSinceReArm = 0;
-                    $this->spawnInitialChildren($slots);
+            $allSettled = true;
+            foreach (array_keys($this->plan) as $entryIndex) {
+                $entryIndex = (int) $entryIndex;
 
-                    continue;
-                }
-                if ($pending < 0 && $reArms < self::MAX_ONE_SHOT_REARMS) {
-                    // Every fresh lookup failed: inconclusive, retry within the same
-                    // bounded budget instead of reporting a drained plan.
-                    $reArms++;
-                    $cleanExitsSinceReArm = 0;
+                if ($this->liveCount($slots, $entryIndex) > 0) {
+                    $allSettled = false;
 
                     continue;
                 }
 
+                if (! $this->settleEntry($entryIndex, $slots, $entryStates, $now, $isShutdown)) {
+                    $allSettled = false;
+                }
+            }
+
+            if ($allSettled) {
                 break;
             }
 
             if ($this->scalingEnabled() && $now - $lastScalePass >= $this->scaleCooldownSeconds) {
                 $lastScalePass = $now;
-                $this->runScalePass($now, $slots, $scaleStates, admitOnly: true);
+                $this->runScalePass($now, $slots, $scaleStates, admitOnly: true, entryStates: $entryStates);
             }
 
             usleep(100_000);
@@ -655,8 +749,13 @@ class WorkerSupervisor
      *
      * @param  array<int, ChildSlot>  $slots
      * @param  array<int, ScaleState>  $scaleStates
+     * @param  array<int, EntryState>  $entryStates  once-mode drain state:
+     *                                               a closed entry (re-arm
+     *                                               budget burned out without
+     *                                               progress, issue #317)
+     *                                               receives no admission
      */
-    private function runScalePass(float $now, array &$slots, array $scaleStates, bool $admitOnly): void
+    private function runScalePass(float $now, array &$slots, array $scaleStates, bool $admitOnly, array $entryStates = []): void
     {
         $depthCallback = $this->depthCallback;
         if ($depthCallback === null || $this->scalePolicy === null) {
@@ -666,9 +765,14 @@ class WorkerSupervisor
         $depths = $depthCallback(false);
 
         foreach (array_keys($this->plan) as $entryIndex) {
+            $entryIndex = (int) $entryIndex;
             $entry = $this->plan[$entryIndex];
             $depth = $depths[$entry['connection']] ?? null;
             if ($depth === null) {
+                continue;
+            }
+
+            if ($admitOnly && ($entryStates[$entryIndex]['closed'] ?? false)) {
                 continue;
             }
 

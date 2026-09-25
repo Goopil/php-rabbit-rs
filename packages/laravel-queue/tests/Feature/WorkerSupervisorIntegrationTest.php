@@ -869,6 +869,109 @@ describe('WorkerSupervisor integration', function () {
     });
 });
 
+describe('fan-out crash storms (issue #317)', function () {
+    /**
+     * Deterministic spawn script for a two-entry plan [broken, healthy]:
+     * spawn 1 is the broken connection's child (exits 1, a compile failure),
+     * spawn 2 is the healthy connection's child (exits 0, drains an empty
+     * queue); every later spawn is a broken re-arm or scaler admission (the
+     * healthy connection never re-arms or scales). Returns a factory that
+     * counts spawns and throws past the cap so an unbounded storm fails the
+     * test on a deadline instead of hanging the suite.
+     */
+    function stormFactory(int $spawnCap, int &$calls): Closure
+    {
+        return static function () use ($spawnCap, &$calls): Process {
+            $calls++;
+            if ($calls > $spawnCap) {
+                throw new RuntimeException("spawn storm: {$calls} children started, the supervisor never concluded (issue #317)");
+            }
+
+            return new Process([PHP_BINARY, '-r', $calls === 2 ? 'exit(0);' : 'exit(1);']);
+        };
+    }
+
+    it('bounds the once-mode re-arm budget per connection when a fan-out plan mixes a crashing and a draining connection', function () {
+        // One broken connection (compile failure: every child exits 1
+        // instantly) + one healthy connection draining an empty queue (every
+        // child exits 0 instantly, unreadable depth). The once-mode re-arm
+        // budget used to be GLOBAL: the healthy connection's clean exits
+        // renewed it forever, so the broken connection re-armed endlessly
+        // (~12 children/s, worker_index 484 in 40 s on the v0.3.7 roast).
+        $calls = 0;
+        $supervisor = new WorkerSupervisor(
+            plan: [
+                ['connection' => 'broken', 'queues' => ['default']],
+                ['connection' => 'healthy', 'queues' => ['default']],
+            ],
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: stormFactory(20, $calls),
+            options: ['stop-when-empty' => true],
+            depthCallback: static fn (bool $fresh = false): array => ['broken' => 10],
+        );
+
+        $exit = $supervisor->run();
+
+        // Bounded: the broken connection burns its own re-arm budget
+        // (initial + 3 re-arms) and the healthy one spawns exactly once —
+        // 5 children total, then the supervisor propagates the crash exit.
+        expect($exit)->toBe(1)
+            ->and($calls)->toBe(5);
+    });
+
+    it('bounds the fleet when auto-scaling fans out over a crashing connection', function () {
+        $calls = 0;
+        $supervisor = new WorkerSupervisor(
+            plan: [
+                ['connection' => 'broken', 'queues' => ['default']],
+                ['connection' => 'healthy', 'queues' => ['default']],
+            ],
+            workers: 1,
+            maxRestarts: 3,
+            baseBackoffSeconds: 0,
+            processFactory: stormFactory(20, $calls),
+            options: ['stop-when-empty' => true],
+            minWorkers: 1,
+            maxWorkers: 3,
+            depthCallback: static fn (bool $fresh = false): array => ['broken' => 10],
+        );
+
+        $exit = $supervisor->run();
+
+        // Bounded with scaling on: 2 initial + 2 admitted on the first scale
+        // pass + 3 bounded re-arms (the healthy connection never scales: its
+        // depth is unreadable) = 7 children, then the crash exit propagates.
+        expect($exit)->toBe(1)
+            ->and($calls)->toBe(7);
+    });
+
+    it('stops admitting scaled children once a crashing connection exhausts its re-arm budget', function () {
+        // The broken connection settles within its re-arm budget; the
+        // healthy connection then spends the (shortened) drain-convergence
+        // window idle. Scale passes during that window must not refill the
+        // closed broken connection (issue #317): without the closed-entry
+        // guard the fleet grows +2 per pass for the whole window.
+        $calls = 0;
+        $supervisor = new class(plan: [['connection' => 'broken', 'queues' => ['default']], ['connection' => 'healthy', 'queues' => ['default']]], workers: 1, maxRestarts: 3, baseBackoffSeconds: 0, processFactory: stormFactory(PHP_INT_MAX, $calls), options: ['stop-when-empty' => true], minWorkers: 1, maxWorkers: 3, scaleCooldownSeconds: 2.0, depthCallback: static fn (bool $fresh = false): array => ['broken' => 10, 'healthy' => 0]) extends WorkerSupervisor
+        {
+            protected function drainConvergenceSeconds(): float
+            {
+                return 3.0;
+            }
+        };
+
+        $exit = $supervisor->run();
+
+        // Guarded: at most 2 initial + 2 admitted before the broken
+        // connection settles + 3 re-arms = 7; the healthy connection drains
+        // once and converges through its window.
+        expect($exit)->toBe(1)
+            ->and($calls)->toBeGreaterThanOrEqual(5)
+            ->and($calls)->toBeLessThanOrEqual(8);
+    });
+});
 /**
  * Bounded wait for a subprocess: a supervisor that never exits fails the
  * test on the deadline instead of hanging the suite.
