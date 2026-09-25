@@ -125,11 +125,11 @@ class RabbitMqWorkCommand extends Command
      *
      * @param  list<array{connection: string, queues: list<string>}>  $plan
      * @return \Closure(bool, bool=): array<string, int|null> pass
-     *                                                 fresh: true to bypass the sampler's memoized window for a
-     *                                                 single call (the once-mode final drain check, issue #287);
-     *                                                 readyOnly: true selects the ready gauge only for the
-     *                                                 scaler's admission reads (issue #318) — the drain check
-     *                                                 keeps the full ready + unacked reading (issue #308)
+     *                                                        fresh: true to bypass the sampler's memoized window for a
+     *                                                        single call (the once-mode final drain check, issue #287);
+     *                                                        readyOnly: true selects the ready gauge only for the
+     *                                                        scaler's admission reads (issue #318) — the drain check
+     *                                                        keeps the full ready + unacked reading (issue #308)
      */
     private function depthCallback(array $plan): \Closure
     {
