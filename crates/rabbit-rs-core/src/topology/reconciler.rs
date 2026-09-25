@@ -79,6 +79,15 @@ pub struct TopologyReconcileError {
     source: TransportError,
 }
 
+impl TopologyReconcileError {
+    /// The typed transport failure that aborted reconciliation, so callers
+    /// can preserve its recoverability when routing the loss.
+    #[must_use]
+    pub fn transport_error(&self) -> &TransportError {
+        &self.source
+    }
+}
+
 impl fmt::Display for TopologyReconcileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "topology reconciliation failed: {}", self.source)
