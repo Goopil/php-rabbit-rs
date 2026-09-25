@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.3.9] - 2026-09-25
+
+### Changed
+
+- No functional changes — this tag ships the fully-green build artifacts for the #317/#318/#319 wave. The release pipeline's macOS leg moved off `macos-14` (Sonoma) because the `shivammathur/homebrew-php` tap stopped publishing Sonoma bottles on 2026-09-23, so setup-php fell back to a silent ~20 min source build of PHP on the runner and failed; macOS runners now use `macos-15` (Sequoia, prebuilt bottles) across the release, functional-matrix and homebrew-formula-test workflows.
+
 ## [0.3.8] - 2026-09-25
 
 ### Fixed

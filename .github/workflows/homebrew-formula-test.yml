@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   audit-formula:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -25,7 +25,7 @@ jobs:
           brew audit --strict --formula goopil/rabbit-rs/rabbit-rs
 
   test-install:
-    runs-on: macos-14
+    runs-on: macos-15
     needs: [audit-formula]
     # Skip install test if the formula still has placeholder SHA-256 values
     # (before the first real release populates them).

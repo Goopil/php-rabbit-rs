@@ -4,6 +4,12 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.9] - 2026-09-25
+
+### Changed
+
+- No package changes — synchronized with native v0.3.9 (`EXTENSION_CONSTRAINT` now `^0.3.9`). This tag exists because the v0.3.8 release pipeline's macOS leg failed (Homebrew dropped Sonoma PHP bottles), so v0.3.9 re-publishes the complete artifact set including macOS binaries.
+
 ## [0.3.8] - 2026-09-25
 
 ### Fixed
