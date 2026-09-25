@@ -4,7 +4,7 @@ Rabbit RS is a monorepo with three components: a Rust core, a native PHP extensi
 
 ## Prerequisites
 
-- **Rust** 1.96.0 (pinned in `rust-toolchain.toml`)
+- **Rust** 1.98.1 (pinned in `rust-toolchain.toml`)
 - **PHP** 8.4 or 8.5 with development headers
 - **Composer** for PHP dependencies
 - **Docker** for the RabbitMQ test lab (integration tests only)

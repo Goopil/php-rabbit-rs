@@ -37,7 +37,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 
 ## Toolchain and Commands
 
-- Rust is pinned to 1.96.0 and uses edition 2024.
+- Rust is pinned to 1.98.1 and uses edition 2024.
 - Run focused checks while iterating:
   - `rtk cargo test -p rabbit-rs-core config::tests`
   - `rtk cargo test -p rabbit-rs-core --test publisher_safety`
@@ -108,7 +108,7 @@ The delivery contract is at-least-once: silent loss is unacceptable, while dupli
 
 - `cargo-nextest` replaces `cargo test` in CI and `scripts/check.sh` (with fallback to `cargo test` if not installed). Config in `.config/nextest.toml` (profile `ci` emits JUnit XML to `target/nextest/junit.xml`).
 - `cargo-llvm-cov` collects Rust coverage as LCOV. Local: `./scripts/coverage-rust.sh`.
-- PHP extension coverage uses `-Cinstrument-coverage` on the cdylib + PHP tests, then `llvm-profdata`/`llvm-cov` from the rustup toolchain (not system LLVM — version must match Rust 1.96). Local: `./scripts/coverage-php-ext.sh`.
+- PHP extension coverage uses `-Cinstrument-coverage` on the cdylib + PHP tests, then `llvm-profdata`/`llvm-cov` from the rustup toolchain (not system LLVM — version must match Rust 1.98). Local: `./scripts/coverage-php-ext.sh`.
 - Laravel coverage uses PCOV + Pest `--coverage-clover`. Local: `./scripts/coverage-laravel.sh`.
 - `./scripts/coverage.sh` runs all three locally and prints a summary.
 - CI workflow `.github/workflows/coverage.yml` has 3 jobs: `coverage-rust`, `coverage-php-ext`, `coverage-laravel`.

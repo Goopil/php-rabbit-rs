@@ -104,7 +104,7 @@ No extra configuration required: pop the queue directly — it is the connection
 | Native extension | `ext-rabbit_rs ^0.3.6` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
 | Delivery | At-least-once: duplicates are permitted and measured (`duplicates_total`, `messages_redelivered`); silent loss after confirmed-path acceptance is a bug |
 
-- **Rust** 1.96.0 (contributors only — see [Contributing](#contributing))
+- **Rust** 1.98.1 (contributors only — see [Contributing](#contributing))
 
 ## Distribution channels
 

@@ -64,7 +64,7 @@ echo "Running Pest tests with coverage instrumentation..."
 
 echo "Resolving llvm-profdata/llvm-cov from the rustup toolchain..."
 # The profraw/profdata format must match the toolchain that built the
-# instrumented artifact (Rust 1.96), so system LLVM must not be used
+# instrumented artifact (Rust 1.98), so system LLVM must not be used
 # (see AGENTS.md). This script is the canonical implementation; the CI
 # job in .github/workflows/coverage.yml calls it.
 LLVM_BIN_DIR="$(dirname "$(find "${HOME}/.rustup" -name llvm-profdata -type f 2>/dev/null | head -1)")"

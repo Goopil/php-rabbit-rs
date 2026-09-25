@@ -4,12 +4,12 @@
 # those installs out of every CI run and out of GitHub API 504 blast radius.
 #
 # The toolchain pin must match .github/actions/rust-setup and the CI jobs
-# (Rust 1.96.0): bump both together.
+# (Rust 1.98.1): bump both together.
 ARG PHP_VERSION=8.4
 ARG PHP_FLAVOR=cli
 FROM php:${PHP_VERSION}-${PHP_FLAVOR}
 
-ARG RUST_VERSION=1.96.0
+ARG RUST_VERSION=1.98.1
 
 # Superset of the package lists the PHPT (cli) and FPM certification (fpm)
 # jobs used to install on every run.

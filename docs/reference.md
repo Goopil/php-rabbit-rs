@@ -684,7 +684,7 @@ The `install.sh` script wraps `cargo php install` with the correct manifest path
 
 #### Requirements for local compilation
 
-- Rust 1.96.0 (pinned in `rust-toolchain.toml`)
+- Rust 1.98.1 (pinned in `rust-toolchain.toml`)
 - `cargo-php` (install with `cargo install cargo-php`)
 - PHP 8.4 or 8.5 with development headers
 - `libssl-dev` (or `openssl-devel` / `openssl-dev` depending on your distro)

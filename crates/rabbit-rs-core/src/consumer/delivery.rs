@@ -148,7 +148,7 @@ impl Delivery {
     ///
     /// Returns a typed error if the delivery was already settled, the
     /// command channel is full, or the consumer is closed.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn ack(&self) -> Result<(), ConsumerError> {
         self.token
             .try_settle(Settlement::Ack)
@@ -165,7 +165,7 @@ impl Delivery {
     ///
     /// Returns a typed error when the delivery was already settled, the
     /// command channel is full, or the consumer is closed.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn release(&self, delay: Duration) -> Result<(), ConsumerError> {
         self.token
             .try_settle(Settlement::Release(delay))
@@ -182,7 +182,7 @@ impl Delivery {
     ///
     /// Returns a typed error for already settled deliveries, a full command
     /// channel, or a closed consumer.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn reject(&self, requeue: bool) -> Result<(), ConsumerError> {
         self.token
             .try_settle(Settlement::Reject(requeue))

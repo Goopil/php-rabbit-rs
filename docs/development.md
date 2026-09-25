@@ -361,7 +361,7 @@ Run on a quiet machine: the orchestrator manages the RabbitMQ lab itself
 (started before tier 5, shared by tiers 5, 6, 8, 9, stopped at the end).
 
 - Docker (daemon running) and the usual shell tooling (`jq`, `curl`, `git`)
-- Rust 1.96 (pinned by `rust-toolchain.toml`)
+- Rust 1.98 (pinned by `rust-toolchain.toml`)
 - PHP 8.4+ with `php-config` (and `php-fpm` for tier 5)
 - `/etc/hosts` mapping for the SAN-negative TLS case —
   `sudo sh -c 'echo "127.0.0.1 wrong.internal" >> /etc/hosts'` (CI adds the

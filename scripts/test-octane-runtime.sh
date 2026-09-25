@@ -376,7 +376,7 @@ ensure_frankenphp_extension() {
         bash -lc 'set -e
             php -r "exit(PHP_ZTS ? 0 : 1);" && echo "embedded PHP is ZTS"
             if ! command -v cargo >/dev/null 2>&1; then
-                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+                curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.1 --profile minimal
             fi
             . "$HOME/.cargo/env"
             apt-get update -qq && apt-get install -y -qq libclang-dev
