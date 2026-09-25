@@ -14,7 +14,7 @@ use Symfony\Component\Process\Process;
  * @phpstan-type WorkerOptions array{timeout?: int|null, tries?: int|null, memory?: int|null, max-jobs?: int|null, max-time?: int|null, stop-when-empty?: bool}
  * @phpstan-type DepthSample array<string, int|null>
  * @phpstan-type ChildSlot array{process: Process, entry: int, restarts: int, restartAt: float, stopping: bool, stoppingAt: float}
- * @phpstan-type EntryState array{reArms: int, lastDepth: int, cleanExits: int, closed: bool, convergenceDeadline: float, convergencePollAt: float}
+ * @phpstan-type EntryState array{reArms: int, lastDepth: int, cleanExits: int, closed: bool, sawWork: bool, convergenceDeadline: float, convergencePollAt: float}
  */
 class WorkerSupervisor
 {
@@ -447,6 +447,7 @@ class WorkerSupervisor
                 'lastDepth' => 0,
                 'cleanExits' => 0,
                 'closed' => false,
+                'sawWork' => false,
                 'convergenceDeadline' => 0.0,
                 'convergencePollAt' => 0.0,
             ];
@@ -500,7 +501,10 @@ class WorkerSupervisor
      * allows, retries an inconclusive depth within the same budget, waits
      * out the drain convergence window, or closes it when the budget burns
      * out without progress. Returns true when the entry needs no further
-     * supervision (drained, or closed — issue #317).
+     * supervision (drained, or closed — issue #317). A gauge that never
+     * read positive during this supervisor's life skips the convergence
+     * window entirely — there is no in-flight work for it to catch
+     * (issue #319).
      *
      * Non-blocking by design (issue #317): the convergence wait is deadline
      * state on the entry, not a sleep, so the loop keeps supervising the
@@ -514,10 +518,30 @@ class WorkerSupervisor
         $state = $entryStates[$entryIndex];
 
         $pending = $this->pendingDepthFor($entryIndex);
+        if ($pending > 0) {
+            // The gauge read positive: this connection demonstrably held
+            // work during this supervisor's life (issue #319).
+            $state['sawWork'] = true;
+        }
+
         if ($pending === 0) {
             // The memoized read can be a stale 0 or a memoized failed probe:
             // re-probe uncached before concluding the entry is drained (#287).
             $pending = $this->pendingDepthFor($entryIndex, fresh: true);
+            if ($pending > 0) {
+                $state['sawWork'] = true;
+            }
+        }
+
+        if ($pending === 0 && ! $state['sawWork']) {
+            // The gauge never read positive during this supervisor's life:
+            // the queue was empty since boot, so nothing can have been
+            // claimed and hidden from the gauge — the #308 convergence
+            // window has nothing to catch. Conclude drained immediately
+            // (issue #319).
+            $entryStates[$entryIndex] = $state;
+
+            return true;
         }
 
         if ($pending === 0) {

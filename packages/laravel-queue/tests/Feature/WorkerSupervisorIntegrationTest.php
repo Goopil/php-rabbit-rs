@@ -972,6 +972,7 @@ describe('fan-out crash storms (issue #317)', function () {
             ->and($calls)->toBeLessThanOrEqual(8);
     });
 });
+
 describe('ready-gauge admission (issue #318)', function () {
     it('admits scaled children on the ready gauge only, never on the fleet in-flight window', function () {
         // One worker claims all 3 jobs instantly (prefetch covers them): the
@@ -1029,6 +1030,42 @@ describe('ready-gauge admission (issue #318)', function () {
             ->and($readyOnlyFlags)->toContain('1');
     });
 });
+
+describe('empty-queue drain cost (issue #319)', function () {
+    it('concludes an empty-since-boot drain immediately instead of paying the convergence window', function () {
+        // The fleet boots on an empty queue: the children exit clean
+        // without consuming anything (an empty queue's clean exit is not
+        // evidence of consumed work), and the gauge reads 0 from the very
+        // first probe — fresh included. The #308 convergence window guards
+        // against in-flight work the gauge could still reveal, but when
+        // the gauge never read positive during this supervisor's life,
+        // there is no such work to catch: conclude drained immediately
+        // instead of burning the full window (issue #319).
+        $this->stateDir = sys_get_temp_dir().'/rabbit-rs-supervisor-'.uniqid('', true);
+        @mkdir($this->stateDir, 0o777, true);
+
+        $startedAt = microtime(true);
+        $calls = [];
+        $supervisor = makeSupervisor(
+            workers: 2,
+            maxRestarts: 0,
+            options: ['stop-when-empty' => true],
+            modes: [0 => 'exit-clean', 1 => 'exit-clean'],
+            calls: $calls,
+            once: true,
+            depth: 0,
+        );
+
+        $exit = $supervisor->run();
+        $elapsed = microtime(true) - $startedAt;
+        supervisorCleanupStateDir($this->stateDir);
+
+        expect($exit)->toBe(WorkerSupervisor::EXIT_CLEAN)
+            ->and($calls)->toBe([0 => 1, 1 => 1])
+            ->and($elapsed)->toBeLessThan(3.0);
+    });
+});
+
 /**
  * Bounded wait for a subprocess: a supervisor that never exits fails the
  * test on the deadline instead of hanging the suite.
