@@ -71,12 +71,15 @@ struct LapinConnection {
     inner: Connection,
 }
 
-/// Filters the lapin connection event stream down to connection errors.
+/// Filters the lapin connection event stream down to connection-fatal errors.
 ///
 /// With lapin's default `auto_recover: false`, every recoverable connection
 /// failure (including heartbeat timeouts) is emitted as `Event::Error`.
+/// Channel-scoped failures (e.g. a failed passive declare on an admin
+/// channel) are also emitted there while the connection itself stays up.
 struct LapinErrorStream {
     events: Pin<Box<dyn futures_util::Stream<Item = lapin::Event> + Send>>,
+    connection_alive: Box<dyn Fn() -> bool + Send>,
 }
 
 #[async_trait]
@@ -84,9 +87,21 @@ impl super::TransportErrorStream for LapinErrorStream {
     async fn next(&mut self) -> Option<TransportError> {
         loop {
             let event = self.events.as_mut().next().await?;
-            if let lapin::Event::Error(error) = event {
-                return Some(map_lapin_error(error));
+            let lapin::Event::Error(error) = event else {
+                continue;
+            };
+            // lapin surfaces channel-scoped failures (e.g. a failed passive
+            // declare on an admin channel) on the connection event stream
+            // while the connection itself stays `Connected`; it flips the
+            // connection state *before* emitting connection-fatal errors.
+            // The status is therefore read at event time: a live connection
+            // proves the failure was channel-scoped and must not tear the
+            // connection down — the owning channel already reports it to its
+            // caller, and `DelayKeepAlive` containment depends on this.
+            if (self.connection_alive)() {
+                continue;
             }
+            return Some(map_lapin_error(error));
         }
     }
 }
@@ -94,8 +109,10 @@ impl super::TransportErrorStream for LapinErrorStream {
 #[async_trait]
 impl TransportConnection for LapinConnection {
     fn error_stream(&self) -> Box<dyn super::TransportErrorStream> {
+        let status = self.inner.status().clone();
         Box::new(LapinErrorStream {
             events: Box::pin(self.inner.events_listener()),
+            connection_alive: Box::new(move || status.connected()),
         })
     }
 
@@ -722,18 +739,119 @@ fn map_lapin_error(error: lapin::Error) -> TransportError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use bytes::Bytes;
+    use lapin::protocol::{AMQPError, AMQPErrorKind, AMQPSoftError};
     use lapin::tcp::OwnedTLSConfig;
     use lapin::types::{AMQPValue, FieldTable};
 
     use super::{
-        build_tls_config, connection_uri, map_header_value, map_headers, publish_header_value,
-        publish_properties,
+        LapinErrorStream, build_tls_config, connection_uri, map_header_value, map_headers,
+        publish_header_value, publish_properties,
     };
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig, TlsVerify};
+    use crate::transport::TransportErrorStream;
     use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
+
+    fn protocol_error(kind: AMQPErrorKind, message: &str) -> lapin::Error {
+        lapin::Error::from(lapin::ErrorKind::ProtocolError(AMQPError::new(
+            kind,
+            message.into(),
+        )))
+    }
+
+    #[tokio::test]
+    async fn channel_scoped_errors_do_not_kill_a_live_connection() {
+        let mut stream = LapinErrorStream {
+            events: Box::pin(futures_util::stream::iter(vec![lapin::Event::Error(
+                protocol_error(
+                    AMQPErrorKind::Soft(AMQPSoftError::NOTFOUND),
+                    "no queue 'rabbit-rs.delay.x' in vhost '/'",
+                ),
+            )])),
+            connection_alive: Box::new(|| true),
+        };
+
+        assert!(
+            stream.next().await.is_none(),
+            "a channel-scoped failure must not be reported as a connection loss"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_refusals_surface_once_the_connection_is_down() {
+        let mut stream = LapinErrorStream {
+            events: Box::pin(futures_util::stream::iter(vec![lapin::Event::Error(
+                protocol_error(
+                    AMQPErrorKind::Soft(AMQPSoftError::ACCESSREFUSED),
+                    "vhost access refused",
+                ),
+            )])),
+            connection_alive: Box::new(|| false),
+        };
+
+        let error = stream
+            .next()
+            .await
+            .expect("a connection.close refusal must surface");
+
+        assert_eq!(
+            error.kind(),
+            crate::transport::TransportErrorKind::Authentication
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn errors_surface_again_once_the_connection_dies_mid_stream() {
+        let alive = Arc::new(AtomicBool::new(true));
+        let events_alive = alive.clone();
+        let stream_alive = alive.clone();
+
+        let events =
+            futures_util::stream::unfold((0u8, events_alive), |(step, alive)| async move {
+                match step {
+                    0 => Some((
+                        lapin::Event::Error(protocol_error(
+                            AMQPErrorKind::Soft(AMQPSoftError::NOTFOUND),
+                            "no queue 'rabbit-rs.delay.x' in vhost '/'",
+                        )),
+                        (1, alive),
+                    )),
+                    1 => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        Some((
+                            lapin::Event::Error(protocol_error(
+                                AMQPErrorKind::Soft(AMQPSoftError::NOTFOUND),
+                                "second channel failure after the connection died",
+                            )),
+                            (2, alive),
+                        ))
+                    }
+                    _ => None,
+                }
+            });
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            alive.store(false, Ordering::Relaxed);
+        });
+
+        let mut stream = LapinErrorStream {
+            events: Box::pin(events),
+            connection_alive: Box::new(move || stream_alive.load(Ordering::Relaxed)),
+        };
+
+        let error = stream
+            .next()
+            .await
+            .expect("errors must surface again once the connection is down");
+        assert_eq!(
+            error.kind(),
+            crate::transport::TransportErrorKind::Connection
+        );
+    }
 
     fn broker_with_tls(host: &str, tls: TlsConfig) -> BrokerConfig {
         BrokerConfig {
