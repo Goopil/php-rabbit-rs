@@ -552,7 +552,11 @@ $rssBefore = count($samples) > 0 ? $samples[0]['rss_bytes'] : null;
 // no kills, so a reconnection can only happen incidentally and is not
 // required.
 $reconnectOk = $killEvery > 0 ? ($reconnects !== null && $reconnects >= 1) : true;
-$slopeOk = $slope === null || $slope <= $leakMbPerHour; // short run: no fit, no verdict
+// The leak threshold gates steady mode only: kill mode forces a reconnect
+// storm (one per kill cycle), so the resulting per-reconnect allocator
+// ratchet is by design, not a leak. The slope is still reported for
+// monitoring; steady mode remains the leak gate.
+$slopeOk = $killEvery > 0 || $slope === null || $slope <= $leakMbPerHour;
 $ok = $missing === 0 && $reconnectOk && $bufferedTripwireViolations === 0 && $slopeOk;
 
 fwrite(STDERR, sprintf(

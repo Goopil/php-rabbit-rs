@@ -816,6 +816,47 @@ async fn permanent_error_stops_the_recovery_loop() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn permanent_topology_failure_fails_the_pool_instead_of_retrying_forever() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_connect_result(Ok(()));
+    // A topology declare the broker refuses permanently (e.g. vhost
+    // permissions reject the queue name): recovery must fail the pool,
+    // never flatten the refusal into a recoverable loss that reconnects
+    // and re-declares forever.
+    transport.push_operation_result(Err(TransportError::authentication(
+        "ACCESS_REFUSED: no permission to declare queue",
+    )));
+
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    let state = tokio::select! {
+        state = coordinator.wait_for_state(|state| {
+            matches!(state, ConnectionState::FailedPermanent { .. })
+        }) => state,
+        ready = coordinator.wait_for_state(|state| {
+            matches!(state, ConnectionState::Ready { generation: 2.. })
+        }) => {
+            panic!("a permanent topology failure was retried and the pool reached {ready:?}")
+        }
+    };
+
+    assert!(matches!(
+        state,
+        ConnectionState::FailedPermanent {
+            kind: TransportErrorKind::Authentication,
+            ..
+        }
+    ));
+
+    coordinator.close().await.expect("close");
+}
+
+#[tokio::test(start_paused = true)]
 async fn recovery_failure_rolls_back_and_retries() {
     let transport = Arc::new(MockTransport::default());
     // First connection succeeds; recovery generation 1 will attempt consumers.

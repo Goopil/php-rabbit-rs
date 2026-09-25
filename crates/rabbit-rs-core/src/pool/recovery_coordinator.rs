@@ -424,6 +424,24 @@ impl RecoveryCoordinatorHandle {
     }
 }
 
+/// Maps a failed recovery generation to the loss error the connection actor
+/// must act on: a permanent underlying cause (authentication, protocol) stays
+/// permanent so [`route_loss`] fails the pool, while every recoverable cause
+/// keeps the historical `recovery failed: …` connection error.
+fn recovery_loss_error(error: &CoordinatorError) -> TransportError {
+    let transport = match error {
+        CoordinatorError::Topology(reconcile) => Some(reconcile.transport_error().clone()),
+        CoordinatorError::Transport(transport) => Some(transport.clone()),
+        CoordinatorError::Publisher(_)
+        | CoordinatorError::Consumer(_)
+        | CoordinatorError::Internal(_) => None,
+    };
+    match transport {
+        Some(transport) if !transport.is_recoverable() => transport,
+        _ => TransportError::connection(format!("recovery failed: {error}")),
+    }
+}
+
 async fn run_coordinator(
     actor: ConnectionActorHandle,
     context: Arc<CoordinatorContext>,
@@ -484,15 +502,17 @@ async fn run_coordinator(
                                 "recovery_coordinator",
                                 format!("recovery generation {generation} failed: {error}"),
                             );
-                            // Roll back so the next Ready re-attempts recovery.
+                            // Roll back so a recoverable cause re-attempts
+                            // recovery on the next Ready generation.
                             last_generation = generation.saturating_sub(1);
-                            // Drive the actor back to Recovering so the
-                            // deterministic recovery order is re-attempted.
-                            let _ = actor
-                                .connection_lost(TransportError::connection(format!(
-                                    "recovery failed: {error}"
-                                )))
-                                .await;
+                            // The actor must learn the failure's
+                            // recoverability: flattening a permanent cause
+                            // (e.g. ACCESS_REFUSED on a topology declare)
+                            // into a recoverable loss would reconnect and
+                            // re-declare a refused topology forever, with
+                            // the caller's readiness timeout as the only
+                            // bound.
+                            let _ = actor.connection_lost(recovery_loss_error(&error)).await;
                         }
                     }
                     ConnectionState::Recovering { .. } | ConnectionState::Connecting { .. } => {
