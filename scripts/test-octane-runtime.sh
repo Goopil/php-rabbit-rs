@@ -23,7 +23,7 @@ set -euo pipefail
 #
 # Pinned upstream versions (see ensure_roadrunner_binary / ensure_frankenphp_image):
 #   RoadRunner   v2025.1.15 — sha256 recorded per platform below, verified at download
-#   FrankenPHP   dunglas/frankenphp:php8.4 — digest-pinned below
+#   FrankenPHP   dunglas/frankenphp:php8.4 — pulled by digest (pinned below)
 #   Composer     laravel/framework ^12.0, laravel/octane ^2.0, spiral/roadrunner-http ^3.3,
 #                spiral/roadrunner-cli ^2.6 (constraints in the Runtime app composer.json)
 #
@@ -78,7 +78,12 @@ ROADRUNNER_SHA256=(
     "linux-amd64:74589ff95e022dddf163f9316821cb80423a7db9865e96ce30a436d6898e34e7"
     "linux-arm64:f384d14b8687520816fc7ec204bb78f2fa54aba4da5336adef91d298fd6420d1"
 )
-FRANKENPHP_IMAGE="dunglas/frankenphp:php8.4"
+# Pull by digest (not by the moving php8.4 tag): the pin is enforced at pull
+# time, so an upstream tag republish can never drift the certification
+# environment. To refresh the pin deliberately: docker pull
+# dunglas/frankenphp:php8.4, copy the new digest from `docker image inspect`,
+# and update both constants below.
+FRANKENPHP_IMAGE="dunglas/frankenphp:php8.4@sha256:77bc2d40a58ace3a9425e4cbb0c40d044188dfd850e44a943ed043d743625df3"
 FRANKENPHP_IMAGE_DIGEST="sha256:77bc2d40a58ace3a9425e4cbb0c40d044188dfd850e44a943ed043d743625df3"
 # Derived image: pinned base + pcntl. Octane's artisan commands subscribe to
 # SIGINT/SIGTERM unconditionally (InteractsWithServers::getSubscribedSignals),
@@ -351,8 +356,10 @@ ensure_frankenphp_image() {
 
     if ! docker image inspect "${FRANKENPHP_DERIVED_IMAGE}" >/dev/null 2>&1; then
         log "building derived image ${FRANKENPHP_DERIVED_IMAGE} (pinned base + pcntl)"
-        docker build -q -t "${FRANKENPHP_DERIVED_IMAGE}" - <<'DOCKERFILE'
-FROM dunglas/frankenphp:php8.4
+        # Unquoted heredoc: the FROM must resolve to the pinned reference, not
+        # the moving tag (a cached tag may point at a newer upstream build).
+        docker build -q -t "${FRANKENPHP_DERIVED_IMAGE}" - <<DOCKERFILE
+FROM ${FRANKENPHP_IMAGE}
 RUN docker-php-ext-install pcntl
 DOCKERFILE
     fi
