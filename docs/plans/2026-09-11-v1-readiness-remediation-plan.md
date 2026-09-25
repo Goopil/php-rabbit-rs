@@ -1,5 +1,7 @@
 # Rabbit RS v1 Readiness Remediation Plan
 
+> **Status (2026-09-25):** superseded as a progress tracker — the checkboxes below were never maintained. The remediation work itself shipped: the 1.0 gate closed with v0.1.0 (2026-09-04) and the remaining decisions landed through the v0.3.x train (auto_subscribe compile-time rejection, `TlsVerify::None` removal, refcounted pool claims, consumer reliability waves — see `CHANGELOG.md`). Current work is tracked in `docs/plans/ROADMAP.md`; open Rust follow-ups: #282, #251, #166.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Execution uses parallel subagents per wave; each workstream owns a strict file boundary listed in its brief.
 
 **Goal:** Make Rabbit RS eligible for a clean, supportable 1.0 by turning every claimed-but-unproven guarantee into an enforced, observable gate.

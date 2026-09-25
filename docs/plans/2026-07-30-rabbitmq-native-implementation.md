@@ -27,11 +27,11 @@
 
 ## Progress
 
-**Last updated:** September 11, 2026
+**Last updated:** September 25, 2026
 
 **Implementation branch:** Goopil/pre-v1
 
-**Next step:** v1 readiness remediation (see `docs/plans/2026-09-11-v1-readiness-remediation-plan.md`) — wave 2: contract reconciliation (docs coherence lint, `auto_subscribe` compile-time rejection), runtime certification, functional matrix, performance baselines; wave 3: RC pipeline.
+**Next step:** none pending on this plan. The remaining v1-readiness decisions shipped through the v0.3.x release train (latest v0.3.9, 2026-09-25); active work is tracked in `docs/plans/ROADMAP.md`. Open Rust items: consume wake-chain throughput (#282), the `connection.blocked/unblocked` signal (#251), the TLS SNI override (#166).
 
 - [x] Task 1 — Reproducible Rust/PHP workspace (`4f2a997`).
 - [x] Task 2 — Normalized and validated configuration (`c324929`).
