@@ -4,6 +4,14 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.8] - 2026-09-25
+
+### Fixed
+
+- The fan-out one-shot re-arm is bounded per connection (issue #317): the re-arm budget, its progress signals (clean child exits, decreasing gauge) and the drain convergence window are tracked per plan entry through an EntryState; a connection whose budget burns out without progress (crash loop, a gauge that never converges) is closed — no further re-arms and no further scaler admissions for it — while the remaining connections keep draining and the supervisor concludes instead of spinning. The convergence wait no longer parks the supervision loop.
+- The auto-scaler admits on the ready gauge only (issue #318): the depth callback takes a `readyOnly` flag — the scaler reads `messages_ready` alone, the one-shot drain check keeps the full ready + unacked reading so an in-flight window stays visible to the drain (#308). The native probe path is unchanged (`Pool::size()` has no unacked concept).
+- An empty-since-boot `--stop-when-empty` drain concludes immediately (issue #319): an entry whose gauge never read positive during this supervisor's life skips the #308 convergence window — nothing can be in flight for it to catch. Entries that did see work keep the full window.
+
 ## [0.3.7] - 2026-09-16
 
 ### Fixed

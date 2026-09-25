@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.3.8] - 2026-09-25
+
+### Fixed
+
+- The fan-out one-shot re-arm is bounded per connection (issue #317): the re-arm budget was a single global counter shared by every plan entry, so a crashing connection's re-arms were renewed by another connection's progress while the auto-scaler kept admitting children for a crashing entry whose gauge never drained — a fan-out plan with one broken connection config churned the fleet in a tight crash-spawn loop and never concluded. The re-arm budget, its progress signals (clean child exits, decreasing gauge) and the drain convergence window are now tracked per connection through an EntryState; a connection whose budget burns out without progress is closed — no further re-arms and no further scaler admissions for it — while the remaining connections keep draining and the supervisor concludes instead of spinning. The convergence wait no longer parks the supervision loop: it is deadline state on the entry, so one connection's window cannot freeze the others.
+- The auto-scaler admits on the ready gauge only (issue #318): the scaler read the drain gauge (`messages_ready` + `messages_unacknowledged`, the #308 semantics), so a worker claiming a burst instantly held the whole burst in its prefetch window and every burst scaled the fleet to `--max-workers` for work that was already claimed and served. The supervisor's depth callback takes a `readyOnly` flag — the scaler reads `messages_ready` alone (`ManagementApi::queueDepth` readyOnly, forwarded through `QueueDepthSampler::depths`), the one-shot drain check keeps the full reading. The native probe path is unchanged (`Pool::size()` has no unacked concept).
+- An empty-since-boot `--stop-when-empty` drain no longer pays the full #308 convergence window (issue #319): each plan entry tracks whether its gauge ever read positive during this supervisor's life, and a queue that was empty since boot concludes drained immediately instead of burning the bounded 15 s poll (~19.6 s per empty drain, once per fan-out re-arm cycle). Entries that did see work keep the full window.
+
 ## [0.3.7] - 2026-09-16
 
 ### Fixed
