@@ -18,23 +18,23 @@ bench = []
 
 [dependencies]
 async-trait = "0.1"
-bytes = "1.10"
+bytes = "1.12"
 flume = "0.12"
 fastrand = "2.3"
 futures-util = "0.3"
-lapin = { version = "4.10", default-features = false, features = ["rustls--ring", "rustls-platform-verifier", "tokio"] }
+lapin = { version = "4.12", default-features = false, features = ["rustls--ring", "rustls-platform-verifier", "tokio"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.11"
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2.5"
 
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.47", features = ["test-util", "process"] }
+tokio = { version = "1.53", features = ["test-util", "process"] }
 rabbit-rs-core = { path = ".", features = ["test-support"] }
-proptest = "1.8"
+proptest = "1.11"
 proptest-state-machine = "0.8"
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 

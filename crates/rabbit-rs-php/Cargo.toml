@@ -19,15 +19,15 @@ extension-tests = ["rabbit-rs-core/test-support"]
 bench = []
 
 [dependencies]
-bytes = "1.10"
+bytes = "1.12"
 ext-php-rs = "=0.15.15"
 rabbit-rs-core = { path = "../rabbit-rs-core" }
 serde_json = "1.0"
-tokio = { version = "1.47", features = ["time"] }
+tokio = { version = "1.53", features = ["time"] }
 
 [dev-dependencies]
 rabbit-rs-core = { path = "../rabbit-rs-core", features = ["test-support"] }
-proptest = "1.8"
+proptest = "1.11"
 proptest-state-machine = "0.8"
 zend-link-stubs = { path = "zend-link-stubs" }
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
