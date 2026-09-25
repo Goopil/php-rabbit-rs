@@ -42,7 +42,7 @@ jobs:
           cargo llvm-cov nextest --workspace --all-targets --no-fail-fast --profile ci --lcov --output-path target/coverage/rust.lcov
 
       - name: Upload LCOV to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: target/coverage/rust.lcov
           flags: rust
@@ -50,7 +50,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload JUnit to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: target/nextest/junit.xml
           flags: rust-tests
@@ -83,7 +83,7 @@ jobs:
         run: ./scripts/coverage-php-ext.sh
 
       - name: Upload LCOV to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: target/coverage/php-ext.lcov
           flags: php-ext
@@ -132,7 +132,7 @@ jobs:
           composer test --working-dir=benchmarks
 
       - name: Upload Clover to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: packages/laravel-queue/build/clover.xml
           flags: laravel
@@ -140,7 +140,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload JUnit to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: packages/laravel-queue/build/junit.xml
           flags: laravel-tests
@@ -149,7 +149,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload Integration Clover to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: packages/laravel-queue/build/clover-integration.xml
           flags: laravel-integration
@@ -157,7 +157,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload Integration JUnit to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
         with:
           files: packages/laravel-queue/build/junit-integration.xml
           flags: laravel-integration-tests
