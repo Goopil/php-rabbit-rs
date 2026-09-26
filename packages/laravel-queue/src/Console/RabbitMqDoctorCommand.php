@@ -606,7 +606,7 @@ final class RabbitMqDoctorCommand extends Command
 
     /**
      * Composer caret constraint check, limited to the ^major.minor[.patch]
-     * shape the package pins (ext-rabbit_rs ^0.3.9): on 0.x the caret admits
+     * shape the package pins (ext-rabbit_rs ^0.3.10): on 0.x the caret admits
      * only the declared minor. Unknown shapes pass — the doctor reports the
      * version instead of guessing.
      */

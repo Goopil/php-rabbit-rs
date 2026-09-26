@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [0.3.10] - 2026-09-26
+
+### Fixed
+
+- Channel-scoped AMQP errors no longer tear down the whole connection (transport adapter): lapin surfaces channel-level failures — e.g. the failed passive redeclare of an expired TTL-bucket queue on the delay keep-alive admin channel — on the connection event stream while the connection itself stays up. Every such event was mapped to a connection loss, so the 30s keep-alive tick caused one allocator-ratcheting reconnect per tick on brokers whose vhost permissions refuse the redeclare; the nightly soak measured 36 MB/h of RSS growth from the churn and is now flat (0 reconnects, single-digit MB/h). The connection status is read at event time — lapin flips the connection state to Error before emitting connection-fatal errors, so connection refusals (close 403/530) and heartbeat timeouts still surface.
+- A failed recovery generation preserves its failure's recoverability: a permanent cause (authentication, protocol) now fails the pool permanently instead of being flattened into a recoverable loss that reconnected and re-declared a refused topology forever — with the caller's readiness timeout as the only bound. `rabbit-rs:topology --fix` reports `declaration failed` for an un-declarable queue again, and the un-declarable-queue post-condition test (issue #273) is green.
+- The soak benchmark's leak threshold gates steady mode only: the kill segment forces one reconnection per kill cycle by design, and the resulting per-reconnect allocator ratchet tripped the 20 MB/h threshold on the segment's first-ever CI run. The kill segment still reports its slope for monitoring; steady mode remains the leak gate.
+
+### Changed
+
+- Test and CI stability: the nightly FrankenPHP smoke job pulls its pinned image by digest (upstream republished the moving tag), the soak kill segment runs even when the steady segment fails so recovery evidence is never masked, `AsyncFlushTest` accepts the bounded deadline-expiry outcome of an explicit flush, and the driver-bench dependency lock is refreshed to the v0.3.9 package metadata.
+
 ## [0.3.9] - 2026-09-25
 
 ### Changed
