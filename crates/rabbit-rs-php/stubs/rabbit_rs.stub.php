@@ -7,7 +7,7 @@ namespace Goopil\RabbitRs {
      * Thrown when the bounded publish buffer is full (backpressure): retry
      * with the same message later; already-buffered messages are never dropped.
      */
-    class BackpressureException extends \Goopil\RabbitRs\Exception {
+    class BackpressureException extends Goopil\RabbitRs\Exception {
         public function __construct() {}
     }
 
@@ -15,7 +15,7 @@ namespace Goopil\RabbitRs {
      * Thrown on broker connection-level failures (transport errors, stale
      * connection generations, source replacement).
      */
-    class ConnectionException extends \Goopil\RabbitRs\Exception {
+    class ConnectionException extends Goopil\RabbitRs\Exception {
         public function __construct() {}
 
         /**
@@ -430,6 +430,7 @@ namespace Goopil\RabbitRs {
          * @return array{closed: bool, pid: int, handle: string,
          *   publishes_total: int, confirmations_total: int, returns_total: int,
          *   backpressure_total: int, publication_retries_total: int,
+         *   connection_blocked: int, connection_blocked_total: int,
          *   reconnects_total: int, deliveries_total: int,
          *   duplicates_total: int, acks_total: int, rejects_total: int,
          *   dropped_publications_total: int, dropped_error_records_total: int,

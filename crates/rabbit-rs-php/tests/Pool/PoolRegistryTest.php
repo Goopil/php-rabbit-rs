@@ -57,6 +57,16 @@ describe('pool registry', function () {
         $pool->close();
     });
 
+    it('exposes the broker backpressure signal in stats', function () {
+        // Issue #251: the keys must exist and read zero on a quiet pool;
+        // connection_blocked is a 0/1 gauge, connection_blocked_total counts
+        // episodes.
+        $pool = new \Goopil\RabbitRs\Pool(poolConfig());
+        expect($pool->stats()['connection_blocked'])->toBe(0);
+        expect($pool->stats()['connection_blocked_total'])->toBe(0);
+        $pool->close();
+    });
+
     it('keeps sibling aliases working after one pool closes its claim', function () {
         $first = new \Goopil\RabbitRs\Pool(poolConfig());
         $second = new \Goopil\RabbitRs\Pool(poolConfig());
