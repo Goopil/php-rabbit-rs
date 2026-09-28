@@ -763,8 +763,8 @@ mod tests {
         publish_header_value, publish_properties,
     };
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig, TlsVerify};
+    use crate::transport::TransportEventStream;
     use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
-    use crate::transport::{TransportEvent, TransportEventStream};
 
     fn protocol_error(kind: AMQPErrorKind, message: &str) -> lapin::Error {
         lapin::Error::from(lapin::ErrorKind::ProtocolError(AMQPError::new(
