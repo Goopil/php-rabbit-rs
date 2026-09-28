@@ -381,17 +381,36 @@ async fn handle_ready(
             event = next_transport_event(&mut events) => {
                 match event {
                     TransportEvent::Error(error) => {
+                        // A dead connection is never blocked: its successor
+                        // starts unblocked. The episode counter survives.
+                        context.metrics.clear_connection_blocked();
                         close_connection(connection).await;
                         return Some(route_loss(&context.states, error));
                     }
-                    // Backpressure is informational; recording lands with the
-                    // metrics work. It must never affect the lifecycle.
-                    TransportEvent::Blocked(_) | TransportEvent::Unblocked => continue,
+                    TransportEvent::Blocked(reason) => {
+                        context.metrics.record_connection_blocked();
+                        crate::log::warn(
+                            "connection_actor",
+                            format!(
+                                "broker '{}' blocked: {}",
+                                context.config.name,
+                                truncate_reason(&reason),
+                            ),
+                        );
+                    }
+                    TransportEvent::Unblocked => {
+                        context.metrics.clear_connection_blocked();
+                        crate::log::info(
+                            "connection_actor",
+                            format!("broker '{}' unblocked", context.config.name),
+                        );
+                    }
                 }
             }
             command = context.commands.recv() => {
                 match command {
                     Some(Command::ConnectionLost(error)) => {
+                        context.metrics.clear_connection_blocked();
                         close_connection(connection).await;
                         return Some(route_loss(&context.states, error));
                     }
@@ -411,10 +430,12 @@ async fn handle_ready(
                     }
                     Some(Command::Start) => {}
                     Some(Command::Close(completed)) => {
+                        context.metrics.clear_connection_blocked();
                         shutdown(&context.states, connection, completed).await;
                         return None;
                     }
                     None => {
+                        context.metrics.clear_connection_blocked();
                         close_connection(connection).await;
                         return None;
                     }
@@ -544,4 +565,13 @@ async fn close_connection(connection: &mut Option<Box<dyn TransportConnection>>)
     if let Some(connection) = connection.take() {
         let _ = connection.close().await;
     }
+}
+
+/// Caps the broker-provided blocked reason in log output. The string is a
+/// protocol-provided diagnostic, but it is still external input and must not
+/// balloon a log line.
+const BLOCKED_REASON_MAX_CHARS: usize = 200;
+
+fn truncate_reason(reason: &str) -> String {
+    reason.chars().take(BLOCKED_REASON_MAX_CHARS).collect()
 }

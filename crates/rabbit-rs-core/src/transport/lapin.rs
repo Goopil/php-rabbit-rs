@@ -110,7 +110,7 @@ impl super::TransportEventStream for LapinEventStream {
                 }
                 // `Connected` and `SendFlow` carry no backpressure or
                 // liveness signal relevant to this stream.
-                _ => continue,
+                _ => {}
             }
         }
     }
