@@ -8,7 +8,7 @@ use crate::{
     recovery::{Clock, ConnectionState, JitterSource, RecoveryPolicy},
     transport::{
         ConsumerChannel, PublisherChannel, Transport, TransportConnection, TransportError,
-        TransportErrorStream,
+        TransportEvent, TransportEventStream,
     },
 };
 
@@ -216,7 +216,7 @@ async fn run_actor(mut context: ActorContext) {
     // Liveness source of the active connection, created the moment the
     // connection is established so no error can be missed between connect
     // and the Ready loop.
-    let mut errors: Option<Box<dyn TransportErrorStream>> = None;
+    let mut events: Option<Box<dyn TransportEventStream>> = None;
     let mut generation = 0_u64;
 
     loop {
@@ -226,13 +226,13 @@ async fn run_actor(mut context: ActorContext) {
                 handle_connecting(
                     &mut context,
                     &mut connection,
-                    &mut errors,
+                    &mut events,
                     &mut generation,
                     previous_failures,
                 )
                 .await
             }
-            Phase::Ready => handle_ready(&mut context, &mut connection, &mut errors).await,
+            Phase::Ready => handle_ready(&mut context, &mut connection, &mut events).await,
             Phase::Recovering { failures, error } => {
                 handle_recovering(&mut context, &mut connection, failures, &error).await
             }
@@ -277,7 +277,7 @@ async fn handle_disconnected(
 async fn handle_connecting(
     context: &mut ActorContext,
     connection: &mut Option<Box<dyn TransportConnection>>,
-    errors: &mut Option<Box<dyn TransportErrorStream>>,
+    events: &mut Option<Box<dyn TransportEventStream>>,
     generation: &mut u64,
     previous_failures: u32,
 ) -> Option<Phase> {
@@ -318,7 +318,7 @@ async fn handle_connecting(
 
     match result {
         Ok(new_connection) => {
-            *errors = Some(new_connection.error_stream());
+            *events = Some(new_connection.event_stream());
             *connection = Some(new_connection);
             *generation = generation.saturating_add(1);
             if *generation > 1 {
@@ -367,20 +367,27 @@ async fn handle_connecting(
 async fn handle_ready(
     context: &mut ActorContext,
     connection: &mut Option<Box<dyn TransportConnection>>,
-    errors: &mut Option<Box<dyn TransportErrorStream>>,
+    events: &mut Option<Box<dyn TransportEventStream>>,
 ) -> Option<Phase> {
     // The liveness source lives for the whole Ready phase; every exit of
     // this loop is a phase change where the connection dies or is closed, so
     // the taken stream is simply dropped with the local binding.
-    let mut errors = errors.take();
+    let mut events = events.take();
     loop {
         tokio::select! {
             // The transport itself reports the connection is dying (socket
             // reset, heartbeat failure): route it exactly like a reported
             // `Command::ConnectionLost`.
-            error = next_transport_error(&mut errors) => {
-                close_connection(connection).await;
-                return Some(route_loss(&context.states, error));
+            event = next_transport_event(&mut events) => {
+                match event {
+                    TransportEvent::Error(error) => {
+                        close_connection(connection).await;
+                        return Some(route_loss(&context.states, error));
+                    }
+                    // Backpressure is informational; recording lands with the
+                    // metrics work. It must never affect the lifecycle.
+                    TransportEvent::Blocked(_) | TransportEvent::Unblocked => continue,
+                }
             }
             command = context.commands.recv() => {
                 match command {
@@ -417,17 +424,15 @@ async fn handle_ready(
     }
 }
 
-/// Waits for the next liveness signal of the active connection. Pends
-/// forever when there is no connection, leaving commands as the only wake-up
-/// source.
-async fn next_transport_error(
-    errors: &mut Option<Box<dyn TransportErrorStream>>,
-) -> TransportError {
-    match errors {
-        Some(stream) => stream
-            .next()
-            .await
-            .unwrap_or_else(|| TransportError::connection("transport error stream ended")),
+/// Waits for the next event of the active connection. Pends forever when
+/// there is no connection, leaving commands as the only wake-up source.
+async fn next_transport_event(
+    events: &mut Option<Box<dyn TransportEventStream>>,
+) -> TransportEvent {
+    match events {
+        Some(stream) => stream.next().await.unwrap_or_else(|| {
+            TransportEvent::Error(TransportError::connection("transport event stream ended"))
+        }),
         None => std::future::pending().await,
     }
 }

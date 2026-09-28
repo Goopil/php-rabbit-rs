@@ -19,7 +19,7 @@ use super::{
     BindingSpec, ConsumerChannel, ConsumerRequest, Delivery, DeliveryStream, ExchangeKind,
     ExchangeSpec, HeaderValue, PublishConfirmation, PublishReceipt, PublishRequest,
     PublisherChannel, QueueKind, QueueSpec, ReturnedMessage, TopologyChannel, Transport,
-    TransportConnection, TransportError, TransportResult,
+    TransportConnection, TransportError, TransportEvent, TransportResult,
 };
 use crate::config::{BrokerConfig, Endpoint};
 
@@ -71,46 +71,56 @@ struct LapinConnection {
     inner: Connection,
 }
 
-/// Filters the lapin connection event stream down to connection-fatal errors.
+/// Maps the lapin connection event stream onto transport events.
 ///
-/// With lapin's default `auto_recover: false`, every recoverable connection
-/// failure (including heartbeat timeouts) is emitted as `Event::Error`.
-/// Channel-scoped failures (e.g. a failed passive declare on an admin
-/// channel) are also emitted there while the connection itself stays up.
-struct LapinErrorStream {
+/// Connection-fatal errors are classified through the connection status (see
+/// the comment in `next`); `ConnectionBlocked`/`ConnectionUnblocked` carry
+/// the broker's resource-alarm backpressure signal and are informational
+/// only — they must never affect the connection lifecycle.
+struct LapinEventStream {
     events: Pin<Box<dyn futures_util::Stream<Item = lapin::Event> + Send>>,
     connection_alive: Box<dyn Fn() -> bool + Send>,
 }
 
 #[async_trait]
-impl super::TransportErrorStream for LapinErrorStream {
-    async fn next(&mut self) -> Option<TransportError> {
+impl super::TransportEventStream for LapinEventStream {
+    async fn next(&mut self) -> Option<TransportEvent> {
         loop {
             let event = self.events.as_mut().next().await?;
-            let lapin::Event::Error(error) = event else {
-                continue;
-            };
-            // lapin surfaces channel-scoped failures (e.g. a failed passive
-            // declare on an admin channel) on the connection event stream
-            // while the connection itself stays `Connected`; it flips the
-            // connection state *before* emitting connection-fatal errors.
-            // The status is therefore read at event time: a live connection
-            // proves the failure was channel-scoped and must not tear the
-            // connection down — the owning channel already reports it to its
-            // caller, and `DelayKeepAlive` containment depends on this.
-            if (self.connection_alive)() {
-                continue;
+            match event {
+                lapin::Event::ConnectionBlocked(reason) => {
+                    return Some(TransportEvent::Blocked(reason));
+                }
+                lapin::Event::ConnectionUnblocked => return Some(TransportEvent::Unblocked),
+                lapin::Event::Error(error) => {
+                    // lapin surfaces channel-scoped failures (e.g. a failed
+                    // passive declare on an admin channel) on the connection
+                    // event stream while the connection itself stays
+                    // `Connected`; it flips the connection state *before*
+                    // emitting connection-fatal errors. The status is
+                    // therefore read at event time: a live connection proves
+                    // the failure was channel-scoped and must not tear the
+                    // connection down — the owning channel already reports it
+                    // to its caller, and `DelayKeepAlive` containment depends
+                    // on this.
+                    if (self.connection_alive)() {
+                        continue;
+                    }
+                    return Some(TransportEvent::Error(map_lapin_error(error)));
+                }
+                // `Connected` and `SendFlow` carry no backpressure or
+                // liveness signal relevant to this stream.
+                _ => continue,
             }
-            return Some(map_lapin_error(error));
         }
     }
 }
 
 #[async_trait]
 impl TransportConnection for LapinConnection {
-    fn error_stream(&self) -> Box<dyn super::TransportErrorStream> {
+    fn event_stream(&self) -> Box<dyn super::TransportEventStream> {
         let status = self.inner.status().clone();
-        Box::new(LapinErrorStream {
+        Box::new(LapinEventStream {
             events: Box::pin(self.inner.events_listener()),
             connection_alive: Box::new(move || status.connected()),
         })
@@ -749,12 +759,12 @@ mod tests {
     use lapin::types::{AMQPValue, FieldTable};
 
     use super::{
-        LapinErrorStream, build_tls_config, connection_uri, map_header_value, map_headers,
+        LapinEventStream, build_tls_config, connection_uri, map_header_value, map_headers,
         publish_header_value, publish_properties,
     };
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig, TlsVerify};
-    use crate::transport::TransportErrorStream;
     use crate::transport::{HeaderFloat, HeaderValue, PublishProperties, PublishRequest};
+    use crate::transport::{TransportEvent, TransportEventStream};
 
     fn protocol_error(kind: AMQPErrorKind, message: &str) -> lapin::Error {
         lapin::Error::from(lapin::ErrorKind::ProtocolError(AMQPError::new(
@@ -765,7 +775,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_scoped_errors_do_not_kill_a_live_connection() {
-        let mut stream = LapinErrorStream {
+        let mut stream = LapinEventStream {
             events: Box::pin(futures_util::stream::iter(vec![lapin::Event::Error(
                 protocol_error(
                     AMQPErrorKind::Soft(AMQPSoftError::NOTFOUND),
@@ -783,7 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn connection_refusals_surface_once_the_connection_is_down() {
-        let mut stream = LapinErrorStream {
+        let mut stream = LapinEventStream {
             events: Box::pin(futures_util::stream::iter(vec![lapin::Event::Error(
                 protocol_error(
                     AMQPErrorKind::Soft(AMQPSoftError::ACCESSREFUSED),
@@ -793,15 +803,52 @@ mod tests {
             connection_alive: Box::new(|| false),
         };
 
-        let error = stream
+        let event = stream
             .next()
             .await
             .expect("a connection.close refusal must surface");
+        let crate::transport::TransportEvent::Error(error) = event else {
+            panic!("a refusal must surface as a transport error");
+        };
 
         assert_eq!(
             error.kind(),
             crate::transport::TransportErrorKind::Authentication
         );
+    }
+
+    #[tokio::test]
+    async fn blocked_events_surface_with_the_broker_reason() {
+        let mut stream = LapinEventStream {
+            events: Box::pin(futures_util::stream::iter(vec![
+                lapin::Event::ConnectionBlocked("memory alarm triggered".into()),
+            ])),
+            connection_alive: Box::new(|| true),
+        };
+
+        let event = stream.next().await.expect("a blocked event must surface");
+        let crate::transport::TransportEvent::Blocked(reason) = event else {
+            panic!("blocked must surface with a reason, got {event:?}");
+        };
+
+        assert_eq!(reason, "memory alarm triggered");
+    }
+
+    #[tokio::test]
+    async fn unblocked_events_surface() {
+        let mut stream = LapinEventStream {
+            events: Box::pin(futures_util::stream::iter(vec![
+                lapin::Event::ConnectionUnblocked,
+            ])),
+            connection_alive: Box::new(|| false),
+        };
+
+        let event = stream
+            .next()
+            .await
+            .expect("an unblocked event must surface");
+
+        assert!(matches!(event, crate::transport::TransportEvent::Unblocked));
     }
 
     #[tokio::test(start_paused = true)]
@@ -838,15 +885,18 @@ mod tests {
             alive.store(false, Ordering::Relaxed);
         });
 
-        let mut stream = LapinErrorStream {
+        let mut stream = LapinEventStream {
             events: Box::pin(events),
             connection_alive: Box::new(move || stream_alive.load(Ordering::Relaxed)),
         };
 
-        let error = stream
+        let event = stream
             .next()
             .await
             .expect("errors must surface again once the connection is down");
+        let crate::transport::TransportEvent::Error(error) = event else {
+            panic!("a connection-fatal error must surface as a transport error");
+        };
         assert_eq!(
             error.kind(),
             crate::transport::TransportErrorKind::Connection
