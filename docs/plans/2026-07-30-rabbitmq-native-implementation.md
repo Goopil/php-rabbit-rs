@@ -31,7 +31,7 @@
 
 **Implementation branch:** Goopil/pre-v1
 
-**Next step:** none pending on this plan. The remaining v1-readiness decisions shipped through the v0.3.x release train (latest v0.3.9, 2026-09-25); active work is tracked in `docs/plans/ROADMAP.md`. Open Rust items: consume wake-chain throughput (#282), the `connection.blocked/unblocked` signal (#251), the TLS SNI override (#166).
+**Next step:** none pending on this plan. The remaining v1-readiness decisions shipped through the v0.3.x release train (latest v0.3.9, 2026-09-25); active work is tracked in `docs/plans/ROADMAP.md`. Open Rust items: the `connection.blocked/unblocked` signal (#251), the TLS SNI override (#166). The consume wake-chain throughput issue (#282) was closed as not planned on 2026-09-28 — the big wins shipped (settlement batching #289, stock-aware flush #296, default prefetch 1000) and the remaining leads have no user-visible ROI; reopen conditions are recorded in the issue.
 
 - [x] Task 1 — Reproducible Rust/PHP workspace (`4f2a997`).
 - [x] Task 2 — Normalized and validated configuration (`c324929`).
