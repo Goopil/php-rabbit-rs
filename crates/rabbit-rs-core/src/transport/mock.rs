@@ -8,8 +8,8 @@ use tokio::sync::oneshot;
 
 use super::{
     BindingSpec, ConsumerChannel, ConsumerRequest, Delivery, DeliveryStream, ExchangeSpec,
-    PublishConfirmation, PublishReceipt, PublishRequest, PublisherChannel, QueueSpec,
-    TopologyChannel, Transport, TransportConnection, TransportError, TransportResult,
+    FetchedMessage, PublishConfirmation, PublishReceipt, PublishRequest, PublisherChannel,
+    QueueSpec, TopologyChannel, Transport, TransportConnection, TransportError, TransportResult,
 };
 use crate::config::BrokerConfig;
 
@@ -26,6 +26,8 @@ pub enum TransportOperation {
     QueueSize { queue: String },
     PurgeQueue { queue: String },
     DeleteQueue { queue: String },
+    DeleteExchange { exchange: String },
+    GetMessage { queue: String, requeue: bool },
     EnableConfirms,
     Publish(PublishRequest),
     Qos { prefetch: u16 },
@@ -64,6 +66,9 @@ struct MockState {
     /// a stream parked still surfaces. Always armed.
     error_notify: Arc<tokio::sync::Notify>,
     queue_sizes: VecDeque<TransportResult<u32>>,
+    /// Scripted `basic.get` results: one entry per `get_message` call,
+    /// defaulting to an empty queue (`Ok(None)`).
+    get_messages: VecDeque<TransportResult<Option<FetchedMessage>>>,
     /// Queue names passed to `queue_declare` on any channel, in call order.
     declared_queues: Mutex<Vec<String>>,
     connect_gates: VecDeque<MockOperationGateWait>,
@@ -146,6 +151,10 @@ impl MockTransport {
 
     pub fn push_queue_size(&self, result: TransportResult<u32>) {
         self.state().queue_sizes.push_back(result);
+    }
+
+    pub fn push_get_message(&self, result: TransportResult<Option<FetchedMessage>>) {
+        self.state().get_messages.push_back(result);
     }
 
     #[must_use]
@@ -490,6 +499,28 @@ macro_rules! impl_topology_channel {
                 self.record_topology(TransportOperation::DeleteQueue {
                     queue: queue.to_owned(),
                 })
+            }
+
+            async fn delete_exchange(&self, exchange: &str) -> TransportResult<()> {
+                self.record_topology(TransportOperation::DeleteExchange {
+                    exchange: exchange.to_owned(),
+                })
+            }
+
+            async fn get_message(
+                &self,
+                queue: &str,
+                requeue: bool,
+            ) -> TransportResult<Option<FetchedMessage>> {
+                let mut state = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.operations.push(TransportOperation::GetMessage {
+                    queue: queue.to_owned(),
+                    requeue,
+                });
+                state.get_messages.pop_front().unwrap_or(Ok(None))
             }
 
             async fn close(&self) -> TransportResult<()> {

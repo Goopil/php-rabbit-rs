@@ -15,9 +15,9 @@ use Illuminate\Support\Facades\Http;
  * $undeclarable queues stay missing even then, modelling the #273 native bug
  * shape: declare reports success, the object never lands on the broker.
  */
-function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null, ?string $queueProbeError = null, array $undeclarable = []): object
+function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declareError = null, ?string $queueProbeError = null, array $undeclarable = [], ?string $exchangeProbeError = null): object
 {
-    $probe = new class($missingQueues, $declareError, $queueProbeError, $undeclarable) extends DoctorProbe
+    $probe = new class($missingQueues, $declareError, $queueProbeError, $undeclarable, $exchangeProbeError) extends DoctorProbe
     {
         public int $declareCalls = 0;
 
@@ -32,6 +32,7 @@ function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declare
             private readonly ?string $declareError,
             private readonly ?string $queueProbeError,
             private readonly array $undeclarable,
+            private readonly ?string $exchangeProbeError,
         ) {}
 
         public function extensionLoaded(): bool
@@ -60,6 +61,22 @@ function bindFakeTopologyProbe($app, array $missingQueues = [], ?string $declare
                 $queue,
                 $nativeConfig['brokers'][0]['vhost'] ?? '/',
             );
+        }
+
+        public function exchangeExists(array $nativeConfig, string $broker, string $exchange): ?string
+        {
+            if ($this->exchangeProbeError === null) {
+                return null;
+            }
+            if ($this->exchangeProbeError === 'missing') {
+                return sprintf(
+                    "protocol error: AMQP soft error: NOT-FOUND: NOT_FOUND - no exchange '%s' in vhost '%s'",
+                    $exchange,
+                    $nativeConfig['brokers'][0]['vhost'] ?? '/',
+                );
+            }
+
+            return $this->exchangeProbeError;
         }
 
         public function declareTopology(array $nativeConfig, string $workerProfile): ?string
@@ -406,6 +423,51 @@ describe('rabbit-rs:topology management api checks', function () {
 
         $this->artisan('rabbit-rs:topology')
             ->expectsOutputToContain('management api')
+            ->assertExitCode(0);
+    });
+});
+
+describe('rabbit-rs:topology native exchange checks (no management url)', function () {
+    it('reports the route exchange as declared through the native probe', function () {
+        bindFakeTopologyProbe($this->app);
+        topologyConnection();
+
+        Artisan::call('rabbit-rs:topology');
+        $output = Artisan::output();
+
+        expect($output)->toContain("[ok  ] exchange 'laravel.jobs' declared")
+            ->and($output)->toContain('bindings and queue arguments were not verified')
+            ->and(Artisan::call('rabbit-rs:topology'))->toBe(0);
+    });
+
+    it('fails with the config path when the route exchange is missing', function () {
+        bindFakeTopologyProbe($this->app, exchangeProbeError: 'missing');
+        topologyConnection();
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("exchange 'laravel.jobs' is missing")
+            ->expectsOutputToContain('queue.connections.rabbitmq.exchange')
+            ->assertExitCode(1);
+    });
+
+    it('fails with the config path when the dead-letter exchange is missing', function () {
+        bindFakeTopologyProbe($this->app, exchangeProbeError: 'missing');
+        topologyConnection('rabbitmq', [
+            'dead_letter' => ['exchange' => 'orders_dlx', 'queue' => 'orders_dlq'],
+        ]);
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("exchange 'orders_dlx' is missing")
+            ->expectsOutputToContain('queue.connections.rabbitmq.dead_letter.exchange')
+            ->assertExitCode(1);
+    });
+
+    it('warns instead of failing when the native exchange probe hits a transport error', function () {
+        bindFakeTopologyProbe($this->app, exchangeProbeError: 'connection refused');
+        topologyConnection();
+
+        $this->artisan('rabbit-rs:topology')
+            ->expectsOutputToContain("exchange 'laravel.jobs' probe failed: connection refused")
             ->assertExitCode(0);
     });
 });

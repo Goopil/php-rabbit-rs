@@ -85,7 +85,7 @@ final class RabbitMqTopologyCommand extends Command
         }
 
         $ok = $this->verifyQueues($name, $compiled, $probe);
-        $ok = $this->verifyManagement($name, $config, $compiled) && $ok;
+        $ok = $this->verifyManagement($name, $config, $compiled, $probe) && $ok;
 
         return ! (bool) $this->option('fix')
             ? $ok
@@ -126,20 +126,22 @@ final class RabbitMqTopologyCommand extends Command
     }
 
     /**
-     * Management-API verification: exchanges, dead-letter bindings, and
-     * subscription-queue arguments. Advisory when the API is unreachable —
-     * only actual mismatches fail the command.
+     * Topology verification beyond the queues: when `management_url` is set,
+     * the management API verifies exchanges, dead-letter bindings, and
+     * subscription-queue arguments (advisory when the API is unreachable —
+     * only actual mismatches fail the command). Without it, the same
+     * exchange-existence checks ride the pool's AMQP operations, and only
+     * bindings and queue arguments stay unverified (not representable in
+     * pure AMQP).
      *
      * @param  array<string, mixed>  $config
      * @param  array<string, mixed>  $compiled
      */
-    private function verifyManagement(string $name, array $config, array $compiled): bool
+    private function verifyManagement(string $name, array $config, array $compiled, DoctorProbe $probe): bool
     {
         $url = $config['management_url'] ?? null;
         if (! is_string($url) || trim($url) === '') {
-            $this->emit('warn', 'management api not configured: exchanges, bindings and queue arguments were not verified');
-
-            return true;
+            return $this->verifyExchangesNative($name, $compiled, $probe);
         }
 
         $username = is_string($config['username'] ?? null) ? $config['username'] : 'guest';
@@ -161,6 +163,72 @@ final class RabbitMqTopologyCommand extends Command
         $ok = $this->verifyRouteTopology($name, $exchanges, $bindings, $compiled) && $ok;
 
         return $this->verifyDeadLetterWiring($name, $exchanges, $bindings, $compiled) && $ok;
+    }
+
+    /**
+     * Native exchange-existence checks for connections without a
+     * `management_url`: every promised route exchange and the dead-letter
+     * exchange probed with `Pool::verifyExchange()` (passive). NOT-FOUND is a
+     * missing topology item and fails; any other probe error leaves
+     * existence unverifiable and only warns.
+     *
+     * @param  array<string, mixed>  $compiled
+     */
+    private function verifyExchangesNative(string $name, array $compiled, DoctorProbe $probe): bool
+    {
+        $broker = (string) ($compiled['native']['brokers'][0]['name'] ?? 'default');
+        $ok = true;
+
+        foreach ($this->promisedExchanges($compiled) as [$exchange, $configPath]) {
+            $error = $probe->exchangeExists($compiled['native'], $broker, $exchange);
+
+            if ($error === null) {
+                $this->emit('ok', "exchange '{$exchange}' declared");
+
+                continue;
+            }
+            if (str_contains($error, 'NOT-FOUND')) {
+                $this->emit('fail', "exchange '{$exchange}' is missing");
+                $this->emit('fail', "check queue.connections.{$name}.{$configPath}");
+                $ok = false;
+            } else {
+                $this->emit('warn', "exchange '{$exchange}' probe failed: {$error}");
+            }
+        }
+
+        $this->emit('warn', 'management api not configured: bindings and queue arguments were not verified');
+
+        return $ok;
+    }
+
+    /**
+     * Exchanges the compiled config promises, with the connection config path
+     * a failure must point at: route exchanges (the default exchange needs
+     * neither declaration nor binding) and the dead-letter exchange.
+     *
+     * @param  array<string, mixed>  $compiled
+     * @return list<array{0: string, 1: string}>
+     */
+    private function promisedExchanges(array $compiled): array
+    {
+        $exchanges = [];
+        foreach ($compiled['native']['routes'] ?? [] as $route) {
+            if (! is_array($route)) {
+                continue;
+            }
+            $exchange = (string) ($route['exchange'] ?? '');
+            if ($exchange === '') {
+                continue;
+            }
+            $exchanges[] = [$exchange, 'exchange'];
+        }
+
+        $deadLetter = $compiled['topology']['dead_letter'] ?? null;
+        if (is_array($deadLetter)) {
+            $exchanges[] = [(string) $deadLetter['exchange'], 'dead_letter.exchange'];
+        }
+
+        return $exchanges;
     }
 
     /**
@@ -367,7 +435,7 @@ final class RabbitMqTopologyCommand extends Command
         // management checks stay advisory when the api is unreachable, as
         // in verify.
         $verified = $this->verifyQueues($name, $compiled, $probe)
-            && $this->verifyManagement($name, $config, $compiled);
+            && $this->verifyManagement($name, $config, $compiled, $probe);
         if ($verified) {
             $this->info("topology declared (worker profile '{$workerProfile}')");
         }

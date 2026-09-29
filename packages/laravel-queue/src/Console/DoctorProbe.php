@@ -88,6 +88,22 @@ class DoctorProbe
     }
 
     /**
+     * Checks exchange existence with a passive probe (`Pool::verifyExchange()`),
+     * returning the native error message when the exchange is missing
+     * (AMQP NOT-FOUND) or the broker cannot be reached, and null when it
+     * exists. A kind mismatch also fails the probe (passive declare
+     * reports the conflict), mirroring the management API's property check.
+     *
+     * @param  array<string, mixed>  $nativeConfig
+     */
+    public function exchangeExists(array $nativeConfig, string $broker, string $exchange): ?string
+    {
+        return $this->probePool($nativeConfig, function (Pool $pool) use ($broker, $exchange): void {
+            $pool->verifyExchange($broker, $exchange);
+        });
+    }
+
+    /**
      * Declares the worker profile's topology by opening and closing a
      * transient consumer: the native connection brings up connection,
      * channels, exchanges, queues, bindings and consumers in recovery order,
@@ -145,6 +161,12 @@ class DoctorProbe
      * real broker traffic — it exercises queue args → DLX → binding → DLQ,
      * which static topology checks cannot prove.
      *
+     * Path resolution per connection: `management_url` set → the management
+     * API declares/verifies/tears the canary DLQ down (primary, unchanged
+     * wire contract); no `management_url` → the same sequence rides the
+     * pool's AMQP operations (declare/bind queue, basic.get-based
+     * verification, purge+delete teardown).
+     *
      * Verification is tiered and doctor-owned (#288): before the check the
      * doctor declares a dedicated canary DLQ ({@see canaryDlqName()}) bound
      * to the configured DLX with the dead-letter routing key, and purges and
@@ -157,7 +179,7 @@ class DoctorProbe
      *
      * Foreign messages encountered in the main queue are released untouched
      * (never acked, never dropped); on a configured-DLQ backlog the
-     * verification scans a bounded window in bulk and stays passive towards
+     * verification scans a bounded window and stays passive towards
      * foreign traffic. Most meaningful in quiet windows: a running worker on
      * the same queue can pick the probe up first — that case is reported as
      * inconclusive, not as a dead-letter failure.
@@ -180,13 +202,11 @@ class DoctorProbe
         bool $competingConsumersExpected = false,
     ): ?RuntimeException {
         $url = $config['management_url'] ?? null;
-        if (! is_string($url) || trim($url) === '') {
-            return new RuntimeException('no management_url configured — the canary cannot verify DLQ delivery');
-        }
+        $useApi = is_string($url) && trim($url) !== '';
+        $base = $useApi ? rtrim(trim((string) $url), '/') : '';
 
         $username = is_string($config['username'] ?? null) ? $config['username'] : 'guest';
         $password = is_string($config['password'] ?? null) ? $config['password'] : 'guest';
-        $base = rtrim(trim($url), '/');
         $vhost = is_string($nativeConfig['brokers'][0]['vhost'] ?? null) ? $nativeConfig['brokers'][0]['vhost'] : '/';
 
         // The canary DLQ must be bound to the configured DLX with the
@@ -200,7 +220,9 @@ class DoctorProbe
             ? $deadLetter['routing_key']
             : self::queueName($nativeConfig);
         $canaryDlq = $this->canaryDlqName($broker, $dlx, $deadLetterRoutingKey);
-        $canaryDlqUrl = "{$base}/api/queues/".rawurlencode($vhost).'/'.rawurlencode($canaryDlq).'/get';
+        $canaryDlqUrl = $useApi
+            ? "{$base}/api/queues/".rawurlencode($vhost).'/'.rawurlencode($canaryDlq).'/get'
+            : '';
 
         $pool = new Pool(self::declareConfig($nativeConfig));
         $messageId = '';
@@ -210,7 +232,12 @@ class DoctorProbe
             $messageId = 'doctor-dlx-canary-'.bin2hex(random_bytes(8));
 
             try {
-                $this->declareCanaryDlq($base, $vhost, $canaryDlq, $dlx, $deadLetterRoutingKey, $username, $password);
+                if ($useApi) {
+                    $this->declareCanaryDlq($base, $vhost, $canaryDlq, $dlx, $deadLetterRoutingKey, $username, $password);
+                } else {
+                    $pool->declareQueue($broker, $canaryDlq, 'quorum', true);
+                    $pool->bindQueue($broker, $dlx, $canaryDlq, $deadLetterRoutingKey);
+                }
             } catch (\Throwable $e) {
                 // A canary DLQ that cannot be declared or bound can never
                 // receive the canary, so the wiring verdict is fail with the
@@ -256,7 +283,11 @@ class DoctorProbe
                 // it reaches the wire would requeue the delivery instead of
                 // dead-lettering it.
                 if ($rejected) {
-                    $this->assertCanaryOnDlq($base, $vhost, $username, $password, $messageId, $dlq, $canaryDlqUrl);
+                    if ($useApi) {
+                        $this->assertCanaryOnDlq($base, $vhost, $username, $password, $messageId, $dlq, $canaryDlqUrl);
+                    } else {
+                        $this->assertCanaryOnDlqNative($pool, $broker, $messageId, $dlq, $canaryDlq);
+                    }
                 }
             } finally {
                 $consumer->close();
@@ -288,8 +319,26 @@ class DoctorProbe
         } catch (\Throwable $e) {
             return new RuntimeException($e->getMessage(), 0, $e);
         } finally {
-            $pool->close();
-            $this->teardownCanaryDlq($base, $vhost, $canaryDlq, $username, $password);
+            if ($useApi) {
+                $pool->close();
+                $this->teardownCanaryDlq($base, $vhost, $canaryDlq, $username, $password);
+            } else {
+                // Native teardown: purge + delete the canary DLQ before the
+                // pool closes. Best-effort hygiene, each failure swallowed so
+                // the teardown can never mask the check's verdict — a
+                // surviving queue is cleaned up by the next run.
+                try {
+                    $pool->clear($broker, $canaryDlq);
+                } catch (\Throwable) {
+                    // best-effort hygiene; never mask the check's verdict
+                }
+                try {
+                    $pool->deleteQueue($broker, $canaryDlq);
+                } catch (\Throwable) {
+                    // same
+                }
+                $pool->close();
+            }
         }
 
         return null;
@@ -358,6 +407,80 @@ class DoctorProbe
                 return; // [ok] full chain proven on the configured DLQ
             }
             $foreign++;
+        }
+
+        throw new CanaryInconclusiveException(
+            'wiring verified through the canary DLQ, but the canary sits deeper than the '.self::CANARY_DLQ_SCAN_WINDOW
+            .'-message scan window of the configured DLQ ('.$foreign.' foreign/stale messages at its head) — dead-letter delivery to the configured DLQ unverified'
+        );
+    }
+
+    /**
+     * Tiered DLQ verification for the rejected canary over the pool's AMQP
+     * operations (basic.get-based; pure AMQP has no bulk pull).
+     *
+     * Tier 1 polls the doctor-owned canary DLQ: up to CANARY_DLQ_ATTEMPTS
+     * rounds, each up to CANARY_DLQ_SCAN_WINDOW `getMessage(requeue: true)`
+     * calls — an empty queue (null) ends the round early. Finding the canary
+     * proves the DLX is alive and routed. Exhaustion is the same hard failure
+     * as the API tier 1: a DLX that routes nothing is exactly the
+     * dead-letter loss this canary exists to catch.
+     *
+     * Tier 2 inspects the configured DLQ with one bounded requeue-only
+     * window. `basic.get` + requeue returns the queue head, so the window
+     * generally sees the head message: finding the canary there proves the
+     * full chain onto the configured DLQ; anything else is the same
+     * inconclusive verdict as the API tier 2 (wiring verified, configured-DLQ
+     * delivery unverified, foreign count reported).
+     */
+    private function assertCanaryOnDlqNative(
+        Pool $pool,
+        string $broker,
+        string $messageId,
+        string $configuredDlq,
+        string $canaryDlq,
+    ): void {
+        $foundInCanaryDlq = false;
+        for ($attempt = 0; $attempt < self::CANARY_DLQ_ATTEMPTS && ! $foundInCanaryDlq; $attempt++) {
+            for ($scanned = 0; $scanned < self::CANARY_DLQ_SCAN_WINDOW; $scanned++) {
+                $message = $pool->getMessage($broker, $canaryDlq, true);
+                if ($message === null) {
+                    break;
+                }
+                if (($message['message_id'] ?? '') === $messageId) {
+                    $foundInCanaryDlq = true;
+
+                    break;
+                }
+            }
+
+            if (! $foundInCanaryDlq) {
+                usleep(self::CANARY_DLQ_POLL_MS);
+            }
+        }
+
+        if (! $foundInCanaryDlq) {
+            throw new RuntimeException('dead-lettered canary never reached the DLX — the dead-letter wiring is broken (the canary DLQ was empty), so dead-lettered messages would vanish');
+        }
+
+        // Tier 2: configured-DLQ evidence (single requeue-only window).
+        $foundInConfiguredDlq = false;
+        $foreign = 0;
+        for ($scanned = 0; $scanned < self::CANARY_DLQ_SCAN_WINDOW; $scanned++) {
+            $message = $pool->getMessage($broker, $configuredDlq, true);
+            if ($message === null) {
+                break;
+            }
+            if (($message['message_id'] ?? '') === $messageId) {
+                $foundInConfiguredDlq = true;
+
+                break;
+            }
+            $foreign++;
+        }
+
+        if ($foundInConfiguredDlq) {
+            return; // [ok] full chain proven on the configured DLQ
         }
 
         throw new CanaryInconclusiveException(

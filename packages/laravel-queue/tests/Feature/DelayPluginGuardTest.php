@@ -39,6 +39,22 @@ function guardPool(object $queue): object
 }
 
 /**
+ * Registers a connection without a management URL and installs the given
+ * native-probe verdict (true/false/null) on the guard seam.
+ */
+function guardNativeQueue(string $name, ?bool $verdict, array $delay = ['mode' => 'auto']): void
+{
+    config()->set('queue.connections.'.$name, [
+        'driver' => 'rabbit-rs',
+        'queue' => 'orders',
+        'management_url' => null,
+        'delay' => $delay,
+    ]);
+
+    DelayPluginGuard::$nativeProbe = static fn (string $connection): ?bool => $verdict;
+}
+
+/**
  * Overview response whose exchange_types carry (or omit) the plugin's
  * delayed exchange type — the wire evidence the guard reads.
  */
@@ -235,6 +251,101 @@ describe('plugin-mode refusal (silent-loss guard)', function () {
         }
 
         expect(guardPool($queue)->publishedBatches)->toBe([]);
+    });
+});
+
+describe('native probe fallback (no management_url)', function () {
+    it('keeps the plugin strategy for auto when the native probe confirms the plugin', function () {
+        Http::fake();
+        guardNativeQueue('guard-native-present', true);
+
+        expect(ConnectionCompiler::compile(
+            'guard-native-present',
+            config('queue.connections.guard-native-present'),
+            RabbitRsConnections::packageDefaults(),
+        )['native']['delay']['mode'])->toBe('auto');
+
+        Http::assertNothingSent();
+    });
+
+    it('degrades auto to ttl when the native probe proves the plugin absent', function () {
+        Http::fake();
+        guardNativeQueue('guard-native-absent', false);
+
+        expect(ConnectionCompiler::compile(
+            'guard-native-absent',
+            config('queue.connections.guard-native-absent'),
+            RabbitRsConnections::packageDefaults(),
+        )['native']['delay']['mode'])->toBe('ttl');
+
+        Http::assertNothingSent();
+    });
+
+    it('degrades auto to ttl when the native probe is unverifiable', function () {
+        Http::fake();
+        guardNativeQueue('guard-native-null', null);
+
+        expect(ConnectionCompiler::compile(
+            'guard-native-null',
+            config('queue.connections.guard-native-null'),
+            RabbitRsConnections::packageDefaults(),
+        )['native']['delay']['mode'])->toBe('ttl');
+    });
+
+    it('refuses a delayed publish in plugin mode when the native probe proves the plugin absent', function () {
+        Http::fake();
+        guardNativeQueue('guard-native-refuse', false, ['mode' => 'plugin']);
+
+        try {
+            ConnectionCompiler::compile(
+                'guard-native-refuse',
+                config('queue.connections.guard-native-refuse'),
+                RabbitRsConnections::packageDefaults(),
+            );
+            DelayPluginGuard::assertPluginEnabled('guard-native-refuse');
+            $this->fail('expected DelayPluginMissingException');
+        } catch (DelayPluginMissingException $exception) {
+            expect($exception->getMessage())->toContain('guard-native-refuse');
+        }
+
+        Http::assertNothingSent();
+    });
+
+    it('falls back to the ttl verdict without the extension and without a seam', function () {
+        Http::fake();
+        config()->set('queue.connections.guard-native-noext', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'orders',
+            'management_url' => null,
+            'delay' => ['mode' => 'auto'],
+        ]);
+
+        expect(ConnectionCompiler::compile(
+            'guard-native-noext',
+            config('queue.connections.guard-native-noext'),
+            RabbitRsConnections::packageDefaults(),
+        )['native']['delay']['mode'])->toBe('ttl');
+    });
+
+    it('publishes a delayed job through the native verdict path', function () {
+        Http::fake();
+        guardNativeQueue('guard-native-publish', true);
+
+        $queue = app('queue')->connection('guard-native-publish');
+        /** @var RabbitMqQueue $queue */
+        $queue->setContainer(app());
+        $queue->later(5, 'stdClass');
+
+        expect(guardPool($queue)->published)->toHaveCount(1)
+            ->and(guardPool($queue)->published[0]['delay_ms'])->toBe(5000);
+        Http::assertNothingSent();
+    });
+
+    it('clears the native probe seam on reset', function () {
+        DelayPluginGuard::$nativeProbe = static fn (string $connection): ?bool => true;
+        DelayPluginGuard::reset();
+
+        expect(DelayPluginGuard::$nativeProbe)->toBeNull();
     });
 });
 

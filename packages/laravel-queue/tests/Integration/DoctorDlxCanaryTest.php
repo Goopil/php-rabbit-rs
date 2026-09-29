@@ -151,3 +151,46 @@ it('fails loud when the dead-letter wiring is broken', function () {
         ->and($output)->toContain('never reached the DLX')
         ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(1);
 });
+
+it('proves the dead-letter wiring end-to-end without a management_url through the native path', function () {
+    config()->set('queue.connections.'.$this->connectionName, array_merge($this->config, ['management_url' => null]));
+    $nativeConfig = config('queue.connections.'.$this->connectionName);
+    declareCanaryTopology($this->connectionName, $nativeConfig);
+
+    Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
+    $output = Artisan::output();
+
+    expect($output)->toContain('dead-letter canary: delivered, rejected, and received on the configured DLQ')
+        ->and($output)->not->toContain('dead-letter canary failed')
+        ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(0);
+});
+
+it('purges and deletes its canary DLQ after the native-path check', function () {
+    config()->set('queue.connections.'.$this->connectionName, array_merge($this->config, ['management_url' => null]));
+    $nativeConfig = config('queue.connections.'.$this->connectionName);
+    declareCanaryTopology($this->connectionName, $nativeConfig);
+
+    Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
+
+    $queues = json_decode((string) managementRequest('GET', 'http://localhost:15672/api/queues'), true) ?: [];
+    $canaryQueues = array_values(array_filter(
+        is_array($queues) ? $queues : [],
+        static fn (array $queue): bool => str_starts_with((string) ($queue['name'] ?? ''), 'rabbit-rs.canary.'),
+    ));
+    expect($canaryQueues)->toBe([]);
+});
+
+it('fails loud on broken wiring without a management_url', function () {
+    $this->config['topology_mode'] = 'external';
+    $this->config['management_url'] = null;
+    config()->set('queue.connections.'.$this->connectionName, $this->config);
+    grantRabbitRsConfigure();
+    declareQueue($this->mainQueue);
+
+    Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]);
+    $output = Artisan::output();
+
+    expect($output)->toContain('dead-letter canary failed')
+        ->and($output)->toContain('never reached the DLX')
+        ->and(Artisan::call('rabbit-rs:doctor', ['--connection' => [$this->connectionName]]))->toBe(1);
+});

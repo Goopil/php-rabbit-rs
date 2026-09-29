@@ -22,6 +22,7 @@ use super::{
 };
 use crate::conversion;
 use ext_php_rs::{
+    binary::Binary,
     boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
@@ -33,6 +34,7 @@ use rabbit_rs_core::{
     pool::{ConnectionHandle, ConnectionKey},
     runtime::RuntimeRegistry,
     topology::delay::DelayStrategy,
+    transport::{BindingSpec, Headers, QueueKind, QueueSpec},
 };
 
 /// Native `RabbitMQ` connection and operation pool.
@@ -407,6 +409,164 @@ impl Pool {
             .block_on(self.client.purge_queue(broker, queue))
         {
             Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Declares a queue on the given broker.
+    ///
+    /// `$kind` is `'quorum'` (default) or `'classic'`; `$durable` defaults to
+    /// true. The declaration uses the full expected spec, so it doubles as an
+    /// argument-mismatch check: an existing queue with different arguments
+    /// fails with a precondition error.
+    ///
+    /// @param string|null $kind 'quorum'|'classic'|null
+    #[php(defaults(kind = None, durable = true))]
+    pub fn declareQueue(
+        &self,
+        broker: &str,
+        queue: &str,
+        kind: Option<&str>,
+        durable: bool,
+    ) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::declareQueue")?;
+        let kind = match kind.unwrap_or("quorum") {
+            "quorum" => QueueKind::Quorum,
+            "classic" => QueueKind::Classic,
+            other => {
+                return rabbit_exception(format!(
+                    "Goopil\\RabbitRs\\Pool::declareQueue(): unsupported queue kind '{other}', expected 'quorum' or 'classic'"
+                ));
+            }
+        };
+        let spec = QueueSpec {
+            name: queue.to_owned(),
+            durable,
+            exclusive: false,
+            auto_delete: false,
+            kind,
+            dead_letter_exchange: None,
+            dead_letter_routing_key: None,
+            message_ttl: None,
+            expires: None,
+            delivery_limit: None,
+            arguments: Headers::new(),
+        };
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.declare_queue(broker, &spec))
+        {
+            Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Declares a binding from `$queue` to `$exchange` with `$routingKey`.
+    /// Binding declarations are idempotent on the broker.
+    pub fn bindQueue(
+        &self,
+        broker: &str,
+        exchange: &str,
+        queue: &str,
+        routing_key: &str,
+    ) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::bindQueue")?;
+        let spec = BindingSpec {
+            queue: queue.to_owned(),
+            exchange: exchange.to_owned(),
+            routing_key: routing_key.to_owned(),
+        };
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.bind_queue(broker, &spec))
+        {
+            Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Deletes a queue on the given broker. A missing queue resolves
+    /// successfully (idempotent deletion).
+    pub fn deleteQueue(&self, broker: &str, queue: &str) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::deleteQueue")?;
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.delete_queue(broker, queue))
+        {
+            Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Verifies an exchange's existence with a passive declare, without
+    /// creating it. Throws when the exchange is missing or the broker
+    /// rejects the probe.
+    pub fn verifyExchange(&self, broker: &str, exchange: &str) -> PhpResult<()> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::verifyExchange")?;
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.verify_exchange(broker, exchange))
+        {
+            Ok(()) => Ok(()),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Probes whether the broker supports the delayed-message plugin by
+    /// declaring and deleting a throwaway `x-delayed-message` exchange.
+    /// Returns false when the plugin is provably absent, and throws when the
+    /// probe is inconclusive (broker unreachable, permission denied, or any
+    /// unexpected failure) so callers can degrade deliberately.
+    pub fn probeDelayPlugin(&self, broker: &str) -> PhpResult<bool> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::probeDelayPlugin")?;
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.probe_delay_plugin(broker))
+        {
+            Ok(present) => Ok(present),
+            Err(error) => client_exception(&error),
+        }
+    }
+
+    /// Fetches one message from a queue with `basic.get` on a dedicated
+    /// channel, settling it immediately: `$requeue = true` inspects without
+    /// consuming (the message returns to the queue), `$requeue = false`
+    /// acknowledges it away. Returns null when the queue is empty.
+    ///
+    /// Flushes the publish buffer first (quiescing outstanding pipelined
+    /// drains) so a buffered publication is on the broker before the fetch.
+    ///
+    /// @return array{message_id: string, payload: \Ext\PhpRs\Binary}|null null = queue empty
+    #[php(defaults(requeue = true))]
+    pub fn getMessage(
+        &self,
+        broker: &str,
+        queue: &str,
+        requeue: bool,
+    ) -> PhpResult<Option<ZBox<ZendHashTable>>> {
+        self.ensure_open("Goopil\\RabbitRs\\Pool::getMessage")?;
+        self.publish_buffer.flush_all()?;
+        self.surface_publish_errors()?;
+        match self
+            .handle
+            .runtime()
+            .block_on(self.client.get_message(broker, queue, requeue))
+        {
+            Ok(Some(message)) => {
+                let mut table = ZendHashTable::new();
+                table.insert(
+                    "message_id",
+                    message.message_id.unwrap_or_default().as_str(),
+                )?;
+                table.insert("payload", Binary::new(message.payload.to_vec()))?;
+                Ok(Some(table))
+            }
+            Ok(None) => Ok(None),
             Err(error) => client_exception(&error),
         }
     }
