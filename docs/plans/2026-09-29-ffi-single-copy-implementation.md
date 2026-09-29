@@ -43,7 +43,7 @@ management-API work on `main`; swap it to `PhpString::from_bytes` when that work
 - `crates/rabbit-rs-php/tests/BinaryPayload/BinaryPayloadTest.php` covers the publish
   (PHP→Rust) direction, which this task does not touch.
 
-- [ ] **Step 1: Baseline — build the extension and run the PHP suite before any change**
+- [x] **Step 1: Baseline — build the extension and run the PHP suite before any change**
 
 ```bash
 cd .worktrees/ffi-single-copy && ./scripts/test-extension.sh
@@ -52,7 +52,7 @@ cd .worktrees/ffi-single-copy && ./scripts/test-extension.sh
 Expected: build succeeds, Pest + PHPT suites pass. If the environment fails here (composer
 missing, PHP version), STOP and report — do not proceed with the refactor.
 
-- [ ] **Step 2: delivery.rs — imports**
+- [x] **Step 2: delivery.rs — imports**
 
 Replace the `ext_php_rs` use block (currently):
 
@@ -79,7 +79,7 @@ use ext_php_rs::{
 };
 ```
 
-- [ ] **Step 3: delivery.rs — add the PhpString type after the `Delivery` impl block (or near the top, after imports)**
+- [x] **Step 3: delivery.rs — add the PhpString type after the `Delivery` impl block (or near the top, after imports)**
 
 ```rust
 /// PHP string view of Rust bytes: exactly one memcpy.
@@ -90,7 +90,7 @@ use ext_php_rs::{
 /// `IntoZval::TYPE` must stay `String`/non-nullable: the `#[php_impl]` macro
 /// writes it into the runtime arginfo, and a `Zval` return would downgrade the
 /// generated signature to `mixed`.
-pub(crate) struct PhpString(ZBox<ZendStr>);
+pub struct PhpString(ZBox<ZendStr>);
 
 impl PhpString {
     pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
@@ -109,7 +109,12 @@ impl IntoZval for PhpString {
 }
 ```
 
-- [ ] **Step 4: delivery.rs — change `payload()` (currently lines 34-38)**
+The shipped code deviates from this listing in one way: `PhpString` is `pub`
+(delivery.rs:156), forced because a `pub fn payload()` returning a `pub(crate)` type is a
+private-type-in-public-interface error under the mandated `clippy -D warnings`; the field
+and constructor stay crate-private (rationale documented at delivery.rs:153-154).
+
+- [x] **Step 4: delivery.rs — change `payload()` (currently lines 34-38)**
 
 Replace:
 
@@ -131,7 +136,7 @@ with:
     }
 ```
 
-- [ ] **Step 5: delivery.rs — change the binary header arm of `insert_header`**
+- [x] **Step 5: delivery.rs — change the binary header arm of `insert_header`**
 
 Replace:
 
@@ -145,7 +150,7 @@ with:
         HeaderValue::Binary(value) => table.insert(key, PhpString::from_bytes(value.as_ref()))?,
 ```
 
-- [ ] **Step 6: compile check**
+- [x] **Step 6: compile check**
 
 ```bash
 rtk cargo test -p rabbit-rs-php
@@ -154,10 +159,10 @@ rtk cargo test -p rabbit-rs-php
 Expected: compiles, all tests pass (the crate's Rust unit tests do not exercise
 `payload()`, so green here only proves compilation).
 
-- [ ] **Step 7: skipped — Pool::get is deferred** (uncommitted management-API work on `main`;
-      see the Files section above).
+- [x] **Step 7: skipped — deferred, not executed** (Pool::get is uncommitted
+      management-API work on `main`; see the Files section above).
 
-- [ ] **Step 8: format, lint, full Rust test run**
+- [x] **Step 8: format, lint, full Rust test run**
 
 ```bash
 rtk cargo fmt --all
@@ -168,7 +173,7 @@ rtk cargo nextest run --workspace --all-targets --no-fail-fast
 (nextest falls back to `rtk cargo test --workspace --all-targets` if nextest is not installed.)
 Expected: all green.
 
-- [ ] **Step 9: regenerate stubs and inspect the diff**
+- [x] **Step 9: regenerate stubs and inspect the diff**
 
 ```bash
 ./scripts/stubs.sh -o crates/rabbit-rs-php/stubs/rabbit_rs.stub.php
@@ -180,7 +185,7 @@ Expected: **empty diff** — the runtime arginfo is byte-identical (both `Binary
 docblock stay unchanged. If the diff is not empty, STOP and report. Validate the stub with
 `php -l crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`.
 
-- [ ] **Step 10: run the extension PHP suite against the rebuilt extension**
+- [x] **Step 10: run the extension PHP suite against the rebuilt extension**
 
 ```bash
 ./scripts/test-extension.sh
@@ -188,7 +193,7 @@ docblock stay unchanged. If the diff is not empty, STOP and report. Validate the
 
 Expected: Pest + PHPT pass, including the binary-safety guards named above.
 
-- [ ] **Step 11: full quality gate**
+- [x] **Step 11: full quality gate**
 
 ```bash
 rtk ./scripts/check.sh
@@ -196,7 +201,7 @@ rtk ./scripts/check.sh
 
 Expected: fmt + clippy + tests + `rtk composer validate --strict` all pass.
 
-- [ ] **Step 12: commit**
+- [x] **Step 12: commit**
 
 ```bash
 rtk git add crates/rabbit-rs-php/src/classes/delivery.rs

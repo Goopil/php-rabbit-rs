@@ -50,9 +50,12 @@ string identity through the macro:
    so the generated signature stays byte-identical to today's `Binary<u8>`-based one.
 2. `Delivery::payload()` returns `PhpResult<PhpString>`; `Binary` import dropped.
 3. `insert_header` `HeaderValue::Binary` arm inserts `PhpString::from_bytes(value.as_ref())`.
-4. `Pool::get()` uses `PhpString::from_bytes`; docblock `payload: \Ext\PhpRs\Binary` →
-   `payload: string` (pool.rs); stubs regenerated via `./scripts/stubs.sh` (comment-only diff
-   expected); unused `Binary` imports removed.
+4. `Pool::get()` — **deferred**: the `Pool::getMessage` call site lives in uncommitted
+   management-API work on `main`; it swaps to `PhpString::from_bytes` (docblock
+   `payload: \Ext\PhpRs\Binary` → `payload: string`, unused `Binary` import dropped) when
+   that work lands. Nothing in `pool.rs` changes on this branch, so no stub regeneration
+   is required here: the runtime arginfo is byte-identical (`Binary<u8>` and `PhpString`
+   both declare `TYPE = String, NULLABLE = false`).
 
 ## Non-goals
 
