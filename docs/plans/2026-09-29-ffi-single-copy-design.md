@@ -43,7 +43,9 @@ A bare `Zval` return type is not acceptable: `impl IntoZval for Zval` declares
 therefore the stub and `ReflectionTest`) to `mixed`. Instead, a private newtype carries the
 string identity through the macro:
 
-1. `pub(crate) struct PhpString(ZBox<ZendStr>)` in `delivery.rs` with
+1. `pub struct PhpString(ZBox<ZendStr>)` in `delivery.rs` (visibility forced: a `pub fn`
+   returning a `pub(crate)` type is a private-type-in-public-interface error under the
+   mandated `clippy -D warnings`; the field and constructor stay crate-private) with
    `PhpString::from_bytes(&[u8])` (the single memcpy) and an `IntoZval` impl declaring
    `TYPE = DataType::String, NULLABLE = false`. The `#[php_impl]` macro reads
    `<T as IntoZval>::TYPE` into the runtime arginfo (ext-php-rs `crates/macros/src/function.rs`),

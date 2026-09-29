@@ -33,7 +33,7 @@ management-API work on `main`; swap it to `PhpString::from_bytes` when that work
 
 **Interfaces:**
 - Consumes: ext-php-rs `Zval::set_zend_string(ZBox<ZendStr>)`, `ZendStr::new(impl AsRef<[u8]>, bool) -> ZBox<ZendStr>`, `IntoZval` (`TYPE`/`NULLABLE` consts + `set_zval`), `DataType::String`, `error::Result`.
-- Produces: `crates/rabbit-rs-php/src/classes/delivery.rs` exports `pub(crate) struct PhpString` with `pub(crate) fn from_bytes(bytes: &[u8]) -> Self` and `impl IntoZval for PhpString`. (The deferred `Pool::getMessage` swap will import it via `use super::delivery::PhpString;`.)
+- Produces: `crates/rabbit-rs-php/src/classes/delivery.rs` exports `pub struct PhpString` with `pub(crate) fn from_bytes(bytes: &[u8]) -> Self` and `impl IntoZval for PhpString`. (The deferred `Pool::getMessage` swap will import it via `use super::delivery::PhpString;`.)
 
 **Verification context (read before starting):**
 - Existing guard tests that MUST keep passing:
@@ -109,8 +109,8 @@ impl IntoZval for PhpString {
 }
 ```
 
-The shipped code deviates from this listing in one way: `PhpString` is `pub`
-(delivery.rs:156), forced because a `pub fn payload()` returning a `pub(crate)` type is a
+The shipped code deviates from the original `pub(crate)` spec in one way: `PhpString` is
+`pub` (delivery.rs:156), forced because a `pub fn payload()` returning a `pub(crate)` type is a
 private-type-in-public-interface error under the mandated `clippy -D warnings`; the field
 and constructor stay crate-private (rationale documented at delivery.rs:153-154).
 
