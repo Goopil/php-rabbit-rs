@@ -17,7 +17,10 @@ pub struct RabbitRsException;
 /// with the same message later; already-buffered messages are never dropped.
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\BackpressureException")]
-#[php(extends(RabbitRsException))]
+#[php(extends(ce = || {
+    use ::ext_php_rs::class::RegisteredClass;
+    <RabbitRsException as RegisteredClass>::get_metadata().ce()
+}, stub = "\\Goopil\\RabbitRs\\Exception"))]
 #[php(flags = ClassFlags::Final)]
 #[derive(Default)]
 pub struct BackpressureException;
@@ -26,7 +29,10 @@ pub struct BackpressureException;
 /// connection generations, source replacement).
 #[php_class]
 #[php(name = "Goopil\\RabbitRs\\ConnectionException")]
-#[php(extends(RabbitRsException))]
+#[php(extends(ce = || {
+    use ::ext_php_rs::class::RegisteredClass;
+    <RabbitRsException as RegisteredClass>::get_metadata().ce()
+}, stub = "\\Goopil\\RabbitRs\\Exception"))]
 #[php(flags = ClassFlags::Final)]
 #[derive(Default)]
 pub struct ConnectionException;
