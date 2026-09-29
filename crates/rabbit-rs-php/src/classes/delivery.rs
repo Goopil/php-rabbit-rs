@@ -8,11 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::exception::{rabbit_exception, rabbit_exception_message};
 use ext_php_rs::{
-    binary::Binary,
     boxed::ZBox,
-    flags::ClassFlags,
+    convert::IntoZval,
+    error::Result,
+    flags::{ClassFlags, DataType},
     prelude::{PhpResult, php_class, php_impl},
-    types::{ArrayKey, ZendHashTable, Zval},
+    types::{ArrayKey, ZendHashTable, ZendStr, Zval},
 };
 use rabbit_rs_core::consumer::{Delivery as NativeDelivery, DeliveryState, SettlementErrorKind};
 use rabbit_rs_core::transport::HeaderValue;
@@ -32,9 +33,9 @@ pub struct Delivery {
 #[php_impl]
 impl Delivery {
     /// Returns the binary-safe delivery payload.
-    pub fn payload(&self) -> PhpResult<Binary<u8>> {
+    pub fn payload(&self) -> PhpResult<PhpString> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::payload")?;
-        Ok(Binary::new(self.inner.payload.to_vec()))
+        Ok(PhpString::from_bytes(self.inner.payload.as_ref()))
     }
 
     /// Returns delivery metadata as a PHP array.
@@ -141,6 +142,35 @@ impl Delivery {
     }
 }
 
+/// PHP string view of Rust bytes: exactly one memcpy.
+///
+/// `Binary<u8>` costs two copies (Bytes→Vec, then Vec→zend_string). This newtype
+/// builds the `zend_string` directly from the byte slice and hands ownership to
+/// the zval, so the bytes are copied once into the final ZendMM allocation.
+/// `IntoZval::TYPE` must stay `String`/non-nullable: the `#[php_impl]` macro
+/// writes it into the runtime arginfo, and a `Zval` return would downgrade the
+/// generated signature to `mixed`.
+///
+/// `pub` only because `#[php_impl]` exposes `Delivery::payload` publicly;
+/// the field and constructor stay crate-private.
+pub struct PhpString(ZBox<ZendStr>);
+
+impl PhpString {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+        Self(ZendStr::new(bytes, false))
+    }
+}
+
+impl IntoZval for PhpString {
+    const TYPE: DataType = DataType::String;
+    const NULLABLE: bool = false;
+
+    fn set_zval(self, zval: &mut Zval, _persistent: bool) -> Result<()> {
+        zval.set_zend_string(self.0);
+        Ok(())
+    }
+}
+
 /// Bounded spin for a full settlement command channel: yields the PHP thread
 /// up to 64 times while the actor drains, then raises. Shared by the
 /// delivery settlements and `Consumer::ackThrough`.
@@ -166,7 +196,7 @@ where
         HeaderValue::Boolean(value) => table.insert(key, *value)?,
         HeaderValue::Integer(value) => table.insert(key, *value)?,
         HeaderValue::Double(value) => table.insert(key, value.get())?,
-        HeaderValue::Binary(value) => table.insert(key, Binary::new(value.to_vec()))?,
+        HeaderValue::Binary(value) => table.insert(key, PhpString::from_bytes(value.as_ref()))?,
         HeaderValue::Array(values) => {
             let mut nested = ZendHashTable::new();
             for (index, value) in values.iter().enumerate() {
