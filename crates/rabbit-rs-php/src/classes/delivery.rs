@@ -161,6 +161,9 @@ impl PhpString {
     }
 }
 
+/// `set_zval` ignores the `persistent` flag and always produces a
+/// request-bound string (ZendMM request heap). Every current caller passes
+/// `false`; a future persistent-heap caller must not use this type.
 impl IntoZval for PhpString {
     const TYPE: DataType = DataType::String;
     const NULLABLE: bool = false;
