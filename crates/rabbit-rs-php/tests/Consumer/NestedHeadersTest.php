@@ -33,4 +33,26 @@ describe('nested header round-trip', function () {
 
         $pool->close();
     });
+
+    it('passes binary-safe header values through metadata', function () {
+        $pool = testingPool(defaultConfigWithWorkers(), [
+            'deliveries' => [[
+                'message_id' => 'binary-headers',
+                'payload' => 'p',
+                'headers' => [
+                    'trace' => "before\0after\xff",
+                    'empty' => '',
+                ],
+            ]],
+        ]);
+        $consumer = $pool->consumer('main');
+        $delivery = $consumer->next(10);
+
+        $headers = $delivery->metadata()['headers'];
+
+        expect($headers['trace'])->toBe("before\0after\xff");
+        expect($headers['empty'])->toBe('');
+
+        $pool->close();
+    });
 });
