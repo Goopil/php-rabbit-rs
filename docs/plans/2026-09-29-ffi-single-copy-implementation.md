@@ -26,12 +26,14 @@
 
 **Files:**
 - Modify: `crates/rabbit-rs-php/src/classes/delivery.rs` (imports, new type, `payload()`, `insert_header`)
-- Modify: `crates/rabbit-rs-php/src/classes/pool.rs:25` (import), `pool.rs:532` (docblock), `pool.rs:549` (call site)
-- Regenerate: `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`
+- Regenerate: `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` (expected: no diff)
+
+**Deferred:** the `Pool::get()`/`Pool::getMessage()` call site (pool.rs) is uncommitted
+management-API work on `main`; swap it to `PhpString::from_bytes` when that work lands.
 
 **Interfaces:**
 - Consumes: ext-php-rs `Zval::set_zend_string(ZBox<ZendStr>)`, `ZendStr::new(impl AsRef<[u8]>, bool) -> ZBox<ZendStr>`, `IntoZval` (`TYPE`/`NULLABLE` consts + `set_zval`), `DataType::String`, `error::Result`.
-- Produces: `crates/rabbit-rs-php/src/classes/delivery.rs` exports `pub(crate) struct PhpString` with `pub(crate) fn from_bytes(bytes: &[u8]) -> Self` and `impl IntoZval for PhpString`. `Pool::get` imports it via `use super::delivery::PhpString;`.
+- Produces: `crates/rabbit-rs-php/src/classes/delivery.rs` exports `pub(crate) struct PhpString` with `pub(crate) fn from_bytes(bytes: &[u8]) -> Self` and `impl IntoZval for PhpString`. (The deferred `Pool::getMessage` swap will import it via `use super::delivery::PhpString;`.)
 
 **Verification context (read before starting):**
 - Existing guard tests that MUST keep passing:
@@ -152,27 +154,8 @@ rtk cargo test -p rabbit-rs-php
 Expected: compiles, all tests pass (the crate's Rust unit tests do not exercise
 `payload()`, so green here only proves compilation).
 
-- [ ] **Step 7: pool.rs — swap `Pool::get()` to the single-copy path**
-
-Three edits in `crates/rabbit-rs-php/src/classes/pool.rs`:
-
-1. Remove `binary::Binary,` from the `ext_php_rs` use block (line ~25) and add
-   `use super::delivery::PhpString;` alongside the other `use super::` imports.
-2. Docblock (line ~532): change
-   `/// @return array{message_id: string, payload: \Ext\PhpRs\Binary}|null null = queue empty`
-   to
-   `/// @return array{message_id: string, payload: string}|null null = queue empty`
-3. Call site (line ~549): replace
-
-```rust
-                table.insert("payload", Binary::new(message.payload.to_vec()))?;
-```
-
-with
-
-```rust
-                table.insert("payload", PhpString::from_bytes(message.payload.as_ref()))?;
-```
+- [ ] **Step 7: skipped — Pool::get is deferred** (uncommitted management-API work on `main`;
+      see the Files section above).
 
 - [ ] **Step 8: format, lint, full Rust test run**
 
@@ -192,8 +175,9 @@ Expected: all green.
 rtk git diff -- crates/rabbit-rs-php/stubs/rabbit_rs.stub.php
 ```
 
-Expected: the only diff is the `Pool::get()` docblock comment changing
-`\Ext\PhpRs\Binary` to `string`; `payload(): string` is unchanged. Validate with
+Expected: **empty diff** — the runtime arginfo is byte-identical (both `Binary<u8>` and
+`PhpString` declare `TYPE = String, NULLABLE = false`), so `payload(): string` and every
+docblock stay unchanged. If the diff is not empty, STOP and report. Validate the stub with
 `php -l crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`.
 
 - [ ] **Step 10: run the extension PHP suite against the rebuilt extension**
@@ -215,7 +199,7 @@ Expected: fmt + clippy + tests + `rtk composer validate --strict` all pass.
 - [ ] **Step 12: commit**
 
 ```bash
-rtk git add crates/rabbit-rs-php/src/classes/delivery.rs crates/rabbit-rs-php/src/classes/pool.rs crates/rabbit-rs-php/stubs/rabbit_rs.stub.php
+rtk git add crates/rabbit-rs-php/src/classes/delivery.rs
 rtk git commit -m "perf(php-ext): single-copy Rust-to-PHP payload conversion"
 ```
 

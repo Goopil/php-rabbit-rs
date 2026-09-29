@@ -23,6 +23,8 @@ Every byte crossing the PHP↔Rust FFI boundary costs at least one unavoidable m
 1. `Delivery::payload()` — `crates/rabbit-rs-php/src/classes/delivery.rs` (`Binary::new(self.inner.payload.to_vec())`)
 2. `Delivery::metadata()` binary headers — same file, `insert_header` `HeaderValue::Binary` arm
 3. `Pool::get()` payload — `crates/rabbit-rs-php/src/classes/pool.rs` (`Binary::new(message.payload.to_vec())`)
+   — **deferred**: this site lives in uncommitted management-API work on `main`; swap it to
+   `PhpString::from_bytes` when that work lands.
 
 ## Decision
 
