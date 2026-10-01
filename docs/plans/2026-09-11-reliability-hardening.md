@@ -97,7 +97,7 @@ results persist. Runtime target: < 60 s for both machines combined.
 
 | Item | Decision | Notes |
 |---|---|---|
-| `connection.blocked`/`unblocked` handling | Post-1.0 issue | Behavior today is bounded (confirm timeouts + deadlines, no infinite stall); the gap is a *measured signal*, not a blocker. Lab can trigger real alarms via `rabbitmqctl set_vm_memory_high_watermark`. |
+| `connection.blocked`/`unblocked` handling | Implemented (2026-09-28, spec `docs/superpowers/specs/2026-09-28-connection-blocked-design.md`) | Observability only: `TransportEventStream` carries `Blocked`/`Unblocked`; the connection actor records `connection_blocked` (gauge) + `connection_blocked_total` (counter) and logs the broker reason; `Pool::stats()` exposes both. Deadlines remain the only publish failure bound. External outbox / Laravel DB spool stays future work. |
 | Broker-side soak assertions (connections/channels stable, no unacked residue, no orphan TTL queues, broker memory) | Post-1.0 | Extends `benchmarks/driver-bench/bin/soak.php` with management-API checks. |
 | Race/cancellation matrix beyond machine coverage (PHP object destruction mid-publish, concurrent consumers) | Partially absorbed | Machine 1 covers buffer-level interleavings; PHP-runtime cancellation belongs to WS5-style runtime certification. |
 | PHP↔Rust boundary fuzzing | Post-1.0, CI-scheduled | `cargo-fuzz` targets on `conversion.rs` (headers, sizes, invalid configs). Requires nightly; never in the PR gate. |

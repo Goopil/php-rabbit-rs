@@ -47,6 +47,8 @@ impl Metrics {
             recovery_failures_total: load(&self.inner.recovery_failures_total),
             backpressure_total: load(&self.inner.backpressure_total),
             publication_retries_total: load(&self.inner.publication_retries_total),
+            connection_blocked_total: load(&self.inner.connection_blocked_total),
+            connection_blocked: load(&self.inner.connection_blocked),
             confirmation_latency: self.inner.confirmation_latency.snapshot(),
             settlement_latency: self.inner.settlement_latency.snapshot(),
         }
@@ -99,6 +101,20 @@ impl Metrics {
     pub(crate) fn record_publication_retry(&self) {
         increment(&self.inner.publication_retries_total);
     }
+
+    /// Records a broker backpressure episode (`connection.blocked`): the
+    /// episode counter grows and the gauge flags backpressure.
+    pub(crate) fn record_connection_blocked(&self) {
+        increment(&self.inner.connection_blocked_total);
+        self.inner.connection_blocked.store(1, Ordering::Relaxed);
+    }
+
+    /// Clears the backpressure gauge (on `connection.unblocked` or when the
+    /// connection goes away — a successor starts unblocked by definition).
+    /// The episode counter is never reset.
+    pub(crate) fn clear_connection_blocked(&self) {
+        self.inner.connection_blocked.store(0, Ordering::Relaxed);
+    }
 }
 
 impl fmt::Debug for Metrics {
@@ -120,6 +136,12 @@ struct MetricsInner {
     recovery_failures_total: AtomicU64,
     backpressure_total: AtomicU64,
     publication_retries_total: AtomicU64,
+    /// Broker backpressure episodes (`connection.blocked`) across all
+    /// connections of this client.
+    connection_blocked_total: AtomicU64,
+    /// Gauge: `1` while the broker is applying backpressure to any current
+    /// connection, `0` otherwise.
+    connection_blocked: AtomicU64,
     confirmation_latency: AtomicHistogram,
     settlement_latency: AtomicHistogram,
 }
@@ -149,6 +171,12 @@ pub struct MetricsSnapshot {
     pub backpressure_total: u64,
     /// Publications whose deadline expired during a recovery suspension and were re-armed once.
     pub publication_retries_total: u64,
+    /// Broker backpressure episodes observed (`connection.blocked`), across
+    /// all connections of this client. Never reset by recovery.
+    pub connection_blocked_total: u64,
+    /// Whether the broker is currently applying backpressure to any current
+    /// connection (`1`) or not (`0`).
+    pub connection_blocked: u64,
     /// End-to-end latency from publication acceptance to broker confirmation.
     pub confirmation_latency: HistogramSnapshot,
     /// End-to-end latency from delivery reservation to successful settlement.
