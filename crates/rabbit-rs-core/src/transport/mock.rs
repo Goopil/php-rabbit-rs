@@ -60,6 +60,11 @@ struct MockState {
     /// Publisher-channel confirm-mode results, mirroring a broker that
     /// rejects `confirm.select` transiently during recovery.
     enable_confirms_results: VecDeque<TransportResult<()>>,
+    /// Gates the next `enable_confirms` so a test can park the caller mid
+    /// round-trip — the publisher actor handles `Ready` inline, so parking
+    /// here parks everything upstream (the coordinator's publisher-slot
+    /// adoption) with it.
+    enable_confirms_gates: VecDeque<MockOperationGateWait>,
     /// Connection-level events armed on the event stream, mirroring a broker
     /// connection that dies (socket reset, heartbeat timeout) or applies
     /// backpressure (resource alarm).
@@ -245,6 +250,15 @@ impl MockTransport {
     pub fn push_publish_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().publish_gates.push_back(wait);
+        gate
+    }
+
+    /// Gates the next `enable_confirms` so a test can park the caller mid
+    /// round-trip.
+    #[must_use]
+    pub fn push_enable_confirms_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().enable_confirms_gates.push_back(wait);
         gate
     }
 
@@ -568,11 +582,19 @@ impl_topology_channel!(MockConsumerChannel, false);
 #[async_trait]
 impl PublisherChannel for MockPublisherChannel {
     async fn enable_confirms(&self) -> TransportResult<()> {
+        let gate = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.operations.push(TransportOperation::EnableConfirms);
+            state.enable_confirms_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.operations.push(TransportOperation::EnableConfirms);
         state.enable_confirms_results.pop_front().unwrap_or(Ok(()))
     }
 

@@ -107,7 +107,7 @@ impl super::TransportEventStream for LapinEventStream {
                     if (self.connection_alive)() {
                         continue;
                     }
-                    return Some(TransportEvent::Error(map_lapin_error(error)));
+                    return Some(TransportEvent::Error(map_event_stream_error(error)));
                 }
                 // `Connected` and `SendFlow` carry no backpressure or
                 // liveness signal relevant to this stream.
@@ -784,7 +784,16 @@ fn map_returned_message(message: lapin::message::BasicReturnMessage) -> Returned
     }
 }
 
-fn map_lapin_error(error: lapin::Error) -> TransportError {
+/// Maps an event-stream lapin failure once the connection is down.
+///
+/// The connection's death is the event being reported, so the surfaced error
+/// must keep the loss retryable: a channel-scoped 404/406 queued just before
+/// the death (a passive keep-alive declare, a refused consume) was already
+/// reported to its owning caller, and classifying the stale copy permanent
+/// would fail the pool on what is only a socket loss. Refused-permission
+/// verdicts (403, 530) keep their authentication classification, matching
+/// [`map_lapin_error`].
+fn map_event_stream_error(error: lapin::Error) -> TransportError {
     let message = error.to_string();
     let authentication = matches!(error.kind(), lapin::ErrorKind::AuthProviderError(_))
         || matches!(
@@ -797,6 +806,48 @@ fn map_lapin_error(error: lapin::Error) -> TransportError {
 
     if authentication {
         TransportError::authentication(message)
+    } else if recoverable {
+        TransportError::connection(message)
+    } else {
+        TransportError::protocol(message)
+    }
+}
+
+/// Maps a lapin operation failure onto the stability-oriented transport
+/// classification.
+///
+/// AMQP conditions recovery can never fix stay non-recoverable: refused
+/// permissions (403) and not-allowed commands (530) classify as
+/// [`TransportErrorKind::Authentication`], while missing topology (404) and
+/// incompatible arguments (406) classify as [`TransportErrorKind::Protocol`] —
+/// reconnecting and re-declaring hits the same verdict forever, so both must
+/// fail the pool instead of looping recovery (the "406 storm" class, #79).
+/// Everything else keeps lapin's own recoverability answer.
+///
+/// Passive declares (`verify_*`) can legitimately observe 404 from callers
+/// that probe existence — the delay keep-alive tick and the delay sweep treat
+/// the error themselves and never route it through recovery, so the permanent
+/// classification does not affect them. Active declares are create-if-missing
+/// and never raise 404, so the lazily-declared TTL bucket queues keep their
+/// create-if-missing semantics.
+fn map_lapin_error(error: lapin::Error) -> TransportError {
+    let message = error.to_string();
+    let (authentication, permanent_topology) = match error.kind() {
+        lapin::ErrorKind::AuthProviderError(_) => (true, false),
+        lapin::ErrorKind::ProtocolError(protocol) => match protocol.get_id() {
+            403 | 530 => (true, false),
+            404 | 406 => (false, true),
+            _ => (false, false),
+        },
+        _ => (false, false),
+    };
+    let recoverable = error.can_be_recovered();
+    drop(error);
+
+    if authentication {
+        TransportError::authentication(message)
+    } else if permanent_topology {
+        TransportError::protocol(message)
     } else if recoverable {
         TransportError::connection(message)
     } else {
@@ -817,7 +868,7 @@ mod tests {
 
     use super::{
         LapinEventStream, build_tls_config, connection_uri, map_header_value, map_headers,
-        publish_header_value, publish_properties,
+        map_lapin_error, publish_header_value, publish_properties,
     };
     use crate::config::{BrokerConfig, Credentials, Endpoint, TlsConfig, TlsVerify};
     use crate::transport::TransportEventStream;
@@ -870,6 +921,50 @@ mod tests {
 
         assert_eq!(
             error.kind(),
+            crate::transport::TransportErrorKind::Authentication
+        );
+    }
+
+    /// `NOT_FOUND` (404) and `PRECONDITION_FAILED` (406) are topology verdicts a
+    /// reconnect can never heal: re-declaring hits the same missing queue or
+    /// the same argument mismatch forever. Both must classify permanent, like
+    /// the refused-permission ids before them — the recovery-level "406
+    /// storm" class the project eliminated for delay queues (#79).
+    #[test]
+    fn not_found_and_precondition_failed_classify_permanent() {
+        let precondition_failed = map_lapin_error(protocol_error(
+            AMQPErrorKind::Soft(AMQPSoftError::PRECONDITIONFAILED),
+            "PRECONDITION_FAILED - inequivalent arg 'x-queue-type' for queue 'jobs' in vhost '/': received none but current is the value 'quorum'",
+        ));
+        assert!(
+            !precondition_failed.is_recoverable(),
+            "a 406 argument mismatch must not be retried by reconnecting"
+        );
+        assert_eq!(
+            precondition_failed.kind(),
+            crate::transport::TransportErrorKind::Protocol
+        );
+
+        let not_found = map_lapin_error(protocol_error(
+            AMQPErrorKind::Soft(AMQPSoftError::NOTFOUND),
+            "NOT_FOUND - no queue 'jobs' in vhost '/'",
+        ));
+        assert!(
+            !not_found.is_recoverable(),
+            "a 404 missing-topology verdict must not be retried by reconnecting"
+        );
+        assert_eq!(
+            not_found.kind(),
+            crate::transport::TransportErrorKind::Protocol
+        );
+
+        // The refused-permission classification is unchanged (regression).
+        let access_refused = map_lapin_error(protocol_error(
+            AMQPErrorKind::Soft(AMQPSoftError::ACCESSREFUSED),
+            "ACCESS_REFUSED - no read permission on queue 'jobs'",
+        ));
+        assert_eq!(
+            access_refused.kind(),
             crate::transport::TransportErrorKind::Authentication
         );
     }

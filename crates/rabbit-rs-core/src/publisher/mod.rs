@@ -241,6 +241,11 @@ pub enum PublishErrorKind {
 pub struct PublishError {
     kind: PublishErrorKind,
     message: String,
+    /// The wrapped transport failure, when the error originates from one.
+    /// Carrying it keeps the transport classification (recoverability)
+    /// available to callers that route the error through recovery, instead of
+    /// flattening a permanent cause into a retryable message string.
+    transport_source: Option<TransportError>,
 }
 
 impl PublishError {
@@ -248,7 +253,25 @@ impl PublishError {
         Self {
             kind,
             message: message.into(),
+            transport_source: None,
         }
+    }
+
+    /// Wraps a transport failure: the classification (kind, recoverability)
+    /// travels with the error so recovery can honor a permanent cause.
+    pub(crate) fn from_transport(error: TransportError) -> Self {
+        let message = error.to_string();
+        Self {
+            kind: PublishErrorKind::Transport,
+            message,
+            transport_source: Some(error),
+        }
+    }
+
+    /// The wrapped transport failure, when this error carries one.
+    #[must_use]
+    pub fn transport_source(&self) -> Option<&TransportError> {
+        self.transport_source.as_ref()
     }
 
     #[must_use]

@@ -970,7 +970,7 @@ fn complete_error(retained: RetainedPublish, error: PublishError) {
 }
 
 fn transport_publish_error(error: &TransportError) -> PublishError {
-    PublishError::new(PublishErrorKind::Transport, error.to_string())
+    PublishError::from_transport(error.clone())
 }
 
 async fn wait_for_deadline(deadline: Option<time::Instant>) {
