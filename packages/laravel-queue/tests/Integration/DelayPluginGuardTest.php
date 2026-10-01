@@ -74,6 +74,74 @@ function delayGuardPoll(RabbitMqQueue $queue, float $timeoutSeconds): ?object
     return null;
 }
 
+/**
+ * Path of the extension artifact the suite itself is running against,
+ * resolved the same way scripts/lib-extension.sh resolves it (debug
+ * preferred, release fallback).
+ */
+function recursionProbeExtensionArtifact(): string
+{
+    $root = dirname(__DIR__, 4);
+
+    // PHP_SHLIB_SUFFIX reports "so" even on macOS php builds, while the
+    // cargo artifact is ".dylib" there — probe both suffixes.
+    foreach (['debug', 'release'] as $profile) {
+        foreach (['dylib', 'so'] as $suffix) {
+            $artifact = $root.'/target/'.$profile.'/librabbit_rs_php.'.$suffix;
+            if (is_file($artifact)) {
+                return $artifact;
+            }
+        }
+    }
+
+    return $root.'/target/debug/librabbit_rs_php.dylib';
+}
+
+/**
+ * Child PHP source for the compile-recursion probe: a minimal container
+ * plus one auto-mode connection without a management url, compiled exactly
+ * the way the Octane /stats path compiles raw config.
+ */
+function recursionProbeChildSource(string $autoloadPath): string
+{
+    $autoloadLiteral = var_export($autoloadPath, true);
+    $vhostLiteral = var_export(ORDERS_VHOST, true);
+
+    return <<<PHP
+<?php
+
+declare(strict_types=1);
+
+require {$autoloadLiteral};
+
+\$repo = new Illuminate\\Config\\Repository([
+    'queue' => ['connections' => ['recursion-probe' => [
+        'driver' => 'rabbit-rs',
+        'queue' => 'rabbit-rs-it-recursion-probe',
+        'exchange' => '',
+        'routing_key' => '{queue}',
+        'hosts' => '127.0.0.1:5672',
+        'vhost' => {$vhostLiteral},
+        'username' => 'rabbit_rs',
+        'password' => 'rabbit_rs_lab',
+        'delay' => ['mode' => 'auto'],
+    ]]],
+]);
+\$app = new Illuminate\\Container\\Container;
+Illuminate\\Container\\Container::setInstance(\$app);
+\$app->instance('config', \$repo);
+
+\$compiled = Goopil\\RabbitRs\\Laravel\\Config\\ConnectionCompiler::compile(
+    'recursion-probe',
+    \$repo->get('queue.connections.recursion-probe'),
+    Goopil\\RabbitRs\\Laravel\\Support\\RabbitRsConnections::packageDefaults(),
+);
+
+echo 'MODE='.\$compiled['native']['delay']['mode'].PHP_EOL;
+echo 'CHILD-OK'.PHP_EOL;
+PHP;
+}
+
 beforeEach(function () {
     if (! extension_loaded('rabbit_rs')) {
         $this->markTestSkipped('ext-rabbit_rs is required for integration tests');
@@ -145,6 +213,43 @@ it('auto mode resolves the plugin strategy against a plugin-enabled broker', fun
     ]));
 
     expect(DelayPluginGuard::resolveAutoMode('rabbit-rs-it-delay-probe', 'auto'))->toBe('auto');
+});
+
+it('resolves the native probe verdict in a plain child process without recursing', function () {
+    // The CI shape: plain php + the extension only — no Xdebug to cap the
+    // recursion, no PCOV. The guard's native fallback compiles its probe
+    // pool through ConnectionCompiler::compile, which re-enters the guard;
+    // without an in-progress verdict the two calls recurse until the child
+    // dies an uncatchable death (memory exhaustion, or a segfault under
+    // PCOV in the coverage job). The child must exit cleanly with the
+    // broker's real plugin verdict.
+    $artifact = recursionProbeExtensionArtifact();
+    if (! extension_loaded('rabbit_rs') || ! is_file($artifact)) {
+        $this->markTestSkipped('ext-rabbit_rs artifact is required for the recursion probe');
+    }
+
+    $script = tempnam(sys_get_temp_dir(), 'rabbit-rs-recursion-').'.php';
+    file_put_contents($script, recursionProbeChildSource(dirname(__DIR__, 2).'/vendor/autoload.php'));
+
+    try {
+        $command = sprintf(
+            '%s -n -d extension=%s -d zend.max_allowed_stack_size=-1 -d memory_limit=256M %s 2>&1',
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($artifact),
+            escapeshellarg($script),
+        );
+        exec($command, $output, $exitCode);
+    } finally {
+        @unlink($script);
+    }
+
+    // Crash dumps from the child carry tens of thousands of stack frames —
+    // keep only the tail for the failure message.
+    $lines = implode("\n", array_slice($output, -15));
+
+    expect($exitCode)->toBe(0, "the compile child must survive: {$lines}")
+        ->and($lines)->toContain('CHILD-OK')
+        ->and($lines)->toContain('MODE='.($this->brokerHasPlugin ? 'auto' : 'ttl'));
 });
 
 it('plugin mode refuses the delayed publish when the plugin is absent', function () {

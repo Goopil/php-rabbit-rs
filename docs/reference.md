@@ -516,11 +516,16 @@ rabbitmq-plugins list | grep delay
 # Should show: rabbitmq_delayed_message_exchange
 ```
 
-The driver guards this for you: with a `management_url` configured, `plugin`
+The driver guards this for you. With a `management_url` configured, the
+guard probes the management API; without one it probes the broker natively
+through the `rabbit_rs` extension (a throwaway delayed-exchange declare that
+only succeeds with the plugin installed). Either way, `plugin`
 mode throws `DelayPluginMissingException` on the first delayed publish when
-the management API proves the plugin absent, and `auto` mode degrades to the
+the probe proves the plugin absent, and `auto` mode degrades to the
 `ttl` bucket queues at connection compile time — deferred jobs are never
-published into the main queue or silently lost.
+published into the main queue or silently lost. See the Laravel package's
+[Management API usage](../packages/laravel-queue/docs/management-api.md) for
+the per-feature path matrix.
 
 3. If using `ttl` mode, check the TTL queues exist:
 

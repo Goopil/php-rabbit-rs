@@ -6,9 +6,10 @@ use futures_util::StreamExt;
 use lapin::{
     BasicProperties, Channel, Confirmation, Connection, ConnectionProperties,
     options::{
-        BasicAckOptions, BasicCancelOptions, BasicConsumeOptions, BasicPublishOptions,
-        BasicQosOptions, BasicRejectOptions, ConfirmSelectOptions, ExchangeDeclareOptions,
-        QueueBindOptions, QueueDeclareOptions, QueueDeleteOptions, QueuePurgeOptions,
+        BasicAckOptions, BasicCancelOptions, BasicConsumeOptions, BasicGetOptions,
+        BasicPublishOptions, BasicQosOptions, BasicRejectOptions, ConfirmSelectOptions,
+        ExchangeDeclareOptions, ExchangeDeleteOptions, QueueBindOptions, QueueDeclareOptions,
+        QueueDeleteOptions, QueuePurgeOptions,
     },
     tcp::OwnedTLSConfig,
     types::{AMQPValue, FieldArray, FieldTable},
@@ -17,7 +18,7 @@ use url::Url;
 
 use super::{
     BindingSpec, ConsumerChannel, ConsumerRequest, Delivery, DeliveryStream, ExchangeKind,
-    ExchangeSpec, HeaderValue, PublishConfirmation, PublishReceipt, PublishRequest,
+    ExchangeSpec, FetchedMessage, HeaderValue, PublishConfirmation, PublishReceipt, PublishRequest,
     PublisherChannel, QueueKind, QueueSpec, ReturnedMessage, TopologyChannel, Transport,
     TransportConnection, TransportError, TransportEvent, TransportResult,
 };
@@ -198,6 +199,53 @@ impl TopologyChannel for LapinChannel {
 
     async fn delete_queue(&self, queue: &str) -> TransportResult<()> {
         delete_queue(&self.inner, queue).await
+    }
+
+    async fn delete_exchange(&self, exchange: &str) -> TransportResult<()> {
+        delete_exchange(&self.inner, exchange).await
+    }
+
+    async fn get_message(
+        &self,
+        queue: &str,
+        requeue: bool,
+    ) -> TransportResult<Option<FetchedMessage>> {
+        let Some(message) = self
+            .inner
+            .basic_get(queue.to_owned().into(), BasicGetOptions::default())
+            .await
+            .map_err(map_lapin_error)?
+        else {
+            return Ok(None);
+        };
+        let delivery = &message.delivery;
+        let fetched = FetchedMessage {
+            delivery_tag: delivery.delivery_tag,
+            exchange: delivery.exchange.to_string(),
+            routing_key: delivery.routing_key.to_string(),
+            redelivered: delivery.redelivered,
+            message_id: delivery
+                .properties
+                .message_id()
+                .as_ref()
+                .map(ToString::to_string),
+            headers: Arc::new(map_headers(delivery.properties.headers().as_ref())),
+            payload: Bytes::from(delivery.data.clone()),
+        };
+        // Settle before returning so the broker's disposition is already
+        // final when the caller inspects the snapshot.
+        if requeue {
+            self.inner
+                .basic_reject(fetched.delivery_tag, BasicRejectOptions { requeue: true })
+                .await
+                .map_err(map_lapin_error)?;
+        } else {
+            self.inner
+                .basic_ack(fetched.delivery_tag, BasicAckOptions::default())
+                .await
+                .map_err(map_lapin_error)?;
+        }
+        Ok(Some(fetched))
     }
 
     async fn close(&self) -> TransportResult<()> {
@@ -582,6 +630,15 @@ async fn delete_queue(channel: &Channel, queue: &str) -> TransportResult<()> {
         .queue_delete(queue.to_owned().into(), QueueDeleteOptions::default())
         .await
         .map(|_| ())
+        .map_err(map_lapin_error)
+}
+
+/// Deletes an exchange. A missing exchange resolves successfully (idempotent
+/// deletion), mirroring [`delete_queue`].
+async fn delete_exchange(channel: &Channel, exchange: &str) -> TransportResult<()> {
+    channel
+        .exchange_delete(exchange.to_owned().into(), ExchangeDeleteOptions::default())
+        .await
         .map_err(map_lapin_error)
 }
 

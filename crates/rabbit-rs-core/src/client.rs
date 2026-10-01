@@ -17,13 +17,19 @@ use crate::{
         PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
-    transport::{PublisherChannel, Transport, TransportError, lapin::LapinTransport},
+    transport::{
+        BindingSpec, ExchangeKind, ExchangeSpec, FetchedMessage, Headers, PublisherChannel,
+        QueueSpec, Transport, TransportError, lapin::LapinTransport,
+    },
 };
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::publisher::PublisherActor;
 
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
+
+/// Name of the throwaway exchange the delay-plugin probe declares.
+const DELAY_PROBE_EXCHANGE: &str = "rabbit-rs.probe.delayed";
 
 /// Upper bound on runtime-synthesized profiles per process (the
 /// `__auto__.` `auto_subscribe` path). Config profiles are not counted.
@@ -532,6 +538,172 @@ impl ClientPool {
             .map_err(|error| ClientError::transport(&error))
     }
 
+    /// Declares a queue on the given broker from a full spec.
+    ///
+    /// A failed declare closes the returned channel only: the admin-channel
+    /// factory hands out a fresh channel on every call, so a protocol error
+    /// (missing exchange, argument mismatch) never poisons the pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn declare_queue(&self, broker: &str, spec: &QueueSpec) -> Result<(), ClientError> {
+        self.ensure_open()?;
+        let channel = self.admin_channel(broker).await?;
+        channel
+            .declare_queue(spec)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Declares a queue binding on the given broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn bind_queue(&self, broker: &str, spec: &BindingSpec) -> Result<(), ClientError> {
+        self.ensure_open()?;
+        let channel = self.admin_channel(broker).await?;
+        channel
+            .bind_queue(spec)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Deletes a queue on the given broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn delete_queue(&self, broker: &str, queue: &str) -> Result<(), ClientError> {
+        self.ensure_open()?;
+        let channel = self.admin_channel(broker).await?;
+        channel
+            .delete_queue(queue)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Deletes an exchange on the given broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn delete_exchange(&self, broker: &str, exchange: &str) -> Result<(), ClientError> {
+        self.ensure_open()?;
+        let channel = self.admin_channel(broker).await?;
+        channel
+            .delete_exchange(exchange)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Verifies an exchange's existence with a passive declare, without
+    /// creating it. The spec's kind and flags are ignored by the broker for
+    /// a passive declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the exchange is missing or the broker
+    /// rejects the probe.
+    pub async fn verify_exchange(&self, broker: &str, exchange: &str) -> Result<(), ClientError> {
+        self.ensure_open()?;
+        let channel = self.admin_channel(broker).await?;
+        let spec = ExchangeSpec {
+            name: exchange.to_owned(),
+            kind: ExchangeKind::Direct,
+            durable: false,
+            auto_delete: false,
+            internal: false,
+            arguments: Headers::new(),
+        };
+        channel
+            .verify_exchange(&spec)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Fetches one message with `basic.get` on a dedicated admin channel,
+    /// settling it according to `requeue` (`true`: inspect without consuming,
+    /// `false`: acknowledge away). Returns `None` when the queue is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// channel failure.
+    pub async fn get_message(
+        &self,
+        broker: &str,
+        queue: &str,
+        requeue: bool,
+    ) -> Result<Option<FetchedMessage>, ClientError> {
+        self.ensure_open()?;
+        let channel = self.admin_channel(broker).await?;
+        channel
+            .get_message(queue, requeue)
+            .await
+            .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Probes whether the broker supports the delayed-message plugin by
+    /// declaring a throwaway `x-delayed-message` exchange.
+    ///
+    /// `Ok(false)` means the plugin is provably absent; an error means the
+    /// probe was inconclusive (broker unreachable, permission denied, or any
+    /// unexpected declare failure), leaving the caller free to degrade.
+    ///
+    /// The probe exchange is deleted before and after a successful declare,
+    /// so a leftover exchange of another type can never turn a later probe
+    /// into a false negative. A failed declare closes only its own channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure, or
+    /// any declare error other than `NOT-IMPLEMENTED`.
+    pub async fn probe_delay_plugin(&self, broker: &str) -> Result<bool, ClientError> {
+        self.ensure_open()?;
+        // Delete any stale probe exchange first: an exchange left over from
+        // a previous process with different arguments would turn the declare
+        // below into PRECONDITION_FAILED instead of NOT-IMPLEMENTED.
+        let _ = self.delete_exchange(broker, DELAY_PROBE_EXCHANGE).await;
+
+        // A fresh channel per probe: an unknown exchange type is a channel-
+        // closing protocol error, and the admin-channel factory hands out a
+        // new channel on every call, so the failed probe poisons nothing.
+        let channel = self.admin_channel(broker).await?;
+        let spec = ExchangeSpec {
+            name: DELAY_PROBE_EXCHANGE.to_owned(),
+            kind: ExchangeKind::Delayed(Box::new(ExchangeKind::Direct)),
+            durable: true,
+            auto_delete: false,
+            internal: false,
+            arguments: Headers::new(),
+        };
+        match channel.declare_exchange(&spec).await {
+            Ok(()) => {
+                let _ = channel.delete_exchange(DELAY_PROBE_EXCHANGE).await;
+                Ok(true)
+            }
+            // The broker answered on a live channel that the exchange type
+            // does not exist: the plugin is provably absent. Two phrasings
+            // cover the field: lapin's NOT-IMPLEMENTED reply code and the
+            // text a RabbitMQ 4.x broker without the plugin emits
+            // (verified against the lab broker: a channel-closing
+            // PRECONDITION_FAILED naming the exchange type).
+            Err(error)
+                if error.to_string().contains("NOT-IMPLEMENTED")
+                    || error.to_string().contains("unknown exchange type") =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(ClientError::transport(&error)),
+        }
+    }
+
     /// Opens a publisher channel for admin operations on the broker
     /// coordinator's single connection, waiting for readiness.
     ///
@@ -556,7 +728,13 @@ impl ClientPool {
         let last_coordinator_error: StdMutex<Option<String>> = StdMutex::new(None);
         let error_slot = &last_coordinator_error;
         let acquisition = async {
-            self.wait_for_coordinator_ready(&coordinator, false, || async {
+            // Spin on Ready like the consumer path: the actor's command
+            // replies race the state watch (a channel request queued a beat
+            // before the Ready transition is answered after the caller reads
+            // the state), so a stable Ready cannot be treated as "wait for a
+            // transition" — that parks against a healthy connection until the
+            // deadline. Retrying under the same wait_timeout keeps the bound.
+            self.wait_for_coordinator_ready(&coordinator, true, || async {
                 match coordinator.admin_channel().await {
                     Ok(channel) => Some(channel),
                     Err(error) => {

@@ -478,7 +478,7 @@ The minimal connection is therefore:
 | `password` | string | `guest` | AMQP password |
 | `tls` | array | package defaults | `enabled`, `ca_cert`, `client_cert`, `client_key` (see [TLS](#tls)) |
 | `heartbeat` | int (seconds) | `30` | AMQP heartbeat; positive integer |
-| `management_url` | ?string | `null` | Laravel-only: RabbitMQ management API base URL for `rabbit-rs:status` (never sent to the native extension) |
+| `management_url` | ?string | `null` | Laravel-only: RabbitMQ management API base URL (never sent to the native extension). Optional: features that consult it fall back to native AMQP probes without it — see [Management API usage](management-api.md) |
 | `exchange` | ?string | `laravel.jobs` | Publishing exchange; `null` publishes through the default exchange |
 | `routing_key` | ?string | `{queue}` | `{queue}` is replaced with the queue name at publish time; `null` means no routing key (default-exchange/fanout usage) |
 | `safety` | string | `safe` | `safe` (confirms + mandatory), `unsafe` (no confirms, no mandatory — synchronous socket write), `blind` (fire-and-forget) |
@@ -830,7 +830,13 @@ php artisan rabbit-rs:status --format=json
 ```
 
 `management_url` is Laravel-only: it is validated on the connection but never
-propagated to the native extension. `null` or blank disables the feature. See
+propagated to the native extension. `null` or blank disables the HTTP feature,
+and every feature that consults the API falls back to native AMQP probes
+(delay-plugin probe, doctor dead-letter canary, topology exchange checks) —
+except the cross-process queue counters above, which are management-API-only
+(pure AMQP exposes no cumulative broker counters). See
+[Management API usage](management-api.md) for the per-feature matrix and the
+protocol-impossible gaps. See
 [Reliability — Measuring duplicates](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#measuring-duplicates) for
 what the counters mean.
 

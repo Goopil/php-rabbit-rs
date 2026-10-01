@@ -260,6 +260,18 @@ namespace Goopil\RabbitRs {
         public function __destruct() {}
 
         /**
+         * Declares a binding from `$queue` to `$exchange` with `$routingKey`.
+         * Binding declarations are idempotent on the broker.
+         *
+         * @param string $broker
+         * @param string $exchange
+         * @param string $queue
+         * @param string $routing_key
+         * @return void
+         */
+        public function bindQueue(string $broker, string $exchange, string $queue, string $routing_key): void {}
+
+        /**
          * Purges all messages from a queue on the given broker.
          *
          * Flushes the publish buffer first (quiescing outstanding pipelined
@@ -304,6 +316,34 @@ namespace Goopil\RabbitRs {
         public function consumer(string $profile): \Goopil\RabbitRs\Consumer {}
 
         /**
+         * Declares a queue on the given broker.
+         *
+         * `$kind` is `'quorum'` (default) or `'classic'`; `$durable` defaults to
+         * true. The declaration uses the full expected spec, so it doubles as an
+         * argument-mismatch check: an existing queue with different arguments
+         * fails with a precondition error.
+         *
+         * @param string|null $kind 'quorum'|'classic'|null
+         *
+         * @param string $broker
+         * @param string $queue
+         * @param string|null $kind
+         * @param bool $durable
+         * @return void
+         */
+        public function declareQueue(string $broker, string $queue, ?string $kind = null, bool $durable = true): void {}
+
+        /**
+         * Deletes a queue on the given broker. A missing queue resolves
+         * successfully (idempotent deletion).
+         *
+         * @param string $broker
+         * @param string $queue
+         * @return void
+         */
+        public function deleteQueue(string $broker, string $queue): void {}
+
+        /**
          * Drains non-confirmed publish outcomes recorded by the pipelined
          * flush, returning one hash per record with `kind`, `message_id`, and
          * `message`. The queue is cleared by this call; the same records would
@@ -337,6 +377,24 @@ namespace Goopil\RabbitRs {
         public function flush(): void {}
 
         /**
+         * Fetches one message from a queue with `basic.get` on a dedicated
+         * channel, settling it immediately: `$requeue = true` inspects without
+         * consuming (the message returns to the queue), `$requeue = false`
+         * acknowledges it away. Returns null when the queue is empty.
+         *
+         * Flushes the publish buffer first (quiescing outstanding pipelined
+         * drains) so a buffered publication is on the broker before the fetch.
+         *
+         * @return array{message_id: string, payload: string}|null null = queue empty
+         *
+         * @param string $broker
+         * @param string $queue
+         * @param bool $requeue
+         * @return array|null
+         */
+        public function getMessage(string $broker, string $queue, bool $requeue = true): ?array {}
+
+        /**
          * Registers a PHP callback invoked when publisher backpressure is detected.
          *
          * The callback receives `(string $broker, int $inFlight, int $capacity)`.
@@ -363,6 +421,18 @@ namespace Goopil\RabbitRs {
          * @return void
          */
         public function onConnectionState(mixed $callback): void {}
+
+        /**
+         * Probes whether the broker supports the delayed-message plugin by
+         * declaring and deleting a throwaway `x-delayed-message` exchange.
+         * Returns false when the plugin is provably absent, and throws when the
+         * probe is inconclusive (broker unreachable, permission denied, or any
+         * unexpected failure) so callers can degrade deliberately.
+         *
+         * @param string $broker
+         * @return bool
+         */
+        public function probeDelayPlugin(string $broker): bool {}
 
         /**
          * Publishes one message and returns its stable message identifier.
@@ -445,5 +515,16 @@ namespace Goopil\RabbitRs {
          * @return array
          */
         public function stats(): array {}
+
+        /**
+         * Verifies an exchange's existence with a passive declare, without
+         * creating it. Throws when the exchange is missing or the broker
+         * rejects the probe.
+         *
+         * @param string $broker
+         * @param string $exchange
+         * @return void
+         */
+        public function verifyExchange(string $broker, string $exchange): void {}
     }
 }

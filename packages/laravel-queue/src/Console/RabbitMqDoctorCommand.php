@@ -108,8 +108,9 @@ final class RabbitMqDoctorCommand extends Command
         $brokerError = $this->checkBroker($compiled, $probe, $extensionUsable);
         $managementUsable = $this->checkManagement($config);
         $this->checkPublishOutcomes($compiled, $config, $managementUsable);
+
         $this->checkTopology($compiled, $brokerError);
-        $this->checkDeadLetterCanary($name, $compiled, $config, $probe, $brokerError, $managementUsable);
+        $this->checkDeadLetterCanary($name, $compiled, $config, $probe, $brokerError);
         $this->checkSafety($compiled);
         $this->checkHorizon($name, $workerClass, $compiled);
         $this->checkEvents();
@@ -359,9 +360,10 @@ final class RabbitMqDoctorCommand extends Command
      * Behavioral dead-letter probe: publishes, terminally rejects, and
      * asserts DLQ delivery — the only check that exercises the whole chain
      * (queue args → DLX → binding → DLQ) instead of inspecting its parts.
-     * Skipped without a reachable broker, without a usable management API
-     * (DLQ delivery is verified through it), or when no dead_letter topology
-     * is configured (checkTopology already warns about that gap).
+     * Skipped without a reachable broker or when no dead_letter topology
+     * is configured (checkTopology already warns about that gap). The
+     * verification path follows the connection: management API when
+     * `management_url` is set, native AMQP operations otherwise.
      *
      * @param  array<string, mixed>  $compiled
      * @param  array<string, mixed>  $config
@@ -372,10 +374,9 @@ final class RabbitMqDoctorCommand extends Command
         array $config,
         DoctorProbe $probe,
         ?string $brokerError,
-        bool $managementUsable,
     ): void {
         $deadLetter = $compiled['topology']['dead_letter'] ?? null;
-        if (! is_array($deadLetter) || $brokerError !== null || ! $managementUsable) {
+        if (! is_array($deadLetter) || $brokerError !== null) {
             return;
         }
 

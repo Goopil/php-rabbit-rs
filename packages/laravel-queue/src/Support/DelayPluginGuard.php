@@ -4,14 +4,24 @@ declare(strict_types=1);
 
 namespace Goopil\RabbitRs\Laravel\Support;
 
+use Closure;
+use Goopil\RabbitRs\Laravel\Config\ConnectionCompiler;
 use Goopil\RabbitRs\Laravel\Exceptions\DelayPluginMissingException;
+use Goopil\RabbitRs\Pool;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Broker-side presence check for the `rabbitmq_delayed_message_exchange`
- * plugin, read from the management API overview: `exchange_types` lists
- * `x-delayed-message` exactly when the plugin is enabled.
+ * plugin. Verdict resolution order per connection:
+ *
+ * 1. `management_url` set — the management API overview probe (primary,
+ *    unchanged wire contract): `exchange_types` lists `x-delayed-message`
+ *    exactly when the plugin is enabled.
+ * 2. No `management_url` — native AMQP probe through the extension: a
+ *    `rabbit-rs.probe.delayed` exchange declare succeeds only with the
+ *    plugin (false = provably absent, null = extension missing or probe
+ *    could not run).
  *
  * The verdict is cached per connection for the process lifetime — enabling
  * the plugin is a broker administration action, not something a running
@@ -30,20 +40,27 @@ final class DelayPluginGuard
     private static array $unverifiedWarnings = [];
 
     /**
+     * Test seam: when set, it replaces the native AMQP probe for every
+     * connection (`fn (string $connection): ?bool`). Cleared by `reset()`.
+     */
+    public static ?Closure $nativeProbe = null;
+
+    /**
      * Drops every cached verdict (test isolation).
      */
     public static function reset(): void
     {
         self::$verdicts = [];
         self::$unverifiedWarnings = [];
+        self::$nativeProbe = null;
     }
 
     /**
      * Effective delay mode for a compiled connection: `auto` keeps the plugin
      * strategy only when the broker confirms the delayed-message exchange
      * type, and degrades to the ttl bucket queues otherwise (plugin absent,
-     * management API unreachable, or no management_url configured). Without
-     * the degradation the native plugin strategy lands deferred jobs in the
+     * probe unverifiable, or no probe path configured). Without the
+     * degradation the native plugin strategy lands deferred jobs in the
      * main queue until a sweep re-buckets them — an early-execution window.
      * Explicit plugin/ttl modes pass through untouched.
      */
@@ -59,9 +76,9 @@ final class DelayPluginGuard
     /**
      * Refuses a delayed publish in plugin mode when the broker proves the
      * plugin absent — without it every deferred message is silently lost.
-     * A probe that cannot verify (no management_url, API down) publishes
-     * through unchanged, so an unrelated management outage never breaks a
-     * working plugin setup; the pass-through is logged once per connection.
+     * A probe that cannot verify publishes through unchanged, so an unrelated
+     * probe-path outage never breaks a working plugin setup; the pass-through
+     * is logged once per connection.
      */
     public static function assertPluginEnabled(string $connection): void
     {
@@ -79,8 +96,9 @@ final class DelayPluginGuard
             self::$unverifiedWarnings[$connection] = true;
             Log::warning(
                 "rabbit-rs: delay.mode=plugin on connection '{$connection}' could not be "
-                .'verified against the management API — delayed publishes are not guarded '
-                .'against the missing rabbitmq_delayed_message_exchange plugin.',
+                .'verified against the broker (no management_url, management API unreachable, '
+                .'or the rabbit_rs extension is unavailable) — delayed publishes are not '
+                .'guarded against the missing rabbitmq_delayed_message_exchange plugin.',
             );
         }
     }
@@ -93,6 +111,16 @@ final class DelayPluginGuard
         if (array_key_exists($connection, self::$verdicts)) {
             return self::$verdicts[$connection];
         }
+
+        // Mark the verdict in progress before probing: probeNative compiles
+        // its throwaway pool through ConnectionCompiler::compile, which
+        // re-enters this guard for the same connection. The re-entrant call
+        // must observe the in-progress verdict (null → the nested compile
+        // degrades to ttl) instead of probing again — writing the cache only
+        // after the probe returned made compile → probe → compile recurse
+        // until the process died (segfault under PCOV coverage, worker death
+        // under Octane). The real verdict overwrites the marker below.
+        self::$verdicts[$connection] = null;
 
         return self::$verdicts[$connection] = self::probeBroker($connection);
     }
@@ -112,10 +140,18 @@ final class DelayPluginGuard
         }
 
         $url = $config['management_url'] ?? null;
-        if (! is_string($url) || trim($url) === '') {
-            return null;
+        if (is_string($url) && trim($url) !== '') {
+            return self::probeManagementApi($config, $url);
         }
 
+        return self::probeNative($connection, $config);
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    private static function probeManagementApi(array $config, string $url): ?bool
+    {
         $username = $config['username'] ?? '';
         $password = $config['password'] ?? '';
 
@@ -147,5 +183,51 @@ final class DelayPluginGuard
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    private static function probeNative(string $connection, array $config): ?bool
+    {
+        if (self::$nativeProbe !== null) {
+            return (self::$nativeProbe)($connection);
+        }
+
+        if (! extension_loaded('rabbit_rs')) {
+            return null;
+        }
+
+        try {
+            // The probe pool is throwaway: pin its delay mode to ttl so this
+            // compile never re-enters the guard for the plugin verdict the
+            // probe itself is about to produce.
+            $probeConfig = $config;
+            $probeConfig['delay'] = array_merge(
+                is_array($config['delay'] ?? null) ? $config['delay'] : [],
+                ['mode' => 'ttl'],
+            );
+
+            $compiled = ConnectionCompiler::compile(
+                $connection,
+                $probeConfig,
+                RabbitRsConnections::packageDefaults(),
+            );
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $broker = (string) ($compiled['native']['brokers'][0]['name'] ?? 'default');
+
+        try {
+            $pool = new Pool($compiled['native']);
+            try {
+                return $pool->probeDelayPlugin($broker);
+            } finally {
+                $pool->close();
+            }
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

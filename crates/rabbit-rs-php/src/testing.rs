@@ -14,8 +14,8 @@ use rabbit_rs_core::{
     publisher::PublisherConfig,
     runtime::RuntimeRegistry,
     transport::{
-        Delivery, HeaderFloat, HeaderValue, Headers, PublishConfirmation, ReturnedMessage,
-        TransportError, mock::MockTransport,
+        Delivery, FetchedMessage, HeaderFloat, HeaderValue, Headers, PublishConfirmation,
+        ReturnedMessage, TransportError, mock::MockTransport,
     },
 };
 
@@ -38,6 +38,11 @@ struct Scenario {
     publication_outcomes: Vec<PublicationFixture>,
     buffer_flush_interval_ms: Option<u64>,
     buffer_flush_threshold: Option<usize>,
+    /// Scripted `basic.get` results, one per `Pool::getMessage` call.
+    get_messages: Vec<GetMessageFixture>,
+    /// Scripted generic operation results (declare/bind/delete/verify),
+    /// consumed in order by any scripted-failing topology operation.
+    operation_results: Vec<OperationFixture>,
 }
 
 #[derive(Debug)]
@@ -46,6 +51,21 @@ enum PublicationFixture {
     Returned,
     Pending,
     TransportError,
+}
+
+#[derive(Debug)]
+enum GetMessageFixture {
+    Message {
+        message_id: Option<String>,
+        payload: Bytes,
+    },
+    Error,
+}
+
+#[derive(Debug)]
+enum OperationFixture {
+    Ok,
+    Error,
 }
 
 #[derive(Debug)]
@@ -102,6 +122,38 @@ pub(crate) fn testing_pool(config: &ZendHashTable, scenario: &ZendHashTable) -> 
         }));
     }
 
+    for fixture in scenario.get_messages {
+        match fixture {
+            GetMessageFixture::Message {
+                message_id,
+                payload,
+            } => {
+                transport.push_get_message(Ok(Some(FetchedMessage {
+                    delivery_tag: 1,
+                    exchange: "testing".to_owned(),
+                    routing_key: "testing".to_owned(),
+                    redelivered: false,
+                    message_id,
+                    headers: Arc::new(Headers::new()),
+                    payload,
+                })));
+            }
+            GetMessageFixture::Error => {
+                transport.push_get_message(Err(TransportError::protocol(
+                    "NOT_FOUND - no queue 'testing' in vhost '/'",
+                )));
+            }
+        }
+    }
+    for fixture in scenario.operation_results {
+        match fixture {
+            OperationFixture::Ok => transport.push_operation_result(Ok(())),
+            OperationFixture::Error => transport.push_operation_result(Err(
+                TransportError::protocol("NOT_FOUND - scripted operation failure"),
+            )),
+        }
+    }
+
     let key = ConnectionKey::from_config(&config);
     let handle = RuntimeRegistry::global()
         .acquire(key)
@@ -141,6 +193,8 @@ impl Scenario {
                 "publication_outcomes",
                 "buffer_flush_interval_ms",
                 "buffer_flush_threshold",
+                "get_messages",
+                "operation_results",
             ],
         )?;
         let publisher_capacity =
@@ -157,6 +211,8 @@ impl Scenario {
         let deliveries = optional_deliveries(table)?;
         let buffer_flush_interval_ms = optional_u64(table, "buffer_flush_interval_ms", "scenario")?;
         let buffer_flush_threshold = optional_usize(table, "buffer_flush_threshold", "scenario")?;
+        let get_messages = optional_get_messages(table)?;
+        let operation_results = optional_operation_results(table)?;
 
         Ok(Self {
             deliveries,
@@ -167,8 +223,69 @@ impl Scenario {
             publication_outcomes,
             buffer_flush_interval_ms,
             buffer_flush_threshold,
+            get_messages,
+            operation_results,
         })
     }
+}
+
+fn optional_get_messages(table: &ZendHashTable) -> Result<Vec<GetMessageFixture>, String> {
+    let Some(value) = table.get("get_messages").map(Zval::dereference) else {
+        return Ok(Vec::new());
+    };
+    let entries = value
+        .array()
+        .ok_or_else(|| "scenario.get_messages: expected a list".to_owned())?;
+    if !is_list(entries) {
+        return Err("scenario.get_messages: expected a list".to_owned());
+    }
+
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, (_, value))| {
+            let path = format!("scenario.get_messages.{index}");
+            let entry = value.dereference();
+            if entry.str() == Some("error") {
+                return Ok(GetMessageFixture::Error);
+            }
+            let entry = entry
+                .array()
+                .ok_or_else(|| format!("{path}: expected an array or 'error'"))?;
+            reject_unknown_keys(entry, &path, &["message_id", "payload"])?;
+            let message_id = optional_text(entry, "message_id", &path)?;
+            let payload = required_binary(entry, "payload", &path)?;
+            Ok(GetMessageFixture::Message {
+                message_id,
+                payload,
+            })
+        })
+        .collect()
+}
+
+fn optional_operation_results(table: &ZendHashTable) -> Result<Vec<OperationFixture>, String> {
+    let Some(value) = table.get("operation_results").map(Zval::dereference) else {
+        return Ok(Vec::new());
+    };
+    let entries = value
+        .array()
+        .ok_or_else(|| "scenario.operation_results: expected a list".to_owned())?;
+    if !is_list(entries) {
+        return Err("scenario.operation_results: expected a list".to_owned());
+    }
+
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, (_, value))| {
+            let path = format!("scenario.operation_results.{index}");
+            match value.dereference().str() {
+                Some("ok") => Ok(OperationFixture::Ok),
+                Some("error") => Ok(OperationFixture::Error),
+                _ => Err(format!("{path}: expected 'ok' or 'error'")),
+            }
+        })
+        .collect()
 }
 
 fn optional_publisher_safety(table: &ZendHashTable) -> Result<SafetyMode, String> {

@@ -12,7 +12,8 @@ use rabbit_rs_core::{
     consumer::{SubscriptionId, SubscriptionPolicy, WeightedFairScheduler},
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     transport::{
-        Delivery as TransportDelivery, PublishConfirmation, QueueKind, TransportError,
+        BindingSpec, Delivery as TransportDelivery, ExchangeKind, FetchedMessage, Headers,
+        PublishConfirmation, QueueKind, QueueSpec, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -585,6 +586,249 @@ async fn queue_size_and_purge_operations() {
         op,
         TransportOperation::PurgeQueue { queue } if queue == "orders"
     )));
+}
+
+#[tokio::test]
+async fn get_message_returns_scripted_message_then_empty() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_get_message(Ok(Some(FetchedMessage {
+        delivery_tag: 7,
+        exchange: "events".to_owned(),
+        routing_key: "orders.created".to_owned(),
+        redelivered: false,
+        message_id: Some("m-1".to_owned()),
+        headers: Arc::new(Headers::new()),
+        payload: Bytes::from_static(b"body"),
+    })));
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    let message = pool
+        .get_message("default", "orders", true)
+        .await
+        .expect("get message")
+        .expect("message present");
+
+    assert_eq!(message.message_id.as_deref(), Some("m-1"));
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::GetMessage { queue, requeue } if queue == "orders" && *requeue
+    )));
+
+    assert!(
+        pool.get_message("default", "orders", false)
+            .await
+            .expect("get message")
+            .is_none(),
+        "unscripted get resolves to an empty queue"
+    );
+}
+
+#[tokio::test]
+async fn topology_admin_operations_ride_the_admin_channel() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    let queue = QueueSpec {
+        name: "orders".to_owned(),
+        durable: true,
+        exclusive: false,
+        auto_delete: false,
+        kind: QueueKind::Quorum,
+        dead_letter_exchange: None,
+        dead_letter_routing_key: None,
+        message_ttl: None,
+        expires: None,
+        delivery_limit: None,
+        arguments: Headers::new(),
+    };
+    pool.declare_queue("default", &queue)
+        .await
+        .expect("declare queue");
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::DeclareQueue(spec) if spec.name == "orders"
+    )));
+
+    pool.bind_queue(
+        "default",
+        &BindingSpec {
+            queue: "orders".to_owned(),
+            exchange: "events".to_owned(),
+            routing_key: "orders.created".to_owned(),
+        },
+    )
+    .await
+    .expect("bind queue");
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::BindQueue(spec) if spec.queue == "orders" && spec.exchange == "events"
+    )));
+
+    pool.delete_queue("default", "orders")
+        .await
+        .expect("delete queue");
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::DeleteQueue { queue } if queue == "orders"
+    )));
+
+    pool.delete_exchange("default", "rabbit-rs.probe.delayed")
+        .await
+        .expect("delete exchange");
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::DeleteExchange { exchange } if exchange == "rabbit-rs.probe.delayed"
+    )));
+}
+
+#[tokio::test]
+async fn verify_exchange_probe_passes_and_fails_as_scripted() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    pool.verify_exchange("default", "events")
+        .await
+        .expect("verify ok");
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::VerifyExchange(spec) if spec.name == "events"
+    )));
+
+    transport.push_operation_result(Err(TransportError::protocol(
+        "NOT_FOUND - no exchange 'missing' in vhost '/'",
+    )));
+    let error = pool
+        .verify_exchange("default", "missing")
+        .await
+        .expect_err("missing exchange");
+    assert!(error.to_string().contains("NOT_FOUND"));
+}
+
+#[tokio::test]
+async fn probe_delay_plugin_classifies_declare_outcomes() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(config()), transport.clone());
+
+    // Plugin present: the delayed exchange declares, then the probe exchange
+    // is cleaned up. Both deletes (pre-clean + cleanup) plus the declare ride
+    // the mock's default Ok(()).
+    assert!(
+        pool.probe_delay_plugin("default")
+            .await
+            .expect("probe present")
+    );
+    assert!(transport.operations().iter().any(|op| matches!(
+        op,
+        TransportOperation::DeclareExchange(spec)
+            if spec.name == "rabbit-rs.probe.delayed"
+                && spec.kind == ExchangeKind::Delayed(Box::new(ExchangeKind::Direct))
+    )));
+    assert_eq!(
+        transport
+            .operations()
+            .iter()
+            .filter(|op| matches!(op, TransportOperation::DeleteExchange { exchange } if exchange == "rabbit-rs.probe.delayed"))
+            .count(),
+        2,
+        "probe exchange deleted before and after the declare"
+    );
+
+    // Plugin absent: the pre-clean delete consumes the first scripted
+    // result, the declare consumes the second and reports NOT-IMPLEMENTED.
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Err(TransportError::protocol(
+        "NOT-IMPLEMENTED - unknown exchange type 'x-delayed-message'",
+    )));
+    assert!(
+        !pool
+            .probe_delay_plugin("default")
+            .await
+            .expect("probe absent")
+    );
+
+    // Same verdict for the text a real RabbitMQ 4.x broker without the
+    // plugin emits: the unknown exchange type is a channel-closing
+    // PRECONDITION_FAILED, not a NOT-IMPLEMENTED reply.
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Err(TransportError::protocol(
+        "PRECONDITION_FAILED - unknown exchange type 'x-delayed-message'",
+    )));
+    assert!(
+        !pool
+            .probe_delay_plugin("default")
+            .await
+            .expect("probe absent (real broker text)")
+    );
+
+    // Inconclusive: any other declare failure propagates so the caller can
+    // distinguish "plugin absent" from "probe could not run".
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Err(TransportError::protocol(
+        "ACCESS-REFUSED - access to exchange refused",
+    )));
+    assert!(pool.probe_delay_plugin("default").await.is_err());
+}
+
+#[test]
+fn admin_ops_stay_ready_across_repeated_pool_lifecycles() {
+    // Regression: an admin channel request queued one beat before the actor's
+    // Ready transition is answered after the caller reads the state, so the
+    // readiness wait observed a stable `Ready` after a failed attempt. With
+    // spin-on-Ready disabled it parked on `wait_for_transition(&Ready)` —
+    // waiting for a healthy, stable connection to change state — until the
+    // deadline. Admin ops now spin on Ready like consumer acquisition.
+    let registry = rabbit_rs_core::runtime::RuntimeRegistry::new();
+    // Bounded readiness wait (validation floor is 1s) so a regression fails
+    // fast instead of hanging 30s per cycle.
+    let config = Arc::new(
+        Config {
+            brokers: vec![BrokerConfig {
+                name: "default".to_owned(),
+                hosts: vec![Endpoint::new("rabbit.local", 5672)],
+                vhost: "/".to_owned(),
+                credentials: Credentials::new("guest", "secret"),
+                tls: TlsConfig::disabled(),
+                heartbeat: Duration::from_secs(30),
+            }],
+            workers: Vec::new(),
+            topology_mode: TopologyMode::External,
+            routes: BTreeMap::new(),
+            delay: rabbit_rs_core::config::DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: rabbit_rs_core::config::ConsumerConfigSection {
+                wait_timeout: Duration::from_secs(1),
+                max_attempts: None,
+            },
+            queue_type: QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid config"),
+    );
+
+    for cycle in 0..24 {
+        let transport = Arc::new(MockTransport::default());
+        transport.push_queue_size(Ok(cycle));
+        let handle = registry
+            .acquire(rabbit_rs_core::pool::ConnectionKey::from_config(&config))
+            .expect("handle");
+        let client = Arc::new(ClientPool::new(config.clone(), transport));
+
+        let size = handle
+            .runtime()
+            .block_on(client.queue_size("default", "jobs"))
+            .unwrap_or_else(|error| panic!("cycle {cycle}: admin op failed: {error}"));
+        assert_eq!(size, cycle);
+
+        handle
+            .runtime()
+            .block_on(handle.close_claim(client.as_ref()))
+            .expect("close claim");
+    }
+
+    registry.close();
 }
 
 #[tokio::test]

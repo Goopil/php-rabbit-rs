@@ -159,8 +159,10 @@ rtk cargo test -p rabbit-rs-php
 Expected: compiles, all tests pass (the crate's Rust unit tests do not exercise
 `payload()`, so green here only proves compilation).
 
-- [x] **Step 7: skipped — deferred, not executed** (Pool::get is uncommitted
-      management-API work on `main`; see the Files section above).
+- [x] **Step 7: done after the deferral was unblocked** (Pool::getMessage landed on
+      `feat/native-fallback-for-management-api`; swapped to `PhpString::from_bytes`,
+      docblock `payload: \Ext\PhpRs\Binary` → `payload: string`, unused `Binary` import
+      dropped, stub regenerated — the only stub diff is that docblock line).
 
 - [x] **Step 8: format, lint, full Rust test run**
 

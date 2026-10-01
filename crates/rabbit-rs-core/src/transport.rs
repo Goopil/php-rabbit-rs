@@ -266,6 +266,21 @@ pub struct Delivery {
     pub payload: Bytes,
 }
 
+/// One message fetched with `basic.get`, already settled by the channel: a
+/// read-only snapshot the caller can inspect freely, since the broker will
+/// neither redeliver it (acked away) nor withhold it (requeued) after the
+/// call returns.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FetchedMessage {
+    pub delivery_tag: u64,
+    pub exchange: String,
+    pub routing_key: String,
+    pub redelivered: bool,
+    pub message_id: Option<String>,
+    pub headers: Arc<Headers>,
+    pub payload: Bytes,
+}
+
 #[async_trait]
 pub trait Transport: Send + Sync {
     /// # Errors
@@ -379,6 +394,32 @@ pub trait TopologyChannel: Send + Sync {
     ///
     /// Returns an error when the broker rejects the deletion request.
     async fn delete_queue(&self, queue: &str) -> TransportResult<()>;
+
+    /// Deletes an exchange. A missing exchange resolves successfully
+    /// (idempotent deletion), mirroring [`Self::delete_queue`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the broker rejects the deletion request.
+    async fn delete_exchange(&self, exchange: &str) -> TransportResult<()>;
+
+    /// Fetches one message with `basic.get` and settles it on this channel:
+    /// `requeue = true` inspects without consuming (`basic.reject` requeue —
+    /// the message returns to the queue), `requeue = false` acknowledges it
+    /// away. Returns `None` when the queue is empty (get-empty).
+    ///
+    /// The message is fully read before settlement, so the returned snapshot
+    /// is always complete regardless of the requeue choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue does not exist or the broker rejects
+    /// the fetch or the settlement.
+    async fn get_message(
+        &self,
+        queue: &str,
+        requeue: bool,
+    ) -> TransportResult<Option<FetchedMessage>>;
 
     /// # Errors
     ///
