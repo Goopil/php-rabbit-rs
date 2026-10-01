@@ -385,7 +385,7 @@ namespace Goopil\RabbitRs {
          * Flushes the publish buffer first (quiescing outstanding pipelined
          * drains) so a buffered publication is on the broker before the fetch.
          *
-         * @return array{message_id: string, payload: \Ext\PhpRs\Binary}|null null = queue empty
+         * @return array{message_id: string, payload: string}|null null = queue empty
          *
          * @param string $broker
          * @param string $queue

@@ -14,6 +14,7 @@ use std::time::Duration;
 use super::{
     bridge::EventBridge,
     consumer::Consumer,
+    delivery::PhpString,
     exception::{
         backpressure_exception, client_exception, connection_exception, rabbit_exception,
         rabbit_exception_message,
@@ -22,7 +23,6 @@ use super::{
 };
 use crate::conversion;
 use ext_php_rs::{
-    binary::Binary,
     boxed::ZBox,
     flags::ClassFlags,
     prelude::{PhpResult, php_class, php_impl},
@@ -544,7 +544,7 @@ impl Pool {
     /// Flushes the publish buffer first (quiescing outstanding pipelined
     /// drains) so a buffered publication is on the broker before the fetch.
     ///
-    /// @return array{message_id: string, payload: \Ext\PhpRs\Binary}|null null = queue empty
+    /// @return array{message_id: string, payload: string}|null null = queue empty
     #[php(defaults(requeue = true))]
     pub fn getMessage(
         &self,
@@ -566,7 +566,7 @@ impl Pool {
                     "message_id",
                     message.message_id.unwrap_or_default().as_str(),
                 )?;
-                table.insert("payload", Binary::new(message.payload.to_vec()))?;
+                table.insert("payload", PhpString::from_bytes(message.payload.as_ref()))?;
                 Ok(Some(table))
             }
             Ok(None) => Ok(None),
