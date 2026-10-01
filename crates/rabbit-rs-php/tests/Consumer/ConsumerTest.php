@@ -53,6 +53,25 @@ describe('delivery terminal state', function () {
         $pool->close();
     });
 
+    it('delivers empty and single-byte payloads', function () {
+        $pool = testingPool(defaultConfigWithWorkers(), [
+            'deliveries' => [
+                ['message_id' => 'delivery-empty', 'payload' => ''],
+                ['message_id' => 'delivery-one-char', 'payload' => 'x'],
+            ],
+        ]);
+        $consumer = $pool->consumer('main');
+        $empty = $consumer->next(10);
+        $oneChar = $consumer->next(10);
+
+        expect($empty)->toBeInstanceOf(\Goopil\RabbitRs\Delivery::class);
+        expect($empty->payload())->toBe('');
+        expect($oneChar)->toBeInstanceOf(\Goopil\RabbitRs\Delivery::class);
+        expect($oneChar->payload())->toBe('x');
+
+        $pool->close();
+    });
+
     it('makes ACK terminal and rejects a second ACK', function () {
         $pool = testingPool(defaultConfigWithWorkers(), [
             'deliveries' => [['message_id' => 'ack-test', 'payload' => 'test']],

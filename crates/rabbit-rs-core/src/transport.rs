@@ -292,15 +292,14 @@ pub trait Transport: Send + Sync {
 
 #[async_trait]
 pub trait TransportConnection: Send + Sync {
-    /// Returns a stream of connection-level errors (socket death, heartbeat
-    /// failure, protocol errors) that reports the liveness of this
-    /// connection.
+    /// Returns a stream of connection-level events that reports the liveness
+    /// and backpressure state of this connection.
     ///
     /// The caller should create the stream once per connection and select
-    /// over it: a yielded error means the connection is lost and recovery
-    /// must run. Stream termination (`None`) also means the connection is
-    /// gone.
-    fn error_stream(&self) -> Box<dyn TransportErrorStream>;
+    /// over it: a [`TransportEvent::Error`] means the connection is lost and
+    /// recovery must run. Stream termination (`None`) also means the
+    /// connection is gone.
+    fn event_stream(&self) -> Box<dyn TransportEventStream>;
 
     /// # Errors
     ///
@@ -318,12 +317,25 @@ pub trait TransportConnection: Send + Sync {
     async fn close(&self) -> TransportResult<()>;
 }
 
-/// Connection-level liveness errors, one connection per stream.
+/// Connection-level events surfaced by an active connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransportEvent {
+    /// Connection-fatal error: the connection is lost and recovery must run.
+    Error(TransportError),
+    /// The broker applied backpressure (resource alarm) and stopped reading
+    /// from publishers on this connection. Carries the broker-provided
+    /// reason string.
+    Blocked(String),
+    /// The broker lifted backpressure; publications flow again.
+    Unblocked,
+}
+
+/// Connection-level events, one connection per stream.
 #[async_trait]
-pub trait TransportErrorStream: Send {
-    /// Waits for the next connection-level error. Returns `None` when the
-    /// error source is gone (the underlying connection no longer exists).
-    async fn next(&mut self) -> Option<TransportError>;
+pub trait TransportEventStream: Send {
+    /// Waits for the next connection event. Returns `None` when the source is
+    /// gone (the underlying connection no longer exists).
+    async fn next(&mut self) -> Option<TransportEvent>;
 }
 
 #[async_trait]

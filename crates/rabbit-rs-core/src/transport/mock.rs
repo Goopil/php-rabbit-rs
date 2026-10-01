@@ -9,7 +9,8 @@ use tokio::sync::oneshot;
 use super::{
     BindingSpec, ConsumerChannel, ConsumerRequest, Delivery, DeliveryStream, ExchangeSpec,
     FetchedMessage, PublishConfirmation, PublishReceipt, PublishRequest, PublisherChannel,
-    QueueSpec, TopologyChannel, Transport, TransportConnection, TransportError, TransportResult,
+    QueueSpec, TopologyChannel, Transport, TransportConnection, TransportError, TransportEvent,
+    TransportResult,
 };
 use crate::config::BrokerConfig;
 
@@ -59,10 +60,11 @@ struct MockState {
     /// Publisher-channel confirm-mode results, mirroring a broker that
     /// rejects `confirm.select` transiently during recovery.
     enable_confirms_results: VecDeque<TransportResult<()>>,
-    /// Connection-level errors armed on the error stream, mirroring a broker
-    /// connection that dies (socket reset, heartbeat timeout).
-    connection_errors: VecDeque<TransportError>,
-    /// Wakes error streams parked on an empty queue so an error pushed after
+    /// Connection-level events armed on the event stream, mirroring a broker
+    /// connection that dies (socket reset, heartbeat timeout) or applies
+    /// backpressure (resource alarm).
+    connection_events: VecDeque<TransportEvent>,
+    /// Wakes event streams parked on an empty queue so an event pushed after
     /// a stream parked still surfaces. Always armed.
     error_notify: Arc<tokio::sync::Notify>,
     queue_sizes: VecDeque<TransportResult<u32>>,
@@ -128,12 +130,33 @@ impl MockTransport {
         self.state().keep_delivery_stream_open = true;
     }
 
-    /// Scripts a connection-level error: every `error_stream()` created by
+    /// Scripts a connection-level error: every `event_stream()` created by
     /// the current mock connection yields it once, like lapin's event
     /// listener reporting a socket reset or heartbeat failure.
     pub fn push_connection_error(&self, error: TransportError) {
         let mut state = self.state();
-        state.connection_errors.push_back(error);
+        state
+            .connection_events
+            .push_back(TransportEvent::Error(error));
+        state.error_notify.notify_one();
+    }
+
+    /// Scripts a broker backpressure episode: every `event_stream()` created
+    /// by the current mock connection yields it once, like lapin reporting
+    /// `connection.blocked`.
+    pub fn push_blocked(&self, reason: &str) {
+        let mut state = self.state();
+        state
+            .connection_events
+            .push_back(TransportEvent::Blocked(reason.to_owned()));
+        state.error_notify.notify_one();
+    }
+
+    /// Scripts the end of a broker backpressure episode
+    /// (`connection.unblocked`).
+    pub fn push_unblocked(&self) {
+        let mut state = self.state();
+        state.connection_events.push_back(TransportEvent::Unblocked);
         state.error_notify.notify_one();
     }
 
@@ -331,24 +354,24 @@ struct MockConnection {
     state: Arc<Mutex<MockState>>,
 }
 
-/// Pends like a live connection with no errors until one is scripted.
-struct MockErrorStream {
+/// Pends like a live connection with no events until one is scripted.
+struct MockEventStream {
     state: Arc<Mutex<MockState>>,
 }
 
 #[async_trait]
-impl super::TransportErrorStream for MockErrorStream {
-    async fn next(&mut self) -> Option<TransportError> {
+impl super::TransportEventStream for MockEventStream {
+    async fn next(&mut self) -> Option<TransportEvent> {
         loop {
-            let error = {
+            let event = {
                 let mut state = self
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.connection_errors.pop_front()
+                state.connection_events.pop_front()
             };
-            if let Some(error) = error {
-                return Some(error);
+            if let Some(event) = event {
+                return Some(event);
             }
             let notified = Arc::clone(
                 &self
@@ -372,8 +395,8 @@ impl MockConnection {
 
 #[async_trait]
 impl TransportConnection for MockConnection {
-    fn error_stream(&self) -> Box<dyn super::TransportErrorStream> {
-        Box::new(MockErrorStream {
+    fn event_stream(&self) -> Box<dyn super::TransportEventStream> {
+        Box::new(MockEventStream {
             state: self.state.clone(),
         })
     }
