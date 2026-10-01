@@ -112,6 +112,16 @@ final class DelayPluginGuard
             return self::$verdicts[$connection];
         }
 
+        // Mark the verdict in progress before probing: probeNative compiles
+        // its throwaway pool through ConnectionCompiler::compile, which
+        // re-enters this guard for the same connection. The re-entrant call
+        // must observe the in-progress verdict (null → the nested compile
+        // degrades to ttl) instead of probing again — writing the cache only
+        // after the probe returned made compile → probe → compile recurse
+        // until the process died (segfault under PCOV coverage, worker death
+        // under Octane). The real verdict overwrites the marker below.
+        self::$verdicts[$connection] = null;
+
         return self::$verdicts[$connection] = self::probeBroker($connection);
     }
 
@@ -189,9 +199,18 @@ final class DelayPluginGuard
         }
 
         try {
+            // The probe pool is throwaway: pin its delay mode to ttl so this
+            // compile never re-enters the guard for the plugin verdict the
+            // probe itself is about to produce.
+            $probeConfig = $config;
+            $probeConfig['delay'] = array_merge(
+                is_array($config['delay'] ?? null) ? $config['delay'] : [],
+                ['mode' => 'ttl'],
+            );
+
             $compiled = ConnectionCompiler::compile(
                 $connection,
-                $config,
+                $probeConfig,
                 RabbitRsConnections::packageDefaults(),
             );
         } catch (\Throwable) {

@@ -292,6 +292,36 @@ describe('native probe fallback (no management_url)', function () {
         )['native']['delay']['mode'])->toBe('ttl');
     });
 
+    it('does not re-enter the probe when the nested compile resolves the mode', function () {
+        // probeNative builds its throwaway probe pool through
+        // ConnectionCompiler::compile, which itself resolves auto against
+        // the broker — the very probe currently running. Without an
+        // in-progress verdict the two calls recurse into each other until
+        // the process dies (segfault under PCOV coverage, worker death
+        // under Octane). The in-progress verdict breaks the cycle: the
+        // nested resolution observes it, degrades to ttl, and the real
+        // probe lands exactly once.
+        Http::fake();
+        config()->set('queue.connections.guard-native-reentrant', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'orders',
+            'management_url' => null,
+            'delay' => ['mode' => 'auto'],
+        ]);
+
+        $probeCalls = 0;
+        DelayPluginGuard::$nativeProbe = static function (string $connection) use (&$probeCalls): bool {
+            $probeCalls++;
+
+            // Faithful stand-in for probeNative's body: it compiles the
+            // probe pool config, and compile() re-enters the guard.
+            return DelayPluginGuard::resolveAutoMode($connection, 'auto') === 'auto';
+        };
+
+        expect(DelayPluginGuard::resolveAutoMode('guard-native-reentrant', 'auto'))->toBe('ttl')
+            ->and($probeCalls)->toBe(1);
+    });
+
     it('refuses a delayed publish in plugin mode when the native probe proves the plugin absent', function () {
         Http::fake();
         guardNativeQueue('guard-native-refuse', false, ['mode' => 'plugin']);
