@@ -56,10 +56,16 @@ struct CompositeInner {
     sources: Vec<ConsumerSetHandle>,
     retired: Vec<AtomicBool>,
     round_robin: AtomicUsize,
-    /// One-slot stash for errors that must surface once: mid-drain batch
-    /// errors and the one-shot re-fetch signal pushed when a source is
-    /// retired while others remain live.
+    /// One-slot stash for mid-drain batch errors: an error surfaced after a
+    /// partial batch was already drained, held back so deliveries are never
+    /// discarded and returned on the next call with an empty batch.
     pending_error: Mutex<Option<ConsumerError>>,
+    /// One-slot stash for the one-shot [`ConsumerErrorKind::SourceReplaced`]
+    /// re-fetch signal pushed when a source is retired while others remain
+    /// live. Kept separate from [`Self::pending_error`] so a stashed batch
+    /// error can never swallow the signal: the caller must learn a broker was
+    /// replaced even when a batch error is parked (audit 2026-10-01).
+    pending_signal: Mutex<Option<ConsumerError>>,
     /// Set when [`ConsumerHandle::close`] was called by the owner: source
     /// closures observed afterwards are expected teardown, not a broker
     /// replacement, so no re-fetch signal is pushed.
@@ -84,6 +90,7 @@ impl ConsumerHandle {
                 retired,
                 round_robin: AtomicUsize::new(0),
                 pending_error: Mutex::new(None),
+                pending_signal: Mutex::new(None),
                 closed_by_caller: AtomicBool::new(false),
             }),
         }
@@ -220,7 +227,7 @@ impl ConsumerHandle {
         if self.all_retired() {
             return Err(ConsumerError::closed());
         }
-        if let Some(error) = self.take_pending_error() {
+        if let Some(error) = self.take_pending() {
             return Err(error);
         }
         Ok(None)
@@ -277,7 +284,7 @@ impl ConsumerHandle {
             if self.all_retired() {
                 return Err(ConsumerError::closed());
             }
-            if let Some(error) = self.take_pending_error() {
+            if let Some(error) = self.take_pending() {
                 return Err(error);
             }
         }
@@ -321,9 +328,10 @@ impl ConsumerHandle {
                     self.retire(index);
                     // Wake a caller parked on a degraded composite: if other
                     // sources remain live, surface the one-shot re-fetch
-                    // signal instead of waiting on them indefinitely.
+                    // signal (or a stashed batch error) instead of waiting on
+                    // them indefinitely.
                     if !self.all_retired()
-                        && let Some(pending) = self.take_pending_error()
+                        && let Some(pending) = self.take_pending()
                     {
                         return Err(pending);
                     }
@@ -335,9 +343,7 @@ impl ConsumerHandle {
         if self.all_retired() {
             return Err(ConsumerError::closed());
         }
-        Err(self
-            .take_pending_error()
-            .unwrap_or_else(ConsumerError::closed))
+        Err(self.take_pending().unwrap_or_else(ConsumerError::closed))
     }
 
     /// Closes every underlying set and wakes all pending calls to
@@ -354,6 +360,11 @@ impl ConsumerHandle {
         *self
             .inner
             .pending_error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .inner
+            .pending_signal
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let mut first_error = None;
@@ -384,11 +395,12 @@ impl ConsumerHandle {
     ///
     /// The first retire of a source — while other sources remain live and
     /// the owner has not closed the composite — pushes a one-shot
-    /// [`ConsumerErrorKind::SourceReplaced`] signal onto the pending slot so
+    /// [`ConsumerErrorKind::SourceReplaced`] signal onto the re-fetch slot so
     /// the caller learns a broker's set was replaced (typically by a
     /// recovery generation) and can re-fetch the consumer. The signal is
     /// delivered once by [`Self::next`], [`Self::try_next`], or
-    /// [`Self::try_next_batch`], then the composite goes quiet again.
+    /// [`Self::try_next_batch`], then the composite goes quiet again. The
+    /// signal never displaces — nor is displaced by — a stashed batch error.
     fn retire(&self, index: usize) {
         if self.inner.retired[index].swap(true, Ordering::AcqRel) {
             return;
@@ -400,7 +412,7 @@ impl ConsumerHandle {
         }
         let mut pending = self
             .inner
-            .pending_error
+            .pending_signal
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if pending.is_none() {
@@ -416,6 +428,22 @@ impl ConsumerHandle {
             .retired
             .iter()
             .all(|retired| retired.load(Ordering::Acquire))
+    }
+
+    /// Takes the next error to surface: the re-fetch signal outranks a
+    /// stashed batch error, so a caller never misses that a broker was
+    /// replaced; the batch error follows on the next observation.
+    fn take_pending(&self) -> Option<ConsumerError> {
+        if let Some(signal) = self
+            .inner
+            .pending_signal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            return Some(signal);
+        }
+        self.take_pending_error()
     }
 
     fn take_pending_error(&self) -> Option<ConsumerError> {
@@ -852,6 +880,81 @@ mod tests {
         assert!(
             matches!(consumer.try_next_batch(4), Err(error) if error.kind() == ConsumerErrorKind::Closed)
         );
+
+        consumer.close().await.expect("composite close");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn source_replaced_signal_survives_a_stashed_batch_error() {
+        // A mid-drain batch error parks in the composite's pending slot; the
+        // source is then retired (its set was replaced by a recovery
+        // generation). The re-fetch signal must survive the stash: the caller
+        // must learn the broker was replaced, and the batch error must still
+        // surface afterwards.
+        let first = MockTransport::default();
+        let second = MockTransport::default();
+        // The first source delivers one message, then errors mid-drain: its
+        // set returns the partial batch and stashes the error internally, so
+        // the error surfaces as a direct Err on the next drain.
+        first.push_delivery(Ok(delivery(1, b"from-first")));
+        first.push_delivery(Err(TransportError::connection("mid-drain error")));
+        second.push_delivery(Ok(delivery(1, b"from-second-1")));
+        second.push_delivery(Ok(delivery(2, b"from-second-2")));
+        second.push_delivery(Ok(delivery(3, b"from-second-3")));
+
+        let left = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&first, "jobs-first", connection_key("first")).await],
+            Metrics::default(),
+        )
+        .await
+        .expect("first source set");
+        let right = ConsumerSet::spawn_with_metrics(
+            vec![subscription(&second, "jobs-second", connection_key("second")).await],
+            Metrics::default(),
+        )
+        .await
+        .expect("second source set");
+        let consumer = super::ConsumerHandle::from_sources(vec![left.clone(), right.clone()]);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // First drain (rotation starts at the left source): the left set
+        // returns its delivery and stashes its mid-drain error internally,
+        // the right set fills the rest of the batch.
+        let first_batch = consumer.try_next_batch(3).expect("first batch");
+        assert_eq!(first_batch.len(), 3);
+        assert_eq!(first_batch[0].payload, Bytes::from_static(b"from-first"));
+        assert_eq!(first_batch[1].payload, Bytes::from_static(b"from-second-1"));
+        assert_eq!(first_batch[2].payload, Bytes::from_static(b"from-second-2"));
+
+        // Second drain (rotation starts at the right source): the right set
+        // contributes a delivery, then the left set surfaces its stashed
+        // error mid-drain — the composite returns the partial batch and
+        // stashes the error in its pending slot.
+        let second_batch = consumer.try_next_batch(8).expect("second batch");
+        assert_eq!(second_batch.len(), 1);
+        assert_eq!(
+            second_batch[0].payload,
+            Bytes::from_static(b"from-second-3")
+        );
+
+        // The replacement closes the first source's set.
+        left.close().await.expect("close first source");
+
+        // The next observation must surface the re-fetch signal — not just
+        // the stashed batch error — so the caller re-fetches the consumer and
+        // resumes deliveries from the replaced broker.
+        let signal = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+            .await
+            .expect("retire must not hang the composite")
+            .expect_err("retire must surface the re-fetch signal");
+        assert_eq!(signal.kind(), ConsumerErrorKind::SourceReplaced);
+
+        // The stashed batch error is not lost: it surfaces on the next call.
+        let stashed = consumer
+            .try_next()
+            .expect_err("stashed batch error must survive the signal");
+        assert_eq!(stashed.kind(), ConsumerErrorKind::Transport);
 
         consumer.close().await.expect("composite close");
     }
