@@ -58,6 +58,15 @@ impl CallbackRegistry {
             .count()
     }
 
+    /// Returns `true` when no callback is currently registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0
+            .lock()
+            .expect("callback registry mutex poisoned")
+            .is_empty()
+    }
+
     /// Invokes every registered callback without holding the internal mutex.
     ///
     /// The callable `Zval`s are shallow-cloned under the mutex, the mutex is
