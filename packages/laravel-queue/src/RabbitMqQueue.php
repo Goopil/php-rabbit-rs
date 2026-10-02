@@ -35,6 +35,16 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     protected const CONTENT_TYPE_JSON = 'application/json';
 
     /**
+     * Native publishBatch bounds, mirrored from the extension's conversion
+     * budget (crates/rabbit-rs-php/src/conversion.rs): a call carrying more
+     * than 256 messages or 1 MiB of cumulative payload is rejected wholesale,
+     * before anything is sent. bulk() chunks prepared batches under them.
+     */
+    public const BATCH_MAX_MESSAGES = 256;
+
+    public const BATCH_MAX_PAYLOAD_BYTES = 1_048_576;
+
+    /**
      * Exact message the native consumer carries when the set is closed
      * (core's `ConsumerError::closed()`): the seam used to recognize a
      * closed-set pop without a dedicated exception kind.
@@ -253,6 +263,14 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      * (after-commit jobs are deferred and reported through the transaction
      * callback), or null when only deferred jobs were given.
      *
+     * Immediate jobs publish through `publishBatch` in chunks that respect
+     * the native batch bounds ({@see BATCH_MAX_MESSAGES},
+     * {@see BATCH_MAX_PAYLOAD_BYTES}) instead of one oversized call the
+     * native layer would reject wholesale. Delivery stays at-least-once
+     * with partial success: a chunk that fails after earlier chunks were
+     * published keeps those publications, and the caller retry re-publishes
+     * every job — the stable message_id keeps the duplicates identifiable.
+     *
      * @param  array<array-key, \Closure|string|object>|string  $jobs
      * @param  mixed  $data
      * @param  string|null  $queue
@@ -268,7 +286,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         [$afterCommit, $immediate] = $this->partitionJobsByAfterCommit($jobs);
         $messageIds = $immediate === []
             ? []
-            : $this->publishBatch($this->prepareBatch($immediate, $data, $queue), $queue);
+            : $this->publishBatchChunked($this->prepareBatch($immediate, $data, $queue), $queue);
 
         if ($afterCommit !== []) {
             // The parent method only exists since Laravel 13; the driver still
@@ -282,7 +300,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
             $messages = $this->prepareBatch($afterCommit, $data, $queue);
             $this->container->make('db.transactions')->addCallback(
-                fn (): array => $this->publishBatch($messages, $queue),
+                fn (): array => $this->publishBatchChunked($messages, $queue),
             );
         }
 
@@ -295,7 +313,10 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     protected function partitionJobsByAfterCommit(array $jobs): array
     {
-        if (! $this->container->bound('db.transactions')) {
+        // Same typed-property initialization check as drainSettlementErrors:
+        // fake-driven tests construct the queue without a container, and the
+        // graceful fallback treats every job as immediate.
+        if (! isset($this->container) || ! $this->container->bound('db.transactions')) { // @phpstan-ignore-line
             return [[], $jobs];
         }
 
@@ -376,6 +397,75 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         }
 
         return $messageIds;
+    }
+
+    /**
+     * Publishes a prepared batch in chunks that respect the native
+     * `publishBatch` bounds ({@see BATCH_MAX_MESSAGES},
+     * {@see BATCH_MAX_PAYLOAD_BYTES}): the native layer rejects any single
+     * call beyond either bound wholesale, before sending anything, so an
+     * unchunked bulk past 256 messages or 1 MiB of payload would publish
+     * nothing at all.
+     *
+     * Each chunk is a regular `publishBatch` (the Horizon subclass keeps
+     * firing its batch events per chunk), and settlement errors drain after
+     * every chunk so a pipelined publish failure surfaces with its chunk
+     * instead of deferring past the whole bulk. A chunk that fails after
+     * earlier chunks were published keeps those publications: delivery is
+     * at-least-once, the caller retry re-publishes, and the stable
+     * message_id keeps the duplicates identifiable.
+     *
+     * @param  list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>  $messages
+     * @return list<string>
+     */
+    protected function publishBatchChunked(array $messages, mixed $queue): array
+    {
+        $messageIds = [];
+        foreach ($this->chunkBatchWithinNativeBounds($messages) as $chunk) {
+            $messageIds = [...$messageIds, ...$this->publishBatch($chunk, $queue)];
+            $this->drainSettlementErrors();
+        }
+
+        return $messageIds;
+    }
+
+    /**
+     * Splits a prepared batch into chunks within the native publishBatch
+     * bounds: at most {@see BATCH_MAX_MESSAGES} messages carrying at most
+     * {@see BATCH_MAX_PAYLOAD_BYTES} cumulative payload bytes each. Payload
+     * size is measured on the native message payload — the exact bytes the
+     * native conversion budget accumulates. A single payload beyond the
+     * payload bound cannot be split: it forms its own chunk and fails in the
+     * native per-message conversion with the limit named in the error.
+     *
+     * @param  list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>  $messages
+     * @return list<list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>>
+     */
+    private function chunkBatchWithinNativeBounds(array $messages): array
+    {
+        $chunks = [];
+        $chunk = [];
+        $chunkPayloadBytes = 0;
+
+        foreach ($messages as $message) {
+            $payloadBytes = strlen((string) $message['native']['payload']);
+            if ($chunk !== []
+                && (count($chunk) >= self::BATCH_MAX_MESSAGES
+                    || $chunkPayloadBytes + $payloadBytes > self::BATCH_MAX_PAYLOAD_BYTES)) {
+                $chunks[] = $chunk;
+                $chunk = [];
+                $chunkPayloadBytes = 0;
+            }
+
+            $chunk[] = $message;
+            $chunkPayloadBytes += $payloadBytes;
+        }
+
+        if ($chunk !== []) {
+            $chunks[] = $chunk;
+        }
+
+        return $chunks;
     }
 
     private function jobDelay(mixed $job): mixed

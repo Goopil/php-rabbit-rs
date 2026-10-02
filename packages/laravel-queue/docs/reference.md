@@ -50,7 +50,7 @@ $jobs = [
     new ProcessOrder(3),
 ];
 
-// Bulk dispatch — a single native call for all immediate jobs
+// Bulk dispatch — native publishBatch calls chunked under the batch limits
 Queue::connection('rabbit-rs')->bulk($jobs);
 ```
 
@@ -164,7 +164,11 @@ $messageIds = Queue::connection('rabbit-rs')->bulk([
 ], '', 'orders.high');
 ```
 
-Bulk publishing uses a single native call (`publishBatch`) for all immediate jobs. Jobs marked `dispatchAfterCommit` are deferred to the transaction commit callback.
+Bulk publishing sends the immediate jobs through `publishBatch` in chunks that respect the native batch bounds: at most **256 messages** and **1 MiB of cumulative payload** per native call. The native layer rejects any single call beyond either bound wholesale (validation precedes send: nothing is published), so a bulk past the bounds is split into consecutive calls; a bulk within the bounds stays a single call. A single payload larger than 1 MiB cannot be split — its chunk fails with the native per-message error naming the limit.
+
+Delivery stays at-least-once with **partial success** on a mid-bulk failure: if a chunk fails after earlier chunks were published, those publications remain and the failure surfaces to the caller. Retrying the bulk re-publishes every job — the stable `message_id` makes the duplicates identifiable.
+
+Jobs marked `dispatchAfterCommit` are deferred to the transaction commit callback (chunked the same way at commit time).
 
 #### pop
 
