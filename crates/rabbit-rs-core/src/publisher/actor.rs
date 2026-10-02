@@ -94,7 +94,6 @@ impl PublisherActor {
             receiver,
             metrics.clone(),
             delay_strategy,
-            byte_budget.clone(),
         ));
         PublisherHandle {
             commands,
@@ -133,6 +132,18 @@ impl PublisherHandle {
         self.capacity.available_permits()
     }
 
+    /// The total payload bytes currently reserved against the publisher byte
+    /// budget. Test-support only — pins the byte-reservation release
+    /// contract, including the shutdown race: a publish command still queued
+    /// in the command channel when the actor exits must not leak its
+    /// reservation.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn buffered_bytes(&self) -> u64 {
+        self.byte_budget.current()
+    }
+
     /// Enqueues a publish while retaining one global capacity permit until its terminal outcome.
     ///
     /// # Errors
@@ -149,15 +160,23 @@ impl PublisherHandle {
                 "publisher byte budget is exhausted",
             ));
         }
+        // The reservation becomes an RAII guard that travels with the
+        // publication: it is released exactly once when the publication is
+        // dropped at a terminal outcome — or while the command is still
+        // queued when the actor exits.
+        let reservation = BudgetGuard {
+            budget: Arc::clone(&self.byte_budget),
+            bytes: payload_bytes,
+        };
 
-        let permit = self.capacity.clone().try_acquire_owned().map_err(|_| {
-            self.byte_budget.release(payload_bytes);
+        let Ok(permit) = self.capacity.clone().try_acquire_owned() else {
+            drop(reservation);
             self.metrics.record_backpressure();
-            PublishError::new(
+            return Err(PublishError::new(
                 PublishErrorKind::Backpressure,
                 "publisher global capacity is exhausted",
-            )
-        })?;
+            ));
+        };
         let (completion, receiver) = oneshot::channel();
         let timeout = request
             .deadline
@@ -170,7 +189,7 @@ impl PublisherHandle {
             accepted_at: Instant::now(),
             _permit: permit,
             sequence: 0,
-            payload_bytes,
+            _reservation: reservation,
         }));
 
         match self.commands.try_send(command) {
@@ -179,7 +198,7 @@ impl PublisherHandle {
                 Ok(PublishWaiter::new(receiver))
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.byte_budget.release(payload_bytes);
+                // Dropping the rejected command releases its byte reservation.
                 self.metrics.record_backpressure();
                 Err(PublishError::new(
                     PublishErrorKind::Backpressure,
@@ -187,7 +206,7 @@ impl PublisherHandle {
                 ))
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.byte_budget.release(payload_bytes);
+                // Dropping the rejected command releases its byte reservation.
                 Err(PublishError::new(
                     PublishErrorKind::Closed,
                     "publisher actor is closed",
@@ -363,7 +382,10 @@ struct RetainedPublish {
     accepted_at: Instant,
     _permit: OwnedSemaphorePermit,
     sequence: u64,
-    payload_bytes: u64,
+    /// RAII byte-budget reservation, released when the publication is
+    /// dropped at a terminal outcome — or while the command is still queued
+    /// when the actor exits. Never read: carried for its `Drop`.
+    _reservation: BudgetGuard,
     timeout: Duration,
     retried: bool,
 }
@@ -380,11 +402,36 @@ enum ConfirmationResult {
 
 type ConfirmationFuture = Pin<Box<dyn Future<Output = (u64, u64, ConfirmationResult)> + Send>>;
 
-/// A publish future carrying its sequence number (the boxed future returned
-/// by [`PublisherChannel::publish`], paired with the tag used to bookkeep its
-/// completion).
-type PublishFuture =
-    Pin<Box<dyn Future<Output = (u64, TransportResult<Box<dyn PublishReceipt>>)> + Send>>;
+/// Outcome of the actor's bounded wire-write phase: either the transport
+/// publish future completed with its receipt result, or the write phase
+/// exceeded its bound — `min(request deadline, now + confirm timeout)` —
+/// while the transport publish was still pending.
+enum WireWriteOutcome {
+    Completed(TransportResult<Box<dyn PublishReceipt>>),
+    TimedOut,
+}
+
+/// A publish future carrying its sequence number: the bounded wire-write
+/// future wrapping [`PublisherChannel::publish`], paired with the tag used to
+/// bookkeep its completion.
+type PublishFuture = Pin<Box<dyn Future<Output = (u64, WireWriteOutcome)> + Send>>;
+
+/// RAII guard holding one retained publication's reservation against the
+/// publisher byte budget: released exactly once when the guard is dropped —
+/// the actor-side twin of the blind pump's `BudgetGuard`. The reservation
+/// travels inside [`RetainedPublish`], so a publication that leaves the actor
+/// by any route (terminal outcome, replay queue, or a command dropped while
+/// still queued when the actor exits) releases its bytes exactly once.
+struct BudgetGuard {
+    budget: Arc<ByteBudget>,
+    bytes: u64,
+}
+
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        self.budget.release(self.bytes);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
@@ -408,7 +455,6 @@ struct ActorState {
     metrics: Metrics,
     delay_strategy: Option<DelayStrategy>,
     declared_ttl_queues: HashSet<Arc<str>>,
-    byte_budget: Arc<ByteBudget>,
 }
 
 impl ActorState {
@@ -417,7 +463,6 @@ impl ActorState {
         config: PublisherConfig,
         metrics: Metrics,
         delay_strategy: Option<DelayStrategy>,
-        byte_budget: Arc<ByteBudget>,
     ) -> Self {
         Self {
             config,
@@ -434,7 +479,6 @@ impl ActorState {
             metrics,
             delay_strategy,
             declared_ttl_queues: HashSet::new(),
-            byte_budget,
         }
     }
 
@@ -470,15 +514,12 @@ impl ActorState {
 
     fn fail_all(&mut self, error: &PublishError) {
         for retained in self.replay.drain(..) {
-            self.byte_budget.release(retained.payload_bytes);
             complete_error(retained, error.clone());
         }
         for in_flight in std::mem::take(&mut self.ledger).into_values() {
-            self.byte_budget.release(in_flight.retained.payload_bytes);
             complete_error(in_flight.retained, error.clone());
         }
         for (_, retained) in self.publishing.drain() {
-            self.byte_budget.release(retained.payload_bytes);
             complete_error(retained, error.clone());
         }
         self.confirmations = FuturesUnordered::new();
@@ -491,7 +532,6 @@ impl ActorState {
         while let Some(mut pending) = self.replay.pop_front() {
             if pending.request.deadline <= now {
                 if pending.retried {
-                    self.byte_budget.release(pending.payload_bytes);
                     complete_error(
                         pending,
                         PublishError::new(
@@ -529,15 +569,8 @@ async fn run_actor(
     mut commands: mpsc::Receiver<Command>,
     metrics: Metrics,
     delay_strategy: Option<DelayStrategy>,
-    byte_budget: Arc<ByteBudget>,
 ) {
-    let mut state = ActorState::new(
-        initial_channel,
-        config,
-        metrics,
-        delay_strategy,
-        byte_budget,
-    );
+    let mut state = ActorState::new(initial_channel, config, metrics, delay_strategy);
     if state.config.enables_confirms()
         && let Some(channel) = &state.channel
         && let Err(error) = channel.enable_confirms().await
@@ -623,7 +656,6 @@ async fn accept_publish(state: &mut ActorState, pending: VecDeque<RetainedPublis
         }
         Phase::FailedPermanent => {
             for retained in pending {
-                state.byte_budget.release(retained.payload_bytes);
                 complete_error(
                     retained,
                     state.permanent_error.clone().unwrap_or_else(|| {
@@ -710,11 +742,7 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
     let mut now = time::Instant::now();
     while let Some(mut retained) = pending.pop_front() {
         if retained.request.deadline <= now {
-            state.byte_budget.release(retained.payload_bytes);
-            complete_error(
-                retained,
-                PublishError::new(PublishErrorKind::Timeout, "publish deadline expired"),
-            );
+            fail_deadline_expired(retained);
             continue;
         }
 
@@ -729,7 +757,6 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
         match topology {
             DelayTopologyOutcome::Ready => {}
             DelayTopologyOutcome::Failed(error) => {
-                state.byte_budget.release(retained.payload_bytes);
                 complete_error(retained, error);
                 continue;
             }
@@ -750,19 +777,32 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
             // exchange with an `x-delay` header a normal exchange ignores
             // would execute the job immediately.
             Err(error) => {
-                state.byte_budget.release(retained.payload_bytes);
                 complete_error(retained, error);
                 continue;
             }
         };
+
+        // The wire-write phase is bounded by the same budget as the confirm
+        // phase: min(request deadline, now + confirm timeout). A transport
+        // publish future that never resolves must not hold the capacity
+        // permit, the byte reservation, and the waiter forever — on expiry
+        // the publication fails through the shared deadline-expiry path.
+        let write_deadline = retained
+            .request
+            .deadline
+            .min(now + state.config.confirm_timeout);
 
         state.publishing.insert(sequence, retained);
 
         let channel_for_pub = Arc::clone(&channel);
         let sequence_for_pub = sequence;
         let mut tagged: PublishFuture = Box::pin(async move {
-            let result = channel_for_pub.publish(request).await;
-            (sequence_for_pub, result)
+            let outcome =
+                match time::timeout_at(write_deadline, channel_for_pub.publish(request)).await {
+                    Ok(result) => WireWriteOutcome::Completed(result),
+                    Err(_) => WireWriteOutcome::TimedOut,
+                };
+            (sequence_for_pub, outcome)
         });
 
         match tagged.as_mut().now_or_never() {
@@ -781,17 +821,13 @@ async fn publish_queue(state: &mut ActorState, mut pending: VecDeque<RetainedPub
     }
 }
 
-fn handle_publish_completion(
-    state: &mut ActorState,
-    sequence: u64,
-    result: TransportResult<Box<dyn PublishReceipt>>,
-) {
+fn handle_publish_completion(state: &mut ActorState, sequence: u64, result: WireWriteOutcome) {
     let Some(retained) = state.publishing.remove(&sequence) else {
         return;
     };
 
     match result {
-        Ok(receipt) => {
+        WireWriteOutcome::Completed(Ok(receipt)) => {
             if state.config.enables_confirms() {
                 let generation = state.generation;
                 let deadline = retained
@@ -813,19 +849,23 @@ fn handle_publish_completion(
                     (sequence, generation, result)
                 }));
             } else {
-                state.byte_budget.release(retained.payload_bytes);
                 let _ = retained.completion.send(Ok(PublishOutcome::Confirmed {
                     message_id: retained.request.properties.message_id.clone(),
                 }));
             }
         }
-        Err(error) if error.is_recoverable() => {
+        WireWriteOutcome::TimedOut => {
+            // The wire-write phase outlived its bound: fail through the same
+            // terminal deadline-expiry path as a publication whose deadline
+            // expired at attempt time.
+            fail_deadline_expired(retained);
+        }
+        WireWriteOutcome::Completed(Err(error)) if error.is_recoverable() => {
             state.replay.push_back(retained);
             state.publish_in_flight.clear();
             state.suspend(state.generation);
         }
-        Err(error) => {
-            state.byte_budget.release(retained.payload_bytes);
+        WireWriteOutcome::Completed(Err(error)) => {
             complete_error(retained, transport_publish_error(&error));
         }
     }
@@ -892,15 +932,6 @@ fn resolve_confirmation(
             .record_confirmation(in_flight.retained.accepted_at.elapsed());
     }
 
-    // Recoverable errors keep the payload budgeted: the message is re-queued
-    // for replay, so its bytes stay accounted for.
-    if !matches!(
-        &result,
-        ConfirmationResult::Completed(Err(error)) if error.is_recoverable()
-    ) {
-        state.byte_budget.release(in_flight.retained.payload_bytes);
-    }
-
     match result {
         ConfirmationResult::TimedOut => {
             complete_error(
@@ -912,6 +943,9 @@ fn resolve_confirmation(
             );
         }
         ConfirmationResult::Completed(Err(error)) if error.is_recoverable() => {
+            // Recoverable errors keep the payload budgeted: the message is
+            // re-queued for replay, so its byte reservation travels with it
+            // and is released when it reaches a terminal outcome.
             state.replay.push_back(in_flight.retained);
             state.suspend(generation);
         }
@@ -963,6 +997,17 @@ fn resolve_confirmation(
 
 fn complete_outcome(retained: RetainedPublish, outcome: PublishOutcome) {
     let _ = retained.completion.send(Ok(outcome));
+}
+
+/// Terminal deadline-expiry path shared by the attempt-time expiry check in
+/// [`publish_queue`] and the bounded wire-write phase: resolves the waiter
+/// with the typed timeout error. The byte reservation is released when the
+/// retained publication is dropped.
+fn fail_deadline_expired(retained: RetainedPublish) {
+    complete_error(
+        retained,
+        PublishError::new(PublishErrorKind::Timeout, "publish deadline expired"),
+    );
 }
 
 fn complete_error(retained: RetainedPublish, error: PublishError) {

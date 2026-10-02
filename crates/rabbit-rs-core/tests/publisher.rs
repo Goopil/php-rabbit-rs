@@ -1328,6 +1328,135 @@ async fn close_with_a_wedged_transport_drops_loudly_at_the_quiesce_deadline() {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded wire-write phase: the pre-confirm transport publish future is
+// bounded by min(request deadline, confirm timeout) like every other phase —
+// a transport publish that never resolves must not hold the permit, the byte
+// reservation, and the waiter forever.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn wire_write_parked_past_the_request_deadline_fails_terminally_on_it() {
+    let transport = MockTransport::default();
+    // The wire-write never completes on its own: the transport publish
+    // parks in its gate past the request deadline.
+    let gate = transport.push_publish_gate();
+
+    let mut config = config_safety();
+    // Exactly one "payload" (7 bytes) fits the budget: a second publish of
+    // the same size can only be accepted once the parked one released its
+    // byte reservation.
+    config.max_buffered_bytes = 7;
+    let actor = actor_safety(&transport, config).await;
+
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(1);
+    let request = PublishRequest::new(
+        Destination::new("jobs", "high"),
+        Bytes::from_static(b"payload"),
+        MessageProperties::new("wedged"),
+        deadline,
+    );
+    let waiter = actor.try_publish(request).expect("publish");
+    gate.wait_entered().await;
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "the gated wire-write must not reach the transport while parked"
+    );
+
+    // Advance exactly to the request deadline. The wire-write bound is
+    // min(request deadline, now + confirm timeout) — the deadline (1s)
+    // elapses before the confirm timeout (5s), so the waiter must resolve
+    // terminally right here.
+    tokio::time::advance(Duration::from_secs(1)).await;
+
+    let error = tokio::time::timeout(Duration::from_secs(10), waiter.wait())
+        .await
+        .expect("the waiter must resolve terminally once the request deadline passes")
+        .expect_err("a wire-write parked past its deadline must fail, not confirm");
+    assert_eq!(error.kind(), PublishErrorKind::Timeout);
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(1),
+        "the waiter must resolve exactly on the request deadline"
+    );
+    assert_eq!(
+        actor.available_permits(),
+        32,
+        "the capacity permit must be released with the terminal outcome"
+    );
+
+    // The terminal outcome releases the byte reservation too: the same
+    // payload size is accepted again, and the publisher stays alive.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let second = actor
+        .try_publish(request_safety("after", b"payload"))
+        .expect("the byte reservation must be released with the terminal outcome");
+    assert!(
+        matches!(second.wait().await, Ok(PublishOutcome::Confirmed { .. })),
+        "the publisher must stay alive after a timed-out wire-write"
+    );
+    wait_for_publish_count(&transport, 1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn publish_commands_queued_behind_close_release_their_byte_reservation_on_exit() {
+    let transport = MockTransport::default();
+    // The publish gate parks the actor on the in-flight future so nothing is
+    // consumed from the command channel while it is being filled.
+    let gate = transport.push_publish_gate();
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let parked = actor
+        .try_publish(request_safety("parked", b"payload"))
+        .expect("parked publish");
+    gate.wait_entered().await;
+
+    // Enqueue Close, then a publish command behind it. One yield lets the
+    // spawned closer complete its send while the actor is parked on the
+    // gated write, so the command channel holds [Close, publish] — the
+    // publish command is still inside the mpsc when the actor exits.
+    let closer = {
+        let actor = actor.clone();
+        tokio::spawn(async move { actor.close().await })
+    };
+    tokio::task::yield_now().await;
+    let queued = actor
+        .try_publish(request_safety("queued", b"payload"))
+        .expect("queued behind close");
+    assert_eq!(actor.buffered_bytes(), 14, "two payloads are reserved");
+
+    // The parked publication is attempted and confirmed inside the quiesce
+    // window; close then exits with the queued command still in its channel.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    assert!(gate.release(), "gate released");
+    tokio::time::timeout(Duration::from_secs(10), closer)
+        .await
+        .expect("close join must not hang")
+        .expect("close task must not panic")
+        .expect("close must succeed");
+    assert!(
+        matches!(parked.wait().await, Ok(PublishOutcome::Confirmed { .. })),
+        "the parked publication must confirm within the quiesce window"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), queued.wait())
+            .await
+            .expect("the queued waiter must resolve once close completes")
+            .expect_err("a queued-but-never-consumed publication must fail loudly")
+            .kind(),
+        PublishErrorKind::Closed
+    );
+
+    // The queued command's byte reservation must be released when the actor
+    // exits with the command still in its channel.
+    assert_eq!(
+        actor.buffered_bytes(),
+        0,
+        "a publish command queued at actor exit must not leak its byte reservation"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Publisher delay tests (from publisher_delay.rs)
 // ---------------------------------------------------------------------------
 

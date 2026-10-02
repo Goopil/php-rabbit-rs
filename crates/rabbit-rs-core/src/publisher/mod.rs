@@ -25,10 +25,11 @@ pub use actor::{PublisherActor, PublisherHandle};
 /// Shared byte budget enforcing a cap on total buffered publisher bytes.
 ///
 /// Uses an atomic counter so that `try_publish` can reserve bytes before
-/// acquiring the semaphore permit. Bytes are released when the
-/// `RetainedPublish` reaches a terminal outcome (confirmed, returned,
-/// terminal error, or drained to replay — at which point replay bytes are
-/// counted separately by the metrics layer).
+/// acquiring the semaphore permit. Each reservation is held by an RAII guard
+/// that travels with its publication: the bytes are released exactly once
+/// when the publication is dropped at a terminal outcome (confirmed, returned,
+/// or terminal error). Publications parked in the replay queue keep their
+/// reservation until they resolve.
 #[derive(Debug)]
 pub struct ByteBudget {
     current: AtomicU64,
@@ -78,6 +79,15 @@ impl ByteBudget {
                 return;
             }
         }
+    }
+
+    /// The currently reserved byte total. Test-support observability for the
+    /// byte-reservation release contract.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn current(&self) -> u64 {
+        self.current.load(Ordering::Relaxed)
     }
 }
 
