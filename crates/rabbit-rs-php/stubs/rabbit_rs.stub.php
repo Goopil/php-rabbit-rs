@@ -117,6 +117,11 @@ namespace Goopil\RabbitRs {
          * async runtime. The slow path blocks on the async runtime with the
          * specified timeout.
          *
+         * `timeoutMs` shares the publish deadline's 24 h ceiling
+         * (`MAX_TIMEOUT_MS`): a value beyond 86_400_000 ms throws a PHP
+         * `\ValueError` naming the bound before any delivery is drained, so an
+         * oversized timeout can never park the calling thread indefinitely.
+         *
          * @param int $timeoutMs
          * @return \Goopil\RabbitRs\Delivery|null
          */
@@ -129,6 +134,10 @@ namespace Goopil\RabbitRs {
          * async runtime. When the buffer is empty, the slow path blocks on the
          * async runtime with the specified timeout, then drains whatever is
          * available. `max` is clamped to `1..=256`.
+         *
+         * `timeoutMs` shares the publish deadline's 24 h ceiling
+         * (`MAX_TIMEOUT_MS`): a value beyond 86_400_000 ms throws a PHP
+         * `\ValueError` naming the bound before any delivery is drained.
          *
          * @return list<\Goopil\RabbitRs\Delivery>
          *
