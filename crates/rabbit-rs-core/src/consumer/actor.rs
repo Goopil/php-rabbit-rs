@@ -1696,6 +1696,7 @@ struct SettlementLaunch {
     publisher: Option<crate::publisher::PublisherHandle>,
     destination: Option<crate::publisher::Destination>,
     delay_strategy: Option<DelayStrategy>,
+    max_attempts: Option<NonZeroU32>,
 }
 
 /// Launch staging shared by `launch_settlement` and `launch_settle_through`:
@@ -1729,6 +1730,7 @@ fn stage_settlement_launch(
         publisher: runtime.publisher.clone(),
         destination: runtime.destination.clone(),
         delay_strategy: runtime.delay_strategy.clone(),
+        max_attempts: runtime.max_attempts,
     })
 }
 
@@ -1773,6 +1775,7 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
             launch.publisher.as_ref(),
             launch.destination.as_ref(),
             launch.delay_strategy.as_ref(),
+            launch.max_attempts,
         )
         .await;
         SettlementResult {
@@ -1795,6 +1798,7 @@ async fn execute_settlement(
     publisher: Option<&crate::publisher::PublisherHandle>,
     destination: Option<&crate::publisher::Destination>,
     delay_strategy: Option<&DelayStrategy>,
+    max_attempts: Option<NonZeroU32>,
 ) -> Result<DeliveryState, ConsumerError> {
     ensure_live_generation(connection_key, generation, channel_id, token)?;
 
@@ -1822,6 +1826,7 @@ async fn execute_settlement(
                 publisher,
                 destination,
                 delay_strategy,
+                max_attempts,
             )
             .await?;
             Ok(DeliveryState::Acked)
@@ -1836,6 +1841,7 @@ async fn execute_settlement(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn delayed_release(
     channel: &Arc<dyn crate::transport::ConsumerChannel>,
     delivery_tag: u64,
@@ -1844,6 +1850,7 @@ async fn delayed_release(
     publisher: Option<&crate::publisher::PublisherHandle>,
     destination: Option<&crate::publisher::Destination>,
     delay_strategy: Option<&DelayStrategy>,
+    max_attempts: Option<NonZeroU32>,
 ) -> Result<(), ConsumerError> {
     let publisher = publisher.ok_or_else(|| {
         ConsumerError::new(
@@ -1882,6 +1889,7 @@ async fn delayed_release(
     let mut properties = MessageProperties::new(token.message_id.as_str());
     properties.correlation_id = token.correlation_id.as_ref().map(|s| Arc::from(s.as_str()));
     properties.headers = AttemptsResolver::default()
+        .with_max_attempts(max_attempts)
         .delayed_headers(&token.headers, token.attempts)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
     properties.delay_ms = Some(u64::try_from(delay_ms).unwrap_or(u64::MAX));
