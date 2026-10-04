@@ -79,6 +79,11 @@ struct MockState {
     /// Queue names passed to `queue_declare` on any channel, in call order.
     declared_queues: Mutex<Vec<String>>,
     connect_gates: VecDeque<MockOperationGateWait>,
+    /// Gates the next `open_publisher` so a test can park the connection
+    /// actor mid channel-open — the actor runs the open inline inside its
+    /// command arm, so parking here parks every queued command (including
+    /// `Close`) behind it.
+    open_publisher_gates: VecDeque<MockOperationGateWait>,
     /// Gates the next `declare_queue` so a test can park the caller mid
     /// declaration — the channel operation runs on the caller's task, not
     /// inside the connection actor loop, so everything else stays live.
@@ -189,6 +194,16 @@ impl MockTransport {
     pub fn push_connect_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().connect_gates.push_back(wait);
+        gate
+    }
+
+    /// Gates the next `open_publisher` so a test can park the caller mid
+    /// channel-open, like a broker that accepts `channel.open` but never
+    /// answers.
+    #[must_use]
+    pub fn push_open_publisher_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().open_publisher_gates.push_back(wait);
         gate
     }
 
@@ -416,10 +431,12 @@ impl TransportConnection for MockConnection {
     }
 
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
-        {
+        let gate = {
             let mut state = self.state();
             state.operations.push(TransportOperation::OpenPublisher);
-        }
+            state.open_publisher_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(Box::new(MockPublisherChannel {
             state: self.state.clone(),
         }))
