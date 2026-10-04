@@ -573,15 +573,21 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             if ($this->workerProfiles->isShared($profile)) {
                 $profile = $this->workerProfiles->registerAutoProfile($queueName);
             }
-        } elseif ($queue === null) {
-            $profile = $queueName;
-        } elseif ($this->workerProfiles->hasProfile($queueName)) {
-            $profile = $queueName;
         } else {
-            throw new InvalidArgumentException(
-                "No worker profile subscribes to queue '{$queueName}': declare it in "
-                .'queue.connections.<name> (queue key or subscriptions).',
-            );
+            // No profile subscribes to the queue name itself. The name may
+            // still double as a worker profile — pop(null) targets the
+            // default queue's profile, an explicit pop may address the
+            // profile by name. Anything else would reach the native pool and
+            // die with its opaque `unknown worker profile` error, so it fails
+            // here with the actionable message instead (same message as the
+            // rejected explicit pop, mirrored for the pop(null) fallback).
+            if (! $this->workerProfiles->hasProfile($queueName)) {
+                throw new InvalidArgumentException(
+                    "No worker profile subscribes to queue '{$queueName}': declare it in "
+                    .'queue.connections.<name> (queue key or subscriptions).',
+                );
+            }
+            $profile = $queueName;
         }
         try {
             $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);

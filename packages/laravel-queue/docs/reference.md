@@ -475,7 +475,7 @@ The minimal connection is therefore:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `driver` | string | — | Must be `rabbit-rs` |
-| `queue` | string | — (required) | Default queue name: the derived consumer subscription and the `pop()` target |
+| `queue` | string | — (required without `subscriptions`) | Default queue name: the derived consumer subscription and the `pop()` target. With `subscriptions` it is optional and must name one of their queues (see [validation and strict errors](#validation-and-strict-errors)) |
 | `hosts` | string or string[] | `127.0.0.1:5672` | Comma-separated `host:port` list (a bare host defaults to port 5672); IPv6 must be bracketed (`[::1]:5672`) |
 | `vhost` | string | `/` | AMQP virtual host (a distinct vhost = a distinct AMQP connection) |
 | `username` | string | `guest` | AMQP username |
@@ -681,7 +681,6 @@ tuning. The alias is the array key; the broker is always this connection
 ```php
 'orders-eu' => [
     'driver' => 'rabbit-rs',
-    'queue' => 'orders',
     'hosts' => 'rabbit-1:5672',
     'vhost' => '/orders-eu',
     'username' => 'orders',
@@ -711,7 +710,10 @@ tuning. The alias is the array key; the broker is always this connection
 | `no_ack` | `false` | Requires `early_ack` **and** `best_effort` |
 
 Without the escape hatch, one subscription named `default` is derived from the
-connection's `queue`. With it, the list replaces the derivation. Rules:
+connection's `queue`. With it, the list replaces the derivation and the
+`queue` key becomes optional: when kept, it must name one of the subscription
+queues (or compilation fails with the two remediations — remove the key, or
+add it as a subscription). Rules:
 at least one entry, unique queues across aliases, unknown fields rejected.
 
 ### Implicit profiles
@@ -915,7 +917,11 @@ and only when the affected connection is resolved:
 - `early_ack` requires `best_effort`; `no_ack` requires `early_ack` and
   `best_effort`.
 - `subscriptions` must contain at least one entry, with unique queues across
-  aliases.
+  aliases. The `queue` key is then optional; when present it must name one of
+  the subscription queues — otherwise compilation fails naming
+  `queue.connections.<name>.queue` with the two remediations (remove the key,
+  or add it as a subscription). Without `subscriptions`, the `queue` key is
+  required (it names the derived subscription).
 
 ### Pool reuse and fingerprints
 
