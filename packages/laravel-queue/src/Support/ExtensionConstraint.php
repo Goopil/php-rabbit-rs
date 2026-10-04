@@ -18,8 +18,8 @@ final class ExtensionConstraint
     /**
      * Composer caret constraint check, limited to the ^major.minor[.patch]
      * shape the package pins (ext-rabbit_rs ^0.3.10): on 0.x the caret admits
-     * only the declared minor. Unknown shapes pass — callers report the
-     * version instead of guessing.
+     * only the declared minor. Unknown *constraint* shapes pass — the check
+     * cannot reason about a constraint it does not recognize.
      */
     public static function satisfiesCaret(string $version, string $constraint): bool
     {
@@ -41,9 +41,9 @@ final class ExtensionConstraint
     /**
      * Asserts the loaded extension version satisfies the constraint. Only
      * reached when the extension is loaded — the missing-extension error
-     * names the constraint and stays authoritative when it is absent. An
-     * undeterminable version passes (the doctor reports it instead of
-     * guessing).
+     * names the constraint and stays authoritative when it is absent. The
+     * check fails closed: an undeterminable version (null → 'unknown')
+     * throws, mirroring the doctor's verdict for a version it cannot read.
      *
      * @throws RuntimeException when the loaded version is outside the constraint
      */
