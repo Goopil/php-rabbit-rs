@@ -1,0 +1,22 @@
+{
+    "tool": "micro-consume",
+    "stage": "batch",
+    "fill": 5000,
+    "requested_iters": 5000,
+    "consumed": 5000,
+    "stats_us": {
+        "per_item_us": 19.893,
+        "per_batch_us": {
+            "p50": 48.83,
+            "mean": 104.21,
+            "p95": 350.08
+        },
+        "avg_batch_size": 5.3,
+        "drain_rate_items_s": 50269.3
+    },
+    "meta": {
+        "php": "8.5.6",
+        "rabbit_rs": "0.3.10",
+        "os": "Darwin 25.6.0"
+    }
+}

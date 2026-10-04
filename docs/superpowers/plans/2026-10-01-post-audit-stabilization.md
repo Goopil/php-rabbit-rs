@@ -586,3 +586,22 @@ Expected: PASS all.
 - **ZTS** — out of policy (V2).
 - **Remaining core LOWs** (kept on record so nothing is lost): SNI validated only against the first sorted host on failover (`lapin.rs:44-60`) — document the cert-coverage requirement; `ChannelsLimitReached` mapped permanent without review (`lapin.rs:787-805`) — deserves its own classification; `spin_on_ready` re-runs heavy establishment per loop (`client.rs:794-796`); stale-generation establishment churn window (`recovery_coordinator.rs:853, 875`) — self-correcting; `tokio::spawn` panics outside a runtime context for direct core-API users (`recovery_coordinator.rs:182`, `client.rs:989-1021`); `Draining` state naming vs `PoolLifecycle::Closing`; `Endpoint::new("", port)` accepted (`config.rs:24-31`); `effective_safety` silently downgrades explicit `safety: "safe"` with legacy `confirms: false` (`config.rs:494-503`).
 - **Sonar duplication / docs/audits directory consolidation beyond Task 20** — cosmetic; batch later.
+
+---
+
+## Phase 3 appendix — graduated from the round-l profile decision gate
+
+### Task 24: Eliminate duplicate per-publish property string clones
+
+**Files:**
+- Modify: `crates/rabbit-rs-core/src/publisher/delay.rs:142-158` (`route_transport_request` — stop `.to_owned()`-ing `content_type`/`correlation_id`/`message_id` into the transport `PublishRequest` per publish) and `crates/rabbit-rs-core/src/transport/lapin.rs:665-693` (`publish_properties` — stop re-`clone()`-ing the same strings into `BasicProperties`; share one `Arc<str>`/borrow through both sites)
+- Callers to keep compiling: `crates/rabbit-rs-core/src/publisher/pump.rs:269`, `crates/rabbit-rs-core/src/publisher/actor.rs:769`
+- Test: `crates/rabbit-rs-core/tests/` (publisher suite — property parity: wire properties byte-identical before/after)
+
+**Context:** The round-l profile (`benchmarks/results/round-l-profile/README.md`, decision gate candidate 4) measured the per-publish property conversion chain at ≈0.3–0.8 µs of the extension-boundary publish p50 (paired A/B `--props=minimal|full`: +0.33/+1.08/+0.21 µs; allocator-family self-time ≈0.8 µs/publish across main/actor/io threads): `route_transport_request` allocates fresh `String`s for every property on every publish and `publish_properties` clones them again into AMQP values, although the data flows unchanged from the PHP zval to the wire. This was the only profile-proven candidate; the other four audit candidates were rejected with numbers (scheduler pick 283.8 ns/pick @32 subs; early-ack spawn +0.6 µs p50/+0.11 µs CPU per delivery; MessageId clones ≤0.15 µs/delivery; budget formatting 15 ns/publish).
+
+- [ ] **Step 1: Characterization test** — a publisher test asserting the wire `BasicProperties` (content_type, correlation_id, message_id, headers) produced for a fixed request are byte-identical across the refactor (golden comparison over the mock transport), so the optimization cannot change what goes on the wire.
+- [ ] **Step 2: Verify green-then-refactor** — the characterization test passes pre-change (no behavior change intended; this is a perf refactor, so the gate is the benchmark, not a failing test).
+- [ ] **Step 3: Implement** — change the `transport::PublishRequest` property fields to `Arc<str>` (or `Option<Arc<str>>`) fed from the core request without a fresh allocation per publish, and have `publish_properties` borrow/clone only the `Arc` pointer into `AMQPValue::LongString` ( constructing the wire value may still need one owned string — keep exactly one, not two). No API breaks outside `pub(crate)`/`transport` internals; if `PublishRequest` is publicly constructible, add the field-type change to the changelog as a minor breaking change or add a constructor preserving the public shape.
+- [ ] **Step 4: Verify** — `rtk cargo test -p rabbit-rs-core` and `rtk cargo clippy --workspace --all-targets --all-features -- -D warnings` PASS; re-run the round-l props A/B on the lab: `RABBIT_RS_SAFETY=safe php -n -d extension=<dylib> benchmarks/results/round-l-profile/tools/micro-publish.php --iters=50000 --props=full` ×3 — the `full` p50 median must move measurably toward the `minimal` floor (≈1.2 µs) without regression in blind/unsafe; record the before/after JSONs under `benchmarks/results/round-l-profile/` (post-fix addendum).
+- [ ] **Step 5: Commit** — `git commit -m "perf(core): share per-publish property strings instead of re-cloning them onto the wire"`
