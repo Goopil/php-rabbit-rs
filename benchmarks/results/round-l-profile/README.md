@@ -143,13 +143,13 @@ Publish ladder, 50k single publishes per run (`profiles/publish-*.json`):
 
 | Mode   | p50      | p95     | p99     | mean     | rate ops/s |
 |--------|---------:|---------|---------|----------|-----------:|
-| safe   | 1.167 µs | 2.667 µs| 9.167 µs| 13.92 µs | 66 663     |
-| blind  | 1.000 µs | 1.875 µs| 6.000 µs| 7.92 µs  | 95 856     |
-| unsafe | 1.041 µs | 2.708 µs| 6.208 µs| 8.30 µs  | 118 597    |
+| safe   | 1.167 µs | 2.584 µs| 7.917 µs| 15.001 µs | 66 663     |
+| blind  | 1.000 µs | 1.833 µs| 5.709 µs| 10.432 µs | 95 856     |
+| unsafe | 1.041 µs | 1.917 µs| 5.125 µs| 8.432 µs  | 118 597    |
 
-The safe→unsafe p50 gap is 0.13 µs; the *mean* gap (~5.6 µs) is buffered-flush
+The safe→unsafe p50 gap is 0.13 µs; the *mean* gap (~6.6 µs) is buffered-flush
 tail, not per-op confirm cost — confirms the confirm waiter is amortized
-off the per-publish path (`confirmation_latency_us_p50` = 6 µs broker-side).
+off the per-publish path (`confirmation_latency_us_p50` = 7 µs broker-side).
 
 Consume stages (`profiles/consume-*.json`; hot = next(1000)+ack on a filled
 backlog, prefetch 64 unless noted):
@@ -176,15 +176,20 @@ Two structural readings:
   while `tryNext()` stays on the lock-free fast path at 0.125 µs. Poll-shape
   workers should prefer `tryNext`/`block_for` over `next(0)` spinning.
 
-Rust-side divan benches (release bench profile, medians):
+Rust-side divan benches (release bench profile, medians). The raw console
+output of the Task-17 session benches is archived verbatim — the scheduler
+bench was re-run during review with the same result (values in the file
+headers; session vs re-run spread ≤ ~12 % at the noisiest cell, verdict
+unchanged): `raw/divan-scheduler.txt`, `raw/divan-consumer-delivery.txt`,
+`raw/divan-publisher.txt`.
 
-| Bench                          | Result                          | Per-unit        |
-|--------------------------------|---------------------------------|-----------------|
-| weighted_fair_round, 4 subs    | 193.5 ns / round of 4 picks     | ≈48 ns/pick     |
-| weighted_fair_round, 32 subs   | 9.083 µs / round of 32 picks    | ≈284 ns/pick    |
-| delivery_ack_round_trip        | 2.874 µs                        | per delivery    |
-| delivery_ack_burst(64)         | 179.3 µs                        | ≈2.8 µs/delivery|
-| pump_batch_128                 | 104.2 µs                        | ≈0.81 µs/publish|
+| Bench                          | Result (session; re-run in the archived file header) | Per-unit        |
+|--------------------------------|------------------------------------------------------|-----------------|
+| weighted_fair_round, 4 subs    | 193.5 ns / round of 4 picks (re-run 185.8 ns)        | ≈48 ns/pick     |
+| weighted_fair_round, 32 subs   | 9.083 µs / round of 32 picks (re-run 9.124 µs)       | ≈284 ns/pick    |
+| delivery_ack_round_trip        | 2.874 µs (re-run 3.041 µs)                           | per delivery    |
+| delivery_ack_burst(64)         | 179.3 µs (re-run 184 µs)                             | ≈2.8 µs/delivery|
+| pump_batch_128                 | 104.2 µs (re-run 127.3 µs)                           | ≈0.81–1.0 µs/publish |
 
 ## Publish safe path — end-to-end per-stage breakdown
 
@@ -218,7 +223,7 @@ while `nextBatch` sustained 41k+/s. Today's measurements decompose it:
 | Laravel worker `pop()`+ack+job hydration (driver-bench worker) | p50 7 µs, p95 25 µs, p99 281 µs          |
 | Extension boundary `next(1000)`+`ack()` on hot backlog (micro) | p50 0.75–0.875 µs, mean 21–22.5 µs        |
 | Extension boundary `tryNext()` empty (FFI floor)  | p50 0.125 µs                                          |
-| Rust-side delivery→dispatch→ack round trip (divan, mock transport) | 2.87 µs                              |
+| Rust-side delivery→dispatch→ack round trip (divan, mock transport; `raw/divan-consumer-delivery.txt`) | 2.87 µs                              |
 
 Per-stage attribution for `Consumer::next()`:
 
@@ -249,7 +254,7 @@ on intuition.
 
 | # | Candidate | Measured cost | Projected gain | Verdict |
 |---|-----------|---------------|----------------|---------|
-| 1 | Scheduler per-pick `Vec` + O(n²) `contains` (`scheduler.rs:96-124`) | ≈48 ns/pick @4 subs → ≈284 ns/pick @32 subs (divan medians; sub-quadratic in practice: several O(n) passes); driver-bench workers use 1 subscription where the pick is off the hot path | <0.5 % of even the sub-µs buffered pop; ≤0.3 % actor CPU at 32 subs | **REJECT** (283.8 ns/pick @32) |
+| 1 | Scheduler per-pick `Vec` + O(n²) `contains` (`scheduler.rs:96-124`) | ≈48 ns/pick @4 subs → ≈284 ns/pick @32 subs (divan medians, archived in `raw/divan-scheduler.txt` with a matching re-run; sub-quadratic in practice: several O(n) passes); driver-bench workers use 1 subscription where the pick is off the hot path | <0.5 % of even the sub-µs buffered pop; ≤0.3 % actor CPU at 32 subs | **REJECT** (283.8 ns/pick @32) |
 | 2 | One `tokio::spawn` per delivery on the early-ack path (`actor.rs:441-446`) | Paired A/B at fill=1000: earlyack p50 1.125–1.584 µs vs hot 0.75–0.875 µs → **+0.5–0.65 µs handoff p50**; trace: `dispatch` CPU delta ≈ +0.11 µs/delivery; early-ack actor CPU 2.52 vs hot 3.77 µs/delivery (early-ack is overall cheaper — no PHP ack crossing) | Batching acks would save ≤0.5 µs/delivery **only** in the opt-in early-ack mode and changes settlement semantics | **REJECT** (+0.6 µs p50, +0.11 µs CPU per delivery) |
 | 3 | 2 `String` allocations per message for `MessageId` (`actor.rs:390-398, 495`) | Total allocator-family self-time on the consume actor thread = 13.8 % of 3.77 µs/delivery ≈ **0.52 µs/delivery for ALL Rust allocations**; `MessageId`'s 2 clones (`MessageId(String)`, `delivery.rs:21`) are 2 of ~6–10 per-message allocs → ≈0.1–0.15 µs/delivery | ≈≤0.7 % of the Laravel per-message cost (p50 7 µs worker / 22 µs micro mean) | **REJECT** (0.52 µs/delivery total allocator self-time; MessageId is a small subset) |
 | 4 | 2–4 per-publish `String` allocations (`delay.rs:142-158` + `lapin.rs:665-693`) | Paired A/B (safe, 50k, 3 runs each): content_type absent vs present p50 deltas **+0.33/+1.08/+0.21 µs** (median +0.33, mean +0.54 µs); the always-on `message_id` double-clone is present in *both* arms, so this undercounts; allocator family ≈0.8 µs/publish across threads; `route_transport_request` runs per publish on both paths (`pump.rs:269`, `actor.rs:769`) and `publish_properties` clones every string again | Eliminating the redundant `to_owned`→`clone` chain (share one `Arc<str>`/borrow between the transport request and `BasicProperties`) saves ≈0.3–0.6 µs/publish p50 ≈ 25–40 % of the extension-boundary publish p50, and removes actor-thread allocator pressure | **KEEP** → task appended to the plan |

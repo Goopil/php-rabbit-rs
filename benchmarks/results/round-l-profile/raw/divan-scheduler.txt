@@ -1,0 +1,19 @@
+# Divan scheduler evidence — re-run for the task-17 review fix (fix/audit-2026-10-01).
+# Command: rtk cargo bench -p rabbit-rs-core --features bench --bench consumer
+# Load conditions: 13:49  up 18 days,  7:46, 4 users, load averages: 7.04 11.07 12.04 (background IDE/VM load, see README 'Machine and environment context').
+# Original Task-17 session values: weighted_fair_round(4) median 193.5 ns/round (~48 ns/pick), (32) median 9.083 µs/round (~284 ns/pick).
+# This archived re-run: (4) median 185.8 ns/round (~46.5 ns/pick), (32) median 9.124 µs/round (~285.1 ns/pick) — same order of magnitude, verdict unchanged.
+consumer                fastest       │ slowest       │ median        │ mean          │ samples │ iters
+├─ latency_percentile                 │               │               │               │         │
+│  ├─ 50                3.964 ns      │ 5.063 ns      │ 4.086 ns      │ 4.129 ns      │ 100     │ 102400
+│  ╰─ 99                6.12 ns       │ 7.341 ns      │ 6.344 ns      │ 6.383 ns      │ 100     │ 102400
+├─ metrics_snapshot     26.7 ns       │ 28.17 ns      │ 27.19 ns      │ 27.22 ns      │ 100     │ 25600
+├─ resolve_attempts                   │               │               │               │         │
+│  ├─ application       13.77 ns      │ 15.47 ns      │ 14.01 ns      │ 14.04 ns      │ 100     │ 51200
+│  ├─ classic           10.92 ns      │ 12.14 ns      │ 11.08 ns      │ 11.11 ns      │ 100     │ 51200
+│  ├─ delivery_count    14.9 ns       │ 21.09 ns      │ 15.07 ns      │ 15.13 ns      │ 100     │ 51200
+│  ╰─ quorum            18.73 ns      │ 20.19 ns      │ 19.22 ns      │ 19.22 ns      │ 100     │ 25600
+╰─ weighted_fair_round                │               │               │               │         │
+   ├─ 4                 180.6 ns      │ 132.6 µs      │ 185.8 ns      │ 1.586 µs      │ 100     │ 3200
+   ╰─ 32                8.832 µs      │ 18.83 µs      │ 9.124 µs      │ 9.32 µs       │ 100     │ 100
+
