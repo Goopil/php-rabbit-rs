@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Console;
 
 use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
+use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
@@ -110,6 +111,11 @@ class WorkerSupervisor
      *                                                                    pending reading (ready + unacked, #308). Injected so
      *                                                                    tests can fake it without HTTP; when absent, scaling
      *                                                                    and the one-shot final depth check never fire.
+     * @param  ?string  $probeDirectory  Probes directory whose fleet drain
+     *                                   marker ({@see ProbeStatefile::signalDrain()}) defers recycling
+     *                                   clean-exited slots while a prestop drain is in flight; null
+     *                                   (tests, or a supervisor built without the probes config)
+     *                                   never defers.
      */
     public function __construct(
         private readonly array $plan,
@@ -125,6 +131,7 @@ class WorkerSupervisor
         private readonly bool $stopWhenEmpty = false,
         private readonly bool $once = false,
         private readonly ?\Closure $depthCallback = null,
+        private readonly ?string $probeDirectory = null,
     ) {
         $this->initialWorkers = $this->maxWorkers !== null
             ? min($this->workers, $this->maxWorkers)
@@ -941,6 +948,16 @@ class WorkerSupervisor
         $slot = $slots[$index];
 
         if ($this->isCleanExit($slot['process'])) {
+            if ($this->drainRequested()) {
+                // A prestop drain is in flight: the hook signaled the fleet
+                // and is waiting for quiescence. Recycling here would
+                // respawn a consumer under a fresh PID (new statefile) while
+                // the hook reports success. Defer the recycle: this dead
+                // slot is re-examined on every tick, and restarts through
+                // this same path once the hook clears its marker.
+                return null;
+            }
+
             // Planned recycling (e.g. --max-jobs reached): reset the
             // crash budget and restart immediately, without backoff.
             $slot['restarts'] = 0;
@@ -972,6 +989,19 @@ class WorkerSupervisor
         }
 
         return null;
+    }
+
+    /**
+     * Whether a prestop drain is currently in flight: the probe hook sets a
+     * marker file in the probes directory for its whole bounded wait ({@see
+     * ProbeStatefile::drainSignaled()}) and the recycle path defers
+     * clean-exit restarts while it exists. A null probe directory never
+     * defers.
+     */
+    private function drainRequested(): bool
+    {
+        return $this->probeDirectory !== null
+            && ProbeStatefile::drainSignaled($this->probeDirectory);
     }
 
     /**

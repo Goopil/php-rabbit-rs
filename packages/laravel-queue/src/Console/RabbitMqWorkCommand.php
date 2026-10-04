@@ -107,6 +107,7 @@ class RabbitMqWorkCommand extends Command
             scaleIdleSeconds: (int) $this->option('scale-idle'),
             once: (bool) $this->option('once'),
             depthCallback: $this->depthCallback($plan),
+            probeDirectory: (string) config('rabbit-rs.probes.path', storage_path('framework/rabbit-rs/probes')),
         );
     }
 
