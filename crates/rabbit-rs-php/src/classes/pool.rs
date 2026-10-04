@@ -409,7 +409,7 @@ impl Pool {
         match self
             .handle
             .runtime()
-            .block_on(self.client.purge_queue(broker, queue))
+            .block_on(self.client.clear_route(broker, queue))
         {
             Ok(()) => Ok(()),
             Err(error) => client_exception(&error),

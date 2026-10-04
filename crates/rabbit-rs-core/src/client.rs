@@ -13,13 +13,14 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
-        PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
+        Destination, PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
         PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
+    topology::delay::DelayStrategy,
     transport::{
         BindingSpec, ExchangeKind, ExchangeSpec, FetchedMessage, Headers, PublisherChannel,
-        QueueSpec, Transport, TransportError, lapin::LapinTransport,
+        QueueSpec, Transport, TransportError, TransportErrorKind, lapin::LapinTransport,
     },
 };
 
@@ -45,6 +46,34 @@ fn worker_brokers(worker: &crate::config::WorkerProfile) -> Vec<String> {
         }
     }
     brokers
+}
+
+/// Destinations whose TTL bucket queues can hold deferred jobs for `queue`
+/// on `broker`: the `(queue, queue)` retry destination the consumer-side
+/// delayed release publishes through, plus every configured publish route of
+/// the broker with its `{queue}` template resolved to the cleared queue name
+/// (the destination a delayed publish through that route used). Mirrors the
+/// delay keep-alive's destination derivation, scoped to the cleared queue;
+/// the result is bounded by the configured route count (deduplicated).
+fn clear_route_destinations(
+    config: &ValidatedConfig,
+    broker: &str,
+    queue: &str,
+) -> Vec<Destination> {
+    let mut destinations = vec![Destination::new(queue, queue)];
+    for route in config.routes().values() {
+        if route.broker != broker {
+            continue;
+        }
+        let destination = Destination::new(
+            route.exchange.clone(),
+            route.routing_key.replace("{queue}", queue),
+        );
+        if !destinations.contains(&destination) {
+            destinations.push(destination);
+        }
+    }
+    destinations
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -536,6 +565,65 @@ impl ClientPool {
             .purge_queue(queue)
             .await
             .map_err(|error| ClientError::transport(&error))
+    }
+
+    /// Purges a queue and the TTL delay bucket queues its publish route
+    /// synthesizes (`delay.mode = ttl`).
+    ///
+    /// This is the queue-clearing operation behind `queue:clear`: a plain
+    /// [`Self::purge_queue`] leaves deferred jobs sitting in the plan's
+    /// synthesized `rabbit-rs.delay.*` bucket queues, where they dead-letter
+    /// back into the cleared queue and still execute after the clear. The
+    /// swept buckets are derived from the compiled delay plan for
+    /// [`clear_route_destinations`] of the queue's broker.
+    ///
+    /// In plugin mode there is nothing to purge beyond the queue itself:
+    /// plugin-mode delayed messages live on the delayed exchange path and
+    /// cannot be purged selectively (they are already en route to their
+    /// destination queues).
+    ///
+    /// A bucket that is already gone — swept, GC'd by its `x-expires`, or
+    /// never declared — has nothing to purge: the broker answers the purge
+    /// with the missing-topology verdict (`NOT_FOUND`/`PRECONDITION_FAILED`,
+    /// the permanent-protocol classification) and the bucket is skipped
+    /// instead of failing the clear. Every other failure propagates: a dead
+    /// connection or a refused purge fails the clear.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure,
+    /// channel failure, or a main-queue/bucket purge failure that is not the
+    /// missing-queue verdict above.
+    pub async fn clear_route(&self, broker: &str, queue: &str) -> Result<(), ClientError> {
+        self.purge_queue(broker, queue).await?;
+
+        let DelayStrategy::TtlBuckets(plan) = DelayStrategy::compile(&self.config) else {
+            // Plugin and auto strategies route deferred messages through the
+            // delayed exchange path; there are no bucket queues to sweep.
+            return Ok(());
+        };
+
+        for destination in clear_route_destinations(&self.config, broker, queue) {
+            for bucket in plan.buckets() {
+                // `queue_for` only fails for a delay past the largest bucket;
+                // a plan bucket always resolves into a concrete spec.
+                let Ok(spec) = plan.queue_for(&destination, *bucket) else {
+                    continue;
+                };
+                // A channel per bucket (the delay keep-alive's discipline): a
+                // missing bucket's channel-closing 404 must not poison the
+                // remaining buckets' purges.
+                let channel = self.admin_channel(broker).await?;
+                match channel.purge_queue(&spec.name).await {
+                    Ok(()) => {}
+                    // The bucket was already swept, GC'd by its `x-expires`,
+                    // or never declared: nothing to purge.
+                    Err(error) if error.kind() == TransportErrorKind::Protocol => {}
+                    Err(error) => return Err(ClientError::transport(&error)),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Declares a queue on the given broker from a full spec.

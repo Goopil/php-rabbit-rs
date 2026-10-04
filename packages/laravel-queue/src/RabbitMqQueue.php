@@ -762,6 +762,11 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     /**
      * Closes all cached consumers and clears the cache.
      *
+     * Each consumer's undrained settlement error records are surfaced first
+     * (see logPendingSettlementErrors): close would otherwise take them to
+     * the grave, the same silent loss the publish side guards against in
+     * logPendingPublishErrors.
+     *
      * This prevents AMQP channel leaks in long-lived processes (Octane,
      * daemons) where consumers would otherwise accumulate across requests
      * or worker lifecycles without ever being closed.
@@ -769,6 +774,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     public function closeConsumers(): void
     {
         foreach ($this->consumers as $consumer) {
+            $this->logPendingSettlementErrors($consumer);
             try {
                 $consumer->close();
             } catch (NativeException) {
@@ -814,6 +820,44 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             // Best-effort: the pool may already be closed or the container
             // partially torn down. The record is lost either way — surfacing
             // it must never fail the process teardown.
+        }
+    }
+
+    /**
+     * Last-resort net at consumer teardown, mirroring
+     * {@see logPendingPublishErrors} on the publish side: settlement errors
+     * surface at the next operation ({@see drainSettlementErrors}), and a
+     * consumer closed before that next operation — process shutdown, Octane
+     * request teardown — would take its undrained records to the grave.
+     * Teardown cannot propagate exceptions, so each record is logged with
+     * the native context instead of being thrown, at the same level and
+     * message the drain path uses.
+     */
+    private function logPendingSettlementErrors(Consumer $consumer): void
+    {
+        // Same typed-property initialization check as drainSettlementErrors:
+        // unit tests construct the queue without a container.
+        if (! isset($this->container)) { // @phpstan-ignore-line
+            return;
+        }
+
+        try {
+            foreach ($consumer->drainErrors() as $error) {
+                $kind = $error['error_kind'] ?? '';
+                if (in_array($kind, ['MaxAttempts', 'InvalidDelay'], true)) {
+                    $this->container->make('log')->error(
+                        'rabbit-rs: poison delivery settled',
+                        $error,
+                    );
+
+                    continue;
+                }
+                $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+            }
+        } catch (\Throwable) {
+            // Best-effort: the consumer may already be closed or the container
+            // partially torn down. The record is lost either way — surfacing
+            // it must never fail the close path.
         }
     }
 
