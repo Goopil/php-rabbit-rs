@@ -13,6 +13,7 @@ use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommand;
 use Goopil\RabbitRs\Laravel\Console\RabbitMqWorkCommandExtension;
 use Goopil\RabbitRs\Laravel\Exceptions\MissingExtensionException;
 use Goopil\RabbitRs\Laravel\Octane\OctaneLifecycle;
+use Goopil\RabbitRs\Laravel\Support\ExtensionConstraint;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
 use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
 use Illuminate\Queue\Events\WorkerStopping as QueueWorkerStopping;
@@ -68,18 +69,40 @@ class RabbitMqServiceProvider extends ServiceProvider
         return extension_loaded('rabbit_rs');
     }
 
+    /**
+     * Version of the loaded ext-rabbit_rs, or null when it cannot be
+     * determined. Overridable so test suites can fake a loaded binary
+     * (mirrors nativeExtensionLoaded()); the value is process-stable, so it
+     * is read once at boot and enforced at connection resolution.
+     */
+    protected function nativeExtensionVersion(): ?string
+    {
+        $version = phpversion('rabbit_rs');
+
+        return $version === false ? null : $version;
+    }
+
     private function registerQueueConnector(): void
     {
         $app = $this->app;
         $pools = $this->app->make(NativePoolFactory::class);
         $nativeExtensionLoaded = $this->nativeExtensionLoaded();
+        $nativeExtensionVersion = $this->nativeExtensionVersion();
 
         $this->app->make('queue')->extend(
             'rabbit-rs',
-            static function () use ($app, $nativeExtensionLoaded, $pools): RabbitMqConnector {
+            static function () use ($app, $nativeExtensionLoaded, $nativeExtensionVersion, $pools): RabbitMqConnector {
                 if (! $nativeExtensionLoaded) {
                     self::throwMissingNativeExtension();
                 }
+
+                // A loaded 0.2.x binary would otherwise sail through to pool
+                // creation and fail confusingly there (deny_unknown_fields on
+                // the newer compiled config), so the caret constraint is
+                // enforced here, at connection resolution. Absent extensions
+                // never reach this check: the missing-extension error above
+                // names the constraint.
+                ExtensionConstraint::assertSatisfied($nativeExtensionVersion, self::EXTENSION_CONSTRAINT);
 
                 // Compilation is deferred to connection resolution: each
                 // queue connection is compiled lazily from current config,

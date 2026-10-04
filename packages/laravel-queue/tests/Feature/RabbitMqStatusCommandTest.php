@@ -80,3 +80,37 @@ describe('status command', function () {
         expect($commands)->toHaveKey('rabbit-rs:status');
     });
 });
+
+describe('status command isolation', function () {
+    it('keeps rabbit-rs:status running when one connection fails to compile', function () {
+        config()->set('queue.connections.rabbit-rs.safety', 'bogus');
+        config()->set('queue.connections.rabbit-rs-good', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+        ]);
+
+        $this->artisan('rabbit-rs:status')
+            ->assertSuccessful()
+            ->expectsOutputToContain('rabbit-rs-good')
+            ->expectsOutputToContain('unavailable')
+            ->expectsOutputToContain('queue.connections.rabbit-rs.safety');
+    });
+
+    it('reports per-connection errors in json output without failing', function () {
+        config()->set('queue.connections.rabbit-rs.safety', 'bogus');
+        config()->set('queue.connections.rabbit-rs-good', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+        ]);
+
+        $this->artisan(STATUS_JSON_COMMAND)
+            ->assertSuccessful()
+            ->expectsOutputToContain('"error": "queue.connections.rabbit-rs.safety: must be safe, unsafe, or blind"');
+    });
+
+    it('hints that pool stats are same-process counters', function () {
+        $this->artisan('rabbit-rs:status')
+            ->assertSuccessful()
+            ->expectsOutputToContain('same-process counters');
+    });
+});

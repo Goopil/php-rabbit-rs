@@ -55,7 +55,9 @@ function waitForQueueSize(RabbitMqQueue $queue, string $queueName, int $expected
 /**
  * Boots a service provider instance whose extension check succeeds, so queue
  * connections resolve end-to-end with the fake Pool classes from the test
- * bootstrap (Unit/Feature tests run without the compiled extension).
+ * bootstrap (Unit/Feature tests run without the compiled extension). The
+ * fake reports the version the pinned constraint names, so the caret check
+ * at connection resolution accepts it like a current binary would be.
  */
 function bootFakeNativeExtension(mixed $app): void
 {
@@ -64,6 +66,11 @@ function bootFakeNativeExtension(mixed $app): void
         protected function nativeExtensionLoaded(): bool
         {
             return true;
+        }
+
+        protected function nativeExtensionVersion(): ?string
+        {
+            return ltrim(RabbitMqServiceProvider::EXTENSION_CONSTRAINT, '^');
         }
     })->boot();
 }

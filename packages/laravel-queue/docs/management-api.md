@@ -15,7 +15,7 @@ protocol-impossible in pure AMQP.
 | Topology exchange checks (`rabbit-rs:topology`) | Management API listing: exchanges, bindings, queue arguments | Native passive `Pool::verifyExchange()` per promised route exchange and the dead-letter exchange; bindings and queue arguments are **not verified** (see gaps) |
 | Queue existence checks | Native `Pool::size()` (passive probe) either way — never HTTP | Native `Pool::size()` |
 | `--fix` topology declaration | Native transient-consumer bring-up either way — never HTTP | Native |
-| Queue depth sampling (`QueueDepthSampler`) | Native `Pool::size()` (native since #272) | Native |
+| Queue depth sampling (`QueueDepthSampler`) | Management API per queue: `messages_ready` + `messages_unacknowledged` (the drain check keeps the full pending reading, #308; the scaler's admission gauge reads ready-only, #318) | Native passive `Pool::size()` fallback (since #272) — ready-only, no unacked gauge: the unacked asymmetry applies to the native leg only, see gaps |
 | Status command (`rabbit-rs:status`) | Management API for cross-process queue counters | **API-only**: no native equivalent |
 | Unroutable stats (`rabbit-rs:doctor` publish outcomes) | Management API `return_unroutable` counter | **API-only**: no native equivalent |
 | Connection readiness / broker reachability | Native pool either way | Native |

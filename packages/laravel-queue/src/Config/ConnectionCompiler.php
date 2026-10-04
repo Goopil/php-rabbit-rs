@@ -757,7 +757,13 @@ final class ConnectionCompiler
         return $value;
     }
 
-    private static function boolean(mixed $value, string $path): bool
+    /**
+     * Casts a config value to bool, accepting Laravel env() strings (e.g.
+     * "1", "true") and rejecting anything else strictly. Public so the
+     * connector casts the framework keys it reads raw (after_commit) with
+     * the same rules and error paths as compilation.
+     */
+    public static function boolean(mixed $value, string $path): bool
     {
         if (is_bool($value)) {
             return $value;
@@ -775,7 +781,14 @@ final class ConnectionCompiler
         self::invalid($path, 'must be a boolean or an env-style boolean string (e.g. "1", "true")');
     }
 
-    private static function integer(mixed $value, string $path): int
+    /**
+     * Casts a config value to int, accepting signed digit strings (Laravel
+     * env() returns strings for .env numbers, e.g. "64") and rejecting
+     * anything else strictly; the caller range-checks. Public so the
+     * connector casts the framework keys it reads raw (block_for) with the
+     * same rules and error paths as compilation.
+     */
+    public static function integer(mixed $value, string $path): int
     {
         if (is_int($value)) {
             return $value;
