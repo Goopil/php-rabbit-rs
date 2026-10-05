@@ -198,11 +198,19 @@ pub struct BindingSpec {
     pub routing_key: String,
 }
 
+/// The per-publication wire properties.
+///
+/// The string fields share the caller's `Arc<str>` allocations (see
+/// [`crate::publisher::MessageProperties`]) instead of re-owning a fresh
+/// `String` per publish: routing and the wire conversion clone the `Arc`
+/// pointer, and the adapter materializes exactly one owned short-string per
+/// property at the wire boundary. This is a minor breaking change of the
+/// public field types (documented in the changelog).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishProperties {
-    pub content_type: Option<String>,
-    pub correlation_id: Option<String>,
-    pub message_id: Option<String>,
+    pub content_type: Option<Arc<str>>,
+    pub correlation_id: Option<Arc<str>>,
+    pub message_id: Option<Arc<str>>,
     pub delay_ms: Option<u64>,
     pub headers: PublishHeaders,
     pub persistent: bool,
@@ -228,6 +236,21 @@ pub struct PublishRequest {
     pub payload: Bytes,
     pub mandatory: bool,
     pub properties: PublishProperties,
+}
+
+/// Builds the wire `BasicProperties` the Lapin adapter sends for `request`,
+/// without a broker connection.
+///
+/// Test-support only: the mock transport records the pre-wire
+/// [`PublishRequest`], and this exposes the final property conversion so
+/// parity tests can pin the serialized properties (content type, correlation
+/// id, message id, headers) across refactors. It deliberately surfaces the
+/// adapter-internal AMQP type for that purpose and is never compiled outside
+/// test builds.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn wire_publish_properties(request: &PublishRequest) -> ::lapin::protocol::BasicProperties {
+    self::lapin::publish_properties(request)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -662,19 +662,22 @@ async fn close_channel(channel: &Channel) -> TransportResult<()> {
         .map_err(map_lapin_error)
 }
 
-fn publish_properties(request: &PublishRequest) -> BasicProperties {
+pub(crate) fn publish_properties(request: &PublishRequest) -> BasicProperties {
     let mut properties = BasicProperties::default();
     if request.properties.persistent {
         properties = properties.with_delivery_mode(2);
     }
+    // Each property materializes exactly one owned short-string here — the
+    // only conversion allocation on the publish path, since the transport
+    // request shares the caller's `Arc<str>` instead of re-owning the value.
     if let Some(content_type) = &request.properties.content_type {
-        properties = properties.with_content_type(content_type.clone().into());
+        properties = properties.with_content_type(content_type.as_ref().into());
     }
     if let Some(correlation_id) = &request.properties.correlation_id {
-        properties = properties.with_correlation_id(correlation_id.clone().into());
+        properties = properties.with_correlation_id(correlation_id.as_ref().into());
     }
     if let Some(message_id) = &request.properties.message_id {
-        properties = properties.with_message_id(message_id.clone().into());
+        properties = properties.with_message_id(message_id.as_ref().into());
     }
     let mut headers = FieldTable::default();
     for (name, value) in &request.properties.headers {

@@ -951,7 +951,7 @@ mod tests {
         }
 
         /// Message ids of every publish observed on the wire, in send order.
-        fn wire_ids(&self) -> Vec<String> {
+        fn wire_ids(&self) -> Vec<Arc<str>> {
             self.transport
                 .operations()
                 .into_iter()
@@ -969,7 +969,7 @@ mod tests {
         fn wire_count(&self, id: &str) -> usize {
             self.wire_ids()
                 .iter()
-                .filter(|sent| sent.as_str() == id)
+                .filter(|sent| sent.as_ref() == id)
                 .count()
         }
 

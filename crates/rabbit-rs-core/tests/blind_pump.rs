@@ -143,17 +143,17 @@ async fn blind_batch_returns_while_every_publish_is_still_pending() {
         assert!(gate.release(), "gate {index} released");
         wait_for_publishes(&transport, index + 1).await;
     }
-    let ids: Vec<Option<String>> = publish_requests(&transport)
+    let ids: Vec<Option<Arc<str>>> = publish_requests(&transport)
         .into_iter()
         .map(|request| request.properties.message_id)
         .collect();
     assert_eq!(
         ids,
         vec![
-            Some("m0".into()),
-            Some("m1".into()),
-            Some("m2".into()),
-            Some("m3".into())
+            Some(Arc::from("m0")),
+            Some(Arc::from("m1")),
+            Some(Arc::from("m2")),
+            Some(Arc::from("m3"))
         ],
         "enfilage order must be preserved at the transport entrance"
     );

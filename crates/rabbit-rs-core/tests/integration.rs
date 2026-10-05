@@ -1037,16 +1037,16 @@ async fn publish_batch_resolves_accepted_publications_when_a_broker_acquisition_
 
     // The accepted publication was resolved exactly once and the failed
     // broker's message was never published.
-    let published_ids: Vec<String> = common::publish_requests(&transport)
+    let published_ids: Vec<Arc<str>> = common::publish_requests(&transport)
         .iter()
         .filter_map(|request| request.properties.message_id.clone())
         .collect();
     assert!(
-        published_ids.contains(&"accepted".to_owned()),
+        published_ids.contains(&Arc::from("accepted")),
         "the accepted publication must be resolved: {published_ids:?}"
     );
     assert!(
-        !published_ids.contains(&"discarded".to_owned()),
+        !published_ids.contains(&Arc::from("discarded")),
         "the failed broker's message must not be published: {published_ids:?}"
     );
 

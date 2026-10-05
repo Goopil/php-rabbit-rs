@@ -139,18 +139,13 @@ pub(crate) fn route_transport_request(
         routing_key,
         payload: request.payload.clone(),
         mandatory,
+        // The property strings are shared `Arc<str>`s from the caller's
+        // request: refcount bumps only, no per-publish allocation. The wire
+        // adapter materializes the single owned short-string per property.
         properties: crate::transport::PublishProperties {
-            content_type: request
-                .properties
-                .content_type
-                .as_ref()
-                .map(|ct| ct.as_ref().to_owned()),
-            correlation_id: request
-                .properties
-                .correlation_id
-                .as_ref()
-                .map(|ci| ci.as_ref().to_owned()),
-            message_id: Some(request.properties.message_id.as_ref().to_owned()),
+            content_type: request.properties.content_type.clone(),
+            correlation_id: request.properties.correlation_id.clone(),
+            message_id: Some(Arc::clone(&request.properties.message_id)),
             delay_ms,
             headers: request.properties.headers.clone(),
             persistent: true,

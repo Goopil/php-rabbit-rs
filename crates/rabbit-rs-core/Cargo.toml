@@ -30,6 +30,10 @@ tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "sync", "ti
 url = "2.5"
 
 [dev-dependencies]
+# Used by the wire-property parity test to serialize the adapter's
+# `BasicProperties` into the exact AMQP bytes (pinned against a golden).
+# Version-aligned with lapin's dependency so the types unify.
+amq-protocol = { version = "10.6", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.53", features = ["test-util", "process"] }
