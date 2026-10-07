@@ -33,7 +33,9 @@ use rabbit_rs_core::client::{ClientError, ClientErrorKind, ClientPool};
 use rabbit_rs_core::pool::ConnectionHandle;
 use rabbit_rs_core::publisher::{PublishOutcome, PublishRequest};
 
-use crate::classes::exception::{backpressure_exception, client_exception, rabbit_exception};
+use crate::classes::exception::{
+    backpressure_exception, client_exception, rabbit_exception, rabbit_exception_message,
+};
 use crate::conversion::NativePublish;
 
 /// Buffer threshold: flush when this many messages are buffered.
@@ -194,6 +196,17 @@ impl PublishBuffer {
             self.dropped_error_records.fetch_add(1, Ordering::Relaxed);
         }
         pending.push_back(error);
+    }
+
+    /// Counts error records that were discarded without ever being surfaced
+    /// to PHP (the surplus records a `surface_publish_errors` call drops
+    /// after raising its first error), so the loss stays observable via
+    /// `stats()`.
+    pub(crate) fn count_discarded_error_records(&self, count: usize) {
+        if count > 0 {
+            self.dropped_error_records
+                .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
     }
 
     /// Drains and returns every pending publish error record.
@@ -424,13 +437,28 @@ impl PublishBuffer {
                 // batch-level `Err` below, which re-buffers every request.
                 let mut first_error = None;
                 for outcome in outcomes {
-                    if let Err(error) = publish_message_id(outcome) {
-                        // `Returned` is the only outcome that resolves to an
-                        // error here. An unroutable message is definitive:
-                        // re-buffering it would loop forever, so the error is
-                        // recorded instead and raised once every outcome has
-                        // been processed.
-                        first_error.get_or_insert(error);
+                    let PublishOutcome::Returned { message_id, reply } = outcome else {
+                        continue;
+                    };
+                    // `Returned` is the only non-confirmed outcome here. An
+                    // unroutable message is definitive: re-buffering it would
+                    // loop forever. The first failure is raised when the
+                    // flush returns; every surplus outcome is recorded in the
+                    // pending-error queue so it surfaces at the next
+                    // operation — exactly like the pipelined drains record
+                    // their returned outcomes — instead of being discarded.
+                    let error = PendingPublishError {
+                        message_id: message_id.as_ref().to_owned(),
+                        kind: "Returned".to_owned(),
+                        message: format!(
+                            "message {message_id} was returned as unroutable (AMQP {})",
+                            reply.code
+                        ),
+                    };
+                    if first_error.is_none() {
+                        first_error = Some(rabbit_exception_message(error.message.clone()));
+                    } else {
+                        self.record_error(error);
                     }
                 }
                 first_error.map_or(Ok(()), Err)
