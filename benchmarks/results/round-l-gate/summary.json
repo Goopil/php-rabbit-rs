@@ -1,0 +1,235 @@
+{
+    "generated": "2026-10-07T16:29:43+00:00",
+    "cells": {
+        "goopil-dispatch-blind": {
+            "mode": "dispatch",
+            "driver": "rabbit-rs",
+            "rounds_measured": 30,
+            "round_median_ops_s": 73233,
+            "round_min_ops_s": 67446,
+            "round_max_ops_s": 75146,
+            "run_avg_ops_s": [
+                73163,
+                72985,
+                72904
+            ],
+            "run_avg_median_ops_s": 72985,
+            "latency_ms_p50": 0.013,
+            "latency_ms_p95": 0.016,
+            "latency_ms_p99": 0.024,
+            "invariants": {
+                "ok": true,
+                "losses": 0,
+                "late": 0,
+                "duplicates": 0,
+                "stalls": 0,
+                "reconnects": 0
+            },
+            "invariants_ok": true,
+            "comparison_vs_frozen": {
+                "round-2-rebench (2026-08-31)": {
+                    "reference_ops_s": 70262,
+                    "delta_pct": 4.2
+                },
+                "round-i-rebench (2026-09-03)": {
+                    "reference_ops_s": 21992,
+                    "delta_pct": 233
+                },
+                "round-d-safe-flush (2026-09-04, pipelined)": {
+                    "reference_ops_s": 21939,
+                    "delta_pct": 233.8
+                },
+                "round-l-profile (2026-10-04, same round, like-for-like)": {
+                    "reference_ops_s": 71380,
+                    "delta_pct": 2.6
+                }
+            },
+            "verdict": "PASS"
+        },
+        "goopil-dispatch-safe": {
+            "mode": "dispatch",
+            "driver": "rabbit-rs",
+            "rounds_measured": 30,
+            "round_median_ops_s": 71498,
+            "round_min_ops_s": 57284,
+            "round_max_ops_s": 75544,
+            "run_avg_ops_s": [
+                69892,
+                68051,
+                72630
+            ],
+            "run_avg_median_ops_s": 69892,
+            "latency_ms_p50": 0.013,
+            "latency_ms_p95": 0.017,
+            "latency_ms_p99": 0.027,
+            "invariants": {
+                "ok": true,
+                "losses": 0,
+                "late": 0,
+                "duplicates": 0,
+                "stalls": 0,
+                "reconnects": 0
+            },
+            "invariants_ok": true,
+            "comparison_vs_frozen": {
+                "round-2-rebench (2026-08-31)": {
+                    "reference_ops_s": 7703,
+                    "delta_pct": 828.2
+                },
+                "round-i-rebench (2026-09-03)": {
+                    "reference_ops_s": 6534,
+                    "delta_pct": 994.2
+                },
+                "round-d-safe-flush (2026-09-04, pipelined)": {
+                    "reference_ops_s": 20866,
+                    "delta_pct": 242.7
+                },
+                "round-l-profile (2026-10-04, same round, like-for-like)": {
+                    "reference_ops_s": 65753,
+                    "delta_pct": 8.7
+                }
+            },
+            "verdict": "PASS"
+        },
+        "goopil-worker": {
+            "mode": "worker",
+            "driver": "rabbit-rs",
+            "rounds_measured": 30,
+            "round_median_ops_s": 30719,
+            "round_min_ops_s": 25182,
+            "round_max_ops_s": 36248,
+            "run_avg_ops_s": [
+                30141,
+                29675,
+                30411
+            ],
+            "run_avg_median_ops_s": 30141,
+            "latency_ms_p50": 0.007,
+            "latency_ms_p95": 0.025,
+            "latency_ms_p99": 0.29,
+            "invariants": {
+                "ok": true,
+                "losses": 0,
+                "late": 0,
+                "duplicates": 0,
+                "stalls": 0,
+                "reconnects": 0
+            },
+            "invariants_ok": true,
+            "comparison_vs_frozen": {
+                "round-2-rebench (2026-08-31)": {
+                    "reference_ops_s": 21747,
+                    "delta_pct": 41.3
+                },
+                "round-i-rebench (2026-09-03)": {
+                    "reference_ops_s": 16234,
+                    "delta_pct": 89.2
+                },
+                "round-d-safe-flush (2026-09-04, pipelined)": {
+                    "reference_ops_s": 15421,
+                    "delta_pct": 99.2
+                },
+                "round-l-profile (2026-10-04, same round, like-for-like)": {
+                    "reference_ops_s": 23495,
+                    "delta_pct": 30.7
+                }
+            },
+            "verdict": "PASS"
+        },
+        "vladimir-dispatch": {
+            "mode": "dispatch",
+            "driver": "rabbitmq-amqplib",
+            "rounds_measured": 30,
+            "round_median_ops_s": 33412,
+            "round_min_ops_s": 32281,
+            "round_max_ops_s": 34617,
+            "run_avg_ops_s": [
+                33535,
+                33571,
+                33185
+            ],
+            "run_avg_median_ops_s": 33535,
+            "latency_ms_p50": 0.028,
+            "latency_ms_p95": 0.039,
+            "latency_ms_p99": 0.072,
+            "invariants": {
+                "ok": true,
+                "losses": 0,
+                "late": 0,
+                "duplicates": 0,
+                "stalls": 0,
+                "reconnects": 0
+            },
+            "invariants_ok": true,
+            "comparison_vs_frozen": {
+                "round-2-rebench (2026-08-31)": {
+                    "reference_ops_s": 32193,
+                    "delta_pct": 3.8
+                },
+                "round-i-rebench (2026-09-03)": {
+                    "reference_ops_s": 9685,
+                    "delta_pct": 245
+                },
+                "round-d-safe-flush (2026-09-04, pipelined)": {
+                    "reference_ops_s": 9545,
+                    "delta_pct": 250
+                },
+                "round-l-profile (2026-10-04, same round, like-for-like)": null
+            },
+            "verdict": "PASS"
+        },
+        "vladimir-worker": {
+            "mode": "worker",
+            "driver": "rabbitmq-amqplib",
+            "rounds_measured": 30,
+            "round_median_ops_s": 2172,
+            "round_min_ops_s": 1709,
+            "round_max_ops_s": 2302,
+            "run_avg_ops_s": [
+                2090,
+                2148,
+                2099
+            ],
+            "run_avg_median_ops_s": 2099,
+            "latency_ms_p50": 0.441,
+            "latency_ms_p95": 0.658,
+            "latency_ms_p99": 1.057,
+            "invariants": {
+                "ok": true,
+                "losses": 0,
+                "late": 0,
+                "duplicates": 0,
+                "stalls": 0,
+                "reconnects": 0
+            },
+            "invariants_ok": true,
+            "comparison_vs_frozen": {
+                "round-2-rebench (2026-08-31)": {
+                    "reference_ops_s": 2041,
+                    "delta_pct": 6.4
+                },
+                "round-i-rebench (2026-09-03)": {
+                    "reference_ops_s": 2029,
+                    "delta_pct": 7
+                },
+                "round-d-safe-flush (2026-09-04, pipelined)": null,
+                "round-l-profile (2026-10-04, same round, like-for-like)": null
+            },
+            "verdict": "PASS"
+        }
+    },
+    "same_session_ratios": {
+        "blind/vladimir-dispatch": 2.19,
+        "worker/vladimir-worker": 14.14,
+        "frozen_references": {
+            "blind/vladimir-dispatch": {
+                "round-i": 2.3,
+                "round-2": 2.2
+            },
+            "worker/vladimir-worker": {
+                "round-i": 8,
+                "round-2": 10.7
+            }
+        }
+    }
+}

@@ -1,0 +1,57 @@
+{
+    "purpose": "Round L final non-regression re-bench (plan step F.3, docs/superpowers/plans/2026-10-01-post-audit-stabilization.md) — driver-bench standard protocol compared against the frozen round budgets before merging.",
+    "date": "2026-10-07",
+    "git": {
+        "branch": "fix/audit-2026-10-01",
+        "head": "de18b5b6e51ebceadbe26de1e6940d56c6aa304a",
+        "head_subject": "Merge branch 'fix/audit-2026-10-01-phpstan' — Round L: align fallbacks and fakes with the precise stub shapes",
+        "hot_path_changes_under_gate": [
+            "crates/rabbit-rs-core/src/consumer/actor.rs (241aeb7)",
+            "crates/rabbit-rs-core/src/publisher/actor.rs (241aeb7)",
+            "crates/rabbit-rs-php/src/classes/publish_buffer.rs (296fa74)"
+        ]
+    },
+    "extension": {
+        "artifact": "target/release/librabbit_rs_php.dylib",
+        "artifact_sha256": "a4c3c4d52ea3807aaac2fa693dffddf180e2388a1456fa19a166924d77ebb7b9",
+        "version": "0.3.10",
+        "build": "rtk cargo build -p rabbit-rs-php --release --features extension-tests",
+        "build_note": "The extension-tests feature (= rabbit-rs-core/test-support) gates test-only constructors/observers (e.g. with_closed_pump_for_tests, buffered_bytes()); no measured code path differs from the round-l-profile build (built without the flag at the same 0.3.10 version). Sources verified not newer than the artifact before the runs.",
+        "loading": "php -n -d extension=<dylib> per run, never installed system-wide"
+    },
+    "php": {
+        "version": "8.5.6 (cli, NTS)",
+        "os": "macOS 26.6.2 (Apple Silicon)",
+        "xdebug_free_assertion": "Every measured process ran under `php -n -d extension=<dylib>` — no ini files. extension_loaded('xdebug') === false verified in the probe (raw/probe-config-echo.json meta) and the flag guarantees it for all runs; per-run stderr captured and asserted empty (total 0 bytes across the 15 gate runs + probe).",
+        "laravel": "v13.33.0 (driver-bench composer.lock)"
+    },
+    "lab": {
+        "broker": "3-node RabbitMQ 4.2.9 cluster, fresh volumes (./scripts/lab-up.sh default with-plugin profile: delayed-message plugin enabled, Prometheus + Toxiproxy up)",
+        "readiness": "./scripts/lab-ready.sh passed. First attempt failed at the 3-node cluster check (management API answered before nodes 2/3 finished joining — startup race, no retry on that step); passed unchanged on re-run ~1 min later. No lab or config change involved.",
+        "queue_type_verification": "bench.goopil.driver-bench on vhost / verified classic+durable via the management API before and after the runs (matches every frozen archive)."
+    },
+    "configuration": {
+        "protocol": "driver-bench standard protocol: bin/bench.php --count=1000 --rounds=10, 3 interleaved passes per cell, one JSON per run under raw/",
+        "cells": ["goopil-dispatch-blind", "goopil-dispatch-safe", "goopil-worker", "vladimir-dispatch (control)", "vladimir-worker (control)"],
+        "payload": "1024 B Laravel envelope (payload_body_bytes=1024 in every run)",
+        "rabbit_rs": {
+            "queue_type": "classic (see deviations — patch applied)",
+            "delay_mode": "ttl",
+            "prefetch": 64,
+            "safety": "safe default (.env); blind cells override via RABBIT_RS_SAFETY=blind process env",
+            "verified_in": "raw/probe-config-echo.json config echo (rabbit_rs_global.queue_type/delay.mode/safety)"
+        },
+        "vendor": "goopil/rabbit-rs-laravel vendored copy refreshed via `composer update goopil/rabbit-rs-laravel --ignore-platform-req=ext-amqp` before the runs; `diff -rq vendor/goopil/rabbit-rs-laravel/src packages/laravel-queue/src` byte-identical afterwards (the stale-vendor trap documented in round-i/round-l-profile)."
+    },
+    "machine_load": {
+        "note": "The machine was NOT quiet: 1-min load averages 11.99-15.42 across the passes (load-observations.csv), comparable to or higher than the round-l-profile session (5.7-13.1). Per the workload-scoped framing rules, medians over interleaved runs and same-session ratios are the comparison contract, not absolute cross-session deltas.",
+        "evidence": "load-observations.csv"
+    },
+    "deviations": [
+        "benchmarks/driver-bench/config/rabbit-rs.php carried an UNCOMMITTED patch during the runs: flat 'queue_type' => 'classic' added next to the dead nested 'topology' block (ConnectionCompiler reads only flat keys, so the committed config silently yields the package default quorum). Same procedure as results/round-l-profile (patch kept for measurement, reverted after). Reverted before committing this archive.",
+        "benchmarks/driver-bench/composer.lock was modified by the vendor refresh (path-repo source reference 0ac0aad -> 808bee4) and restored to the committed state after the runs to keep the archive commit scoped. The vendored copy used for the runs is byte-identical to packages/laravel-queue/src.",
+        "Extension built with --features extension-tests per the gate instruction (test-only code; see extension.build_note).",
+        "Vladimir cells ran under the same xdebug-free invocation (php -n) as the goopil cells so the session control shares the measured environment (older archives ran it under the default ini)."
+    ],
+    "provenance_discipline": "Follows results/round-l-profile: per-run JSON with meta (php/rabbit_rs/os), xdebug-free assertion, load observations bracketing every pass, stderr captured per run and asserted empty."
+}
