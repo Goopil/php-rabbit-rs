@@ -1800,6 +1800,52 @@ async fn close_resolves_within_deadline_with_hanging_channel() {
     );
 }
 
+/// Close fans the per-subscription channel closes out concurrently under one
+/// total ~2 s bound: a set with several stalled channels must not pay the
+/// per-channel deadline once per subscription (5 subscriptions with 4 stalled
+/// channels close in ~2 s, not ~8 s).
+#[tokio::test(start_paused = true)]
+async fn close_fanout_bounds_hanging_channels_at_the_total_budget() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    // Four of the five subscription channels hang on close; the fifth
+    // completes immediately. Sequential per-channel 2 s deadlines would hold
+    // the close for ~8 s.
+    let _close_gates: Vec<_> = (0..4)
+        .map(|_| transport.push_close_channel_gate())
+        .collect();
+    let subscriptions = vec![
+        subscription(&transport, "s1", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s2", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s3", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s4", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s5", connection_key("b", "/"), 1).await,
+    ];
+    let consumer = ConsumerSet::spawn_with_metrics(subscriptions, Metrics::default())
+        .await
+        .expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    drop(d1);
+
+    let started = tokio::time::Instant::now();
+    let close_result = tokio::time::timeout(Duration::from_secs(10), consumer.close()).await;
+    let elapsed = started.elapsed();
+    assert!(
+        close_result.is_ok(),
+        "close should complete even with hanging channels"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "the hanging channels must hold the close for the full ~2 s total budget: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "close must fan the channel closes out under one ~2 s total bound, \
+         not pay the 2 s deadline per hanging channel: {elapsed:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Early-ACK best-effort mode tests
 // ---------------------------------------------------------------------------

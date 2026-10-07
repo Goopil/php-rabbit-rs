@@ -372,12 +372,16 @@ impl ActorState {
                 break;
             };
             let Some(runtime) = self.subscriptions.get(&subscription) else {
+                // Defensive: the scheduler still routes a subscription whose
+                // runtime is gone. Re-enqueue the delivery and stop this
+                // dispatch pass — `continue` would pick the same scheduler
+                // entry again and spin on the very same delivery.
                 self.buffers
                     .entry(subscription.clone())
                     .or_default()
                     .push_front(delivery);
                 self.scheduler.mark_ready(&subscription);
-                continue;
+                break;
             };
             let generation = runtime.generation;
             let channel_id = runtime.channel_id;
@@ -1538,6 +1542,12 @@ fn flush_acked(state: &mut ActorState) {
 /// delivery contract stays at-least-once.
 const CLOSE_SETTLEMENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// Total budget for the close fan-out across every subscription channel:
+/// the closes run concurrently and the whole fan-out is bounded once, so N
+/// stalled channels cost ~2 s in total instead of the per-channel deadline
+/// paid N times.
+const CLOSE_CHANNEL_FANOUT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Shuts the consumer set down: flushes pending and queued settlements to
 /// the transport within a bounded budget (a consumer that pops, acks, and
 /// exits must not silently drop its acknowledgements), closes every
@@ -1634,10 +1644,19 @@ async fn close_set(state: &mut ActorState, control_rx: &mut mpsc::Receiver<Contr
         }
     }
 
-    for runtime in state.subscriptions.values() {
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(2), runtime.channel.close()).await;
-    }
+    // Close every subscription channel concurrently under one total bound:
+    // each close gets at most the fan-out budget, and N stalled channels
+    // cost that budget once instead of once per subscription.
+    let channels: Vec<_> = state
+        .subscriptions
+        .values()
+        .map(|runtime| Arc::clone(&runtime.channel))
+        .collect();
+    let _ = tokio::time::timeout(
+        CLOSE_CHANNEL_FANOUT_BUDGET,
+        futures_util::future::join_all(channels.iter().map(|channel| channel.close())),
+    )
+    .await;
     if let Some(completed) = state
         .close_completion
         .lock()
