@@ -1,5 +1,7 @@
 # Code Review — rabbit-rs-laravel (goopil/rabbit-rs-laravel)
 
+> **Superseded findings tracker — status as of v0.3.10.** See [docs/plans/ROADMAP.md](../plans/ROADMAP.md) and the 2026-10-01 adversarial audit; open items are tracked in [docs/superpowers/plans/2026-10-01-post-audit-stabilization.md](../superpowers/plans/2026-10-01-post-audit-stabilization.md).
+
 > **Scope**: `packages/laravel-queue` (Laravel 12/13 queue driver on the native `ext-rabbit_rs` extension, at-least-once contract).
 > **Branch reviewed**: `ref/sonarcloud-scope-and-fixes` — 27 src files, 5,179 LOC, Pest suite.
 > **Status re-checked against v0.3.2** (2026-09-12): findings re-verified at the tag; each HIGH/MEDIUM carries its current status.

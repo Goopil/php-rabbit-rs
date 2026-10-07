@@ -18,6 +18,7 @@ jobs:
   rust:
     name: Rust (fmt + clippy + tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -43,6 +44,7 @@ jobs:
   clippy-sarif:
     name: Clippy SARIF
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
@@ -76,6 +78,7 @@ jobs:
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -93,6 +96,7 @@ jobs:
   php:
     name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -135,6 +139,7 @@ jobs:
   php-analysis:
     name: Pint + PHPStan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -167,6 +172,7 @@ jobs:
   phpt:
     name: PHPT (${{ matrix.php }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -214,6 +220,7 @@ jobs:
   octane:
     name: Octane lifecycle
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -248,6 +255,7 @@ jobs:
   integration:
     name: Integration + Smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -355,6 +363,7 @@ jobs:
   docs:
     name: Docs coherence
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -399,6 +408,7 @@ jobs:
   fpm:
     name: FPM certification (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -464,6 +474,7 @@ jobs:
   composer-audit:
     name: Composer audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 

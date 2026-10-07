@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Workspace-internal crate: distributed as a PIE binary, never crates.io.
+publish = false
 # Benchmark targets are declared explicitly (see the core crate): the custom
 # harness cannot be driven by nextest, and support.rs-style fixtures stay
 # out of the bench binary set.

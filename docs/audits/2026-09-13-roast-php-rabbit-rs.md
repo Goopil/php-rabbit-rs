@@ -1,5 +1,7 @@
 # Code Review — php-rabbit-rs (extension: FFI binding + core)
 
+> **Superseded findings tracker — status as of v0.3.10.** See [docs/plans/ROADMAP.md](../plans/ROADMAP.md) and the 2026-10-01 adversarial audit; open items are tracked in [docs/superpowers/plans/2026-10-01-post-audit-stabilization.md](../superpowers/plans/2026-10-01-post-audit-stabilization.md).
+
 > **Scope**: `crates/rabbit-rs-php` (ext-php-rs 0.15.15 binding) + `crates/rabbit-rs-core` (lapin engine).
 > **Branch reviewed**: `ref/sonarcloud-scope-and-fixes` — full adversarial review, ~30,688 LOC.
 > **Status re-checked against v0.3.2** (2026-09-12): findings re-verified line-by-line at the `v0.3.2` tag; each HIGH carries its current status.
