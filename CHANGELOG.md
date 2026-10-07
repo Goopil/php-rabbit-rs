@@ -568,7 +568,7 @@ pipeline end to end after fixing the issues below.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.10...HEAD
 [0.0.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.2...v0.0.3
 [0.0.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.3...v0.0.4
 [0.0.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.4...v0.0.5
@@ -594,3 +594,7 @@ pipeline end to end after fixing the issues below.
 [0.3.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.3...v0.3.4
 [0.3.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.4...v0.3.5
 [0.3.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.5...v0.3.6
+[0.3.7]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...v0.3.7
+[0.3.8]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.7...v0.3.8
+[0.3.9]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.8...v0.3.9
+[0.3.10]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.9...v0.3.10
