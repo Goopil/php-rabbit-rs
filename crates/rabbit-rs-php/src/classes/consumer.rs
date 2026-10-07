@@ -175,6 +175,11 @@ impl Consumer {
     /// settlement is enqueued so a rejected call has no side effects
     /// (audit F-20).
     ///
+    /// Settlement is partial when an entry fails mid-loop (already-settled
+    /// token, closed consumer set, or a settlement channel that stays full
+    /// through backpressure): entries enqueued before the failing one stay
+    /// settled, and the error surfaces after the loop returns.
+    ///
     /// @param list<\Goopil\RabbitRs\Delivery> $deliveries
     pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
         self.ensure_open("Goopil\\RabbitRs\\Consumer::ackBatch")?;

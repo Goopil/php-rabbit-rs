@@ -30,7 +30,6 @@ namespace Goopil\RabbitRs {
          * @return never
          *
          * @param string $message
-         * @return void
          */
         public static function throw(string $message): void {}
     }
@@ -60,6 +59,11 @@ namespace Goopil\RabbitRs {
          * Bounded to 256 deliveries per call. The cap is checked before any
          * settlement is enqueued so a rejected call has no side effects
          * (audit F-20).
+         *
+         * Settlement is partial when an entry fails mid-loop (already-settled
+         * token, closed consumer set, or a settlement channel that stays full
+         * through backpressure): entries enqueued before the failing one stay
+         * settled, and the error surfaces after the loop returns.
          *
          * @param list<\Goopil\RabbitRs\Delivery> $deliveries
          *
@@ -93,8 +97,6 @@ namespace Goopil\RabbitRs {
          *
          * @return list<array{delivery_tag: int, subscription: string,
          *   error_kind: string, message: string}>
-         *
-         * @return array
          */
         public function drainErrors(): array {}
 
@@ -143,7 +145,6 @@ namespace Goopil\RabbitRs {
          *
          * @param int $max
          * @param int $timeoutMs
-         * @return array
          */
         public function nextBatch(int $max, int $timeoutMs): array {}
 
@@ -186,12 +187,12 @@ namespace Goopil\RabbitRs {
          *
          * @return array{message_id: string, correlation_id?: string,
          *   subscription: string, attempts: int, state: string,
-         *   headers: array<string, bool|int|float|string|null>}
+         *   headers: array<string, bool|int|float|string|array|null>}
          *
-         * Nested broker headers such as `x-death` are omitted from the flat PHP
-         * header model.
-         *
-         * @return array
+         * Nested broker structures (e.g. dead-letter `x-death` tables and field
+         * arrays) round-trip as nested PHP arrays. Binary header values become
+         * byte strings, and AMQP decimal values are dropped with a PHP notice
+         * (PHP has no decimal scalar).
          */
         public function metadata(): array {}
 
@@ -360,8 +361,6 @@ namespace Goopil\RabbitRs {
          * clear/stats operation.
          *
          * @return list<array{kind: string, message_id: string, message: string}>
-         *
-         * @return array
          */
         public function drainErrors(): array {}
 
@@ -399,7 +398,6 @@ namespace Goopil\RabbitRs {
          * @param string $broker
          * @param string $queue
          * @param bool $requeue
-         * @return array|null
          */
         public function getMessage(string $broker, string $queue, bool $requeue = true): ?array {}
 
@@ -482,8 +480,16 @@ namespace Goopil\RabbitRs {
          * A batch contains at most 256 messages and 1 MiB of cumulative payload.
          * Header count and size limits are cumulative across the complete call.
          *
+         * Partial success: the batch is submitted as one boundary crossing and
+         * every outcome is awaited, but outcomes are evaluated in input order
+         * and the call short-circuits on the first `Returned` outcome, whose
+         * unroutable error is raised. The messages that follow it were still
+         * submitted and may be confirmed — their message identifiers are not
+         * returned with the exception (duplicates are permitted and identifiable
+         * via `message_id`); the metrics snapshot remains the source of truth
+         * for what reached the broker.
+         *
          * @param array $messages
-         * @return array
          */
         public function publishBatch(array $messages): array {}
 
@@ -520,8 +526,6 @@ namespace Goopil\RabbitRs {
          *
          * Latency percentiles are integer milliseconds (`0` when no samples have
          * been recorded yet).
-         *
-         * @return array
          */
         public function stats(): array {}
 
