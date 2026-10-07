@@ -103,6 +103,23 @@ describe('ProbeStatefile writer', function () {
 
         expect(fn () => $writer->heartbeat(0, 0, 0))->not->toThrow(Throwable::class);
     });
+
+    it('sweeps orphaned tmp statefiles by the same age cutoff', function () {
+        $dir = probeTempDir();
+        (new ProbeStatefile($dir, 123, heartbeatSeconds: 0))->heartbeat(0, 0, 0);
+
+        // An orphaned *.json.tmp left by a worker that crashed between the
+        // tmp write and the rename, aged past the sweep cutoff — and a fresh
+        // one whose writer is still mid-rename, which must survive.
+        file_put_contents($dir.'/9.json.tmp', '{}');
+        touch($dir.'/9.json.tmp', time() - 7200);
+        file_put_contents($dir.'/456.json.tmp', '{}');
+
+        (new ProbeStatefile($dir, 123, heartbeatSeconds: 0))->heartbeat(0, 0, 0);
+
+        expect(is_file($dir.'/9.json.tmp'))->toBeFalse()
+            ->and(is_file($dir.'/456.json.tmp'))->toBeTrue();
+    });
 });
 
 describe('ProbeStatefile reader', function () {

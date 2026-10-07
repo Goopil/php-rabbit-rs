@@ -151,6 +151,27 @@ describe('buildChildCommands', function (): void {
             expect($arg)->not->toContain('--rabbit-rs-worker');
         }
     });
+
+    it('resolves the artisan binary to the injected absolute path regardless of cwd', function (): void {
+        // `rabbit-rs:work` may be launched from any working directory (systemd
+        // units, containers): the child command must reference the app's
+        // artisan script absolutely, never cwd-relative.
+        $cwd = getcwd();
+        chdir(sys_get_temp_dir());
+        try {
+            $supervisor = new WorkerSupervisor(
+                plan: singlePlan(),
+                workers: 1,
+                maxRestarts: 1,
+                baseBackoffSeconds: 0,
+                artisanPath: '/srv/app/artisan',
+            );
+
+            expect($supervisor->buildChildCommands()[0][1])->toBe('/srv/app/artisan');
+        } finally {
+            chdir($cwd);
+        }
+    });
 });
 
 describe('auto-scaling command building', function (): void {

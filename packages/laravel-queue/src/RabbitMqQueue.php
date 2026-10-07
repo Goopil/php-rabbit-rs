@@ -172,16 +172,40 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         return $this->size($queue);
     }
 
+    /**
+     * Delayed jobs are not a state AMQP exposes on the job queue: delayed
+     * publishes park in the TTL bucket queues (or on the plugin), and
+     * nothing on the wire marks a ready message as delayed — there is no
+     * gauge to read. Always 0 by design.
+     *
+     * @param  string|null  $queue
+     */
     public function delayedSize($queue = null)
     {
         return 0;
     }
 
+    /**
+     * Reserved jobs are not a state AMQP exposes: an unacked delivery shows
+     * up in the queue's unacked gauge, never in the ready count this driver
+     * reads via a passive size probe — there is no per-job reserved gauge to
+     * read. Always 0 by design.
+     *
+     * @param  string|null  $queue
+     */
     public function reservedSize($queue = null)
     {
         return 0;
     }
 
+    /**
+     * The oldest pending job's creation time is not a state AMQP exposes:
+     * the broker reports a ready-message count only, never per-message
+     * metadata over a passive probe — there is no timestamp to read. Always
+     * null by design.
+     *
+     * @param  string|null  $queue
+     */
     public function creationTimeOfOldestPendingJob($queue = null)
     {
         return null;
@@ -487,10 +511,22 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      *
      * Publish outcomes surface at the next operation (same pattern as
      * settlement errors after a pop): connection-level failures
-     * (`Transport`, `Closed`) throw {@see ConnectionException}; every other
-     * kind (returned as unroutable, nack, timeout, backpressure) throws
-     * {@see QueueException}, mirroring how a synchronous publish failure
-     * surfaces.
+     * (`Transport`) throw {@see ConnectionException}; every other kind —
+     * returned as unroutable, nack, timeout, backpressure, including
+     * `Closed`, which `client_exception` maps to the base native exception —
+     * throws {@see QueueException}, mirroring how a synchronous publish
+     * failure surfaces.
+     *
+     * Consumer settlement errors resolve differently: the first
+     * connection-level kind (`StaleGeneration`, `Transport`) throws
+     * {@see ConnectionException} carrying the drained message and ends the
+     * sweep — the link or the connection generation is gone, and the broker
+     * redelivers. A `MaxAttempts` or `InvalidDelay` settlement is terminal
+     * poison policy (attempts above the cap, or a release delay the compiled
+     * delay strategy refuses): with no dead-letter exchange it is an
+     * explicit, documented loss, so it is logged at error level with the
+     * core's error context. Every other kind is logged at warning level and
+     * swept past.
      */
     public function drainSettlementErrors(): void
     {

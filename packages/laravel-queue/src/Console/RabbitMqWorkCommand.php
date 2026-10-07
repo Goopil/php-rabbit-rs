@@ -53,8 +53,10 @@ class RabbitMqWorkCommand extends Command
 
     /**
      * Validates the auto-scaling flags: --once and --stop-when-empty are two
-     * mutually exclusive one-shot regimes, and the scaling ceiling must not
-     * fall below the floor.
+     * mutually exclusive one-shot regimes, the scaling ceiling must not
+     * fall below the floor, and the floor must keep at least one live
+     * consumer per connection (a floor of 0 would let auto-scaling release
+     * the whole fleet and leave the connection unserved).
      *
      * @throws InvalidArgumentException
      */
@@ -66,6 +68,13 @@ class RabbitMqWorkCommand extends Command
 
         $minWorkers = (int) $this->option('min-workers');
         $maxWorkers = $this->option('max-workers') !== null ? (int) $this->option('max-workers') : null;
+
+        if ($minWorkers < 1) {
+            throw new InvalidArgumentException(sprintf(
+                'The --min-workers value (%d) must be at least 1: scaling never walks a connection below one live consumer.',
+                $minWorkers,
+            ));
+        }
 
         if ($maxWorkers !== null && $maxWorkers < $minWorkers) {
             throw new InvalidArgumentException(sprintf(
@@ -108,6 +117,7 @@ class RabbitMqWorkCommand extends Command
             once: (bool) $this->option('once'),
             depthCallback: $this->depthCallback($plan),
             probeDirectory: (string) config('rabbit-rs.probes.path', storage_path('framework/rabbit-rs/probes')),
+            artisanPath: $this->laravel->basePath('artisan'),
         );
     }
 

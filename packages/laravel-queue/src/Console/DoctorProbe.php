@@ -25,7 +25,11 @@ class DoctorProbe
     /** Upper bound on the canary-DLQ verification poll (attempts × interval). */
     private const CANARY_DLQ_ATTEMPTS = 30;
 
-    private const CANARY_DLQ_POLL_MS = 300_000;
+    /**
+     * Sleep between canary-DLQ verification attempts, in microseconds
+     * (300 ms wall-clock, fed to usleep()).
+     */
+    private const CANARY_DLQ_POLL_MICROSECONDS = 300_000;
 
     /** Bulk DLQ scan window, in messages, per verification attempt. */
     private const CANARY_DLQ_SCAN_WINDOW = 100;
@@ -390,7 +394,7 @@ class DoctorProbe
             }
 
             if (! $foundInCanaryDlq) {
-                usleep(self::CANARY_DLQ_POLL_MS);
+                usleep(self::CANARY_DLQ_POLL_MICROSECONDS);
             }
         }
 
@@ -455,7 +459,7 @@ class DoctorProbe
             }
 
             if (! $foundInCanaryDlq) {
-                usleep(self::CANARY_DLQ_POLL_MS);
+                usleep(self::CANARY_DLQ_POLL_MICROSECONDS);
             }
         }
 
