@@ -122,6 +122,7 @@ it('rejects an unmarshable delivery toward the dead-letter exchange and returns 
         'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
+        'headers' => [],
     ]);
     $pool->pushDelivery('__auto__.orders-eu', $delivery);
 
@@ -139,6 +140,7 @@ it('acknowledges an unmarshable delivery with a loud log when no dead-letter exc
         'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
+        'headers' => [],
     ]);
     $pool->pushDelivery('__auto__.orders-eu', $delivery);
 
@@ -159,6 +161,7 @@ it('does not settle a marshable delivery on pop', function (): void {
         'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
+        'headers' => [],
     ]);
     $pool->pushDelivery('__auto__.orders-eu', $delivery);
 
@@ -223,6 +226,7 @@ it('recovers inline from a transiently closed consumer set instead of throwing o
         'subscription' => 'auto',
         'attempts' => 1,
         'state' => 'pending',
+        'headers' => [],
     ]);
     $pool->pushDelivery('__auto__.orders-eu', $delivery);
 

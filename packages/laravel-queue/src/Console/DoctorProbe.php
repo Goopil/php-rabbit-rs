@@ -272,7 +272,7 @@ class DoctorProbe
                     if ($delivery === null) {
                         continue;
                     }
-                    if (($delivery->metadata()['message_id'] ?? '') === $messageId) {
+                    if ($delivery->metadata()['message_id'] === $messageId) {
                         $delivery->reject(false); // terminal reject → dead-lettered to the DLQ
                         $rejected = true;
 
@@ -451,7 +451,7 @@ class DoctorProbe
                 if ($message === null) {
                     break;
                 }
-                if (($message['message_id'] ?? '') === $messageId) {
+                if ($message['message_id'] === $messageId) {
                     $foundInCanaryDlq = true;
 
                     break;
@@ -475,7 +475,7 @@ class DoctorProbe
             if ($message === null) {
                 break;
             }
-            if (($message['message_id'] ?? '') === $messageId) {
+            if ($message['message_id'] === $messageId) {
                 $foundInConfiguredDlq = true;
 
                 break;

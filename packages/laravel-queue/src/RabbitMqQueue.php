@@ -535,12 +535,12 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         foreach ($this->consumers as $consumer) {
             $errors = $consumer->drainErrors();
             foreach ($errors as $error) {
-                $kind = $error['error_kind'] ?? '';
+                $kind = $error['error_kind'];
                 if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
                     // Native exception messages are set only at throw time:
                     // the extension's static factory throws a typed
                     // ConnectionException carrying the drained message.
-                    ConnectionException::throw($error['message'] ?? 'settlement error: '.$kind);
+                    ConnectionException::throw($error['message']);
                 }
                 // The parent $container is a non-nullable typed property, but
                 // fake-driven unit tests construct the queue without it:
@@ -576,13 +576,13 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     private function drainPublishErrors(): void
     {
         foreach ($this->pool->drainErrors() as $error) {
-            $kind = $error['kind'] ?? '';
+            $kind = $error['kind'];
             if ($kind === 'Transport') {
-                ConnectionException::throw($error['message'] ?? 'publish error: '.$kind);
+                ConnectionException::throw($error['message']);
             }
 
             throw new QueueException(
-                $error['message'] ?? 'publish error: '.$kind,
+                $error['message'],
             );
         }
     }
@@ -653,7 +653,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             return null;
         }
         $metadata = $delivery->metadata();
-        $queueName = $this->workerProfiles->queue($profile, $metadata['subscription'] ?? null);
+        $queueName = $this->workerProfiles->queue($profile, $metadata['subscription']);
 
         // Only job-construction failures (unmarshable payload, missing
         // message id) are settled here; routing errors above must keep
@@ -769,9 +769,9 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
         $stats = $this->pool->stats();
         $probe->heartbeat(
-            (int) ($stats['deliveries_total'] ?? 0),
-            (int) ($stats['acks_total'] ?? 0),
-            (int) ($stats['rejects_total'] ?? 0),
+            $stats['deliveries_total'],
+            $stats['acks_total'],
+            $stats['rejects_total'],
         );
 
         return $probe;
@@ -879,7 +879,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
         try {
             foreach ($consumer->drainErrors() as $error) {
-                $kind = $error['error_kind'] ?? '';
+                $kind = $error['error_kind'];
                 if (in_array($kind, ['MaxAttempts', 'InvalidDelay'], true)) {
                     $this->container->make('log')->error(
                         'rabbit-rs: poison delivery settled',
