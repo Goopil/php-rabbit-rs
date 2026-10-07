@@ -7,6 +7,7 @@ use Goopil\RabbitRs\Laravel\Connectors\RabbitMqConnector;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Goopil\RabbitRs\Laravel\Support\NativePoolFactory;
+use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Goopil\RabbitRs\Laravel\Tests\TestCase;
 use Goopil\RabbitRs\Pool;
 
@@ -199,7 +200,7 @@ function integrationPoolAndQueue(
     // the pool compiled below.
     $container['config']->set('queue.connections.'.$connectionName, $connectConfig);
 
-    $compiled = ConnectionCompiler::compile($connectionName, $config);
+    $compiled = ConnectionCompiler::compile($connectionName, $config, RabbitRsConnections::packageDefaults());
     $pool = new Pool($compiled['native']);
     $factory = new NativePoolFactory(createPool: fn (): Pool => $pool);
     $queue = (new RabbitMqConnector($factory))->connect($connectConfig);

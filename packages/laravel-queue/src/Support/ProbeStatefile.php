@@ -305,6 +305,10 @@ final class ProbeStatefile
     /**
      * Removes statefiles abandoned by dead workers: a live worker's heartbeat
      * keeps its file mtime fresh, so an hour-old file belongs to a gone pid.
+     * The same cutoff covers orphaned *.json.tmp files left by a worker that
+     * died between the tmp write and the rename ({@see write()},
+     * {@see rewriteStatefile()}): fresh() never reads them, so only this
+     * sweep would ever remove them.
      */
     private function sweepAbandoned(): void
     {
@@ -313,6 +317,14 @@ final class ProbeStatefile
         foreach (glob($this->directory.'/*.json') ?: [] as $file) {
             $mtime = @filemtime($file);
             if ($file !== $own && $mtime !== false && $mtime < $cutoff) {
+                @unlink($file);
+            }
+        }
+        // No own-file guard: the worker's own tmp exists only between the tmp
+        // write and the rename, so an hour-old one is always an orphan.
+        foreach (glob($this->directory.'/*.json.tmp') ?: [] as $file) {
+            $mtime = @filemtime($file);
+            if ($mtime !== false && $mtime < $cutoff) {
                 @unlink($file);
             }
         }

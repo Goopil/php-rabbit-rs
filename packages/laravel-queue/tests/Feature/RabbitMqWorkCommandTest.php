@@ -367,6 +367,19 @@ describe('rabbit-rs:work plan fan-out wiring', function () {
             ->and($command->capturedSupervisor->buildChildCommands())->toHaveCount(2);
     });
 
+    it('resolves the child artisan binary against the app base path', function () {
+        $command = registerTestWorkCommand($this->app);
+
+        $this->artisan('test:work-command')->assertSuccessful();
+
+        $artisan = $command->capturedSupervisor->buildChildCommands()[0][1];
+
+        // Absolute, so a supervisor launched from a foreign working directory
+        // still spawns `queue:work` children against the right artisan.
+        expect($artisan)->toBe($this->app->basePath('artisan'))
+            ->and($artisan)->toStartWith('/');
+    });
+
     it('rejects --once together with --stop-when-empty', function () {
         $this->withoutExceptionHandling();
         registerTestWorkCommand($this->app);
@@ -381,6 +394,14 @@ describe('rabbit-rs:work plan fan-out wiring', function () {
 
         expect(fn () => $this->artisan('test:work-command', ['--min-workers' => '3', '--max-workers' => '2'])->run())
             ->toThrow(InvalidArgumentException::class, '--max-workers');
+    });
+
+    it('rejects a min-workers value below 1', function () {
+        $this->withoutExceptionHandling();
+        registerTestWorkCommand($this->app);
+
+        expect(fn () => $this->artisan('test:work-command', ['--min-workers' => '0'])->run())
+            ->toThrow(InvalidArgumentException::class, '--min-workers');
     });
 });
 
