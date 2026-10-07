@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Workspace-internal crate: distributed through the PHP extension, never crates.io.
+publish = false
 # Benchmark targets are declared explicitly: benches/support.rs is a shared
 # fixture module, not a benchmark binary.
 autobenches = false

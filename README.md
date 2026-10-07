@@ -90,7 +90,7 @@ No extra configuration required: pop the queue directly — it is the connection
 - **Octane lifecycle** — flush, reload, and stop hooks prevent channel leaks
 - **No unsafe Rust** — `#![forbid(unsafe_code)]` across the entire workspace
 
-> On the curated lab workloads, rabbit-rs consumes **4–6× faster** than php-amqplib on the same session, with 0 losses and 0 duplicates in every reliable-mode run. Harness, methodology, and archived results: [benchmarks/README.md](benchmarks/README.md).
+> On the lab consumption workload (transport harness, unit pop+ack — php-amqplib pulls one `basic_get` per message, rabbit-rs runs a pushed subscription with prefetch 64 and manual acks; the publish side is blind on both), rabbit-rs reaches **12 963 ops/s against 2 255 ops/s** for php-amqplib on the same session, interleaved runs (10 000 msgs/round × 10 rounds), with 0 losses and 0 duplicates in every archived run. Harness, methodology, and archived results: [benchmarks/README.md](benchmarks/README.md); the numbers above are from [benchmarks/results/round-2-rebench/README.md](benchmarks/results/round-2-rebench/README.md).
 
 ## Support contract
 
@@ -101,7 +101,7 @@ No extra configuration required: pop the queue directly — it is the connection
 | SAPIs | CLI, PHP-FPM, and Octane (FrankenPHP, RoadRunner, Open Swoole, Swoole) |
 | RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
 | Platforms | Linux x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE; macOS ARM64 — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and Homebrew |
-| Native extension | `ext-rabbit_rs ^0.3.6` as a Composer suggestion: `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
+| Native extension | `ext-rabbit_rs` as a Composer suggestion (version range declared in the driver's `composer.json`): `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
 | Delivery | At-least-once: duplicates are permitted and measured (`duplicates_total`, `messages_redelivered`); silent loss after confirmed-path acceptance is a bug |
 
 - **Rust** 1.98.1 (contributors only — see [Contributing](#contributing))
@@ -182,6 +182,7 @@ Read before betting a pipeline on this.
 | Getting started (Laravel driver) | [packages/laravel-queue/docs/getting-started.md](packages/laravel-queue/docs/getting-started.md) |
 | Reference — configuration, usage, topology, operations, recipes | [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
+| Laravel example app — job, Dockerfile, supervisor config | [examples/laravel/](examples/laravel/) |
 | Development guide | [docs/development.md](docs/development.md) |
 | Security policy — reporting vulnerabilities | [SECURITY.md](SECURITY.md) |
 

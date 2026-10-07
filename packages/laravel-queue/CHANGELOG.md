@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for the Rabbit RS native extension. This is a simplified mirror of the [workspace changelog](https://github.com/Goopil/rabbit-rs/blob/main/CHANGELOG.md); releases are synchronized with the native extension (`goopil/rabbit-rs-native`).
+All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for the Rabbit RS native extension. This is a simplified mirror of the [workspace changelog](https://github.com/Goopil/php-rabbit-rs/blob/main/CHANGELOG.md); releases are synchronized with the native extension (`goopil/rabbit-rs-native`).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
@@ -321,7 +321,7 @@ Packaging/CI release: no Laravel driver changes since 0.1.1.
   | `routes.default.exchange` (env `RABBIT_RS_EXCHANGE`) | connection key `exchange` (default `laravel.jobs`) |
   | `workers.default.subscriptions.default.queue` (env `RABBIT_RS_QUEUE`) | connection key `queue` (required, no default) |
 
-  The env hooks `RABBIT_RS_MAX_ATTEMPTS`, `RABBIT_RS_EXCHANGE`, and `RABBIT_RS_QUEUE` are silently dropped from the package config — those values now live as plain connection keys (`max_attempts`, `exchange`, `queue`); wire them with `env()` directly on the connection in `queue.php` if you need an env hook (see the package's [configuration guide](https://github.com/Goopil/rabbit-rs/blob/main/docs/configuration.md)). The same applies to the former broker env hooks `RABBIT_RS_HOSTS`/`RABBIT_RS_VHOST`/`RABBIT_RS_USERNAME`/`RABBIT_RS_PASSWORD`.
+  The env hooks `RABBIT_RS_MAX_ATTEMPTS`, `RABBIT_RS_EXCHANGE`, and `RABBIT_RS_QUEUE` are silently dropped from the package config — those values now live as plain connection keys (`max_attempts`, `exchange`, `queue`); wire them with `env()` directly on the connection in `queue.php` if you need an env hook (see the package's [configuration reference](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#configuration)). The same applies to the former broker env hooks `RABBIT_RS_HOSTS`/`RABBIT_RS_VHOST`/`RABBIT_RS_USERNAME`/`RABBIT_RS_PASSWORD`.
 - `hosts` strings with empty segments (e.g. `"host1:5672,,host2"`) are now strictly rejected with a typed config error instead of silently skipping the empty segment; at least one host is required.
 - Unknown keys — on the connection or inside `tls`, `delay`, `dead_letter`, `subscriptions` — are rejected with their full config path; strictness is otherwise unchanged (`dead_letter` required with `delivery_limit`, `no_ack` requires `early_ack` + `best_effort`, range checks).
 
@@ -391,8 +391,12 @@ Packaging-only release: Laravel mirror split sequenced after native release publ
 - Pools are closed before clearing the cache in `flush` and `resetAfterFork`.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 
-[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.10...HEAD
 [0.3.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.5...v0.3.6
+[0.3.7]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...v0.3.7
+[0.3.8]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.7...v0.3.8
+[0.3.9]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.8...v0.3.9
+[0.3.10]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.9...v0.3.10
 [0.3.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.2...v0.3.3
