@@ -827,6 +827,10 @@ fn map_event_stream_error(error: lapin::Error) -> TransportError {
 /// fail the pool instead of looping recovery (the "406 storm" class, #79).
 /// Everything else keeps lapin's own recoverability answer.
 ///
+/// Protocol exceptions also carry their AMQP reply code on the mapped error
+/// ([`TransportError::protocol_code`]) so callers can classify by code
+/// instead of matching broker- and client-dependent Display text.
+///
 /// Passive declares (`verify_*`) can legitimately observe 404 from callers
 /// that probe existence — the delay keep-alive tick and the delay sweep treat
 /// the error themselves and never route it through recovery, so the permanent
@@ -835,13 +839,17 @@ fn map_event_stream_error(error: lapin::Error) -> TransportError {
 /// create-if-missing semantics.
 fn map_lapin_error(error: lapin::Error) -> TransportError {
     let message = error.to_string();
+    let mut protocol_code = None;
     let (authentication, permanent_topology) = match error.kind() {
         lapin::ErrorKind::AuthProviderError(_) => (true, false),
-        lapin::ErrorKind::ProtocolError(protocol) => match protocol.get_id() {
-            403 | 530 => (true, false),
-            404 | 406 => (false, true),
-            _ => (false, false),
-        },
+        lapin::ErrorKind::ProtocolError(protocol) => {
+            protocol_code = Some(protocol.get_id());
+            match protocol.get_id() {
+                403 | 530 => (true, false),
+                404 | 406 => (false, true),
+                _ => (false, false),
+            }
+        }
         _ => (false, false),
     };
     let recoverable = error.can_be_recovered();
@@ -850,11 +858,17 @@ fn map_lapin_error(error: lapin::Error) -> TransportError {
     if authentication {
         TransportError::authentication(message)
     } else if permanent_topology {
-        TransportError::protocol(message)
+        match protocol_code {
+            Some(code) => TransportError::protocol_with_code(code, message),
+            None => TransportError::protocol(message),
+        }
     } else if recoverable {
         TransportError::connection(message)
     } else {
-        TransportError::protocol(message)
+        match protocol_code {
+            Some(code) => TransportError::protocol_with_code(code, message),
+            None => TransportError::protocol(message),
+        }
     }
 }
 

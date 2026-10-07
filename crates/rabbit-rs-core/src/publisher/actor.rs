@@ -381,6 +381,12 @@ struct RetainedPublish {
     completion: oneshot::Sender<Result<PublishOutcome, PublishError>>,
     accepted_at: Instant,
     _permit: OwnedSemaphorePermit,
+    /// Wire-attempt ordinal: `0` while the publication has never been
+    /// attempted — it is assigned only when the publication reaches the wire
+    /// write (see `publish_queue`). Deliberately NOT a submission index:
+    /// submission order is not part of the at-least-once contract. The
+    /// post-suspend replay uses this field to order never-attempted
+    /// publications before attempted ones (see `suspend`).
     sequence: u64,
     /// RAII byte-budget reservation, released when the publication is
     /// dropped at a terminal outcome — or while the command is still queued
@@ -493,6 +499,17 @@ impl ActorState {
         }
     }
 
+    /// Suspends the actor for a recovery generation: everything still held —
+    /// queued for attempt, on the wire, or awaiting its confirmation — is
+    /// consolidated into the replay queue for the next establishment.
+    ///
+    /// The replay ordering is intentional: the consolidation stable-sorts by
+    /// wire-attempt `sequence`, so never-attempted publications
+    /// (`sequence == 0`, in submission order among themselves) replay before
+    /// attempted ones (in wire-attempt order). Submission order is otherwise
+    /// NOT part of the at-least-once contract: a publication may replay after
+    /// one submitted later, and what bounds the wait is each publication's
+    /// deadline, not its position.
     fn suspend(&mut self, generation: u64) {
         if generation > 0 {
             self.generation = self.generation.max(generation);
@@ -727,6 +744,17 @@ async fn handle_connection_event(
     }
 }
 
+/// Drains the replay queue consolidated by [`ActorState::suspend`] into the
+/// freshly re-established channel.
+///
+/// The queue's order is the intentional post-suspend ordering (stable sort
+/// by wire-attempt `sequence`): never-attempted publications go out before
+/// attempted ones. Each publication replays with its original `message_id`
+/// and deadline — a deadline that expired while parked is re-armed exactly
+/// once by [`expire_replay`] before the publication fails terminally. The
+/// ordering is a recovery-time courtesy, not a contract: submission order is
+/// not part of the at-least-once guarantee, so a suspended publication may
+/// replay after one submitted later.
 async fn flush_replay(state: &mut ActorState) {
     state.expire_replay();
     let pending = std::mem::take(&mut state.replay);

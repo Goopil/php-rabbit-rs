@@ -62,7 +62,13 @@ impl fmt::Debug for Delivery {
             .field("correlation_id", &self.correlation_id)
             .field("subscription", &self.subscription)
             .field("payload_len", &self.payload.len())
-            .field("headers", &self.headers)
+            // Header keys only: header values are application payload data
+            // and must never surface through Debug output (logs, error
+            // contexts, traces).
+            .field(
+                "header_keys",
+                &self.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            )
             .field("attempts", &self.attempts)
             .field("state", &self.state())
             .finish_non_exhaustive()

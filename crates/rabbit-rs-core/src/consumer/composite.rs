@@ -20,6 +20,14 @@ use super::{
 };
 use crate::metrics::MetricsSnapshot;
 
+/// Total budget for fanning a composite close out to every underlying set.
+///
+/// Each set's actor already bounds its own teardown (settlement drain, then
+/// one fan-out bound across its channels); this cap keeps one stalled source
+/// from stretching the user-facing close beyond ~2 s regardless of the
+/// source count.
+const CLOSE_FANOUT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A consumer handle that merges deliveries from one or more per-broker
 /// [`ConsumerSetHandle`]s.
 ///
@@ -352,9 +360,17 @@ impl ConsumerHandle {
     /// Source closures observed after this call are expected teardown: no
     /// re-fetch signal is pushed and any pending signal is discarded.
     ///
+    /// The per-set closes fan out concurrently under one total budget: each
+    /// set's actor bounds its own teardown, and one stalled source must not
+    /// stretch the user-facing close by the source count.
+    ///
     /// # Errors
     ///
-    /// Returns the first typed error raised by an underlying set close.
+    /// Returns the first typed error raised by an underlying set close. If
+    /// the total budget elapses first, every set has already received its
+    /// close signal and finishes its bounded teardown independently, so the
+    /// close resolves successfully rather than reporting work it cannot
+    /// observe.
     pub async fn close(&self) -> Result<(), ConsumerError> {
         self.inner.closed_by_caller.store(true, Ordering::Release);
         *self
@@ -367,13 +383,20 @@ impl ConsumerHandle {
             .pending_signal
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        let mut first_error = None;
-        for source in &self.inner.sources {
-            if let Err(error) = source.close().await {
-                first_error.get_or_insert(error);
-            }
+        let closes = self.inner.sources.iter().map(ConsumerSetHandle::close);
+        let results =
+            tokio::time::timeout(CLOSE_FANOUT_BUDGET, futures_util::future::join_all(closes)).await;
+        match results {
+            Ok(results) => results
+                .into_iter()
+                .find_map(Result::err)
+                .map_or(Ok(()), Err),
+            // The budget elapsed: the close signals were all delivered (each
+            // set's handle signals before awaiting its actor's completion),
+            // so teardown proceeds in the background even though this call
+            // stopped waiting.
+            Err(_elapsed) => Ok(()),
         }
-        first_error.map_or(Ok(()), Err)
     }
 
     /// Returns the source indices in poll order, starting at the current

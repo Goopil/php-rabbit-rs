@@ -72,6 +72,11 @@ pub enum TransportErrorKind {
 pub struct TransportError {
     kind: TransportErrorKind,
     message: String,
+    /// The AMQP reply code the transport extracted from the broker's
+    /// protocol exception, when one was raised (e.g. `540` for
+    /// `NOT_IMPLEMENTED`). Callers classify on this instead of matching the
+    /// Display text, whose phrasing depends on the client and broker version.
+    protocol_code: Option<u16>,
 }
 
 impl TransportError {
@@ -96,6 +101,18 @@ impl TransportError {
         Self::new(TransportErrorKind::Protocol, message)
     }
 
+    /// A protocol failure carrying the AMQP reply code the transport
+    /// extracted from the broker's exception (e.g. `540` for
+    /// `NOT_IMPLEMENTED`).
+    #[must_use]
+    pub fn protocol_with_code(code: u16, message: impl Into<String>) -> Self {
+        Self {
+            kind: TransportErrorKind::Protocol,
+            message: message.into(),
+            protocol_code: Some(code),
+        }
+    }
+
     #[must_use]
     pub fn closed(message: impl Into<String>) -> Self {
         Self::new(TransportErrorKind::Closed, message)
@@ -104,6 +121,13 @@ impl TransportError {
     #[must_use]
     pub const fn kind(&self) -> TransportErrorKind {
         self.kind
+    }
+
+    /// The AMQP reply code carried by a protocol failure, when the transport
+    /// could extract one from the broker's exception.
+    #[must_use]
+    pub const fn protocol_code(&self) -> Option<u16> {
+        self.protocol_code
     }
 
     #[must_use]
@@ -118,6 +142,7 @@ impl TransportError {
         Self {
             kind,
             message: message.into(),
+            protocol_code: None,
         }
     }
 }
