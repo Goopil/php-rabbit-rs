@@ -162,7 +162,12 @@ namespace Goopil\RabbitRs {
             private ?\Closure $ackCallback = null;
 
             /**
-             * @param  array<string, mixed>  $metadata
+             * Mirrors the native metadata() contract: every delivery carries
+             * message_id, subscription, attempts, state, and headers (the
+             * core synthesizes message_id as "generation:channel:tag" when
+             * the AMQP property is absent).
+             *
+             * @param  array{message_id: string, correlation_id?: string, subscription: string, attempts: int, state: string, headers: array<string, mixed>}  $metadata
              */
             public function __construct(
                 private readonly string $body,
@@ -175,7 +180,7 @@ namespace Goopil\RabbitRs {
             }
 
             /**
-             * @return array<string, mixed>
+             * @return array{message_id: string, correlation_id?: string, subscription: string, attempts: int, state: string, headers: array<string, mixed>}
              */
             public function metadata(): array
             {
@@ -246,7 +251,7 @@ namespace Goopil\RabbitRs {
             /** @var list<Delivery> */
             private array $deliveries = [];
 
-            /** @var list<array<string, mixed>> */
+            /** @var list<array{delivery_tag: int, subscription: string, error_kind: string, message: string}> */
             private array $errors = [];
 
             private ?\Throwable $nextException = null;
@@ -259,7 +264,10 @@ namespace Goopil\RabbitRs {
             }
 
             /**
-             * @param  array<string, mixed>  $error
+             * Mirrors the native drainErrors() record shape: exactly
+             * delivery_tag, subscription, error_kind, and message.
+             *
+             * @param  array{delivery_tag: int, subscription: string, error_kind: string, message: string}  $error
              */
             public function pushError(array $error): void
             {
@@ -267,7 +275,7 @@ namespace Goopil\RabbitRs {
             }
 
             /**
-             * @return list<array<string, mixed>>
+             * @return list<array{delivery_tag: int, subscription: string, error_kind: string, message: string}>
              */
             public function drainErrors(): array
             {
@@ -341,7 +349,12 @@ namespace Goopil\RabbitRs {
             /** @var array<string, int> */
             public array $sizeResults = [];
 
-            /** @var array<string, mixed>|null */
+            /**
+             * Per-key overrides merged over the full contract-shaped stats()
+             * snapshot (mirrors Pool::stats()); null returns the default.
+             *
+             * @var array<string, int|bool|string>|null
+             */
             public ?array $statsResult = null;
 
             public int $statsCalls = 0;
@@ -575,13 +588,26 @@ namespace Goopil\RabbitRs {
             }
 
             /**
-             * @return array<string, mixed>
+             * Mirrors the native Pool::stats() contract shape, key order
+             * included; $statsResult overrides individual counters.
+             *
+             * @return array{closed: bool, pid: int, handle: string,
+             *   publishes_total: int, confirmations_total: int, returns_total: int,
+             *   backpressure_total: int, publication_retries_total: int,
+             *   connection_blocked: int, connection_blocked_total: int,
+             *   reconnects_total: int, deliveries_total: int, duplicates_total: int,
+             *   acks_total: int, rejects_total: int, dropped_publications_total: int,
+             *   dropped_error_records_total: int, publish_buffered: int,
+             *   publish_buffered_bytes: int, confirmation_latency_p50: int,
+             *   confirmation_latency_p95: int, confirmation_latency_p99: int,
+             *   settlement_latency_p50: int, settlement_latency_p95: int,
+             *   settlement_latency_p99: int}
              */
             public function stats(): array
             {
                 $this->statsCalls++;
 
-                return $this->statsResult ?? [
+                $stats = [
                     'closed' => $this->closed,
                     'pid' => 12345,
                     'handle' => 'conn:019f8f1a',
@@ -589,12 +615,18 @@ namespace Goopil\RabbitRs {
                     'confirmations_total' => 98,
                     'returns_total' => 2,
                     'backpressure_total' => 0,
+                    'publication_retries_total' => 0,
+                    'connection_blocked' => 0,
+                    'connection_blocked_total' => 0,
                     'reconnects_total' => 1,
                     'deliveries_total' => 50,
+                    'duplicates_total' => 0,
                     'acks_total' => 48,
                     'rejects_total' => 2,
                     'dropped_publications_total' => 0,
                     'dropped_error_records_total' => 0,
+                    'publish_buffered' => 0,
+                    'publish_buffered_bytes' => 0,
                     'confirmation_latency_p50' => 12,
                     'confirmation_latency_p95' => 45,
                     'confirmation_latency_p99' => 120,
@@ -602,6 +634,8 @@ namespace Goopil\RabbitRs {
                     'settlement_latency_p95' => 30,
                     'settlement_latency_p99' => 85,
                 ];
+
+                return $this->statsResult === null ? $stats : [...$stats, ...$this->statsResult];
             }
 
             public function close(): void

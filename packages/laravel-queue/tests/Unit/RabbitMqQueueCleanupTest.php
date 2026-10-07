@@ -138,9 +138,10 @@ describe('closeConsumers', function (): void {
         $queue->pop('orders-eu');
         $consumer = $pool->consumerFor('__auto__.orders-eu');
         $consumer->pushError([
+            'delivery_tag' => 1,
+            'subscription' => 'auto',
             'error_kind' => 'AlreadySettled',
             'message' => 'delivery already settled',
-            'message_id' => 'msg-settled-1',
         ]);
 
         Log::spy();
@@ -150,7 +151,8 @@ describe('closeConsumers', function (): void {
 
         Log::shouldHaveReceived('warning', fn (string $message, array $context): bool => $message === 'rabbit-rs settlement error'
             && ($context['error_kind'] ?? null) === 'AlreadySettled'
-            && ($context['message_id'] ?? null) === 'msg-settled-1');
+            && ($context['delivery_tag'] ?? null) === 1
+            && ($context['subscription'] ?? null) === 'auto');
     });
 
     it('logs poison settlement records at error level before closing the consumer', function (): void {
@@ -160,18 +162,18 @@ describe('closeConsumers', function (): void {
         $queue->pop('orders-eu');
         $consumer = $pool->consumerFor('__auto__.orders-eu');
         $consumer->pushError([
+            'delivery_tag' => 2,
+            'subscription' => 'auto',
             'error_kind' => 'MaxAttempts',
             'message' => 'delivery attempts 25 exceed the configured maximum of 20 — acknowledged and dropped (no dead-letter exchange configured)',
-            'message_id' => 'msg-poison-close',
-            'attempts' => 25,
         ]);
 
         Log::spy();
         $queue->closeConsumers();
 
         Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled'
-            && ($context['message_id'] ?? null) === 'msg-poison-close'
-            && ($context['attempts'] ?? null) === 25);
+            && ($context['delivery_tag'] ?? null) === 2
+            && ($context['subscription'] ?? null) === 'auto');
     });
 
     it('never throws from closeConsumers when a pending settlement record is connection-level', function (): void {
@@ -181,6 +183,8 @@ describe('closeConsumers', function (): void {
         $queue->pop('orders-eu');
         $consumer = $pool->consumerFor('__auto__.orders-eu');
         $consumer->pushError([
+            'delivery_tag' => 1,
+            'subscription' => 'auto',
             'error_kind' => 'StaleGeneration',
             'message' => 'stale generation detected',
         ]);
