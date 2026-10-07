@@ -233,9 +233,18 @@ impl Pool {
     ///
     /// A batch contains at most 256 messages and 1 MiB of cumulative payload.
     /// Header count and size limits are cumulative across the complete call.
+    ///
+    /// Partial success: the batch is submitted as one boundary crossing and
+    /// every outcome is awaited, but outcomes are evaluated in input order
+    /// and the call short-circuits on the first `Returned` outcome, whose
+    /// unroutable error is raised. The messages that follow it were still
+    /// submitted and may be confirmed — their message identifiers are not
+    /// returned with the exception (duplicates are permitted and identifiable
+    /// via `message_id`); the metrics snapshot remains the source of truth
+    /// for what reached the broker.
     pub fn publish_batch(&self, messages: &ZendHashTable) -> PhpResult<Vec<String>> {
-        self.flush()?;
         self.ensure_open("Goopil\\RabbitRs\\Pool::publishBatch")?;
+        self.flush()?;
         let publishes = conversion::publish_batch(messages, &self.delay_strategy)
             .map_err(rabbit_exception_message)?;
         let requests = publishes
@@ -409,7 +418,7 @@ impl Pool {
         match self
             .handle
             .runtime()
-            .block_on(self.client.purge_queue(broker, queue))
+            .block_on(self.client.clear_route(broker, queue))
         {
             Ok(()) => Ok(()),
             Err(error) => client_exception(&error),
@@ -715,15 +724,19 @@ impl Pool {
     }
 
     /// Surfaces the oldest pending publish error (recorded by the pipelined
-    /// flush) as the exception its kind maps to, mirroring the sync
-    /// `client_exception` mapping. The whole queue is cleared: every record
-    /// has been processed, and only the first failure is raised — the same
-    /// behavior as the sync flush raising its first error.
+    /// flush or a sync flush surplus) as the exception its kind maps to,
+    /// mirroring the sync `client_exception` mapping. Only the first record
+    /// is raised — a backlog never repeats the same failure across
+    /// operations — and every discarded surplus record is counted in
+    /// `dropped_error_records_total` (surfaced by `stats()`) instead of
+    /// vanishing silently.
     fn surface_publish_errors(&self) -> PhpResult<()> {
         let errors = self.publish_buffer.take_errors();
         let Some(first) = errors.first() else {
             return Ok(());
         };
+        self.publish_buffer
+            .count_discarded_error_records(errors.len().saturating_sub(1));
         match first.kind.as_str() {
             "Transport" => connection_exception(&first.message),
             "Backpressure" => backpressure_exception(&first.message),

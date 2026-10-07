@@ -26,13 +26,21 @@ FILES=(
 # - the distribution is NTS-only, 10 archives / 30 assets (2026-08-31);
 # - the supported broker floor is RabbitMQ 4.2.9+;
 # - delay.mode=auto is a documented alias for the plugin driver, with no
-#   TTL fallback.
+#   TTL fallback;
+# - the repository was renamed to Goopil/php-rabbit-rs (the trailing
+#   exclusion keeps the match away from the current php-rabbit-rs slug and
+#   the goopil/rabbit-rs-laravel mirror repo); the old slug only survives
+#   in historical records, which this script deliberately does not scan;
+# - the ext-rabbit_rs pin as of the rename (^0.3.6): the live constraint is
+#   the `suggest` entry in packages/laravel-queue/composer.json (^0.3.10).
 PATTERNS=(
   '16 release archives'
   'RabbitMQ 4\.3'
   'NTS and ZTS'
   'plugin when available'
   'TTL buckets otherwise'
+  'Goopil/rabbit-rs([^a-z-]|$)'
+  '\^0\.3\.6([^0-9]|$)'
 )
 
 # Require-model claims: `ext-rabbit_rs` is a Composer *suggestion* enforced

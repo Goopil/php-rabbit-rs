@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, sync::Arc, time::Duration};
+use std::{error::Error, fmt, future::Future, sync::Arc, time::Duration};
 
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -8,16 +8,20 @@ use crate::{
     recovery::{Clock, ConnectionState, JitterSource, RecoveryPolicy},
     transport::{
         ConsumerChannel, PublisherChannel, Transport, TransportConnection, TransportError,
-        TransportEvent, TransportEventStream,
+        TransportEvent, TransportEventStream, TransportResult,
     },
 };
 
 const COMMAND_CAPACITY: usize = 32;
 
-/// Upper bound for a single connect attempt so a silent network black hole
-/// (socket accepted by a proxy, no handshake data ever arriving) cannot
-/// block the recovery lifecycle. The attempt resolves as a recoverable
-/// connection error and the backoff policy schedules the next try.
+/// Upper bound for a single connect attempt and for each per-command
+/// transport operation (channel opens, connection close) so a silent network
+/// black hole (socket accepted by a proxy, no handshake data ever arriving)
+/// cannot block the recovery lifecycle or park the command loop — every
+/// queued command (`Close`, `ConnectionLost`, error events) would otherwise
+/// stall until heartbeat detection, configurable up to 65535 s. A timed-out
+/// operation resolves as a recoverable connection error and the backoff
+/// policy schedules the next try.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Spawns and owns the serialized lifecycle of one broker connection.
@@ -311,6 +315,10 @@ async fn handle_connecting(
                 Some(Command::OpenConsumer(completed)) => {
                     let _ = completed.send(Err(TransportError::closed("connection is not ready")));
                 }
+                Some(Command::ConnectionLost(new_error)) if !new_error.is_recoverable() => {
+                    publish_permanent_failure(&context.states, &new_error);
+                    return Some(Phase::FailedPermanent);
+                }
                 Some(Command::Start | Command::ConnectionLost(_)) => {}
             }
         }
@@ -415,18 +423,43 @@ async fn handle_ready(
                         return Some(route_loss(&context.states, error));
                     }
                     Some(Command::OpenPublisher(completed)) => {
-                        let result = match connection.as_deref() {
-                            Some(conn) => conn.open_publisher().await,
-                            None => Err(TransportError::closed("connection is not ready")),
+                        let outcome = match connection.as_deref() {
+                            Some(conn) => bounded_channel_operation(conn.open_publisher()).await,
+                            None => Ok(Err(TransportError::closed("connection is not ready"))),
                         };
-                        let _ = completed.send(result);
+                        match outcome {
+                            Ok(result) => {
+                                let _ = completed.send(result);
+                            }
+                            Err(error) => {
+                                // The open outlived its budget: the connection
+                                // can no longer make progress. Reply to the
+                                // caller, then treat it exactly like a reported
+                                // loss so queued commands are serviced again
+                                // instead of parking behind the wedged call.
+                                let _ = completed.send(Err(error.clone()));
+                                context.metrics.clear_connection_blocked();
+                                close_connection(connection).await;
+                                return Some(route_loss(&context.states, error));
+                            }
+                        }
                     }
                     Some(Command::OpenConsumer(completed)) => {
-                        let result = match connection.as_deref() {
-                            Some(conn) => conn.open_consumer().await,
-                            None => Err(TransportError::closed("connection is not ready")),
+                        let outcome = match connection.as_deref() {
+                            Some(conn) => bounded_channel_operation(conn.open_consumer()).await,
+                            None => Ok(Err(TransportError::closed("connection is not ready"))),
                         };
-                        let _ = completed.send(result);
+                        match outcome {
+                            Ok(result) => {
+                                let _ = completed.send(result);
+                            }
+                            Err(error) => {
+                                let _ = completed.send(Err(error.clone()));
+                                context.metrics.clear_connection_blocked();
+                                close_connection(connection).await;
+                                return Some(route_loss(&context.states, error));
+                            }
+                        }
                     }
                     Some(Command::Start) => {}
                     Some(Command::Close(completed)) => {
@@ -562,9 +595,37 @@ async fn shutdown(
 }
 
 async fn close_connection(connection: &mut Option<Box<dyn TransportConnection>>) {
-    if let Some(connection) = connection.take() {
-        let _ = connection.close().await;
+    let Some(connection) = connection.take() else {
+        return;
+    };
+    // A wedged transport must not stall shutdown or a loss transition past
+    // the same budget as any other connection operation: the socket is
+    // dropped either way, so the close result is best-effort.
+    if tokio::time::timeout(CONNECT_TIMEOUT, connection.close())
+        .await
+        .is_err()
+    {
+        crate::log::warn(
+            "connection_actor",
+            "connection close exceeded its budget; abandoning the connection",
+        );
     }
+}
+
+/// Bounds one per-command channel operation by [`CONNECT_TIMEOUT`], the same
+/// deadline as a connect attempt.
+///
+/// A channel open that outlives that budget means the connection can no
+/// longer make progress; the caller receives a recoverable transport error
+/// and the actor treats the connection as lost instead of parking the
+/// command loop — with every queued `Close` and `ConnectionLost` behind it —
+/// until heartbeat detection, configurable up to 65535 s, happens to notice.
+async fn bounded_channel_operation<T>(
+    operation: impl Future<Output = TransportResult<T>>,
+) -> Result<TransportResult<T>, TransportError> {
+    tokio::time::timeout(CONNECT_TIMEOUT, operation)
+        .await
+        .map_err(|_| TransportError::connection("channel operation timed out"))
 }
 
 /// Caps the broker-provided blocked reason in log output. The string is a

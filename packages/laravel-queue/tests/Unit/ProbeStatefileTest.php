@@ -103,6 +103,23 @@ describe('ProbeStatefile writer', function () {
 
         expect(fn () => $writer->heartbeat(0, 0, 0))->not->toThrow(Throwable::class);
     });
+
+    it('sweeps orphaned tmp statefiles by the same age cutoff', function () {
+        $dir = probeTempDir();
+        (new ProbeStatefile($dir, 123, heartbeatSeconds: 0))->heartbeat(0, 0, 0);
+
+        // An orphaned *.json.tmp left by a worker that crashed between the
+        // tmp write and the rename, aged past the sweep cutoff — and a fresh
+        // one whose writer is still mid-rename, which must survive.
+        file_put_contents($dir.'/9.json.tmp', '{}');
+        touch($dir.'/9.json.tmp', time() - 7200);
+        file_put_contents($dir.'/456.json.tmp', '{}');
+
+        (new ProbeStatefile($dir, 123, heartbeatSeconds: 0))->heartbeat(0, 0, 0);
+
+        expect(is_file($dir.'/9.json.tmp'))->toBeFalse()
+            ->and(is_file($dir.'/456.json.tmp'))->toBeTrue();
+    });
 });
 
 describe('ProbeStatefile reader', function () {
@@ -148,5 +165,68 @@ describe('ProbeStatefile reader', function () {
 
     it('returns an empty list when the directory does not exist', function () {
         expect(ProbeStatefile::fresh(probeTempDir().'/missing', 5))->toBe([]);
+    });
+});
+
+describe('drain request markers', function () {
+    it('marks one statefile as drain requested and clears it again', function () {
+        $dir = probeTempDir();
+        (new ProbeStatefile($dir, 123, heartbeatSeconds: 3600))->heartbeat(1, 1, 0);
+
+        ProbeStatefile::requestDrain($dir.'/123.json');
+
+        expect(json_decode((string) file_get_contents($dir.'/123.json'), true)['drain_requested'])->toBeTrue();
+
+        ProbeStatefile::clearDrainRequest($dir.'/123.json');
+
+        expect(json_decode((string) file_get_contents($dir.'/123.json'), true))->not->toHaveKey('drain_requested');
+    });
+
+    it('carries an injected drain request across the worker writes that follow it', function () {
+        // The prestop hook injects the flag right before signaling the
+        // worker: the throttled heartbeats in between and the shutdown
+        // draining write must not wipe it, or the final statefile would not
+        // record that the worker was asked to drain.
+        $dir = probeTempDir();
+        $writer = new ProbeStatefile($dir, 123, heartbeatSeconds: 3600);
+        $writer->heartbeat(1, 1, 0);
+
+        ProbeStatefile::requestDrain($dir.'/123.json');
+
+        $writer->heartbeat(2, 2, 0);
+        $writer->draining();
+
+        $data = json_decode((string) file_get_contents($dir.'/123.json'), true);
+        expect($data['state'])->toBe('draining')
+            ->and($data['consumed'])->toBe(2)
+            ->and($data['drain_requested'])->toBeTrue();
+    });
+
+    it('leaves missing and malformed statefiles untouched by drain rewrites', function () {
+        $dir = probeTempDir();
+        file_put_contents($dir.'/9.json', 'not json');
+
+        ProbeStatefile::requestDrain($dir.'/missing.json');
+        ProbeStatefile::clearDrainRequest($dir.'/9.json');
+
+        expect(file_get_contents($dir.'/9.json'))->toBe('not json');
+    });
+
+    it('signals, reports, and clears the fleet drain marker', function () {
+        $dir = probeTempDir();
+
+        expect(ProbeStatefile::drainSignaled($dir))->toBeFalse();
+
+        ProbeStatefile::signalDrain($dir);
+
+        // The marker file must not be a statefile: scans and sweeps only
+        // ever look at *.json.
+        expect(ProbeStatefile::drainSignaled($dir))->toBeTrue()
+            ->and(is_file($dir.'/drain.requested'))->toBeTrue()
+            ->and(ProbeStatefile::fresh($dir, 5))->toBe([]);
+
+        ProbeStatefile::clearDrainSignal($dir);
+
+        expect(ProbeStatefile::drainSignaled($dir))->toBeFalse();
     });
 });

@@ -313,6 +313,58 @@ evidence archived; #141 closed; #139 fixed or bounded-documented; quality
 gate green; no hot-path changes.
 
 
+## Round L — audit 2026-10-01 stabilization (post-1.0)
+
+**DELIVERED 2026-10-07** — all 24 tasks complete on branch
+`fix/audit-2026-10-01` (MR #344); patch tag v0.3.11 pending on merge. The
+round also fixed the missing Zend link stubs that broke the Linux test
+binaries in CI (`_call_user_function_impl` and siblings).
+
+Motivation: the 2026-10-01 adversarial audit (6 passes: publish, consume,
+pool/recovery, PHP FFI, Laravel, launch-readiness). Full TDD plan:
+`docs/superpowers/plans/2026-10-01-post-audit-stabilization.md`.
+
+Scope as delivered:
+
+- **Phase 1 — stability (audit HIGH)**: consumer settle-through guards
+  (double-settle panics, stale-generation poisoning, `SourceReplaced` vs
+  stashed batch error); permanent-error classification for topology
+  404/406 declares and coordinator causes (ends the 406 reconnect storm);
+  Laravel `bulk()` chunking to native batch bounds.
+- **Phase 2 — robustness (audit MEDIUM, 12 fixes)**: config validation
+  (`max_buffered_bytes = 0`, duplicate broker/worker names); delayed release
+  honors the subscription `max_attempts`; `Consumer::next(timeoutMs)` bound
+  to the shared 24 h ceiling; `EventBridge::drain` early-return; publisher
+  wire-write bounded by the request deadline; publish-buffer handle bounds
+  with exact teardown accounting; connection-actor command-arm timeouts +
+  permanent loss during Connecting; runtime-registry LRU eviction;
+  `connection_blocked` gauge counts blocked brokers; Laravel extension
+  caret enforced at resolution + connector env casting + status isolation;
+  queue-key coherence with subscriptions + actionable `pop(null)`; K8s
+  prestop drain honored by the supervisor; `clear()` covers TTL delay
+  buckets + consumer settlement drain on close.
+- **Phase 3 — performance (profile-first)**: fresh Round L profile archived
+  (`benchmarks/results/round-l-profile/`), decision gate applied, one
+  graduated optimization (per-publish property strings shared instead of
+  re-cloned onto the wire); scheduler evidence archived (divan).
+- **Phase 4 — launch hygiene**: stale repo slug + version references swept
+  with `check-docs.sh` guards; community files (issue/PR templates,
+  CoC), `.idea` untracked, artifact dirs ignored; ROAST reviews relocated
+  to `docs/audits/2026-09-13-roast-*.md` with superseded banners; README
+  hero claim workload-scoped (12 963 vs 2 255 ops/s, round-2-rebench);
+  Packagist metadata completed; `publish = false` on the workspace crates;
+  CI jobs bounded with `timeout-minutes` + Homebrew workflow concurrency.
+- **Phase 5 — contracts & observability**: stub/docblock alignment
+  (nested-array `metadata()`, `publishBatch` partial success +
+  `ensure_open` order, `ackBatch` partial settlement, discarded error
+  records counted, sync-flush surplus `Returned` outcomes recorded);
+  `stubs.sh` duplicate `@return` post-processing; `Delivery` Debug
+  redaction; close fan-out bounded ~2 s total; typed AMQP reply-code
+  plugin detection (`TransportError::protocol_code`); stderr sink without
+  `eprintln!`; callback exceptions never silently dropped; Laravel polish
+  (probe docs, statefile tmp sweep, min-workers floor, absolute artisan
+  path, non-blocking fleet stop, integration defaults = shipped prefetch).
+
 ## Round I — consumer correctness under stress (P0, external review 2026-09-02)
 
 **DELIVERED 2026-09-03** (PRs #132/#133, 6/6 items; soak + chaos prove the

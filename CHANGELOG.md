@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+### Changed
+
+- `rabbit_rs_core::transport::PublishProperties` now shares the caller's per-message `Arc<str>` allocations instead of re-owning fresh `String`s on every publish: `content_type`, `correlation_id` and `message_id` changed from `Option<String>` to `Option<Arc<str>>` (minor breaking change for code constructing these fields directly), and the Lapin wire adapter materializes exactly one owned short-string per property at the wire boundary. The bytes put on the wire are unchanged (pinned by a golden parity test); the round-l profile measured the eliminated duplicate conversions at ≈0.3–0.6 µs of the extension-boundary publish p50.
+
 ## [0.3.10] - 2026-09-26
 
 ### Fixed
@@ -562,7 +568,7 @@ pipeline end to end after fixing the issues below.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.10...HEAD
 [0.0.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.2...v0.0.3
 [0.0.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.3...v0.0.4
 [0.0.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.4...v0.0.5
@@ -588,3 +594,7 @@ pipeline end to end after fixing the issues below.
 [0.3.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.3...v0.3.4
 [0.3.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.4...v0.3.5
 [0.3.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.5...v0.3.6
+[0.3.7]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...v0.3.7
+[0.3.8]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.7...v0.3.8
+[0.3.9]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.8...v0.3.9
+[0.3.10]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.9...v0.3.10

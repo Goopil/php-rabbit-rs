@@ -637,6 +637,7 @@ impl Config {
                 "delivery_limit is only supported on quorum queues: remove it or set queue_type=quorum",
             ));
         }
+        Self::validate_unique_broker_names(&self.brokers)?;
         for broker in &mut self.brokers {
             if broker.hosts.is_empty() {
                 return Err(ConfigError::new(
@@ -664,6 +665,7 @@ impl Config {
             .map(|broker| broker.name.as_str())
             .collect();
 
+        Self::validate_unique_worker_names(&self.workers)?;
         for worker in &mut self.workers {
             Self::validate_worker(worker, &broker_names)?;
 
@@ -712,6 +714,36 @@ impl Config {
             queue_durable: self.queue_durable,
             fingerprint,
         })
+    }
+
+    /// Broker names index the validated registry: `ValidatedConfig::broker()`
+    /// resolves by name, so a duplicate would silently shadow the later entry.
+    fn validate_unique_broker_names(brokers: &[BrokerConfig]) -> Result<(), ConfigError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for broker in brokers {
+            if !seen.insert(broker.name.as_str()) {
+                return Err(ConfigError::new(
+                    format!("brokers.{}", broker.name),
+                    "broker name must be unique",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Worker names index the validated registry: `ValidatedConfig::worker()`
+    /// resolves by name, so a duplicate would silently shadow the later entry.
+    fn validate_unique_worker_names(workers: &[WorkerProfile]) -> Result<(), ConfigError> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        for worker in workers {
+            if !seen.insert(worker.name.as_str()) {
+                return Err(ConfigError::new(
+                    format!("workers.{}", worker.name),
+                    "worker name must be unique",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Publisher settings that no longer have a valid non-default form are
@@ -816,6 +848,13 @@ impl Config {
                 return Err(ConfigError::new(
                     path + ".weight",
                     "weight must be greater than zero",
+                ));
+            }
+            if subscription.max_buffered_bytes == 0 {
+                return Err(ConfigError::new(
+                    path + ".max_buffered_bytes",
+                    "max_buffered_bytes must be greater than zero: zero classifies every \
+                     delivery as oversized, which the consumer then acknowledges and discards",
                 ));
             }
             let prefetch_base = format!(
@@ -1661,6 +1700,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_broker_names() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate
+            .brokers
+            .push(broker(vec![Endpoint::new("rabbit-2.local", 5672)]));
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "brokers.default");
+        assert!(
+            error.to_string().contains("broker name must be unique"),
+            "error must state the uniqueness rule, got: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_worker_names() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers.push(worker(16));
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(error.path(), "workers.main");
+        assert!(
+            error.to_string().contains("worker name must be unique"),
+            "error must state the uniqueness rule, got: {error}"
+        );
+    }
+
+    #[test]
     fn accepts_config_without_scheduler_max_in_flight() {
         let candidate = serde_json::from_value::<Config>(json!({
             "brokers": [{
@@ -1899,6 +1968,23 @@ mod tests {
         let error = candidate.validate().unwrap_err();
 
         assert_eq!(error.path(), "workers.main.subscriptions.default.weight");
+    }
+
+    #[test]
+    fn rejects_zero_max_buffered_bytes_with_exact_path() {
+        let mut candidate = config(vec![Endpoint::new("rabbit.local", 5672)]);
+        candidate.workers[0].subscriptions[0].max_buffered_bytes = 0;
+
+        let error = candidate.validate().unwrap_err();
+
+        assert_eq!(
+            error.path(),
+            "workers.main.subscriptions.default.max_buffered_bytes"
+        );
+        assert!(
+            error.to_string().contains("greater than zero"),
+            "error must state the bound, got: {error}"
+        );
     }
 
     #[test]

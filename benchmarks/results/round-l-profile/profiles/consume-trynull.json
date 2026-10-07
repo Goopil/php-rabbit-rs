@@ -1,0 +1,19 @@
+{
+    "tool": "micro-consume",
+    "stage": "trynull",
+    "fill": 30000,
+    "requested_iters": 200000,
+    "consumed": 0,
+    "stats_us": {
+        "p50": 0.125,
+        "p95": 0.166,
+        "p99": 0.167,
+        "mean": 0.123,
+        "max": 11.5
+    },
+    "meta": {
+        "php": "8.5.6",
+        "rabbit_rs": "0.3.10",
+        "os": "Darwin 25.6.0"
+    }
+}

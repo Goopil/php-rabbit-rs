@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Goopil\RabbitRs\Laravel\Console;
 
 use Goopil\RabbitRs\Laravel\Exceptions\SupervisorException;
+use Goopil\RabbitRs\Laravel\Support\ProbeStatefile;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
@@ -110,6 +111,17 @@ class WorkerSupervisor
      *                                                                    pending reading (ready + unacked, #308). Injected so
      *                                                                    tests can fake it without HTTP; when absent, scaling
      *                                                                    and the one-shot final depth check never fire.
+     * @param  ?string  $probeDirectory  Probes directory whose fleet drain
+     *                                   marker ({@see ProbeStatefile::signalDrain()}) defers recycling
+     *                                   clean-exited slots while a prestop drain is in flight; null
+     *                                   (tests, or a supervisor built without the probes config)
+     *                                   never defers.
+     * @param  ?string  $artisanPath  Absolute path to the artisan entry script
+     *                                (the Laravel base path's artisan). The command resolves it
+     *                                via the application so children spawn correctly no matter
+     *                                what the supervisor's working directory is; null (direct
+     *                                constructions, tests) keeps the cwd-relative `artisan`
+     *                                fallback.
      */
     public function __construct(
         private readonly array $plan,
@@ -125,6 +137,8 @@ class WorkerSupervisor
         private readonly bool $stopWhenEmpty = false,
         private readonly bool $once = false,
         private readonly ?\Closure $depthCallback = null,
+        private readonly ?string $probeDirectory = null,
+        private readonly ?string $artisanPath = null,
     ) {
         $this->initialWorkers = $this->maxWorkers !== null
             ? min($this->workers, $this->maxWorkers)
@@ -172,9 +186,14 @@ class WorkerSupervisor
         // The connection is `queue:work`'s positional argument (Laravel's
         // WorkCommand signature is `queue:work {connection?}`): passing it as
         // an option would be rejected by Symfony Console.
+        //
+        // The artisan script is referenced absolutely when the command injected
+        // the app base path: a supervisor launched from a foreign working
+        // directory (systemd unit, container entrypoint) would otherwise make
+        // every child die instantly with "Could not open input file: artisan".
         $cmd = [
             PHP_BINARY,
-            'artisan',
+            $this->artisanPath ?? 'artisan',
             'queue:work',
             $entry['connection'],
             '--queue='.implode(',', $entry['queues']),
@@ -884,18 +903,34 @@ class WorkerSupervisor
         $victims = array_slice($victims, 0, $count);
 
         foreach ($victims as $index) {
-            $slot = $slots[$index];
-            $pid = $slot['process']->getPid();
-            if ($pid === null || ! posix_kill($pid, SIGTERM)) {
-                // The child exited between the poll and the signal: leave
-                // the slot to the regular clean-exit path.
-                continue;
-            }
-
-            $slot['stopping'] = true;
-            $slot['stoppingAt'] = $now;
-            $slots[$index] = $slot;
+            $this->signalSlotStop($slots, $index, $now);
         }
+    }
+
+    /**
+     * Sends one child the non-blocking stop signal: SIGTERM via posix_kill,
+     * with the slot marked stopping so the poll loop's escalation deadline
+     * ({@see STOP_ESCALATION_SECONDS}, {@see killSlot()}) starts now.
+     *
+     * Returns false when the child cannot be signaled — it exited between
+     * the poll and the signal — leaving the slot to the regular clean-exit
+     * path.
+     *
+     * @param  array<int, ChildSlot>  $slots
+     */
+    private function signalSlotStop(array &$slots, int $index, float $now): bool
+    {
+        $slot = $slots[$index];
+        $pid = $slot['process']->getPid();
+        if ($pid === null || ! posix_kill($pid, SIGTERM)) {
+            return false;
+        }
+
+        $slot['stopping'] = true;
+        $slot['stoppingAt'] = $now;
+        $slots[$index] = $slot;
+
+        return true;
     }
 
     /**
@@ -941,6 +976,16 @@ class WorkerSupervisor
         $slot = $slots[$index];
 
         if ($this->isCleanExit($slot['process'])) {
+            if ($this->drainRequested()) {
+                // A prestop drain is in flight: the hook signaled the fleet
+                // and is waiting for quiescence. Recycling here would
+                // respawn a consumer under a fresh PID (new statefile) while
+                // the hook reports success. Defer the recycle: this dead
+                // slot is re-examined on every tick, and restarts through
+                // this same path once the hook clears its marker.
+                return null;
+            }
+
             // Planned recycling (e.g. --max-jobs reached): reset the
             // crash budget and restart immediately, without backoff.
             $slot['restarts'] = 0;
@@ -975,6 +1020,19 @@ class WorkerSupervisor
     }
 
     /**
+     * Whether a prestop drain is currently in flight: the probe hook sets a
+     * marker file in the probes directory for its whole bounded wait ({@see
+     * ProbeStatefile::drainSignaled()}) and the recycle path defers
+     * clean-exit restarts while it exists. A null probe directory never
+     * defers.
+     */
+    private function drainRequested(): bool
+    {
+        return $this->probeDirectory !== null
+            && ProbeStatefile::drainSignaled($this->probeDirectory);
+    }
+
+    /**
      * Restarts one slot's child in place: same worker index and plan entry,
      * fresh process.
      *
@@ -989,18 +1047,69 @@ class WorkerSupervisor
     }
 
     /**
-     * Stop all child processes gracefully (the supervisor's own shutdown
-     * path).
+     * Stops the whole fleet on the supervisor's own shutdown paths: every
+     * running child receives a NON-BLOCKING SIGTERM and the loop below waits
+     * out ONE shared grace period for the fleet (polling, like the
+     * supervision loop), escalating the stragglers to SIGKILL via
+     * {@see killSlot()}. Deliberately not `Process::stop(10, ...)`, which
+     * would park the shutdown for up to 10 s per child, serially — the same
+     * rationale as the scale-down path ({@see releaseIdleSlots()}): signal
+     * everything first, then escalate only the children that outlive the
+     * grace period.
+     *
+     * Caveat (blocking native calls freeze signal handlers): with a
+     * `block_for > 0` driver config, a child parked inside the extension's
+     * blocking `next()` may not observe SIGTERM promptly; run the supervisor
+     * with `block_for=0` (the default) so children exit promptly. SIGKILL
+     * still guarantees the exit at the deadline.
+     *
+     * Requires ext-posix for `posix_kill`, which ships alongside ext-pcntl
+     * on the platforms the forking path supports (same requirement as
+     * Laravel Horizon); without it the fleet is left as is.
      *
      * @param  array<int, ChildSlot>  $slots
      */
     private function stopAllSlots(array $slots): void
     {
-        foreach ($slots as $slot) {
-            if ($slot['process']->isRunning()) {
-                $slot['process']->stop(10, SIGTERM);
+        if (! function_exists('posix_kill')) {
+            return;
+        }
+
+        $now = microtime(true);
+        foreach (array_keys($slots) as $index) {
+            if ($slots[$index]['process']->isRunning()) {
+                $this->signalSlotStop($slots, $index, $now);
             }
         }
+
+        // One shared grace window for the whole fleet — concurrent, not the
+        // per-child serial 10 s of Process::stop.
+        $deadline = $now + self::STOP_ESCALATION_SECONDS;
+        while (microtime(true) < $deadline && $this->anySlotRunning($slots)) {
+            usleep(100_000);
+        }
+
+        foreach ($slots as $slot) {
+            if ($slot['process']->isRunning()) {
+                $this->killSlot($slot['process']);
+            }
+        }
+    }
+
+    /**
+     * Whether any child slot is still running.
+     *
+     * @param  array<int, ChildSlot>  $slots
+     */
+    private function anySlotRunning(array $slots): bool
+    {
+        foreach ($slots as $slot) {
+            if ($slot['process']->isRunning()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

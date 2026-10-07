@@ -33,7 +33,9 @@ use rabbit_rs_core::client::{ClientError, ClientErrorKind, ClientPool};
 use rabbit_rs_core::pool::ConnectionHandle;
 use rabbit_rs_core::publisher::{PublishOutcome, PublishRequest};
 
-use crate::classes::exception::{backpressure_exception, client_exception, rabbit_exception};
+use crate::classes::exception::{
+    backpressure_exception, client_exception, rabbit_exception, rabbit_exception_message,
+};
 use crate::conversion::NativePublish;
 
 /// Buffer threshold: flush when this many messages are buffered.
@@ -45,7 +47,11 @@ pub(crate) const PUBLISH_BUFFER_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Fixed wall-clock budget for the destructor flush (audit F-18): a stalled
 /// broker must not hold process teardown hostage for up to the per-message
 /// timeout (30 s default, 24 h ceiling). Explicit `flush()` keeps the
-/// caller's full-deadline semantics.
+/// caller's full-deadline semantics. The budget is ONE shared deadline across
+/// the whole destructor flush: outstanding pipelined drains are quiesced and
+/// the still-buffered batch is flushed inside it, not one budget each.
+/// `block_on` scheduling overhead around the deadline is not part of the
+/// bound.
 pub(crate) const TEARDOWN_FLUSH_BUDGET: Duration = Duration::from_millis(500);
 /// Cap on concurrent spawned drains: when the cap is hit the flushing
 /// `publish()` blocks briefly and then reports backpressure, so the drain
@@ -190,6 +196,17 @@ impl PublishBuffer {
             self.dropped_error_records.fetch_add(1, Ordering::Relaxed);
         }
         pending.push_back(error);
+    }
+
+    /// Counts error records that were discarded without ever being surfaced
+    /// to PHP (the surplus records a `surface_publish_errors` call drops
+    /// after raising its first error), so the loss stays observable via
+    /// `stats()`.
+    pub(crate) fn count_discarded_error_records(&self, count: usize) {
+        if count > 0 {
+            self.dropped_error_records
+                .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
     }
 
     /// Drains and returns every pending publish error record.
@@ -357,6 +374,17 @@ impl PublishBuffer {
     ///
     /// Panics if the drain-handle mutex was poisoned by a panicked drain.
     pub fn quiesce(&self) {
+        self.quiesce_within(tokio::time::Instant::now() + TEARDOWN_FLUSH_BUDGET);
+    }
+
+    /// [`Self::quiesce`] bounded by a caller-provided deadline: the
+    /// destructor shares one deadline between this wait and the final batch
+    /// flush instead of composing two sequential budgets (audit F-18).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the drain-handle mutex was poisoned by a panicked drain.
+    fn quiesce_within(&self, deadline: tokio::time::Instant) {
         let timers: Vec<JoinHandle<()>> = std::mem::take(
             &mut *self
                 .timer_handles
@@ -378,7 +406,6 @@ impl PublishBuffer {
         if handles.is_empty() {
             return;
         }
-        let deadline = tokio::time::Instant::now() + TEARDOWN_FLUSH_BUDGET;
         self.handle.runtime().block_on(async move {
             for handle in handles {
                 let _ = tokio::time::timeout_at(deadline, handle).await;
@@ -410,13 +437,28 @@ impl PublishBuffer {
                 // batch-level `Err` below, which re-buffers every request.
                 let mut first_error = None;
                 for outcome in outcomes {
-                    if let Err(error) = publish_message_id(outcome) {
-                        // `Returned` is the only outcome that resolves to an
-                        // error here. An unroutable message is definitive:
-                        // re-buffering it would loop forever, so the error is
-                        // recorded instead and raised once every outcome has
-                        // been processed.
-                        first_error.get_or_insert(error);
+                    let PublishOutcome::Returned { message_id, reply } = outcome else {
+                        continue;
+                    };
+                    // `Returned` is the only non-confirmed outcome here. An
+                    // unroutable message is definitive: re-buffering it would
+                    // loop forever. The first failure is raised when the
+                    // flush returns; every surplus outcome is recorded in the
+                    // pending-error queue so it surfaces at the next
+                    // operation — exactly like the pipelined drains record
+                    // their returned outcomes — instead of being discarded.
+                    let error = PendingPublishError {
+                        message_id: message_id.as_ref().to_owned(),
+                        kind: "Returned".to_owned(),
+                        message: format!(
+                            "message {message_id} was returned as unroutable (AMQP {})",
+                            reply.code
+                        ),
+                    };
+                    if first_error.is_none() {
+                        first_error = Some(rabbit_exception_message(error.message.clone()));
+                    } else {
+                        self.record_error(error);
                     }
                 }
                 first_error.map_or(Ok(()), Err)
@@ -470,6 +512,11 @@ impl PublishBuffer {
             .await
         }) else {
             self.rebuffer_or_drop(publishes);
+            // The re-buffered batch must still be flushed within the flush
+            // interval (issue #218): arm the timer so a saturated pipeline
+            // retries it even if PHP never publishes again. Idempotent: a
+            // timer already covering the batch makes this a no-op.
+            self.ensure_flush_timer();
             return backpressure_exception(
                 "publish drain pipeline is saturated; retry after flush",
             );
@@ -486,10 +533,19 @@ impl PublishBuffer {
             let _permit = permit;
             buffer.run_drain(publishes, requests).await;
         });
-        self.drain_handles
-            .lock()
-            .expect("drain handles mutex poisoned")
-            .push(task);
+        {
+            // Push and prune under one lock: completed drains are pruned on
+            // every push so a publish-only process cannot accumulate one
+            // finished handle per flush cycle. `is_finished` stays false for
+            // aborted-but-running drains, so quiesce's abort-safety
+            // semantics are unchanged.
+            let mut handles = self
+                .drain_handles
+                .lock()
+                .expect("drain handles mutex poisoned");
+            handles.push(task);
+            handles.retain(|handle| !handle.is_finished());
+        }
         Ok(())
     }
 
@@ -528,10 +584,17 @@ impl PublishBuffer {
         let task = self.handle.runtime().spawn(async move {
             buffer.run_flush_timer().await;
         });
-        self.timer_handles
-            .lock()
-            .expect("timer handles mutex poisoned")
-            .push(task);
+        {
+            // Bounded tracking: a finished (fired or aborted) timer handle is
+            // pruned when the next timer is armed, so repeated arm/fire
+            // cycles cannot accumulate handles.
+            let mut handles = self
+                .timer_handles
+                .lock()
+                .expect("timer handles mutex poisoned");
+            handles.push(task);
+            handles.retain(|handle| !handle.is_finished());
+        }
     }
 
     /// Enforces the armed batch deadline (runs on the runtime).
@@ -552,17 +615,25 @@ impl PublishBuffer {
         let task = self.handle.runtime().spawn(async move {
             buffer.run_timer_drain().await;
         });
-        self.drain_handles
-            .lock()
-            .expect("drain handles mutex poisoned")
-            .push(task);
+        {
+            // Same bounded tracking as `flush_pipelined`: prune completed
+            // handles on push so a long-lived process with a short interval
+            // cannot accumulate finished timer-initiated drains.
+            let mut handles = self
+                .drain_handles
+                .lock()
+                .expect("drain handles mutex poisoned");
+            handles.push(task);
+            handles.retain(|handle| !handle.is_finished());
+        }
     }
 
     /// Timer-initiated pipelined drain (runs on the runtime). Mirrors
     /// `flush_pipelined` without its synchronous permit wait: this task
     /// already runs on the runtime, where `block_on` would panic. On
-    /// saturation the batch is re-buffered and the backpressure surfaces at
-    /// the next operation, like every other non-confirmed outcome.
+    /// saturation the batch is re-buffered with a fresh flush timer armed and
+    /// the backpressure surfaces at the next operation, like every other
+    /// non-confirmed outcome.
     async fn run_timer_drain(self: Arc<Self>) {
         let publishes = self.take();
         if publishes.is_empty() {
@@ -580,6 +651,10 @@ impl PublishBuffer {
                 .map(|publish| publish.request.properties.message_id.as_ref().to_owned())
                 .unwrap_or_default();
             self.rebuffer_or_drop(publishes);
+            // Same interval contract as the synchronous saturation path: the
+            // re-buffered batch keeps a flush timer armed (idempotent — the
+            // timer that spawned this drain already cleared `timer_pending`).
+            self.ensure_flush_timer();
             self.record_error(PendingPublishError {
                 message_id,
                 kind: "Backpressure".to_owned(),
@@ -647,30 +722,55 @@ impl PublishBuffer {
     /// Used by the destructor path only: unlike `flush_all`, failures are
     /// never re-buffered — the process is going away, so anything the budget
     /// could not confirm is counted in `dropped_publications` and released.
-    /// Outstanding pipelined drains are quiesced first (within the same
-    /// budget); a drain completing after this point counts its publications
-    /// as dropped instead of re-buffering them (`tearing_down`).
+    /// `tearing_down` is set before quiescing so every drain completing from
+    /// here on counts its publications as dropped instead of re-buffering
+    /// them into a buffer whose only remaining flush is the one below
+    /// (setting the flag after quiesce left a microsecond window where a
+    /// drain re-buffered after the batch was taken, uncounted). Quiesce and
+    /// the batch flush share one [`TEARDOWN_FLUSH_BUDGET`] deadline.
     pub(crate) fn flush_teardown(&self) {
-        self.quiesce();
         self.tearing_down.store(true, Ordering::Release);
+        let deadline = tokio::time::Instant::now() + TEARDOWN_FLUSH_BUDGET;
+        self.quiesce_within(deadline);
         if self.is_empty() {
             return;
         }
         let publishes = self.take();
         let requests = Self::drain_requests(&publishes);
-        let confirmed = self
-            .handle
-            .runtime()
-            .block_on(async {
-                tokio::time::timeout(TEARDOWN_FLUSH_BUDGET, self.client.publish_batch(requests))
-                    .await
-            })
-            .is_ok_and(|result| result.is_ok());
-        if !confirmed {
-            self.dropped_publications.fetch_add(
-                u64::try_from(publishes.len()).unwrap_or(u64::MAX),
-                Ordering::Relaxed,
-            );
+        let attempted = self.handle.runtime().block_on(async {
+            tokio::time::timeout_at(deadline, self.client.publish_batch(requests)).await
+        });
+        match attempted {
+            Ok(Ok(outcomes)) => {
+                // Every outcome is inspected: `Confirmed` deliveries need no
+                // accounting, but a `Returned` outcome is not a confirmation —
+                // it is a definitive unroutable disposition, recorded for PHP
+                // surfacing exactly like the pipelined drains record it
+                // instead of being treated as delivered.
+                for outcome in outcomes {
+                    if let PublishOutcome::Returned { message_id, reply } = outcome {
+                        self.record_error(PendingPublishError {
+                            message_id: message_id.as_ref().to_owned(),
+                            kind: "Returned".to_owned(),
+                            message: format!(
+                                "message {message_id} was returned as unroutable (AMQP {})",
+                                reply.code
+                            ),
+                        });
+                    }
+                }
+            }
+            // Wall-clock timeout or batch-level failure: the outcomes are of
+            // unknown state, so every publication of the batch is counted as
+            // dropped exactly once (audit F-18). Confirmations that land
+            // after the budget stay unobservable by design — the client
+            // metrics still count them.
+            Err(_) | Ok(Err(_)) => {
+                self.dropped_publications.fetch_add(
+                    u64::try_from(publishes.len()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+            }
         }
     }
 
@@ -741,5 +841,368 @@ pub(crate) fn publish_message_id(outcome: PublishOutcome) -> PhpResult<String> {
             "message {message_id} was returned as unroutable (AMQP {})",
             reply.code
         )),
+    }
+}
+
+/// Focused unit tests for the buffer-internal invariants the state-machine
+/// harness cannot reach: the bounded handle-tracking vecs, the saturation-path
+/// timer re-arm, and teardown ordering/accounting. Time runs real — the
+/// buffer's `Handle::block_on` facade requires a multi-thread runtime, where
+/// paused Tokio time is unsupported (see the state-machine harness) — so
+/// waits are bounded real-time polls against generous ceilings, never bare
+/// sleeps.
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use zend_link_stubs as _;
+
+    use rabbit_rs_core::config::{
+        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
+        TlsConfig, TopologyMode,
+    };
+    use rabbit_rs_core::publisher::{Destination, MessageProperties};
+    use rabbit_rs_core::runtime::{PidProvider, RuntimeFactory, RuntimeRegistry};
+    use rabbit_rs_core::transport::mock::{MockTransport, TransportOperation};
+    use rabbit_rs_core::transport::{PublishConfirmation, ReturnedMessage, TransportError};
+
+    use super::*;
+
+    /// Timer-inert interval for tests that must not depend on the background
+    /// timer (oversized, like the state-machine harness's interval).
+    const NO_TIMER: Duration = Duration::from_secs(3600);
+    /// Short interval proving the saturation path re-arms the flush timer.
+    const SHORT_INTERVAL: Duration = Duration::from_millis(10);
+    /// Validity window of a healthy publication: a case finishes in
+    /// milliseconds, so healthy deadlines never expire mid-case.
+    const HEALTHY_DEADLINE: Duration = Duration::from_secs(10);
+    /// How long a released gate stays comfortably inside quiesce's 500 ms
+    /// wait, so a mid-quiesce drain completion is deterministic.
+    const QUIESCE_RELEASE_DELAY: Duration = Duration::from_millis(20);
+    const PAYLOAD: &[u8] = b"job";
+    const BROKER: &str = "main";
+
+    struct FixedPid;
+
+    impl PidProvider for FixedPid {
+        fn current_pid(&self) -> u32 {
+            424_242
+        }
+    }
+
+    /// The production runtime shape: a single-worker multi-thread runtime.
+    struct BackgroundRuntimeFactory;
+
+    impl RuntimeFactory for BackgroundRuntimeFactory {
+        fn create(&self) -> std::io::Result<tokio::runtime::Runtime> {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+        }
+    }
+
+    /// One buffer wired to a real client pool over the scriptable mock
+    /// transport (same shape as the state-machine harness).
+    struct Fixture {
+        transport: Arc<MockTransport>,
+        handle: Arc<ConnectionHandle>,
+        buffer: Arc<PublishBuffer>,
+        /// Owns the runtime the handle borrows; declared last so it drops
+        /// after every other field.
+        _registry: RuntimeRegistry,
+    }
+
+    impl Fixture {
+        fn new(flush_interval: Duration) -> Self {
+            let transport = Arc::new(MockTransport::default());
+            let registry = RuntimeRegistry::with_dependencies(
+                Arc::new(FixedPid),
+                Arc::new(BackgroundRuntimeFactory),
+            );
+            let config: Arc<rabbit_rs_core::config::ValidatedConfig> = Config {
+                brokers: vec![BrokerConfig {
+                    name: BROKER.to_owned(),
+                    hosts: vec![Endpoint::new("rabbit.local", 5672)],
+                    vhost: "/".to_owned(),
+                    credentials: Credentials::new("guest", "secret"),
+                    tls: TlsConfig::disabled(),
+                    heartbeat: Duration::from_secs(30),
+                }],
+                workers: Vec::new(),
+                topology_mode: TopologyMode::External,
+                routes: std::collections::BTreeMap::new(),
+                delay: DelayConfig::default(),
+                dead_letter: None,
+                delivery_limit: None,
+                publisher: PublisherConfigSection::default(),
+                consumer: rabbit_rs_core::config::ConsumerConfigSection::default(),
+                queue_type: rabbit_rs_core::transport::QueueKind::Quorum,
+                queue_durable: true,
+            }
+            .validate()
+            .expect("valid config")
+            .into();
+            let handle = registry
+                .acquire(rabbit_rs_core::pool::ConnectionKey::from_config(&config))
+                .expect("connection handle");
+            let client = Arc::new(ClientPool::new(
+                Arc::clone(&config),
+                Arc::clone(&transport) as _,
+            ));
+            let buffer = Arc::new(PublishBuffer::new(
+                client,
+                Arc::clone(&handle),
+                flush_interval,
+            ));
+            Fixture {
+                transport,
+                handle,
+                buffer,
+                _registry: registry,
+            }
+        }
+
+        /// One healthy publication carrying the given message id.
+        fn publish(id: u32) -> NativePublish {
+            NativePublish {
+                broker: BROKER.into(),
+                request: PublishRequest::new(
+                    Destination::new("jobs", "orders"),
+                    Bytes::from_static(PAYLOAD),
+                    MessageProperties::new(format!("{id}")),
+                    tokio::time::Instant::now() + HEALTHY_DEADLINE,
+                ),
+            }
+        }
+
+        /// Message ids of every publish observed on the wire, in send order.
+        fn wire_ids(&self) -> Vec<Arc<str>> {
+            self.transport
+                .operations()
+                .into_iter()
+                .filter_map(|operation| match operation {
+                    TransportOperation::Publish(request) => request
+                        .properties
+                        .message_id
+                        .as_ref()
+                        .map(ToOwned::to_owned),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn wire_count(&self, id: &str) -> usize {
+            self.wire_ids()
+                .iter()
+                .filter(|sent| sent.as_ref() == id)
+                .count()
+        }
+
+        fn drain_handle_count(&self) -> usize {
+            self.buffer
+                .drain_handles
+                .lock()
+                .expect("drain handles mutex poisoned")
+                .len()
+        }
+    }
+
+    /// Bounded real-time wait for `condition`. The buffer's `block_on` facade
+    /// requires a multi-thread runtime, where paused Tokio time is unsupported
+    /// (see the state-machine harness), so time runs real: the poll loop
+    /// sleeps on the runtime in 2 ms ticks until the condition holds or the
+    /// timeout elapses. Returns whether the condition was observed — callers
+    /// assert.
+    fn wait_for(fixture: &Fixture, timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
+        fixture.handle.runtime().block_on(async {
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                if condition() {
+                    return true;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+    }
+
+    /// Sustained pipelined flushing without any `quiesce()` must not
+    /// accumulate one finished `JoinHandle` per flush cycle: the tracking vec
+    /// is pruned on every push and stays bounded by the concurrent-drain cap.
+    #[test]
+    fn pipelined_flush_cycles_prune_completed_drain_handles() {
+        let fixture = Fixture::new(NO_TIMER);
+        for id in 0..10_000u32 {
+            fixture
+                .transport
+                .push_confirmation(Ok(PublishConfirmation::Ack(None)));
+            let publish = Fixture::publish(id);
+            fixture.buffer.enqueue(publish);
+            fixture.buffer.flush_triggered().expect("pipelined flush");
+        }
+        // No quiesce, no explicit flush: only the per-push pruning bounds the
+        // vec. Today every completed handle is retained until a quiesce.
+        let handles = fixture.drain_handle_count();
+        assert!(
+            handles <= 64,
+            "completed drain handles must be pruned on push; {handles} accumulated"
+        );
+        assert_eq!(fixture.buffer.dropped_publications(), 0);
+    }
+
+    /// A permit-timeout re-buffer must leave the batch with an armed flush
+    /// timer: the re-buffered publication is retried within the flush
+    /// interval even though PHP never publishes again (issue #218 contract).
+    #[test]
+    fn saturation_rebuffer_rearms_the_flush_timer() {
+        let fixture = Fixture::new(SHORT_INTERVAL);
+        // Saturate the drain pipeline: every permit held by a drain parked on
+        // a controlled confirmation that stays unresolved (healthy deadline,
+        // so no expiry).
+        let drain_cap = u32::try_from(MAX_CONCURRENT_DRAINS).expect("small const");
+        let mut controllers = Vec::new();
+        for id in 0..drain_cap {
+            controllers.push(fixture.transport.push_controlled_confirmation());
+            let publish = Fixture::publish(id);
+            fixture.buffer.enqueue(publish);
+            fixture.buffer.flush_triggered().expect("drain spawned");
+        }
+        // One publication more: the flushing publish times out waiting for a
+        // drain slot, re-buffers the batch and raises backpressure.
+        fixture.buffer.enqueue(Fixture::publish(8));
+        let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fixture.buffer.flush_triggered()
+        }));
+        assert!(raised.is_err(), "a saturated flush must raise backpressure");
+        assert_eq!(fixture.buffer.buffered_len(), 1);
+        // The re-buffered batch must not wait for the next publish: a timer
+        // covers it (the oversized interval in the other tests keeps the
+        // timer inert, so the saturation path is the only arming here).
+        assert!(
+            fixture.buffer.timer_pending.load(Ordering::Acquire),
+            "a re-buffered batch must have a flush timer armed"
+        );
+        // Free the pipeline and script the retry's confirmation: the armed
+        // timer must flush the re-buffered publication within the interval.
+        for controller in &controllers {
+            controller.resolve(Ok(PublishConfirmation::Ack(None)));
+        }
+        fixture
+            .transport
+            .push_confirmation(Ok(PublishConfirmation::Ack(None)));
+        let flushed = wait_for(&fixture, Duration::from_secs(5), || {
+            fixture.wire_ids().len() == MAX_CONCURRENT_DRAINS + 1
+        });
+        assert!(
+            flushed,
+            "the re-buffered batch must flush within the flush interval (wire: {:?})",
+            fixture.wire_ids()
+        );
+        assert_eq!(fixture.buffer.buffered_len(), 0);
+        assert_eq!(fixture.buffer.dropped_publications(), 0);
+        assert!(fixture.buffer.take_errors().is_empty());
+    }
+
+    /// The teardown flush's `Ok` batch must not treat `Returned` outcomes as
+    /// confirmed deliveries: they are definitive unroutable dispositions,
+    /// recorded for PHP surfacing exactly like pipelined drains record them.
+    #[test]
+    fn teardown_reports_returned_publications_distinctly() {
+        let fixture = Fixture::new(NO_TIMER);
+        fixture.buffer.enqueue(Fixture::publish(0));
+        fixture.buffer.enqueue(Fixture::publish(1));
+        fixture
+            .transport
+            .push_confirmation(Ok(PublishConfirmation::Ack(Some(ReturnedMessage {
+                reply_code: 312,
+                reply_text: "NO_ROUTE".to_owned(),
+                exchange: "jobs".to_owned(),
+                routing_key: "orders".to_owned(),
+                payload: Bytes::from_static(PAYLOAD),
+            }))));
+        fixture
+            .transport
+            .push_confirmation(Ok(PublishConfirmation::Ack(None)));
+        fixture.buffer.flush_teardown();
+        assert_eq!(fixture.buffer.dropped_publications(), 0);
+        assert_eq!(fixture.buffer.buffered_len(), 0);
+        let errors = fixture.buffer.take_errors();
+        assert_eq!(
+            errors.len(),
+            1,
+            "the returned publication must be recorded, not treated as confirmed"
+        );
+        assert_eq!(errors[0].message_id, "0");
+        assert_eq!(errors[0].kind, "Returned");
+    }
+
+    /// `tearing_down` is set before quiesce: a drain failing during the
+    /// quiesce window must count its batch as dropped, not re-buffer it into
+    /// the teardown flush. The pre-fix ordering re-sent the already-failed
+    /// batch on the wire after its terminal resolution.
+    #[test]
+    fn teardown_sets_tearing_down_before_quiescing_drains() {
+        let fixture = Fixture::new(NO_TIMER);
+        let gate = fixture.transport.push_publish_gate();
+        fixture.buffer.enqueue(Fixture::publish(0));
+        fixture.buffer.flush_triggered().expect("drain spawned");
+        // The drain is parked on the gated wire write; the second publication
+        // stays buffered for the teardown batch flush.
+        fixture.buffer.enqueue(Fixture::publish(1));
+        // Release the gated send while teardown's quiesce is still awaiting
+        // the drain: it then fails (scripted protocol error) mid-quiesce.
+        let transport = Arc::clone(&fixture.transport);
+        fixture.handle.runtime().spawn(async move {
+            tokio::time::sleep(QUIESCE_RELEASE_DELAY).await;
+            let _released = gate.release();
+            transport.push_confirmation(Err(TransportError::protocol(
+                "simulated non-recoverable publish failure",
+            )));
+        });
+        fixture.buffer.flush_teardown();
+        // Message 0 reached the wire exactly once (the gated send); the
+        // failed drain's batch was counted as dropped, never re-buffered and
+        // re-sent by the teardown flush. Message 1 went out once too.
+        assert_eq!(
+            fixture.wire_count("0"),
+            1,
+            "a drain failing under teardown must not re-buffer its batch (wire: {:?})",
+            fixture.wire_ids()
+        );
+        assert_eq!(fixture.buffer.dropped_publications(), 2);
+        assert_eq!(fixture.buffer.buffered_len(), 0);
+    }
+
+    /// The destructor composes quiesce and the final batch flush inside ONE
+    /// teardown budget: a drain parked past the budget must not buy the batch
+    /// flush a second full budget (audit F-18's single fixed shutdown
+    /// ceiling).
+    #[test]
+    fn teardown_bounds_quiesce_and_batch_flush_in_one_budget() {
+        let fixture = Fixture::new(NO_TIMER);
+        // Park a drain forever on a gated wire write: quiesce spends its
+        // whole wait on it.
+        let _gate = fixture.transport.push_publish_gate();
+        fixture.buffer.enqueue(Fixture::publish(0));
+        fixture.buffer.flush_triggered().expect("drain spawned");
+        // One buffered publication for the teardown batch flush, parked on a
+        // pending confirmation so the batch flush consumes its whole budget.
+        fixture.buffer.enqueue(Fixture::publish(1));
+        fixture.transport.push_pending_confirmation();
+        let started = std::time::Instant::now();
+        fixture.buffer.flush_teardown();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(750),
+            "teardown must bound quiesce + batch flush in one shared 500 ms budget; took {elapsed:?}"
+        );
+        // The buffered publication could not be confirmed within the
+        // remaining budget: counted as dropped exactly once.
+        assert_eq!(fixture.buffer.dropped_publications(), 1);
     }
 }

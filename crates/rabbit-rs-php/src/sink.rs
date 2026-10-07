@@ -10,7 +10,7 @@
 //! `error` enable records at that severity and above. Unset or unrecognized
 //! values keep the extension silent (the core's default sink is silent too).
 
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 use rabbit_rs_core::log::{self, Level, Record, Sink};
 
@@ -34,12 +34,17 @@ pub(crate) struct StderrSink {
 impl Sink for StderrSink {
     fn log(&self, record: Record<'_>) {
         if emits(self.min_level, record.level) {
-            eprintln!(
-                "[rabbit-rs.{}] {}: {}",
+            // Write the line directly instead of going through `eprintln!`:
+            // a failed stderr write (e.g. a closed pipe under FPM) must be
+            // ignored — diagnostics are best-effort and must never panic the
+            // runtime thread emitting them.
+            let line = format!(
+                "[rabbit-rs.{}] {}: {}\n",
                 record.target,
                 record.level.as_str(),
                 record.message
             );
+            let _ = std::io::stderr().write_all(line.as_bytes());
         }
     }
 }

@@ -17,6 +17,13 @@
 //! A re-establishment storm (a new channel + `QoS` + consume per round, or a
 //! fresh connection per purge) is the mechanism that would degrade pops;
 //! these tests fail if it ever appears.
+//!
+//! The post-audit stabilization plan (Task 16) adds the `clear_route`
+//! contract on the same pool: a purge of the main queue alone left deferred
+//! jobs sitting in the TTL delay bucket queues the compiled plan synthesizes
+//! for the route's destinations, where they still executed after the clear.
+//! `clear_route` sweeps those buckets too — a bucket the GC already took
+//! must not fail the clear, while a real purge failure still must.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -26,14 +33,16 @@ use std::{
 
 use bytes::Bytes;
 use rabbit_rs_core::{
-    client::ClientPool,
+    client::{ClientErrorKind, ClientPool},
     config::{
-        BrokerConfig, Config, ConsumerConfigSection, Credentials, Endpoint, PrefetchConfig,
-        PublisherConfigSection, SchedulerConfig, SubscriptionConfig, TlsConfig, TopologyMode,
-        WorkerProfile,
+        BrokerConfig, Config, ConsumerConfigSection, Credentials, DelayConfig, DelayMode, Endpoint,
+        PrefetchConfig, PublisherConfigSection, RouteConfig, SchedulerConfig, SubscriptionConfig,
+        TlsConfig, TopologyMode, WorkerProfile,
     },
+    publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
+    topology::delay::DelayStrategy,
     transport::{
-        Delivery as TransportDelivery, QueueKind,
+        Delivery as TransportDelivery, PublishConfirmation, QueueKind, TransportError,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -325,4 +334,225 @@ async fn deliveries_after_a_purge_carry_the_pre_existing_generation() {
         BTreeSet::from([1, 2, 3, 4, 5, 6]),
         "acks after a purge must settle without stale-generation errors"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Task 16 (post-audit stabilization) — `clear()` covers TTL delay buckets.
+//
+// `queue:clear` purging only the main queue left deferred jobs sitting in
+// the `rabbit-rs.delay.*` bucket queues, where they still dead-lettered
+// back into the cleared queue and executed after the clear. `clear_route`
+// sweeps the compiled plan's bucket queues for the route's destinations,
+// tolerates buckets the GC already took (missing-queue verdict), and still
+// fails on real purge failures.
+// ---------------------------------------------------------------------------
+
+/// A consumer-shaped config publishing through a TTL delay plan: the route
+/// `default` publishes `jobs` through the `jobs` exchange, and delayed
+/// dispatches land in the destination's synthesized bucket queues.
+fn ttl_delay_config() -> rabbit_rs_core::config::ValidatedConfig {
+    Config {
+        brokers: vec![BrokerConfig {
+            name: "default".to_owned(),
+            hosts: vec![Endpoint::new("rabbit.local", 5672)],
+            vhost: "/".to_owned(),
+            credentials: Credentials::new("guest", "secret"),
+            tls: TlsConfig::disabled(),
+            heartbeat: Duration::from_secs(30),
+        }],
+        workers: vec![WorkerProfile {
+            name: "main".to_owned(),
+            subscriptions: vec![SubscriptionConfig {
+                name: "jobs".to_owned(),
+                broker: "default".to_owned(),
+                queue: "jobs".to_owned(),
+                weight: 1,
+                prefetch: PrefetchConfig::Fixed(8),
+                max_buffered_bytes: 64 * 1024 * 1024,
+                early_ack: false,
+                no_ack: false,
+            }],
+            scheduler: SchedulerConfig::weighted_fair(),
+        }],
+        topology_mode: TopologyMode::Declare,
+        routes: BTreeMap::from([(
+            "default".to_owned(),
+            RouteConfig {
+                broker: "default".to_owned(),
+                exchange: "jobs".to_owned(),
+                routing_key: "{queue}".to_owned(),
+            },
+        )]),
+        delay: DelayConfig {
+            mode: DelayMode::Ttl,
+            ..DelayConfig::default()
+        },
+        dead_letter: None,
+        delivery_limit: None,
+        publisher: PublisherConfigSection::default(),
+        consumer: ConsumerConfigSection::default(),
+        queue_type: QueueKind::Classic,
+        queue_durable: true,
+    }
+    .validate()
+    .expect("valid ttl delay config")
+}
+
+/// The bucket queue names the compiled plan produces for the route
+/// destination the delayed publish used (`(jobs, jobs)` — the route exchange
+/// with the `{queue}` template resolved).
+fn planned_bucket_names(config: &rabbit_rs_core::config::ValidatedConfig) -> Vec<String> {
+    let DelayStrategy::TtlBuckets(plan) = DelayStrategy::compile(config) else {
+        panic!("the ttl delay config must compile to the bucket strategy");
+    };
+
+    plan.expected_queue_names(&Destination::new("jobs", "jobs"))
+}
+
+/// The queue names every recorded purge targeted, in wire order.
+fn purged_queues(transport: &MockTransport) -> Vec<String> {
+    transport
+        .operations()
+        .iter()
+        .filter_map(|operation| match operation {
+            TransportOperation::PurgeQueue { queue } => Some(queue.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn clear_route_purges_the_delay_bucket_holding_the_deferred_job() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(ttl_delay_config()), transport.clone());
+
+    // A delayed dispatch through the route destination: the delay router
+    // publishes it into the destination's synthesized bucket queue (default
+    // exchange, bucket queue name as the routing key), declared lazily.
+    let mut properties = MessageProperties::new("deferred-1");
+    properties.delay_ms = Some(1_000);
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let outcomes = pool
+        .publish_batch(vec![(
+            "default".into(),
+            PublishRequest::new(
+                Destination::new("jobs", "jobs"),
+                Bytes::from_static(b"deferred"),
+                properties,
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            ),
+        )])
+        .await
+        .expect("delayed publish accepted");
+    assert!(
+        matches!(&outcomes[..], [PublishOutcome::Confirmed { .. }]),
+        "the deferred publication must be confirmed: {outcomes:?}"
+    );
+
+    // The bucket the deferred job actually landed in: the wire publish
+    // carries the synthesized queue name as its routing key.
+    let bucket = transport
+        .operations()
+        .iter()
+        .find_map(|operation| match operation {
+            TransportOperation::Publish(request)
+                if request.routing_key.starts_with("rabbit-rs.delay.") =>
+            {
+                Some(request.routing_key.to_string())
+            }
+            _ => None,
+        })
+        .expect("the delayed publish must have been routed into a bucket queue");
+
+    pool.clear_route("default", "jobs")
+        .await
+        .expect("clear route");
+
+    let purged = purged_queues(&transport);
+    assert!(
+        purged.contains(&"jobs".to_owned()),
+        "the main queue must still be purged, got {purged:?}"
+    );
+    assert!(
+        purged.contains(&bucket),
+        "clear must purge the delay bucket '{bucket}' holding the deferred job, got {purged:?}"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
+#[tokio::test(start_paused = true)]
+async fn clear_route_tolerates_buckets_already_swept_by_the_gc() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(ttl_delay_config()), transport.clone());
+
+    // Warm the coordinator first: its startup topology reconcile consumes
+    // scripted operation results, and the script below targets the clear's
+    // own purge operations.
+    pool.purge_queue("default", "jobs").await.expect("warm-up");
+
+    // The main queue purges fine; the first bucket is gone already (swept,
+    // GC'd by its x-expires, or never declared): the broker answers the
+    // purge with the missing-queue verdict.
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Err(TransportError::protocol(
+        "NOT_FOUND - no queue 'rabbit-rs.delay.x' in vhost '/'",
+    )));
+
+    pool.clear_route("default", "jobs")
+        .await
+        .expect("a missing bucket must not fail the clear");
+
+    // The sweep continued past the missing bucket: every planned bucket was
+    // purged, in the plan's deterministic (ascending) bucket order.
+    let expected_buckets = planned_bucket_names(&ttl_delay_config());
+    let purged_buckets: Vec<String> = purged_queues(&transport)
+        .into_iter()
+        .filter(|queue| queue.starts_with("rabbit-rs.delay."))
+        .collect();
+    assert_eq!(
+        purged_buckets, expected_buckets,
+        "every planned bucket must be purged despite the missing first bucket"
+    );
+
+    pool.close().await.expect("close pool");
+}
+
+#[tokio::test(start_paused = true)]
+async fn clear_route_propagates_real_bucket_purge_failures() {
+    let transport = Arc::new(MockTransport::default());
+    let pool = ClientPool::new(Arc::new(ttl_delay_config()), transport.clone());
+
+    // Warm the coordinator first (see the swept-bucket test above): the
+    // script below must reach the clear's own purge operations.
+    pool.purge_queue("default", "jobs").await.expect("warm-up");
+
+    // The main queue purges fine; the first bucket purge fails for a real
+    // reason (connection loss): the clear must fail, never silently swallow
+    // the record.
+    transport.push_operation_result(Ok(()));
+    transport.push_operation_result(Err(TransportError::connection("socket reset mid-purge")));
+
+    let error = pool
+        .clear_route("default", "jobs")
+        .await
+        .expect_err("a real bucket purge failure must fail the clear");
+    assert_eq!(
+        error.kind(),
+        ClientErrorKind::Transport,
+        "the transport failure must surface as a typed client error: {error}"
+    );
+    // The failure happened at the first bucket purge: it was attempted (the
+    // main purge succeeded before it) and the sweep stopped there.
+    let purged = purged_queues(&transport);
+    let attempted_buckets = purged
+        .iter()
+        .filter(|queue| queue.starts_with("rabbit-rs.delay."))
+        .count();
+    assert_eq!(
+        attempted_buckets, 1,
+        "the sweep must stop at the failed bucket purge, got {purged:?}"
+    );
+
+    pool.close().await.expect("close pool");
 }

@@ -1800,6 +1800,52 @@ async fn close_resolves_within_deadline_with_hanging_channel() {
     );
 }
 
+/// Close fans the per-subscription channel closes out concurrently under one
+/// total ~2 s bound: a set with several stalled channels must not pay the
+/// per-channel deadline once per subscription (5 subscriptions with 4 stalled
+/// channels close in ~2 s, not ~8 s).
+#[tokio::test(start_paused = true)]
+async fn close_fanout_bounds_hanging_channels_at_the_total_budget() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    // Four of the five subscription channels hang on close; the fifth
+    // completes immediately. Sequential per-channel 2 s deadlines would hold
+    // the close for ~8 s.
+    let _close_gates: Vec<_> = (0..4)
+        .map(|_| transport.push_close_channel_gate())
+        .collect();
+    let subscriptions = vec![
+        subscription(&transport, "s1", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s2", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s3", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s4", connection_key("b", "/"), 1).await,
+        subscription(&transport, "s5", connection_key("b", "/"), 1).await,
+    ];
+    let consumer = ConsumerSet::spawn_with_metrics(subscriptions, Metrics::default())
+        .await
+        .expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    drop(d1);
+
+    let started = tokio::time::Instant::now();
+    let close_result = tokio::time::timeout(Duration::from_secs(10), consumer.close()).await;
+    let elapsed = started.elapsed();
+    assert!(
+        close_result.is_ok(),
+        "close should complete even with hanging channels"
+    );
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "the hanging channels must hold the close for the full ~2 s total budget: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "close must fan the channel closes out under one ~2 s total bound, \
+         not pay the 2 s deadline per hanging channel: {elapsed:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Early-ACK best-effort mode tests
 // ---------------------------------------------------------------------------
@@ -3023,4 +3069,310 @@ async fn defers_the_cumulative_ack_until_the_dispatch_stock_is_drained() {
         }],
         "the ack batch flushes as one cumulative wire ack when the stock drains"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Settle-through guards (audit 2026-10-01, HIGH 1-3)
+// ---------------------------------------------------------------------------
+
+/// Advances paused time until the transport recorded `expected` cumulative
+/// (`multiple=true`) wire acks, letting the actor process settle-throughs.
+async fn wait_for_cumulative_acks(transport: &MockTransport, expected: usize) {
+    for _ in 0..200 {
+        let acks = transport
+            .operations()
+            .iter()
+            .filter(|operation| matches!(operation, TransportOperation::Ack { multiple: true, .. }))
+            .count();
+        if acks >= expected {
+            return;
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+    panic!("transport never recorded {expected} cumulative wire acks");
+}
+
+/// Advances paused time until the actor recorded at least one settlement
+/// error, then drains it.
+async fn wait_for_settlement_errors(
+    consumer: &rabbit_rs_core::consumer::ConsumerSetHandle,
+) -> Vec<rabbit_rs_core::consumer::SettlementError> {
+    for _ in 0..200 {
+        let errors = consumer.drain_errors();
+        if !errors.is_empty() {
+            return errors;
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+    panic!("no settlement error was recorded");
+}
+
+/// A second settle-through over an already-settled prefix must be rejected
+/// with a recorded `AlreadySettled` error — never panic the actor. The panic
+/// shape it replaces: `validate_contiguous_prefix` computing the ledger range
+/// `acked_prefix + 1..=target_tag` with start > end after the first
+/// settle-through advanced the watermark, killing the actor task so no
+/// subscription ever settles again and `close()` hangs.
+#[tokio::test(start_paused = true)]
+async fn double_settle_through_returns_already_settled_and_actor_survives() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    transport.push_delivery(Ok(delivery(3, b"msg3")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 3).await;
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    let d2 = consumer.next().await.expect("d2");
+    let d3 = consumer.next().await.expect("d3");
+
+    consumer
+        .try_settle_through(d3.inner_token().clone())
+        .expect("first settle-through enqueued");
+    wait_for_cumulative_acks(&transport, 1).await;
+    assert_eq!(d1.state(), DeliveryState::Acked);
+    assert_eq!(d2.state(), DeliveryState::Acked);
+    assert_eq!(d3.state(), DeliveryState::Acked);
+
+    // Second settle-through over the settled prefix: fire-and-forget enqueue
+    // succeeds, the actor must reject it instead of panicking.
+    consumer
+        .try_settle_through(d3.inner_token().clone())
+        .expect("second settle-through enqueued");
+
+    let errors = wait_for_settlement_errors(&consumer).await;
+    let already = errors
+        .iter()
+        .find(|error| error.kind == ConsumerErrorKind::AlreadySettled)
+        .expect("double settle-through must record AlreadySettled, not panic");
+    assert_eq!(already.delivery_tag, 3);
+    assert_eq!(
+        already.subscription,
+        SubscriptionId::new("s1"),
+        "the error must identify the settled subscription"
+    );
+
+    // The actor survived: a fresh delivery still dispatches and settles.
+    transport.push_delivery(Ok(delivery(4, b"msg4")));
+    let d4 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("actor must survive the double settle-through")
+        .expect("d4 dispatches after the rejected settle-through");
+    assert_eq!(d4.delivery_tag(), 4);
+    consumer
+        .try_settle_through(d4.inner_token().clone())
+        .expect("settle-through of tag 4 enqueued");
+    wait_for_cumulative_acks(&transport, 2).await;
+    assert_eq!(
+        d4.state(),
+        DeliveryState::Acked,
+        "the live settle-through must complete after the rejection"
+    );
+
+    consumer.close().await.expect("close");
+}
+
+/// `flush_acked` advanced the settled watermark past the target: a
+/// settle-through over the flushed prefix must be rejected with
+/// `AlreadySettled` instead of computing an empty inverse ledger range.
+#[tokio::test(start_paused = true)]
+async fn settle_through_after_ack_returns_already_settled() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery(1, b"msg1")));
+    transport.push_delivery(Ok(delivery(2, b"msg2")));
+    transport.push_delivery(Ok(delivery(3, b"msg3")));
+
+    let sub = subscription(&transport, "s1", connection_key("b", "/"), 3).await;
+    let consumer = ConsumerSet::spawn_with_metrics(vec![sub], Metrics::default())
+        .await
+        .expect("consumer");
+
+    let d1 = consumer.next().await.expect("d1");
+    let d2 = consumer.next().await.expect("d2");
+    let d3 = consumer.next().await.expect("d3");
+
+    // Plain acks coalesce: flush_acked bursts the contiguous prefix into one
+    // cumulative wire ack and advances the watermark past tag 3.
+    d1.ack().await.expect("ack 1");
+    d2.ack().await.expect("ack 2");
+    d3.ack().await.expect("ack 3");
+    wait_for_cumulative_acks(&transport, 1).await;
+    assert_eq!(d3.state(), DeliveryState::Acked, "prefix flushed");
+
+    // Settle-through over the flushed prefix: must be rejected, not panicked.
+    consumer
+        .try_settle_through(d3.inner_token().clone())
+        .expect("settle-through enqueued");
+
+    let errors = wait_for_settlement_errors(&consumer).await;
+    let already = errors
+        .iter()
+        .find(|error| error.kind == ConsumerErrorKind::AlreadySettled)
+        .expect("settle-through after ack must record AlreadySettled, not panic");
+    assert_eq!(already.delivery_tag, 3);
+
+    // The actor survived: a fresh delivery still dispatches and settles.
+    transport.push_delivery(Ok(delivery(4, b"msg4")));
+    let d4 = tokio::time::timeout(Duration::from_secs(5), consumer.next())
+        .await
+        .expect("actor must survive the rejected settle-through")
+        .expect("d4 dispatches after the rejected settle-through");
+    assert_eq!(d4.delivery_tag(), 4);
+    consumer
+        .try_settle_through(d4.inner_token().clone())
+        .expect("settle-through of tag 4 enqueued");
+    wait_for_cumulative_acks(&transport, 2).await;
+    assert_eq!(d4.state(), DeliveryState::Acked);
+
+    consumer.close().await.expect("close");
+}
+
+/// Builds a direct subscription with an explicit generation so two consumer
+/// sets can share the subscription id, connection key and channel id while
+/// only the generation moves — the shape a coordinator recovery produces.
+async fn generation_subscription(
+    transport: &Arc<MockTransport>,
+    generation: u64,
+    key: ConnectionKey,
+    max_buffered_bytes: u64,
+) -> Subscription {
+    // Keep the delivery stream open like a live broker subscription so
+    // deliveries pushed after the pump parks still surface.
+    transport.keep_delivery_stream_open();
+    let channel = transport
+        .connect(&broker("collide", "/"))
+        .await
+        .expect("connection")
+        .open_consumer()
+        .await
+        .expect("consumer channel");
+    Subscription::new("jobs", key, "jobs", Arc::from(channel))
+        .generation(generation)
+        .prefetch(4)
+        .channel_id(1)
+        .max_buffered_bytes(max_buffered_bytes)
+}
+
+/// Audit 2026-10-01 HIGH 3: a stale-generation settle-through whose numeric
+/// tag collides with a live token must be rejected by a generation fence
+/// BEFORE the ledger scan stages tokens. Without the fence, the live token is
+/// staged, then the wire-time generation check fails, and the completion arm
+/// marks the live token `Lost` and subtracts its bytes from the buffer budget
+/// for a settlement that never touched it.
+#[tokio::test(start_paused = true)]
+async fn stale_generation_settle_through_leaves_live_tokens_settleable() {
+    let stale_transport = Arc::new(MockTransport::default());
+    let live_transport = Arc::new(MockTransport::default());
+    let key = connection_key("collide", "/");
+
+    // Generation 1: capture a token for tag 1, then retire the set the way
+    // recovery replaces a consumer set with a newer generation.
+    let stale_set = ConsumerSet::spawn_with_metrics(
+        vec![generation_subscription(&stale_transport, 1, key, 64).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("generation 1 consumer set");
+    stale_transport.push_delivery(Ok(delivery(1, b"stale")));
+    let stale = stale_set.next().await.expect("generation 1 delivery");
+    assert_eq!(stale.delivery_tag(), 1);
+    stale_set.close().await.expect("close generation 1 set");
+    let_actor_process().await;
+
+    // Generation 2: same subscription id, channel id and numeric tag — the
+    // delivery a stale settle-through would wrongly settle. The byte budget
+    // equals one payload: a phantom byte subtraction becomes observable
+    // because the second delivery only fits once tag 1 settles for real.
+    let live_set = ConsumerSet::spawn_with_metrics(
+        vec![generation_subscription(&live_transport, 2, key, 4).await],
+        Metrics::default(),
+    )
+    .await
+    .expect("generation 2 consumer set");
+    live_transport.push_delivery(Ok(delivery(1, b"live")));
+    live_transport.push_delivery(Ok(delivery(2, b"more")));
+    let live = live_set.next().await.expect("generation 2 delivery");
+    assert_eq!(live.delivery_tag(), 1);
+
+    // Route the generation-1 token into the generation-2 actor: its numeric
+    // tag collides with the live tag-1 delivery.
+    live_set
+        .try_settle_through(stale.inner_token().clone())
+        .expect("stale settle-through enqueued");
+
+    let mut errors = Vec::new();
+    for _ in 0..200 {
+        errors = live_set.drain_errors();
+        if errors
+            .iter()
+            .any(|error| error.kind == ConsumerErrorKind::StaleGeneration)
+        {
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+    let stale_error = errors
+        .iter()
+        .find(|error| error.kind == ConsumerErrorKind::StaleGeneration)
+        .expect("stale-generation settle-through must be rejected");
+    assert_eq!(stale_error.delivery_tag, 1);
+
+    // Zero token mutations: the live token is not poisoned to Lost...
+    assert_eq!(
+        live.state(),
+        DeliveryState::Pending,
+        "the live token must not be marked Lost by a stale settlement"
+    );
+    // ...its bytes are not subtracted from the buffer budget (the parked
+    // delivery must still be held back by delivery 1's bytes)...
+    assert!(
+        matches!(live_set.try_next(), Ok(None)),
+        "the byte budget must still hold delivery 1's bytes"
+    );
+    // ...and nothing reached the wire.
+    let settlements = live_transport
+        .operations()
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation,
+                TransportOperation::Ack { .. } | TransportOperation::Reject { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        settlements, 0,
+        "a stale settle-through must produce zero wire settlements"
+    );
+
+    // The live token still settles: exactly one cumulative wire ack, and the
+    // budget frees the parked delivery.
+    live_set
+        .try_settle_through(live.inner_token().clone())
+        .expect("live settle-through enqueued");
+    wait_for_cumulative_acks(&live_transport, 1).await;
+    assert_eq!(live.state(), DeliveryState::Acked);
+    let acks = live_transport
+        .operations()
+        .iter()
+        .filter(|operation| matches!(operation, TransportOperation::Ack { .. }))
+        .count();
+    assert_eq!(
+        acks, 1,
+        "exactly the live settle-through may reach the wire"
+    );
+    let released = live_set
+        .try_next()
+        .expect("buffer observable")
+        .expect("parked delivery admitted once the budget freed");
+    assert_eq!(released.delivery_tag(), 2);
+
+    drop(stale_set);
+    drop(live_set);
 }

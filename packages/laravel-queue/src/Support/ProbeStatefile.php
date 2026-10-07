@@ -20,6 +20,16 @@ final class ProbeStatefile
 {
     private const SWEEP_SECONDS = 3600;
 
+    /**
+     * Name of the fleet-wide drain marker file inside the probes directory:
+     * the prestop hook writes it for the whole bounded wait and the
+     * supervisor's recycle path defers clean-exit restarts while it exists.
+     * Exec probes and the supervisor run in separate processes, so the file
+     * is the only cheap channel (Horizon precedent). Deliberately not
+     * *.json: statefile scans and sweeps must never see it.
+     */
+    private const DRAIN_MARKER = 'drain.requested';
+
     private ?float $lastWrite = null;
 
     private bool $started = false;
@@ -126,6 +136,105 @@ final class ProbeStatefile
         return $files;
     }
 
+    /**
+     * Marks one statefile as drain-requested: the prestop hook writes the
+     * flag right before signaling the worker, and the worker's own writes
+     * carry it over ({@see drainRequestedOnDisk()}) so it survives into the
+     * final draining statefile. Best-effort, like every probe write: a
+     * missing or malformed file is left untouched.
+     */
+    public static function requestDrain(string $path): void
+    {
+        self::rewriteStatefile($path, static function (array $data): array {
+            $data['drain_requested'] = true;
+
+            return $data;
+        });
+    }
+
+    /**
+     * Removes one statefile's drain request: the prestop hook clears its
+     * markers after the bounded wait, whether or not the drain completed.
+     */
+    public static function clearDrainRequest(string $path): void
+    {
+        self::rewriteStatefile($path, static function (array $data): array {
+            unset($data['drain_requested']);
+
+            return $data;
+        });
+    }
+
+    /**
+     * Signals the supervisor that a prestop drain is in flight: the hook's
+     * process and the supervisor's share nothing but the filesystem, so the
+     * marker file under the probes directory is the channel. The supervisor
+     * defers recycling clean-exited slots while it exists — without it, a
+     * SIGTERMed worker is instantly respawned under a fresh PID while the
+     * hook still believes the fleet drained.
+     */
+    public static function signalDrain(string $directory): void
+    {
+        try {
+            if (! is_dir($directory) && ! @mkdir($directory, 0775, true) && ! is_dir($directory)) {
+                return;
+            }
+            @file_put_contents($directory.'/'.self::DRAIN_MARKER, date(DATE_ATOM));
+        } catch (\Throwable) {
+            // Probes are best-effort: never break the caller.
+        }
+    }
+
+    /**
+     * Whether a prestop drain is currently signaled for this probes directory.
+     *
+     * The check busts PHP's stat cache for the marker path: the supervisor
+     * is a long-running process and the marker is set and cleared by OTHER
+     * processes (the prestop hook), whose changes the cache never observes —
+     * a cached signal would defer recycles forever.
+     */
+    public static function drainSignaled(string $directory): bool
+    {
+        $marker = $directory.'/'.self::DRAIN_MARKER;
+        clearstatcache(true, $marker);
+
+        return is_file($marker);
+    }
+
+    /**
+     * Clears the fleet drain signal: the prestop hook calls this after its
+     * bounded wait, releasing the supervisor's deferred recycles.
+     */
+    public static function clearDrainSignal(string $directory): void
+    {
+        @unlink($directory.'/'.self::DRAIN_MARKER);
+    }
+
+    /**
+     * Rewrites one statefile in place through $mutate, atomically (tmp +
+     * rename): a concurrent worker write can only win or lose the rename,
+     * the file is never torn. Missing or malformed files are skipped.
+     *
+     * @param  \Closure(array<string, mixed>): array<string, mixed>  $mutate
+     */
+    private static function rewriteStatefile(string $path, \Closure $mutate): void
+    {
+        try {
+            $data = json_decode((string) @file_get_contents($path), true);
+            if (! is_array($data)) {
+                return;
+            }
+            $data = $mutate($data);
+            $tmp = $path.'.tmp';
+            if (@file_put_contents($tmp, json_encode($data, JSON_THROW_ON_ERROR)) === false) {
+                return;
+            }
+            @rename($tmp, $path);
+        } catch (\Throwable) {
+            // Probes are best-effort: never break the caller.
+        }
+    }
+
     private function state(): string
     {
         if ($this->draining) {
@@ -176,12 +285,30 @@ final class ProbeStatefile
             'consumed' => $consumed,
             'acked' => $acked,
             'nacked' => $nacked,
+            'drain_requested' => $this->drainRequestedOnDisk(),
         ], JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * Carries a drain request that an external process (the rabbit-rs:probe
+     * prestop hook) injected into this worker's statefile across the
+     * worker's own writes: the next throttled heartbeat would otherwise wipe
+     * the injected flag before the final draining write could preserve it.
+     */
+    private function drainRequestedOnDisk(): bool
+    {
+        $data = json_decode((string) @file_get_contents($this->directory.'/'.$this->pid.'.json'), true);
+
+        return is_array($data) && ($data['drain_requested'] ?? false) === true;
     }
 
     /**
      * Removes statefiles abandoned by dead workers: a live worker's heartbeat
      * keeps its file mtime fresh, so an hour-old file belongs to a gone pid.
+     * The same cutoff covers orphaned *.json.tmp files left by a worker that
+     * died between the tmp write and the rename ({@see write()},
+     * {@see rewriteStatefile()}): fresh() never reads them, so only this
+     * sweep would ever remove them.
      */
     private function sweepAbandoned(): void
     {
@@ -190,6 +317,14 @@ final class ProbeStatefile
         foreach (glob($this->directory.'/*.json') ?: [] as $file) {
             $mtime = @filemtime($file);
             if ($file !== $own && $mtime !== false && $mtime < $cutoff) {
+                @unlink($file);
+            }
+        }
+        // No own-file guard: the worker's own tmp exists only between the tmp
+        // write and the rename, so an hour-old one is always an orphan.
+        foreach (glob($this->directory.'/*.json.tmp') ?: [] as $file) {
+            $mtime = @filemtime($file);
+            if ($mtime !== false && $mtime < $cutoff) {
                 @unlink($file);
             }
         }

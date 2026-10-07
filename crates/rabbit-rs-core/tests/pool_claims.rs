@@ -21,7 +21,7 @@ use rabbit_rs_core::{
         BrokerConfig, Config, Credentials, Endpoint, PublisherConfigSection, TlsConfig,
         TopologyMode,
     },
-    pool::ConnectionKey,
+    pool::{ConnectionHandle, ConnectionKey},
     publisher::{Destination, MessageProperties, PublishOutcome, PublishRequest},
     runtime::RuntimeRegistry,
     transport::{
@@ -30,11 +30,11 @@ use rabbit_rs_core::{
     },
 };
 
-fn config() -> Arc<rabbit_rs_core::config::ValidatedConfig> {
+fn config(broker: &str) -> Arc<rabbit_rs_core::config::ValidatedConfig> {
     Arc::new(
         Config {
             brokers: vec![BrokerConfig {
-                name: "default".to_owned(),
+                name: broker.to_owned(),
                 hosts: vec![Endpoint::new("rabbit.local", 5672)],
                 vhost: "/".to_owned(),
                 credentials: Credentials::new("guest", "secret"),
@@ -79,7 +79,7 @@ async fn a_live_pool_keeps_working_after_a_probe_pool_closes() {
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let registry = RuntimeRegistry::new();
-    let key = ConnectionKey::from_config(config().as_ref());
+    let key = ConnectionKey::from_config(config("default").as_ref());
 
     // Two pools sharing one fingerprint acquire one shared handle.
     let live = registry.acquire(key).expect("live pool handle");
@@ -89,7 +89,7 @@ async fn a_live_pool_keeps_working_after_a_probe_pool_closes() {
         "one fingerprint must share one handle"
     );
 
-    let client = Arc::new(ClientPool::new(config(), transport.clone()));
+    let client = Arc::new(ClientPool::new(config("default"), transport.clone()));
 
     // The live pool publishes through the shared connection.
     let first = client
@@ -146,10 +146,10 @@ async fn releasing_the_last_claim_without_a_close_keeps_the_connection_for_reuse
     let transport = Arc::new(MockTransport::default());
     transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
     let registry = RuntimeRegistry::new();
-    let key = ConnectionKey::from_config(config().as_ref());
+    let key = ConnectionKey::from_config(config("default").as_ref());
 
     let handle = registry.acquire(key).expect("pool handle");
-    let client = Arc::new(ClientPool::new(config(), transport.clone()));
+    let client = Arc::new(ClientPool::new(config("default"), transport.clone()));
     let outcomes = client
         .publish_batch(vec![("default".into(), request("warm"))])
         .await
@@ -170,5 +170,58 @@ async fn releasing_the_last_claim_without_a_close_keeps_the_connection_for_reuse
     assert!(Arc::ptr_eq(&again, &handle), "the handle is reused");
 
     // See the sibling test: the registry's runtime must outlive this context.
+    std::mem::forget(registry);
+}
+
+/// A worker building pools for rotating fingerprints drops each pool object
+/// without an explicit close (zero live claims, the PHP destructor path).
+/// The registry must not accumulate those pools forever: past its cap, the
+/// oldest zero-claim pool is evicted and closed through the regular close
+/// path, and the registry stays bounded.
+#[tokio::test(start_paused = true)]
+async fn registry_eviction_bounds_the_process_pool_count() {
+    let registry = RuntimeRegistry::new();
+
+    // 17 distinct fingerprints, each released without a close (zero live
+    // claims), then one more acquire: the registry must evict the oldest
+    // idle pools instead of growing past its cap.
+    let handles: Vec<Arc<ConnectionHandle>> = (0..18)
+        .map(|index| {
+            let key = ConnectionKey::from_config(config(&format!("pool-{index}")).as_ref());
+            let handle = registry.acquire(key).expect("pool handle");
+            assert!(handle.release_claim(), "the test owns exactly one claim");
+            handle
+        })
+        .collect();
+
+    // The two oldest idle pools were evicted and closed; every pool within
+    // the cap stays open.
+    assert!(
+        handles[0].is_closed(),
+        "the oldest idle pool must be evicted"
+    );
+    assert!(
+        handles[1].is_closed(),
+        "the next acquire must evict the next-oldest idle pool"
+    );
+    for (index, handle) in handles.iter().enumerate().skip(2) {
+        assert!(
+            !handle.is_closed(),
+            "idle pool {index} is within the cap and must stay open"
+        );
+    }
+
+    // The evicted fingerprint gets a fresh handle on the next acquire.
+    let fresh = registry
+        .acquire(ConnectionKey::from_config(config("pool-0").as_ref()))
+        .expect("handle for the evicted fingerprint");
+    assert!(!fresh.is_closed());
+    assert!(
+        !Arc::ptr_eq(&fresh, &handles[0]),
+        "the evicted handle must be replaced"
+    );
+
+    // See the sibling tests: the registry's runtime must outlive this
+    // context; the process reclaims it at exit.
     std::mem::forget(registry);
 }

@@ -42,10 +42,12 @@ impl Delivery {
     ///
     /// @return array{message_id: string, correlation_id?: string,
     ///   subscription: string, attempts: int, state: string,
-    ///   headers: array<string, bool|int|float|string|null>}
+    ///   headers: array<string, bool|int|float|string|array|null>}
     ///
-    /// Nested broker headers such as `x-death` are omitted from the flat PHP
-    /// header model.
+    /// Nested broker structures (e.g. dead-letter `x-death` tables and field
+    /// arrays) round-trip as nested PHP arrays. Binary header values become
+    /// byte strings, and AMQP decimal values are dropped with a PHP notice
+    /// (PHP has no decimal scalar).
     pub fn metadata(&self) -> PhpResult<ZBox<ZendHashTable>> {
         self.ensure_current_process("Goopil\\RabbitRs\\Delivery::metadata")?;
         let mut metadata = ZendHashTable::new();

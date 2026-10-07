@@ -120,6 +120,7 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | `RABBIT_RS_WORKER` | `default` | Worker mode: `default` or `horizon` |
 | `RABBIT_RS_PRODUCTION_WARNING` | `true` | Warn about unbounded redeliveries without `delivery_limit` + dead-letter |
 | `RABBIT_RS_BEST_EFFORT` | `false` | Gates `early_ack`/`no_ack` subscriptions on a connection |
+| `RABBIT_RS_PROBES_PATH` | `storage_path('framework/rabbit-rs/probes')` | Directory of the per-PID worker health statefiles read by `rabbit-rs:probe` |
 
 ## Commands
 
@@ -129,6 +130,7 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | `php artisan rabbit-rs:status` | Per-connection pool metrics and counters; `--format=json` for monitoring |
 | `php artisan rabbit-rs:doctor` | One-shot health report per connection — `ok`/`warn`/`fail` checks, non-zero exit on failure (CI-friendly) |
 | `php artisan rabbit-rs:topology` | Preflight topology check; `--fix` declares missing topology |
+| `php artisan rabbit-rs:probe` | Kubernetes probes (`startup`/`ready`/`alive`/`prestop`) over the worker statefiles; exit 0 when healthy, 1 otherwise (`--max-age`, `--timeout`) |
 
 Details — dispatching, worker and queue resolution semantics, status counters, doctor checks, and topology verification: [docs/reference.md](docs/reference.md).
 

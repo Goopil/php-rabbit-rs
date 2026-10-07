@@ -58,6 +58,15 @@ impl CallbackRegistry {
             .count()
     }
 
+    /// Returns `true` when no callback is currently registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0
+            .lock()
+            .expect("callback registry mutex poisoned")
+            .is_empty()
+    }
+
     /// Invokes every registered callback without holding the internal mutex.
     ///
     /// The callable `Zval`s are shallow-cloned under the mutex, the mutex is
@@ -96,6 +105,16 @@ impl CallbackRegistry {
                         );
                         thrown.set_object(Some(object));
                         error.get_or_insert(thrown);
+                    } else {
+                        // The exception object could not be converted into a
+                        // zval: a fallback message keeps the failure visible
+                        // instead of silently dropping the callback exception.
+                        error.get_or_insert_with(|| {
+                            crate::classes::exception::rabbit_exception_message(
+                                "the event callback threw but its exception could not be converted"
+                                    .to_owned(),
+                            )
+                        });
                     }
                 }
                 Err(other) => {

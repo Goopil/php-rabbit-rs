@@ -10,6 +10,7 @@ use Goopil\RabbitRs\Laravel\Events\BackpressureDetected;
 use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
 use Goopil\RabbitRs\Laravel\Horizon\RabbitMqQueue as HorizonRabbitMqQueue;
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
+use Goopil\RabbitRs\Laravel\Support\ExtensionConstraint;
 use Goopil\RabbitRs\Laravel\Support\RabbitRsConnections;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
@@ -127,7 +128,7 @@ final class RabbitMqDoctorCommand extends Command
 
         $version = $probe->extensionVersion() ?? 'unknown';
         $constraint = RabbitMqServiceProvider::EXTENSION_CONSTRAINT;
-        if (! $this->satisfiesCaret($version, $constraint)) {
+        if (! ExtensionConstraint::satisfiesCaret($version, $constraint)) {
             $this->emit('fail', "extension version {$version} does not satisfy the composer requirement ext-rabbit_rs {$constraint}");
 
             return false;
@@ -603,29 +604,6 @@ final class RabbitMqDoctorCommand extends Command
                 $this->emit('warn', "no listener registered for {$short} — the event is dispatched but unobserved");
             }
         }
-    }
-
-    /**
-     * Composer caret constraint check, limited to the ^major.minor[.patch]
-     * shape the package pins (ext-rabbit_rs ^0.3.10): on 0.x the caret admits
-     * only the declared minor. Unknown shapes pass — the doctor reports the
-     * version instead of guessing.
-     */
-    private function satisfiesCaret(string $version, string $constraint): bool
-    {
-        if (preg_match('/^\^(\d+)\.(\d+)(?:\.(\d+))?$/', $constraint, $matches) !== 1) {
-            return true;
-        }
-
-        $major = (int) $matches[1];
-        $minor = (int) $matches[2];
-        $floor = sprintf('%d.%d.%d', $major, $minor, (int) ($matches[3] ?? 0));
-        $ceiling = $major > 0
-            ? sprintf('%d.0.0', $major + 1)
-            : sprintf('0.%d.0', $minor + 1);
-
-        return version_compare($version, $floor, '>=')
-            && version_compare($version, $ceiling, '<');
     }
 
     /**

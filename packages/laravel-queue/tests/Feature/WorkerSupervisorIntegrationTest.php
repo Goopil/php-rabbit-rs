@@ -867,6 +867,53 @@ describe('WorkerSupervisor integration', function () {
 
         expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
     });
+
+    it('defers recycling a clean-exited slot while the prestop drain marker is set', function () {
+        // K8s prestop flow: the hook marks the fleet drain, SIGTERMs every
+        // tracked worker, and waits for quiescence. queue:work exits 0 on
+        // SIGTERM, so an unrestricted supervisor instantly respawns the slot
+        // under a fresh PID (new statefile) while the hook reports success.
+        // While the drain marker file exists the slot must stay empty; the
+        // hook removes the marker after its bounded wait and the recycle
+        // resumes through the same clean-exit path.
+        $script = writeSupervisorScript(mode: 'exit-clean', probeDirectory: test()->stateDir);
+
+        // The drain is already in flight when the supervisor boots: the very
+        // first clean exit must be deferred, deterministically.
+        file_put_contents(test()->stateDir.'/drain.requested', 'prestop');
+
+        $process = new Process([PHP_BINARY, $script, test()->stateDir]);
+        $process->start();
+
+        expect(supervisorWaitForMarker(0))->not->toBeNull('worker 0 should have started');
+
+        // Several poll ticks pass with the marker set: no second invocation.
+        usleep(700_000);
+        expect(supervisorInvocationCount(0))->toBe(1);
+
+        // The hook clears its markers after the bounded wait; recycling resumes.
+        @unlink(test()->stateDir.'/drain.requested');
+        $resumed = false;
+        $deadline = microtime(true) + 3.0;
+        while (microtime(true) < $deadline) {
+            if (supervisorInvocationCount(0) >= 2) {
+                $resumed = true;
+
+                break;
+            }
+            usleep(20_000);
+        }
+
+        expect($resumed)->toBeTrue('the slot should recycle once the drain marker is cleared');
+
+        $supervisorPid = $process->getPid();
+        expect($supervisorPid)->not->toBeNull();
+        posix_kill($supervisorPid, SIGTERM);
+
+        supervisorAwaitExit($process, 5);
+
+        expect($process->getExitCode())->toBe(WorkerSupervisor::EXIT_CLEAN);
+    });
 });
 
 describe('fan-out crash storms (issue #317)', function () {
@@ -1196,6 +1243,9 @@ function supervisorCleanupStateDir(string $dir): void
  *                           plan's connection (no callback when null).
  * @param  int|null  $scaleIdle  Scale-down hysteresis window in seconds.
  * @param  int|null  $scaleCooldown  Minimum seconds between scaling passes.
+ * @param  string|null  $probeDirectory  Probes directory passed to the
+ *                                       supervisor (null omits it), where
+ *                                       the prestop drain marker is watched.
  */
 function writeSupervisorScript(
     string $mode = 'run',
@@ -1208,6 +1258,7 @@ function writeSupervisorScript(
     ?int $scaleIdle = null,
     ?int $scaleCooldown = null,
     array $modes = [],
+    ?string $probeDirectory = null,
 ): string {
     $stubPath = dirname(__DIR__).WORKER_STUB_PATH;
     $autoloadPath = dirname(__DIR__, 2).'/vendor/autoload.php';
@@ -1227,6 +1278,9 @@ function writeSupervisorScript(
     }
     if ($depth !== null) {
         $scalingArgs .= ", depthCallback: static fn (): array => ['rabbit-rs' => {$depth}]";
+    }
+    if ($probeDirectory !== null) {
+        $scalingArgs .= ', probeDirectory: '.var_export($probeDirectory, true);
     }
 
     // Build a self-contained script that constructs the supervisor and runs it.

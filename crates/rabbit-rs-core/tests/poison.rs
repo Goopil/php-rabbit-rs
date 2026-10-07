@@ -19,7 +19,7 @@ use rabbit_rs_core::{
     publisher::{Destination, PublisherActor, PublisherConfig, PublisherHandle},
     topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
-        Delivery as TransportDelivery, HeaderValue, Transport,
+        Delivery as TransportDelivery, HeaderValue, PublishConfirmation, Transport,
         mock::{MockTransport, TransportOperation},
     },
 };
@@ -98,6 +98,16 @@ mod helper {
     }
 
     pub async fn publisher(transport: &MockTransport) -> PublisherHandle {
+        publisher_with_strategy(transport, None).await
+    }
+
+    /// The production publisher always carries the compiled delay strategy:
+    /// a delayed release publishes with `delay_ms` set, and the publisher
+    /// actor performs the (single) delayed routing.
+    pub async fn publisher_with_strategy(
+        transport: &MockTransport,
+        delay_strategy: Option<DelayStrategy>,
+    ) -> PublisherHandle {
         let channel = transport
             .connect(&broker("publisher", "/"))
             .await
@@ -109,7 +119,7 @@ mod helper {
             Arc::from(channel),
             PublisherConfig::with_safety(32, Duration::from_secs(5), SafetyMode::Safe),
             Metrics::default(),
-            None,
+            delay_strategy,
         )
     }
 
@@ -359,6 +369,78 @@ async fn delayed_release_at_the_cap_with_a_dlx_dead_letters_the_original() {
         "no ack when dead-lettering"
     );
     assert_eq!(publish_operations(&transport), 0, "no republish at the cap");
+}
+
+// ---------------------------------------------------------------------------
+// Delayed release below the configured cap
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn delayed_release_below_the_configured_cap_republishes_with_the_next_attempt() {
+    let transport = MockTransport::default();
+    transport.push_delivery(Ok(delivery_with_attempts(7, "21")));
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let publisher = publisher_with_strategy(&transport, Some(DelayStrategy::Plugin)).await;
+    let consumer = ConsumerSet::spawn_with_metrics(
+        vec![
+            subscription(&transport, "jobs", connection_key("jobs", "/"))
+                .await
+                .delayed_publisher(publisher, Destination::new("jobs", "high"))
+                .delay_strategy(DelayStrategy::Plugin)
+                .max_attempts(NonZeroU32::new(50)),
+        ],
+        Metrics::default(),
+    )
+    .await
+    .expect("consumer set");
+    let item = consumer.next().await.expect("delivery");
+    assert_eq!(item.attempts, 21, "dispatch honors the configured cap");
+
+    item.release(Duration::from_secs(5))
+        .await
+        .expect("release enqueued (fire-and-forget)");
+    tokio::time::advance(Duration::from_millis(10)).await;
+    let_actor_process().await;
+
+    assert_eq!(
+        publish_operations(&transport),
+        1,
+        "attempt 21 is below the configured cap of 50: the delayed release must republish, not settle terminally"
+    );
+    let operations = transport.operations();
+    let next_attempt = operations
+        .iter()
+        .find_map(|operation| match operation {
+            TransportOperation::Publish(request) => Some(request),
+            _ => None,
+        })
+        .expect("the republished request")
+        .properties
+        .headers
+        .get(APPLICATION_ATTEMPTS_HEADER)
+        .cloned();
+    assert_eq!(
+        next_attempt,
+        Some(HeaderValue::Integer(22)),
+        "the republish must carry the next attempt count"
+    );
+    assert_eq!(
+        item.state(),
+        DeliveryState::Acked,
+        "the original delivery is settled once the republish is confirmed"
+    );
+    assert_eq!(
+        ack_operations(&transport, 7),
+        1,
+        "the original delivery is acked after the confirmed republish"
+    );
+    let errors = consumer.drain_errors();
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.kind == ConsumerErrorKind::MaxAttempts),
+        "no MaxAttempts error below the configured cap, got: {errors:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

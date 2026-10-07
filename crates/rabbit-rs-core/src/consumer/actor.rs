@@ -372,12 +372,16 @@ impl ActorState {
                 break;
             };
             let Some(runtime) = self.subscriptions.get(&subscription) else {
+                // Defensive: the scheduler still routes a subscription whose
+                // runtime is gone. Re-enqueue the delivery and stop this
+                // dispatch pass — `continue` would pick the same scheduler
+                // entry again and spin on the very same delivery.
                 self.buffers
                     .entry(subscription.clone())
                     .or_default()
                     .push_front(delivery);
                 self.scheduler.mark_ready(&subscription);
-                continue;
+                break;
             };
             let generation = runtime.generation;
             let channel_id = runtime.channel_id;
@@ -1037,82 +1041,10 @@ pub(crate) async fn run_actor(
             }
             Some(settle_through_result) = state.pending_settle_throughs.next(),
                 if !state.pending_settle_throughs.is_empty() => {
-                let channel_key = settle_through_result.channel_key;
-                state.settlement_in_flight.remove(&channel_key);
-
-                let target_tag = settle_through_result.target_tag;
-
-                let is_terminal = match &settle_through_result.result {
-                    Ok(_) => true,
-                    Err(error) => matches!(
-                        error.kind(),
-                        ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
-                    ),
-                };
-
-                if is_terminal {
-                    if let Ok(DeliveryState::Acked) = &settle_through_result.result {
-                        for token in &settle_through_result.affected_tokens {
-                            let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
-                            if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
-                                *buf_bytes = buf_bytes.saturating_sub(bytes);
-                            }
-                        }
-                        state.metrics.record_ack(
-                            settle_through_result
-                                .affected_tokens
-                                .last()
-                                .unwrap()
-                                .reserved_at
-                                .elapsed(),
-                        );
-                    } else {
-                        for token in &settle_through_result.affected_tokens {
-                            let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
-                            if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
-                                *buf_bytes = buf_bytes.saturating_sub(bytes);
-                            }
-                        }
-                    }
-                    state.try_drain_pending();
-                    if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
-                        for tag in (ledger.acked_prefix + 1)..=target_tag {
-                            ledger.pending.remove(&tag);
-                        }
-                        if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
-                            ledger.acked_prefix = target_tag;
-                        }
-                    }
-                }
-
-                for token in &settle_through_result.affected_tokens {
-                    let final_state = match &settle_through_result.result {
-                        Ok(state) => *state,
-                        Err(error) if matches!(error.kind(), ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport) => {
-                            DeliveryState::Lost
-                        }
-                        Err(_) => DeliveryState::Pending,
-                    };
-                    token.state.store(final_state as u8, std::sync::atomic::Ordering::Release);
-                    token.settling.store(false, std::sync::atomic::Ordering::Release);
-                }
-
-                if let Err(error) = &settle_through_result.result {
-                    state.record_settlement_error(SettlementError {
-                        delivery_tag: settle_through_result.target_tag,
-                        subscription: settle_through_result
-                            .affected_tokens
-                            .last()
-                            .map_or_else(
-                                || SubscriptionId::new("unknown"),
-                                |t| t.subscription.clone(),
-                            ),
-                        kind: error.kind(),
-                        message: error.to_string(),
-                                            });
-                }
-
-                drain_settlement_queue(&mut state, channel_key);
+                state
+                    .settlement_in_flight
+                    .remove(&settle_through_result.channel_key);
+                complete_settle_through(&mut state, settle_through_result);
             }
         }
     }
@@ -1236,12 +1168,21 @@ fn handle_settle(
 
 /// Enqueues a contiguous-prefix multi-ack. Shared by the live command loop
 /// and the close-time sweep.
+///
+/// Settle-through has no client-side CAS — unlike plain settle, which flips
+/// the token terminal before enqueueing — so every rejection guard lives
+/// here, before any token or ledger mutation (audit 2026-10-01): a second
+/// `SettleThrough` for an already-settled prefix would otherwise reach
+/// `validate_contiguous_prefix` with an inverted ledger range and panic the
+/// actor, and a stale-generation token whose numeric tag collides with a live
+/// delivery would stage the live tokens for a settlement that never touches
+/// them.
 fn handle_settle_through(
     state: &mut ActorState,
     token: Arc<DeliveryTokenInner>,
     job_latency: Duration,
 ) {
-    let Some(channel_key) = claim_settlement(state, &token) else {
+    let Some((channel_key, live_generation)) = fence_settle_through(state, &token) else {
         return;
     };
     let Some(ledger) = state.channel_ledgers.get(&channel_key) else {
@@ -1255,8 +1196,46 @@ fn handle_settle_through(
         ));
         return;
     };
+    // A target at or below the settled watermark has no pending prefix left:
+    // computing `acked_prefix + 1..=target_tag` would be an inverted
+    // `BTreeMap` range. Reject instead of panicking the actor.
+    let acked_prefix = ledger.acked_prefix;
+    if token.delivery_tag <= acked_prefix {
+        token
+            .settling
+            .store(false, std::sync::atomic::Ordering::Release);
+        state.record_settlement_error(settlement_error(
+            &token,
+            ConsumerErrorKind::AlreadySettled,
+            "settle-through target is at or below the already-settled prefix",
+        ));
+        return;
+    }
     match validate_contiguous_prefix(ledger, token.delivery_tag) {
         Ok(affected_tokens) => {
+            // Defense in depth for the fence above: never stage a token that
+            // does not belong to the live generation, so a foreign ledger
+            // entry can never be mutated or byte-accounted by this
+            // settlement.
+            let affected_tokens: Vec<Arc<DeliveryTokenInner>> = affected_tokens
+                .into_iter()
+                .filter(|affected| {
+                    affected.connection_key == live_generation.0
+                        && affected.generation == live_generation.1
+                        && affected.channel_id == live_generation.2
+                })
+                .collect();
+            if affected_tokens.is_empty() {
+                token
+                    .settling
+                    .store(false, std::sync::atomic::Ordering::Release);
+                state.record_settlement_error(settlement_error(
+                    &token,
+                    ConsumerErrorKind::StaleGeneration,
+                    "settle-through staged no token of the live generation",
+                ));
+                return;
+            }
             for affected in &affected_tokens {
                 affected
                     .settling
@@ -1292,6 +1271,162 @@ fn handle_settle_through(
             ));
         }
     }
+}
+
+/// Rejection prologue shared by every settle-through launch: the
+/// terminal-state guard, the `settling` claim, and the generation fence. The
+/// fence must fire BEFORE `validate_contiguous_prefix` collects
+/// `affected_tokens` — the ledger scan would otherwise stage the live tokens
+/// of a colliding numeric tag, and the completion arm would mark them `Lost`
+/// and subtract their bytes from the buffer budget on the stale rejection.
+///
+/// Returns the live channel key and generation identity to stage against, or
+/// `None` after recording the rejection (with the `settling` flag rolled
+/// back) so the caller proceeds to the next command.
+fn fence_settle_through(
+    state: &mut ActorState,
+    token: &Arc<DeliveryTokenInner>,
+) -> Option<(ChannelKey, (crate::pool::ConnectionKey, u64, u16))> {
+    // Terminal-state guard: anything not `Pending` is already settled or
+    // transitioning (Acked/Rejected by a completed settlement, Lost, or
+    // auto-acked). Checked before the `settling` CAS so a rejection leaves no
+    // flag to roll back.
+    if token.state.load(std::sync::atomic::Ordering::Acquire) != DeliveryState::Pending as u8 {
+        state.record_settlement_error(settlement_error(
+            token,
+            ConsumerErrorKind::AlreadySettled,
+            "settle-through target is already settled or terminal",
+        ));
+        return None;
+    }
+    let channel_key = claim_settlement(state, token)?;
+    let Some(runtime) = state.subscriptions.get(&token.subscription) else {
+        // Unreachable after `claim_settlement` resolved the channel key from
+        // this same map; kept as a guard so the staging below cannot panic.
+        token
+            .settling
+            .store(false, std::sync::atomic::Ordering::Release);
+        state.record_settlement_error(settlement_error(
+            token,
+            ConsumerErrorKind::InvalidSubscription,
+            "delivery references an unknown subscription",
+        ));
+        return None;
+    };
+    let live_generation = (
+        runtime.connection_key,
+        runtime.generation,
+        runtime.channel_id,
+    );
+    if ensure_live_generation(
+        live_generation.0,
+        live_generation.1,
+        live_generation.2,
+        token,
+    )
+    .is_err()
+    {
+        // Zero token mutations on the rejection: the stale token belongs to a
+        // dead generation whose ledger died with it.
+        token
+            .settling
+            .store(false, std::sync::atomic::Ordering::Release);
+        state.record_settlement_error(settlement_error(
+            token,
+            ConsumerErrorKind::StaleGeneration,
+            "delivery belongs to a stale connection generation or channel",
+        ));
+        return None;
+    }
+    Some((channel_key, live_generation))
+}
+
+/// Bookkeeping for one completed settle-through on a live consumer. The
+/// caller must already have cleared `settlement_in_flight` for the result's
+/// channel. Mirrors the close-time sweep in `close_set`, plus the
+/// bookkeeping that only matters to a consumer that stays open (metrics,
+/// buffer accounting, watermark advance).
+///
+/// `affected_tokens` may be empty — stage-time generation filtering can in
+/// principle exclude every token — so no step may index into it.
+fn complete_settle_through(state: &mut ActorState, settle_through_result: SettleThroughResult) {
+    let channel_key = settle_through_result.channel_key;
+    let target_tag = settle_through_result.target_tag;
+
+    let is_terminal = match &settle_through_result.result {
+        Ok(_) => true,
+        Err(error) => matches!(
+            error.kind(),
+            ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+        ),
+    };
+
+    if is_terminal {
+        if let Ok(DeliveryState::Acked) = &settle_through_result.result {
+            for token in &settle_through_result.affected_tokens {
+                let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                    *buf_bytes = buf_bytes.saturating_sub(bytes);
+                }
+            }
+            // The affected set can be empty (see above): record no ack
+            // latency from a phantom token.
+            if let Some(last) = settle_through_result.affected_tokens.last() {
+                state.metrics.record_ack(last.reserved_at.elapsed());
+            }
+        } else {
+            for token in &settle_through_result.affected_tokens {
+                let bytes = u64::try_from(token.payload.len()).unwrap_or(u64::MAX);
+                if let Some(buf_bytes) = state.buffered_bytes.get_mut(&token.subscription) {
+                    *buf_bytes = buf_bytes.saturating_sub(bytes);
+                }
+            }
+        }
+        state.try_drain_pending();
+        if let Some(ledger) = state.channel_ledgers.get_mut(&channel_key) {
+            for tag in (ledger.acked_prefix + 1)..=target_tag {
+                ledger.pending.remove(&tag);
+            }
+            if matches!(settle_through_result.result, Ok(DeliveryState::Acked)) {
+                ledger.acked_prefix = target_tag;
+            }
+        }
+    }
+
+    for token in &settle_through_result.affected_tokens {
+        let final_state = match &settle_through_result.result {
+            Ok(state) => *state,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ConsumerErrorKind::StaleGeneration | ConsumerErrorKind::Transport
+                ) =>
+            {
+                DeliveryState::Lost
+            }
+            Err(_) => DeliveryState::Pending,
+        };
+        token
+            .state
+            .store(final_state as u8, std::sync::atomic::Ordering::Release);
+        token
+            .settling
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    if let Err(error) = &settle_through_result.result {
+        state.record_settlement_error(SettlementError {
+            delivery_tag: settle_through_result.target_tag,
+            subscription: settle_through_result.affected_tokens.last().map_or_else(
+                || SubscriptionId::new("unknown"),
+                |t| t.subscription.clone(),
+            ),
+            kind: error.kind(),
+            message: error.to_string(),
+        });
+    }
+
+    drain_settlement_queue(state, channel_key);
 }
 
 /// Builds a settlement error for a token whose asynchronous settlement failed.
@@ -1407,6 +1542,12 @@ fn flush_acked(state: &mut ActorState) {
 /// delivery contract stays at-least-once.
 const CLOSE_SETTLEMENT_DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// Total budget for the close fan-out across every subscription channel:
+/// the closes run concurrently and the whole fan-out is bounded once, so N
+/// stalled channels cost ~2 s in total instead of the per-channel deadline
+/// paid N times.
+const CLOSE_CHANNEL_FANOUT_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Shuts the consumer set down: flushes pending and queued settlements to
 /// the transport within a bounded budget (a consumer that pops, acks, and
 /// exits must not silently drop its acknowledgements), closes every
@@ -1503,10 +1644,19 @@ async fn close_set(state: &mut ActorState, control_rx: &mut mpsc::Receiver<Contr
         }
     }
 
-    for runtime in state.subscriptions.values() {
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(2), runtime.channel.close()).await;
-    }
+    // Close every subscription channel concurrently under one total bound:
+    // each close gets at most the fan-out budget, and N stalled channels
+    // cost that budget once instead of once per subscription.
+    let channels: Vec<_> = state
+        .subscriptions
+        .values()
+        .map(|runtime| Arc::clone(&runtime.channel))
+        .collect();
+    let _ = tokio::time::timeout(
+        CLOSE_CHANNEL_FANOUT_BUDGET,
+        futures_util::future::join_all(channels.iter().map(|channel| channel.close())),
+    )
+    .await;
     if let Some(completed) = state
         .close_completion
         .lock()
@@ -1565,6 +1715,7 @@ struct SettlementLaunch {
     publisher: Option<crate::publisher::PublisherHandle>,
     destination: Option<crate::publisher::Destination>,
     delay_strategy: Option<DelayStrategy>,
+    max_attempts: Option<NonZeroU32>,
 }
 
 /// Launch staging shared by `launch_settlement` and `launch_settle_through`:
@@ -1598,6 +1749,7 @@ fn stage_settlement_launch(
         publisher: runtime.publisher.clone(),
         destination: runtime.destination.clone(),
         delay_strategy: runtime.delay_strategy.clone(),
+        max_attempts: runtime.max_attempts,
     })
 }
 
@@ -1642,6 +1794,7 @@ fn launch_settlement(state: &mut ActorState, channel_key: ChannelKey, params: Se
             launch.publisher.as_ref(),
             launch.destination.as_ref(),
             launch.delay_strategy.as_ref(),
+            launch.max_attempts,
         )
         .await;
         SettlementResult {
@@ -1664,6 +1817,7 @@ async fn execute_settlement(
     publisher: Option<&crate::publisher::PublisherHandle>,
     destination: Option<&crate::publisher::Destination>,
     delay_strategy: Option<&DelayStrategy>,
+    max_attempts: Option<NonZeroU32>,
 ) -> Result<DeliveryState, ConsumerError> {
     ensure_live_generation(connection_key, generation, channel_id, token)?;
 
@@ -1691,6 +1845,7 @@ async fn execute_settlement(
                 publisher,
                 destination,
                 delay_strategy,
+                max_attempts,
             )
             .await?;
             Ok(DeliveryState::Acked)
@@ -1705,6 +1860,7 @@ async fn execute_settlement(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn delayed_release(
     channel: &Arc<dyn crate::transport::ConsumerChannel>,
     delivery_tag: u64,
@@ -1713,6 +1869,7 @@ async fn delayed_release(
     publisher: Option<&crate::publisher::PublisherHandle>,
     destination: Option<&crate::publisher::Destination>,
     delay_strategy: Option<&DelayStrategy>,
+    max_attempts: Option<NonZeroU32>,
 ) -> Result<(), ConsumerError> {
     let publisher = publisher.ok_or_else(|| {
         ConsumerError::new(
@@ -1751,6 +1908,7 @@ async fn delayed_release(
     let mut properties = MessageProperties::new(token.message_id.as_str());
     properties.correlation_id = token.correlation_id.as_ref().map(|s| Arc::from(s.as_str()));
     properties.headers = AttemptsResolver::default()
+        .with_max_attempts(max_attempts)
         .delayed_headers(&token.headers, token.attempts)
         .map_err(|error| ConsumerError::new(ConsumerErrorKind::MaxAttempts, error.to_string()))?;
     properties.delay_ms = Some(u64::try_from(delay_ms).unwrap_or(u64::MAX));
@@ -1927,4 +2085,47 @@ fn drain_settlement_queue(state: &mut ActorState, channel_key: ChannelKey) {
         return;
     }
     state.settle_through_queues.remove(&channel_key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A disconnected `ActorState`: no subscription, no ledger, no in-flight
+    /// work — just enough wiring for completion bookkeeping to run.
+    fn test_state() -> ActorState {
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (buffer_tx, _buffer_rx) = flume::bounded(4);
+        let (error_tx, error_rx) = flume::bounded(4);
+        ActorState::new(
+            Vec::new(),
+            control_tx,
+            buffer_tx,
+            error_tx,
+            error_rx,
+            Arc::new(std::sync::Mutex::new(None)),
+            Metrics::default(),
+            8,
+            HashMap::new(),
+        )
+    }
+
+    /// The completion arm must tolerate an empty `affected_tokens`: stage-time
+    /// generation filtering can in principle exclude every token, so no step
+    /// may index into the set (`.last().unwrap()` would panic the actor).
+    #[tokio::test]
+    async fn settle_through_completion_tolerates_an_empty_affected_token_set() {
+        let mut state = test_state();
+        complete_settle_through(
+            &mut state,
+            SettleThroughResult {
+                channel_key: (SubscriptionId::new("jobs"), 1, 1),
+                target_tag: 3,
+                affected_tokens: Vec::new(),
+                result: Ok(DeliveryState::Acked),
+            },
+        );
+        // No ack latency is recorded from a phantom token.
+        assert_eq!(state.metrics.snapshot().acks_total, 0);
+    }
 }

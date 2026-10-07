@@ -190,20 +190,14 @@ it('uses the Laravel ack callback and event sequence on fail', function (): void
         ->and($job->isDeleted())->toBeTrue();
 });
 
-it('throws InvalidArgumentException when message_id is missing', function (): void {
-    $delivery = new Delivery(
-        '{"job":"test"}',
-        ['attempts' => 0],
-    );
-
-    expect(fn () => job($delivery))
-        ->toThrow(InvalidArgumentException::class, 'message_id');
-});
-
 it('throws InvalidArgumentException when message_id is empty', function (): void {
+    // The native metadata contract always carries message_id (the core
+    // synthesizes "generation:channel:tag" when the AMQP property is
+    // absent), so only an empty id — a foreign publisher's empty
+    // message-id property — can trip this guard.
     $delivery = new Delivery(
         '{"job":"test"}',
-        ['message_id' => '', 'attempts' => 0],
+        ['message_id' => '', 'subscription' => 'orders_high', 'attempts' => 0, 'state' => 'pending', 'headers' => []],
     );
 
     expect(fn () => job($delivery))
@@ -213,7 +207,7 @@ it('throws InvalidArgumentException when message_id is empty', function (): void
 it('throws InvalidArgumentException when payload is invalid JSON', function (): void {
     $delivery = new Delivery(
         'not-json',
-        ['message_id' => 'abc', 'attempts' => 0],
+        ['message_id' => 'abc', 'subscription' => 'orders_high', 'attempts' => 0, 'state' => 'pending', 'headers' => []],
     );
 
     expect(fn () => job($delivery))
