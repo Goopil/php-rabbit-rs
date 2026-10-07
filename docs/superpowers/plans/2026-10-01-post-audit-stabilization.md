@@ -551,11 +551,11 @@ Expected: PASS all.
 - Modify: `crates/rabbit-rs-core/src/publisher/actor.rs` doc comment (document the intentional post-suspend replay ordering: never-attempted publications replay before attempted ones, submission order is not part of the at-least-once contract — audit LOW 3, currently only pinned by the state-machine test)
 - Test: extend `tests/consumer.rs` (close fan-out timing with paused time), `tests/log_facade.rs` (redaction), plugin-detection unit test next to `client.rs`.
 
-- [ ] **Step 1:** Failing tests: (a) redacted `Debug` for `Delivery` (no header values in output); (b) close of a 5-subscription set with 4 gated channels completes ~2 s (paused time), not 10 s; (c) plugin detection fires on a `ProtocolError(540, "NOT_IMPLEMENTED")`-style typed error with a different Display text.
-- [ ] **Step 2:** Verify failure: `rtk cargo test -p rabbit-rs-core --test consumer close_fanout && rtk cargo test -p rabbit-rs-core --test log_facade` → FAIL.
-- [ ] **Step 3:** Implement the six edits above (each minimal).
-- [ ] **Step 4:** Verify: `rtk cargo test -p rabbit-rs-core && rtk cargo test -p rabbit-rs-php` → PASS.
-- [ ] **Step 5:** Commit: `git commit -m "fix(core): redact delivery debug output, parallelize close fan-out, harden sink and plugin detection"`
+- [x] **Step 1:** Failing tests: (a) redacted `Debug` for `Delivery` (no header values in output); (b) close of a 5-subscription set with 4 gated channels completes ~2 s (paused time), not 10 s; (c) plugin detection fires on a `ProtocolError(540, "NOT_IMPLEMENTED")`-style typed error with a different Display text.
+- [x] **Step 2:** Verify failure: `rtk cargo test -p rabbit-rs-core --test consumer close_fanout && rtk cargo test -p rabbit-rs-core --test log_facade` → FAIL.
+- [x] **Step 3:** Implement the six edits above (each minimal).
+- [x] **Step 4:** Verify: `rtk cargo test -p rabbit-rs-core && rtk cargo test -p rabbit-rs-php` → PASS.
+- [x] **Step 5:** Commit: `git commit -m "fix(core): redact delivery debug output, parallelize close fan-out, harden sink and plugin detection"`
 
 ### Task 23: Laravel polish batch
 
