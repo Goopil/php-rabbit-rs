@@ -164,14 +164,18 @@ it('prestop does not report drained while a fresh untracked worker is still cons
     $dir = (string) config('rabbit-rs.probes.path');
     writeProbeState($dir, PROBE_PID_A, ['state' => 'running']);
 
-    // Mid-wait, the tracked worker flips to draining (its shutdown write)
-    // and the recycled worker appears under a fresh PID.
+    // Mid-wait, the recycled worker appears under a fresh PID and then the
+    // tracked worker flips to draining (its shutdown write). The order is
+    // load-bearing: B must exist BEFORE A reports draining, otherwise the
+    // microsecond window between the two writes leaves a fleet of
+    // {A: draining} alone, which `drained()` accepts — the hook would
+    // conclude drained and the expected not-drained verdict would race.
     $midWait = new Process([PHP_BINARY, '-r', sprintf(
-        'usleep(200000); file_put_contents(%s, json_encode(["pid" => %d, "state" => "draining", "connected" => true, "consumed" => 0, "acked" => 0, "nacked" => 0])); file_put_contents(%s, json_encode(["pid" => %d, "state" => "running", "connected" => true, "consumed" => 0, "acked" => 0, "nacked" => 0]));',
-        var_export($dir.'/'.PROBE_PID_A.'.json', true),
-        PROBE_PID_A,
+        'usleep(200000); file_put_contents(%s, json_encode(["pid" => %d, "state" => "running", "connected" => true, "consumed" => 0, "acked" => 0, "nacked" => 0])); file_put_contents(%s, json_encode(["pid" => %d, "state" => "draining", "connected" => true, "consumed" => 0, "acked" => 0, "nacked" => 0]));',
         var_export($dir.'/'.PROBE_PID_B.'.json', true),
         PROBE_PID_B,
+        var_export($dir.'/'.PROBE_PID_A.'.json', true),
+        PROBE_PID_A,
     )]);
     $midWait->start();
 
