@@ -4,6 +4,21 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.11] - 2026-10-22
+
+### Fixed
+
+- `bulk()` chunks oversized publishes to the native batch bounds (256 messages / 1 MiB cumulative payload) instead of failing the entire batch, and documents the partial-success outcome.
+- The extension version caret is enforced at connection resolution (not only at boot): a stale extension binary fails the connection with an actionable error instead of surfacing a native config mismatch later. Connector env strings are cast centrally and `rabbit-rs:status` failures are isolated per connection.
+- The work command's `--queue` value is validated against the connection's subscriptions and `pop(null)` fails with an actionable error naming the resolution path.
+- The worker supervisor honors drain requests so the Kubernetes preStop hook actually drains workers before exit.
+- Supervisor polish: probe statefiles are swept after use, `--min-workers` has a floor guard, the child artisan path is absolute, a fleet stop no longer blocks on unresponsive children, and docblocks match the shipped behavior.
+- Config fallbacks and test fakes are aligned with the precise extension stub shapes (nested-array metadata, `publishBatch` partial success, discarded error records counted).
+
+### Changed
+
+- Synchronized with native v0.3.11 (`EXTENSION_CONSTRAINT` now `^0.3.11`). The native release carries the Round L audit stabilization (settle-through guards, permanent 404/406 classification, publisher deadline bounds, runtime-registry LRU eviction) — see the workspace changelog for the full list.
+
 ## [0.3.10] - 2026-09-26
 
 ### Changed

@@ -6,6 +6,7 @@ use Goopil\RabbitRs\Laravel\Console\CanaryInconclusiveException;
 use Goopil\RabbitRs\Laravel\Console\DoctorProbe;
 use Goopil\RabbitRs\Laravel\Events\BackpressureDetected;
 use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
+use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
@@ -18,8 +19,12 @@ const BASE_QUEUE_CLASS = 'Goopil\RabbitRs\Laravel\RabbitMqQueue';
  * and without a broker, so the doctor's extension and broker probes are
  * substituted with configurable fakes.
  */
-function bindFakeProbe($app, bool $loaded = true, ?string $version = '0.3.10', ?string $brokerError = null, ?RuntimeException $canaryError = null): void
+function bindFakeProbe($app, bool $loaded = true, ?string $version = null, ?string $brokerError = null, ?RuntimeException $canaryError = null): void
 {
+    // The healthy fake tracks the lockstep extension constraint so the
+    // fixture survives release bumps; the drift test overrides explicitly.
+    $version ??= ltrim(RabbitMqServiceProvider::EXTENSION_CONSTRAINT, '^');
+
     $app->instance(DoctorProbe::class, new class($loaded, $version, $brokerError, $canaryError) extends DoctorProbe
     {
         public function __construct(
@@ -150,7 +155,7 @@ describe('rabbit-rs:doctor broker probe', function () {
         doctorConnection();
 
         $this->artisan('rabbit-rs:doctor')
-            ->expectsOutputToContain('^0.3.10')
+            ->expectsOutputToContain(RabbitMqServiceProvider::EXTENSION_CONSTRAINT)
             ->assertExitCode(1);
     });
 
@@ -158,7 +163,7 @@ describe('rabbit-rs:doctor broker probe', function () {
         doctorConnection();
 
         $this->artisan('rabbit-rs:doctor')
-            ->expectsOutputToContain('0.3.10')
+            ->expectsOutputToContain(ltrim(RabbitMqServiceProvider::EXTENSION_CONSTRAINT, '^'))
             ->assertExitCode(0);
     });
 });
