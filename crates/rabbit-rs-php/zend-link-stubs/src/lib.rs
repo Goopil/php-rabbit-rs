@@ -37,6 +37,7 @@ stub!(gc_possible_root);
 stub!(__zend_malloc);
 stub!(_emalloc);
 stub!(_efree);
+stub!(_femalloc);
 stub!(zend_is_callable);
 stub!(_call_user_function_impl);
 stub!(zend_throw_exception_ex);
