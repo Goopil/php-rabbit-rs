@@ -8,6 +8,16 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Changed
+
+- **Event-callback exception precedence (ext-php-rs 0.16)**: when a user-registered
+  event callback (`onBackpressure`, `onConnectionState`) throws during an operation,
+  the callback's exception is now what the operation surfaces. Under ext-php-rs 0.15
+  the operation's own error (e.g. `BackpressureException`) was thrown with the callback
+  exception chained as `previous`; 0.16 makes throwing while an exception is pending a
+  no-op, so the first exception wins. Publications are still re-buffered and counted —
+  no message loss. (issue #359)
+
 ## [0.3.11] - 2026-10-22
 
 Round L — stabilization of the 2026-10-01 adversarial audit: 24 tasks across

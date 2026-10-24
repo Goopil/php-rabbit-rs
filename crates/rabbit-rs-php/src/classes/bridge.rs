@@ -115,7 +115,9 @@ impl EventBridge {
         if let Some(exception) = state_error.or(backpressure_error) {
             // The exception object is preserved end-to-end; throwing a real
             // object cannot fail (only abstract/interface classes can).
-            let _ = exception.throw();
+            // 0.16 makes throw() return () and a no-op when an exception is
+            // already pending (audit F-17 context still applies).
+            exception.throw();
         }
     }
 

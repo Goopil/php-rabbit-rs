@@ -42,6 +42,7 @@ stub!(zend_is_callable);
 stub!(_call_user_function_impl);
 stub!(zend_throw_exception_ex);
 stub!(zend_throw_exception_object);
+stub!(zend_throw_exception);
 
 /// Never read without an engine; zeroed space satisfies the relocations.
 #[unsafe(no_mangle)]
@@ -50,3 +51,7 @@ pub static executor_globals: [u64; 8192] = [0; 8192];
 /// Never read without an engine; null class entry satisfies the relocations.
 #[unsafe(no_mangle)]
 pub static zend_ce_traversable: usize = 0;
+
+/// Never read without an engine; null class entry satisfies the relocations.
+#[unsafe(no_mangle)]
+pub static zend_ce_error: usize = 0;

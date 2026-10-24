@@ -13,6 +13,7 @@ use ext_php_rs::{
     error::Error,
     prelude::{PhpException, PhpResult},
     types::{ZendCallable, Zval},
+    zend::ExecutorGlobals,
 };
 
 /// Registry of PHP callables, protected by a mutex.
@@ -95,28 +96,42 @@ impl CallbackRegistry {
             };
             match callback.try_call(params.to_vec()) {
                 Ok(_) => {}
-                // Preserve the thrown exception object so it is rethrown as-is
-                // instead of being stringified and destroyed.
-                Err(Error::Exception(exception)) => {
-                    let mut object = Zval::new();
-                    if exception.set_zval(&mut object, false).is_ok() {
-                        let mut thrown = crate::classes::exception::rabbit_exception_message(
-                            "registered callback threw an exception".to_owned(),
-                        );
-                        thrown.set_object(Some(object));
-                        error.get_or_insert(thrown);
-                    } else {
-                        // The exception object could not be converted into a
-                        // zval: a fallback message keeps the failure visible
-                        // instead of silently dropping the callback exception.
+                // In ext-php-rs 0.16 the caught exception object lives in the
+                // engine globals, not in the error payload: take ownership of
+                // it so it is rethrown as-is instead of being stringified and
+                // destroyed.
+                Err(Error::ExceptionPending { .. }) => match ExecutorGlobals::take_exception() {
+                    Some(exception) => {
+                        let mut object = Zval::new();
+                        if exception.set_zval(&mut object, false).is_ok() {
+                            let mut thrown = crate::classes::exception::rabbit_exception_message(
+                                "registered callback threw an exception".to_owned(),
+                            );
+                            thrown.set_object(Some(object));
+                            error.get_or_insert(thrown);
+                        } else {
+                            // The exception object could not be converted into
+                            // a zval: a fallback message keeps the failure
+                            // visible instead of silently dropping the callback
+                            // exception.
+                            error.get_or_insert_with(|| {
+                                crate::classes::exception::rabbit_exception_message(
+                                    "the event callback threw but its exception could not be converted"
+                                        .to_owned(),
+                                )
+                            });
+                        }
+                    }
+                    None => {
+                        // The pending error carried no retrievable exception
+                        // object; keep the failure visible.
                         error.get_or_insert_with(|| {
                             crate::classes::exception::rabbit_exception_message(
-                                "the event callback threw but its exception could not be converted"
-                                    .to_owned(),
+                                "registered callback threw an exception".to_owned(),
                             )
                         });
                     }
-                }
+                },
                 Err(other) => {
                     error.get_or_insert_with(|| {
                         crate::classes::exception::rabbit_exception_message(other.to_string())

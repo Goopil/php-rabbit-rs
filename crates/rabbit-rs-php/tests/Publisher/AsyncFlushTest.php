@@ -138,7 +138,13 @@ describe('pipelined auto-flush', function () {
 
     it('reports no pending records when every publication confirms', function () {
         $outcomes = array_fill(0, 64, 'ack');
-        $pool = testingPool(defaultConfig(), ['publication_outcomes' => $outcomes]);
+        // Disable the interval timer so the 64-message publish loop reaches
+        // the threshold flush atomically instead of being split by timer
+        // drains mid-loop (would cause publishes_total to lag behind).
+        $pool = testingPool(defaultConfig(), [
+            'publication_outcomes' => $outcomes,
+            'buffer_flush_interval_ms' => 3_600_000,
+        ]);
 
         for ($i = 0; $i < 64; $i++) {
             $pool->publish(pubMessage("m{$i}"));
