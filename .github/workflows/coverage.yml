@@ -19,10 +19,12 @@ jobs:
     name: Coverage (Rust)
     runs-on: ubuntu-latest
     env:
-      # libclang 21 on ubuntu-26.04 parses clang's builtin SSE headers
-      # (xmmintrin.h) with an emulated __m128 when bindgen runs without a
-      # target, failing the ext-php-rs build script.
-      BINDGEN_EXTRA_CLANG_ARGS: --target=x86_64-unknown-linux-gnu
+      # The ubuntu-26.04 image ships libclang 20/21/22; clang-sys picks the
+      # newest (22), whose parser no longer knows LLVM <=21's
+      # __builtin_ia32_* builtins, so parsing the PHP headers fails the
+      # ext-php-rs build. Pin the library to 21, whose headers the runner's
+      # PHP toolchain resolves against (probed on 2026-10-24).
+      LIBCLANG_PATH: /usr/lib/llvm-21/lib
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -68,10 +70,12 @@ jobs:
     name: Coverage (PHP Extension)
     runs-on: ubuntu-latest
     env:
-      # libclang 21 on ubuntu-26.04 parses clang's builtin SSE headers
-      # (xmmintrin.h) with an emulated __m128 when bindgen runs without a
-      # target, failing the ext-php-rs build script.
-      BINDGEN_EXTRA_CLANG_ARGS: --target=x86_64-unknown-linux-gnu
+      # The ubuntu-26.04 image ships libclang 20/21/22; clang-sys picks the
+      # newest (22), whose parser no longer knows LLVM <=21's
+      # __builtin_ia32_* builtins, so parsing the PHP headers fails the
+      # ext-php-rs build. Pin the library to 21, whose headers the runner's
+      # PHP toolchain resolves against (probed on 2026-10-24).
+      LIBCLANG_PATH: /usr/lib/llvm-21/lib
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -106,10 +110,12 @@ jobs:
     name: Coverage (Laravel)
     runs-on: ubuntu-latest
     env:
-      # libclang 21 on ubuntu-26.04 parses clang's builtin SSE headers
-      # (xmmintrin.h) with an emulated __m128 when bindgen runs without a
-      # target, failing the ext-php-rs build script.
-      BINDGEN_EXTRA_CLANG_ARGS: --target=x86_64-unknown-linux-gnu
+      # The ubuntu-26.04 image ships libclang 20/21/22; clang-sys picks the
+      # newest (22), whose parser no longer knows LLVM <=21's
+      # __builtin_ia32_* builtins, so parsing the PHP headers fails the
+      # ext-php-rs build. Pin the library to 21, whose headers the runner's
+      # PHP toolchain resolves against (probed on 2026-10-24).
+      LIBCLANG_PATH: /usr/lib/llvm-21/lib
     # Boots the Docker RabbitMQ lab for the Integration coverage pass.
     timeout-minutes: 60
     steps:
