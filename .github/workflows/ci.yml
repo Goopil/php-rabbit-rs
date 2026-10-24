@@ -23,6 +23,9 @@ jobs:
       # (xmmintrin.h) with an emulated __m128 when bindgen runs without a
       # target, failing the ext-php-rs build script.
       BINDGEN_EXTRA_CLANG_ARGS: --target=x86_64-unknown-linux-gnu
+      # TEMPORARY DEBUG: trace bindgen's effective clang args (round-3
+      # failure investigation); remove once resolved.
+      RUST_LOG: bindgen=trace
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
