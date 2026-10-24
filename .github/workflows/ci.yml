@@ -23,9 +23,10 @@ jobs:
       # (xmmintrin.h) with an emulated __m128 when bindgen runs without a
       # target, failing the ext-php-rs build script.
       BINDGEN_EXTRA_CLANG_ARGS: --target=x86_64-unknown-linux-gnu
-      # TEMPORARY DEBUG: trace bindgen's effective clang args (round-3
-      # failure investigation); remove once resolved.
-      RUST_LOG: bindgen=trace
+      # TEMPORARY DEBUG: probe the runner's clang/libclang SSE defaults and
+      # bindgen flag forms (round-3 failure investigation); remove once
+      # resolved.
+      DEBUG_PROBE: "1"
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -39,6 +40,29 @@ jobs:
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: cargo-nextest
+
+      - name: TEMPORARY DEBUG probe (clang SSE defaults + bindgen flag forms)
+        if: env.DEBUG_PROBE == '1'
+        run: |
+          set +e
+          echo "=== clang version ==="
+          clang --version | head -2
+          echo "=== default-target SSE macros (expect present on x86_64) ==="
+          echo 'int x;' | clang -dM -E - | grep -cE "define __SSE2__ 1|define __SSE__ 1" || echo "SSE MACROS MISSING"
+          echo "=== driver-level xmmintrin parse ==="
+          echo '#include <xmmintrin.h>' | clang -E - >/dev/null 2>&1 && echo PARSE-OK || echo PARSE-FAIL
+          echo "=== libclang candidates ==="
+          ldconfig -p | grep -E "libclang" | head -5
+          echo "=== install bindgen-cli 0.73.2 and probe ==="
+          cargo install bindgen-cli --version 0.73.2 --quiet
+          H=/usr/lib/llvm-21/lib/clang/21/include/xmmintrin.h
+          echo "--- bindgen NO extra args ---"
+          bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "--- bindgen BINDGEN_EXTRA_CLANG_ARGS='--target=x86_64-unknown-linux-gnu' ---"
+          BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-unknown-linux-gnu" bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "--- bindgen BINDGEN_EXTRA_CLANG_ARGS='-target x86_64-unknown-linux-gnu' ---"
+          BINDGEN_EXTRA_CLANG_ARGS="-target x86_64-unknown-linux-gnu" bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "=== probe done ==="
 
       - name: Check formatting
         run: cargo fmt --all -- --check
