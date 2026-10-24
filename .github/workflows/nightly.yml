@@ -22,8 +22,14 @@ jobs:
   # (ci.yml, octane-runtime job).
   octane-runtime:
     name: Octane runtime (${{ matrix.server }})
-    # libclang 21 on ubuntu-latest (26.04) breaks ext-php-rs 0.15's bindgen; unpin after the ext-php-rs 0.16 migration
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    env:
+      # The ubuntu-26.04 image ships libclang 20/21/22; clang-sys picks the
+      # newest (22), whose parser no longer knows LLVM <=21's
+      # __builtin_ia32_* builtins, so parsing the PHP headers fails the
+      # ext-php-rs build. Pin the library to 21, whose headers the runner's
+      # PHP toolchain resolves against (probed on 2026-10-24).
+      LIBCLANG_PATH: /usr/lib/llvm-21/lib
     timeout-minutes: 45
     strategy:
       fail-fast: false
