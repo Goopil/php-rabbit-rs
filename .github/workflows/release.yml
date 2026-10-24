@@ -422,21 +422,16 @@ jobs:
           sudo chmod +x /usr/local/bin/pie
           pie --version
 
-      - name: Authenticate Composer for the GitHub API (release access)
-        if: matrix.docker_image == ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
-
       - name: Install the published release via PIE (runner)
         if: matrix.docker_image == ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          sudo -E pie repository:add vcs "https://github.com/${GITHUB_REPOSITORY}"
-          sudo -E pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
+          # Packagist only, like the container cells: adding the VCS
+          # repository makes composer prefer it and sync its metadata over
+          # git/ssh (no key on runners — the ssh clone fallback fails), while
+          # the Packagist dist resolves the prebuilt release asset. Packagist
+          # metadata for the native package must always reference this repo.
+          sudo pie install --no-interaction "goopil/rabbit-rs-native:${GITHUB_REF_NAME}"
 
       - name: Smoke test installed extension (runner)
         if: matrix.docker_image == ''
