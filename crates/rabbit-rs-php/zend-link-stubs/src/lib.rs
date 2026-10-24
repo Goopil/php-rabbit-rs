@@ -50,3 +50,7 @@ pub static executor_globals: [u64; 8192] = [0; 8192];
 /// Never read without an engine; null class entry satisfies the relocations.
 #[unsafe(no_mangle)]
 pub static zend_ce_traversable: usize = 0;
+
+/// Never read without an engine; null class entry satisfies the relocations.
+#[unsafe(no_mangle)]
+pub static zend_ce_error: usize = 0;
