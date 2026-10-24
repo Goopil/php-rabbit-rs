@@ -27,8 +27,7 @@ jobs:
   # suite), on the PHP version real-broker CI does not cover.
   integration-php85:
     name: PHP 8.5 glibc x86_64 (full integration)
-    # libclang 21 on ubuntu-latest (26.04) breaks ext-php-rs 0.15's bindgen; unpin after the ext-php-rs 0.16 migration
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

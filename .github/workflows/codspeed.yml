@@ -19,8 +19,7 @@ concurrency:
 jobs:
   benchmarks:
     name: Rust benchmarks
-    # libclang 21 on ubuntu-latest (26.04) breaks ext-php-rs 0.15's bindgen; unpin after the ext-php-rs 0.16 migration
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
