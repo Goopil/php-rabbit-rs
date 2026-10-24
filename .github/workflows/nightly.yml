@@ -22,8 +22,12 @@ jobs:
   # (ci.yml, octane-runtime job).
   octane-runtime:
     name: Octane runtime (${{ matrix.server }})
-    # libclang 21 on ubuntu-latest (26.04) breaks ext-php-rs 0.15's bindgen; unpin after the ext-php-rs 0.16 migration
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    env:
+      # libclang 21 on ubuntu-26.04 parses clang's builtin SSE headers
+      # (xmmintrin.h) with an emulated __m128 when bindgen runs without a
+      # target, failing the ext-php-rs build script.
+      BINDGEN_EXTRA_CLANG_ARGS: --target=x86_64-unknown-linux-gnu
     timeout-minutes: 45
     strategy:
       fail-fast: false
