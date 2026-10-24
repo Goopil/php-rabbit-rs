@@ -6,6 +6,89 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain available in the repository.
 
+## [Unreleased]
+
+## [0.3.11] - 2026-10-22
+
+Round L — stabilization of the 2026-10-01 adversarial audit: 24 tasks across
+five phases (stability, robustness, profile-first performance, launch hygiene,
+contracts & observability). Full plan:
+`docs/superpowers/plans/2026-10-01-post-audit-stabilization.md`.
+
+### Fixed
+
+- Consumer settlement is guarded against double-settle panics, stale-generation
+  poisoning, and the `SourceReplaced` vs stashed-batch-error interaction (audit
+  HIGH findings): a delivery can no longer corrupt consumer state by settling
+  twice, after its generation closed, or through an out-of-range token.
+- Topology declare failures with AMQP 404/406 — and the coordinator causes that
+  carry them — are classified as permanent errors: an un-declarable topology
+  fails the pool permanently instead of looping through 406 reconnect storms.
+- Laravel `bulk()` chunks oversized publishes to the native batch bounds
+  (256 messages / 1 MiB cumulative payload) and documents the partial-success
+  outcome instead of failing the entire batch.
+- Configuration validation rejects `max_buffered_bytes = 0` and duplicate
+  broker/worker names with errors naming the exact config path.
+- Delayed releases honor the subscription `max_attempts` instead of retrying
+  past the cap.
+- `Consumer::next(timeoutMs)` is bounded by the shared 24-hour ceiling.
+- The publisher wire-write phase is bounded by the request deadline, so a
+  stalled socket can no longer park a publish past its budget.
+- The extension publish buffer bounds in-flight handle growth and makes
+  teardown accounting exact (every accepted publication is resolved or
+  counted).
+- Connection-actor command arms carry bounded timeouts, and a permanent loss
+  discovered during `Connecting` is honored instead of retried forever.
+- The process-local runtime registry is bounded, evicting idle pools
+  LRU-style so long-lived Octane workers cannot accumulate registries.
+- The `connection_blocked` gauge counts currently blocked brokers instead of
+  chattering on every set/clear.
+- Laravel: the extension version caret is enforced at connection resolution,
+  connector env strings are cast centrally, and `rabbit-rs:status` failures
+  are isolated per connection.
+- Laravel: the work command's queue key is validated against the connection's
+  subscriptions and `pop(null)` fails with an actionable error.
+- The worker supervisor honors drain requests so the Kubernetes preStop hook
+  actually drains workers before exit.
+- `clear()` purges TTL delay buckets in addition to the primary queue, and
+  closing a consumer drains its settlement records.
+- PHP event callbacks whose listener throws no longer have the exception
+  silently dropped; the stderr sink no longer bypasses the log facade; the
+  typed AMQP reply code drives delayed-exchange plugin detection.
+
+### Added
+
+- `TransportError::protocol_code` exposes the typed AMQP reply code for
+  programmatic error handling.
+
+### Changed
+
+- Performance: `rabbit_rs_core::transport::PublishProperties` now shares the
+  caller's per-message `Arc<str>` allocations instead of re-owning fresh
+  `String`s on every publish: `content_type`, `correlation_id` and
+  `message_id` changed from `Option<String>` to `Option<Arc<str>>` (minor
+  breaking change for code constructing these fields directly), and the Lapin
+  wire adapter materializes exactly one owned short-string per property at
+  the wire boundary. The bytes put on the wire are unchanged (pinned by a
+  golden parity test); the round-l profile measured the eliminated duplicate
+  conversions at ≈0.3–0.6 µs of the extension-boundary publish p50.
+- The event bridge skips its drain work entirely when no callbacks are
+  registered (per-publish fast path).
+- `Delivery` debug output is redacted and the close fan-out is bounded
+  (~2 s total across connections).
+- PHP stubs and docblocks are aligned with the shipped behavior: `metadata()`
+  returns nested arrays, `publishBatch` reports partial success with a
+  documented `ensure_open` order, `ackBatch` settles partially, and discarded
+  error records are counted in `stats()`.
+- Launch hygiene: community files (issue/PR templates, Code of Conduct),
+  stale repo-slug/version references swept with `check-docs.sh` guards, ROAST
+  reviews relocated under `docs/audits/`, README hero claim workload-scoped,
+  Packagist metadata completed, workspace crates marked `publish = false`,
+  CI jobs bounded with `timeout-minutes` and the Homebrew workflow gained
+  concurrency control.
+- driver-bench dependencies refreshed (Laravel framework 13.34,
+  iamfarhad/laravel-rabbitmq 1.4.4) and CI actions bumped.
+
 ## [0.3.10] - 2026-09-26
 
 ### Fixed
@@ -562,7 +645,7 @@ pipeline end to end after fixing the issues below.
 - `delivery_limit` without `dead_letter` is rejected to prevent silent message loss.
 - Linux builds: version-script linker fixes; Pest v4 upgrade for Laravel 13 support.
 
-[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.11...HEAD
 [0.0.3]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.2...v0.0.3
 [0.0.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.3...v0.0.4
 [0.0.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.0.4...v0.0.5
@@ -588,3 +671,8 @@ pipeline end to end after fixing the issues below.
 [0.3.4]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.3...v0.3.4
 [0.3.5]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.4...v0.3.5
 [0.3.6]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.5...v0.3.6
+[0.3.7]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.6...v0.3.7
+[0.3.8]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.7...v0.3.8
+[0.3.9]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.8...v0.3.9
+[0.3.10]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.9...v0.3.10
+[0.3.11]: https://github.com/Goopil/php-rabbit-rs/compare/v0.3.10...v0.3.11

@@ -856,6 +856,156 @@ async fn permanent_topology_failure_fails_the_pool_instead_of_retrying_forever()
     coordinator.close().await.expect("close");
 }
 
+// ---------------------------------------------------------------------------
+// Permanent-error classification (audit HIGH 4–5): topology 404/406 verdicts
+// and permanent consumer/publisher establishment errors must fail the pool
+// instead of being flattened into retryable connection errors that reconnect
+// and re-declare forever.
+// ---------------------------------------------------------------------------
+
+/// A topology declare the broker rejects permanently with `PRECONDITION_FAILED`
+/// (406 — a pre-existing queue with incompatible arguments, never
+/// self-healing) must fail the pool exactly like the `ACCESS_REFUSED` case
+/// above: reconnecting and re-declaring can never heal an argument mismatch.
+#[tokio::test(start_paused = true)]
+async fn precondition_failed_topology_declare_fails_permanently_without_reconnect_loop() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_connect_result(Ok(()));
+    // The 406 verdict as the transport classifies it: the protocol kind, the
+    // same non-recoverable class the ACCESS_REFUSED test above observes
+    // through the authentication kind.
+    transport.push_operation_result(Err(TransportError::protocol(
+        "PRECONDITION_FAILED - inequivalent arg 'x-queue-type' for queue 'jobs' in vhost '/': received none but current is the value 'quorum'",
+    )));
+
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    let state = tokio::select! {
+        state = coordinator.wait_for_state(|state| {
+            matches!(state, ConnectionState::FailedPermanent { .. })
+        }) => state,
+        ready = coordinator.wait_for_state(|state| {
+            matches!(state, ConnectionState::Ready { generation: 2.. })
+        }) => {
+            panic!("a 406 topology verdict was retried and the pool reached {ready:?}")
+        }
+    };
+
+    assert!(matches!(
+        state,
+        ConnectionState::FailedPermanent {
+            kind: TransportErrorKind::Protocol,
+            ..
+        }
+    ));
+
+    // The failure was counted once and never again: a permanent failure stops
+    // the recovery loop, so the counter freezes instead of climbing.
+    let failures = coordinator.metrics_snapshot().recovery_failures_total;
+    assert_eq!(failures, 1, "exactly one failed recovery generation");
+    for _ in 0..50 {
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        coordinator.metrics_snapshot().recovery_failures_total,
+        failures,
+        "a permanent topology failure must stop scheduling recovery attempts"
+    );
+
+    coordinator.close().await.expect("close");
+}
+
+/// Consumer establishment refused permanently (`ACCESS_REFUSED` on
+/// `basic.consume` — no read permission on the queue — or a `QoS` precondition
+/// rejection) must stay permanent through `CoordinatorError::Consumer`:
+/// flattening it into a retryable connection error tears the shared
+/// connection down and re-establishes it forever.
+#[tokio::test(start_paused = true)]
+async fn permanent_consumer_establishment_error_stays_permanent() {
+    let transport = Arc::new(MockTransport::default());
+    transport.push_connect_result(Ok(()));
+    // `set_qos` consumes this result (same injection point as the transient
+    // retry test): a refusal the broker will repeat on every generation.
+    transport.push_consumer_result(Err(TransportError::authentication(
+        "ACCESS_REFUSED: no read permission on queue 'jobs'",
+    )));
+
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    let state = tokio::select! {
+        state = coordinator.wait_for_state(|state| {
+            matches!(state, ConnectionState::FailedPermanent { .. })
+        }) => state,
+        ready = coordinator.wait_for_state(|state| {
+            matches!(state, ConnectionState::Ready { generation: 2.. })
+        }) => {
+            panic!("a permanent consumer-establishment refusal was retried and the pool reached {ready:?}")
+        }
+    };
+
+    assert!(matches!(
+        state,
+        ConnectionState::FailedPermanent {
+            kind: TransportErrorKind::Authentication,
+            ..
+        }
+    ));
+
+    coordinator.close().await.expect("close");
+}
+
+/// Regression: a transient connection failure during reconcile must keep the
+/// historical rollback-and-retry behavior — the permanence classification may
+/// only stop the loop for causes recovery can never fix.
+#[tokio::test(start_paused = true)]
+async fn transient_reconcile_failure_still_retries() {
+    let transport = Arc::new(MockTransport::default());
+    // First connection succeeds; recovery generation 1 fails mid reconcile.
+    transport.push_connect_result(Ok(()));
+    transport.push_operation_result(Err(TransportError::connection(
+        "connection reset during declare",
+    )));
+    // The retry: connect + reconcile succeed.
+    transport.push_connect_result(Ok(()));
+
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    // Advance time through the backoff so the retry can occur.
+    tokio::time::advance(Duration::from_secs(2)).await;
+
+    let ready2 = tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_for_state(
+            &coordinator,
+            |s| matches!(s, ConnectionState::Ready { generation: g } if *g >= 2),
+        ),
+    )
+    .await;
+    assert!(
+        ready2.is_ok(),
+        "a transient reconcile failure must retry with backoff, state: {:?}",
+        coordinator.state()
+    );
+
+    coordinator.close().await.expect("close");
+}
+
 #[tokio::test(start_paused = true)]
 async fn recovery_failure_rolls_back_and_retries() {
     let transport = Arc::new(MockTransport::default());
@@ -1091,6 +1241,187 @@ async fn delayed_publish_declare_failure_fails_that_message_and_keeps_publisher_
         outcome,
         PublishOutcome::Confirmed {
             message_id: "still-published".into()
+        }
+    );
+
+    coordinator.close().await.expect("close");
+}
+
+// ---------------------------------------------------------------------------
+// On-demand establishment error kind (audit HIGH 5) and publisher-slot lock
+// (audit MEDIUM): a failure on a healthy connection must surface its real
+// kind, and the publisher slot must never be locked across an awaited actor
+// round-trip.
+// ---------------------------------------------------------------------------
+
+/// On-demand establishment of a profile requested after the last generation
+/// must surface the real error kind to the connection actor: a permanent
+/// refusal fails the pool instead of being reported as a generic recoverable
+/// `connection_lost` on a healthy connection.
+#[tokio::test(start_paused = true)]
+async fn on_demand_consumer_establishment_failure_surfaces_the_real_error_kind() {
+    let transport = Arc::new(MockTransport::default());
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+    // "main" is established by generation 1; "secondary" is requested later,
+    // so its establishment rides the on-demand path.
+    let requested = Arc::new(Mutex::new(
+        [(
+            "main".to_owned(),
+            config.worker("main").expect("worker profile").clone(),
+        )]
+        .into_iter()
+        .collect(),
+    ));
+    let coordinator_config = RecoveryCoordinatorConfig {
+        requested_profiles: requested.clone(),
+        ..coordinator_config(config)
+    };
+
+    let coordinator = RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config);
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    requested
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            "secondary".to_owned(),
+            worker_profile("secondary", "primary", "jobs", 4),
+        );
+    // The on-demand establishment's `set_qos` is refused permanently.
+    transport.push_consumer_result(Err(TransportError::authentication(
+        "ACCESS_REFUSED: no read permission on queue 'jobs'",
+    )));
+
+    let error = coordinator
+        .consumer("secondary")
+        .await
+        .expect_err("the establishment is refused");
+    assert!(
+        error.to_string().contains("ACCESS_REFUSED"),
+        "the caller observes the real failure, got: {error}"
+    );
+
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let state = tokio::select! {
+        state = coordinator.wait_for_state(|s| {
+            matches!(s, ConnectionState::FailedPermanent { .. })
+        }) => state,
+        ready = coordinator.wait_for_state(|s| {
+            matches!(s, ConnectionState::Ready { generation: 2.. })
+        }) => {
+            panic!("an on-demand permanent refusal was flattened into a retry and the pool reached {ready:?}")
+        }
+    };
+    assert!(matches!(
+        state,
+        ConnectionState::FailedPermanent {
+            kind: TransportErrorKind::Authentication,
+            ..
+        }
+    ));
+
+    coordinator.close().await.expect("close");
+}
+
+/// A `wait_for_publisher` racing a recovery generation must complete during
+/// the transition: the publisher slot lock must never be held across the
+/// awaited actor round-trip (`connection_event(Ready)`), or acquisition parks
+/// behind it with no deadline.
+#[tokio::test(start_paused = true)]
+async fn wait_for_publisher_completes_while_a_generation_transition_is_in_flight() {
+    let transport = Arc::new(MockTransport::default());
+    let config = config(
+        vec![broker("primary", "/", "guest")],
+        vec![worker_profile("main", "primary", "jobs", 4)],
+    );
+
+    let coordinator =
+        RecoveryCoordinator::spawn(&dyn_transport(&transport), coordinator_config(config));
+
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 1 })
+    })
+    .await;
+
+    // An unconfirmed publication is retained for replay: the Ready event of
+    // the next generation flushes it through the publisher actor while the
+    // coordinator adopts the fresh channel.
+    transport.push_pending_confirmation();
+    let waiter = coordinator
+        .publisher()
+        .await
+        .expect("publisher ready")
+        .try_publish(publish_request(
+            "in-flight",
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("publish accepted");
+    for _ in 0..100 {
+        if transport
+            .operations()
+            .iter()
+            .any(|op| matches!(op, TransportOperation::Publish(_)))
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    // Park the publisher actor mid `connection_event(Ready)`: the
+    // `enable_confirms` gate holds the actor inside the round-trip the
+    // coordinator awaits — the window in which the coordinator must not hold
+    // the publisher slot lock.
+    let gate = transport.push_enable_confirms_gate();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    transport.push_connect_result(Ok(()));
+    coordinator
+        .connection_lost(TransportError::connection("heartbeat missed"))
+        .await
+        .expect("loss reported");
+
+    wait_for_state(&coordinator, |s| {
+        matches!(
+            s,
+            ConnectionState::Recovering { .. } | ConnectionState::Connecting { .. }
+        )
+    })
+    .await;
+    tokio::time::advance(Duration::from_millis(200)).await;
+    gate.wait_entered().await;
+
+    // The acquisition must resolve while the transition is still parked — a
+    // slot lock held across the round-trip would park it with no deadline.
+    let acquisition = {
+        let coordinator = coordinator.clone();
+        tokio::spawn(async move { coordinator.wait_for_publisher().await })
+    };
+    let publisher = tokio::time::timeout(Duration::from_secs(1), acquisition)
+        .await
+        .expect("wait_for_publisher must complete while the generation transition is parked")
+        .expect("acquisition task joined")
+        .expect("publisher handle available during the transition");
+    drop(publisher);
+
+    let _ = gate.release();
+    wait_for_state(&coordinator, |s| {
+        matches!(s, ConnectionState::Ready { generation: 2 })
+    })
+    .await;
+    let outcome = tokio::time::timeout(Duration::from_secs(5), waiter.wait())
+        .await
+        .expect("confirmation within timeout")
+        .expect("the replayed publication must be confirmed");
+    assert_eq!(
+        outcome,
+        PublishOutcome::Confirmed {
+            message_id: "in-flight".into()
         }
     );
 

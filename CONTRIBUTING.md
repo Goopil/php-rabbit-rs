@@ -14,8 +14,8 @@ Rabbit RS is a monorepo with three components: a Rust core, a native PHP extensi
 
 ```bash
 # Clone
-git clone https://github.com/Goopil/rabbit-rs.git
-cd rabbit-rs
+git clone https://github.com/Goopil/php-rabbit-rs.git
+cd php-rabbit-rs
 
 # Build the extension (debug mode)
 cargo build -p rabbit-rs-php --features extension-tests

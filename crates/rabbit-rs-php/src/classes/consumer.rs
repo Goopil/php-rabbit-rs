@@ -13,11 +13,13 @@ use super::{
         consumer_exception, consumer_exception_message, rabbit_exception, rabbit_exception_message,
     },
 };
+use crate::conversion::MAX_TIMEOUT_MS;
 use ext_php_rs::{
     boxed::ZBox,
     flags::ClassFlags,
-    prelude::{PhpResult, php_class, php_impl},
+    prelude::{PhpException, PhpResult, php_class, php_impl},
     types::{ZendClassObject, ZendHashTable, Zval},
+    zend::ce,
 };
 use rabbit_rs_core::consumer::{ConsumerHandle, Delivery as NativeDelivery};
 use tokio::{runtime::Handle, time};
@@ -44,7 +46,13 @@ impl Consumer {
     /// The fast path checks the lock-free buffer without crossing into the
     /// async runtime. The slow path blocks on the async runtime with the
     /// specified timeout.
+    ///
+    /// `timeoutMs` shares the publish deadline's 24 h ceiling
+    /// (`MAX_TIMEOUT_MS`): a value beyond 86_400_000 ms throws a PHP
+    /// `\ValueError` naming the bound before any delivery is drained, so an
+    /// oversized timeout can never park the calling thread indefinitely.
     pub fn next(&self, timeoutMs: i64) -> PhpResult<Option<Delivery>> {
+        Self::validate_timeout_ms(timeoutMs)?;
         self.ensure_open("Goopil\\RabbitRs\\Consumer::next")?;
         self.drain_publish_buffer()?;
         // Drain before the fast path too: a delivery being immediately
@@ -89,8 +97,13 @@ impl Consumer {
     /// async runtime with the specified timeout, then drains whatever is
     /// available. `max` is clamped to `1..=256`.
     ///
+    /// `timeoutMs` shares the publish deadline's 24 h ceiling
+    /// (`MAX_TIMEOUT_MS`): a value beyond 86_400_000 ms throws a PHP
+    /// `\ValueError` naming the bound before any delivery is drained.
+    ///
     /// @return list<\Goopil\RabbitRs\Delivery>
     pub fn nextBatch(&self, max: i64, timeoutMs: i64) -> PhpResult<Vec<Delivery>> {
+        Self::validate_timeout_ms(timeoutMs)?;
         self.ensure_open("Goopil\\RabbitRs\\Consumer::nextBatch")?;
         self.drain_publish_buffer()?;
         // Drain before the fast path too, mirroring next() (audit F-21).
@@ -161,6 +174,11 @@ impl Consumer {
     /// Bounded to 256 deliveries per call. The cap is checked before any
     /// settlement is enqueued so a rejected call has no side effects
     /// (audit F-20).
+    ///
+    /// Settlement is partial when an entry fails mid-loop (already-settled
+    /// token, closed consumer set, or a settlement channel that stays full
+    /// through backpressure): entries enqueued before the failing one stay
+    /// settled, and the error surfaces after the loop returns.
     ///
     /// @param list<\Goopil\RabbitRs\Delivery> $deliveries
     pub fn ackBatch(&self, deliveries: &ZendHashTable) -> PhpResult<()> {
@@ -297,6 +315,33 @@ impl Consumer {
     /// Wraps a native delivery into the PHP-facing type with this handle's pid.
     fn wrap_delivery(&self, delivery: NativeDelivery) -> Delivery {
         Delivery::new(delivery, self.pid)
+    }
+
+    /// Rejects a consumer wait beyond the shared 24 h ceiling.
+    ///
+    /// Consumer waits and publish deadlines share [`MAX_TIMEOUT_MS`]: a
+    /// `PHP_INT_MAX` timeout would otherwise park the calling thread
+    /// indefinitely (`max_execution_time` counts CPU time only while the
+    /// worker is parked in `block_on`, and tokio clamps oversized
+    /// durations), so the over-ceiling call is rejected before any delivery
+    /// is drained, mirroring the publish-side `timeout_ms` validation.
+    ///
+    /// Negative and zero values keep their existing behavior: the slow path
+    /// rejects negatives, and zero returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns a PHP `ValueError` naming the bound when `timeout_ms`
+    /// exceeds the ceiling.
+    fn validate_timeout_ms(timeout_ms: i64) -> PhpResult<()> {
+        if timeout_ms > MAX_TIMEOUT_MS.cast_signed() {
+            return Err(PhpException::new(
+                format!("timeoutMs: exceeds the {MAX_TIMEOUT_MS} millisecond limit"),
+                0,
+                ce::value_error(),
+            ));
+        }
+        Ok(())
     }
 
     /// Drains native events, then blocks on the async runtime for the next

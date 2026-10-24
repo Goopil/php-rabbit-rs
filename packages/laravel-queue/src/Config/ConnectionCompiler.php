@@ -81,7 +81,7 @@ final class ConnectionCompiler
         self::rejectUnknownKeys($config, array_merge(self::CONNECTION_KEYS, array_keys($defaults)), $path);
         self::rejectAutoSubscribe($config, $path);
 
-        $queue = self::string($config['queue'] ?? null, $path.self::PATH_QUEUE);
+        $queue = self::queue($config, $path);
         $broker = self::broker($name, $config, $path);
         $bestEffort = self::boolean($config['best_effort'] ?? false, $path.'.best_effort');
         $worker = self::worker($name, $queue, $config, $bestEffort, $path);
@@ -303,19 +303,47 @@ final class ConnectionCompiler
     }
 
     /**
+     * The connection `queue` key: required without `subscriptions` (it names
+     * the derived subscription), optional with them — {@see worker()} then
+     * only accepts a value one of the subscriptions covers. An explicit null
+     * behaves like an absent key.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private static function queue(array $config, string $path): ?string
+    {
+        $queue = $config['queue'] ?? null;
+        if ($queue !== null) {
+            return self::string($queue, $path.self::PATH_QUEUE);
+        }
+
+        if (($config['subscriptions'] ?? null) === null) {
+            self::invalid($path.self::PATH_QUEUE, 'must be a non-empty string');
+        }
+
+        return null;
+    }
+
+    /**
      * Without the `subscriptions` key, one subscription named "default" is
      * derived from the connection's queue. With it, the escape-hatch list
      * replaces the derivation: the alias is the array key and the broker is
-     * always this connection.
+     * always this connection. The `queue` key stays optional in that case —
+     * it feeds the connector's pop(null) target and the work plan — but when
+     * present it must be covered: a queue no subscription consumes would only
+     * fail at pop time (no profile subscribes to it), so the mismatch is
+     * rejected here instead.
      *
      * @param  array<string, mixed>  $config
      * @return array{name: string, subscriptions: list<array<string, mixed>>, scheduler: array{strategy: string}}
      */
-    private static function worker(string $name, string $queue, array $config, bool $bestEffort, string $path): array
+    private static function worker(string $name, ?string $queue, array $config, bool $bestEffort, string $path): array
     {
         $subscriptions = $config['subscriptions'] ?? null;
 
         if ($subscriptions === null) {
+            // compile() already required the queue key in this branch: it is
+            // the name of the derived subscription.
             return [
                 'name' => $name,
                 'subscriptions' => [
@@ -349,6 +377,18 @@ final class ConnectionCompiler
             $seenQueues[$queueName] = $alias;
 
             $compiled[] = self::subscription($name, $alias, $entry, $config, $bestEffort, $subscriptionPath);
+        }
+
+        if ($queue !== null && ! isset($seenQueues[$queue])) {
+            self::invalid(
+                $path.self::PATH_QUEUE,
+                sprintf(
+                    "the queue key is ignored when subscriptions are defined and no subscription consumes '%s' — "
+                    .'remove the key, or add it as a subscription (covered queues: %s)',
+                    $queue,
+                    implode(', ', array_keys($seenQueues)),
+                ),
+            );
         }
 
         return [
@@ -757,7 +797,13 @@ final class ConnectionCompiler
         return $value;
     }
 
-    private static function boolean(mixed $value, string $path): bool
+    /**
+     * Casts a config value to bool, accepting Laravel env() strings (e.g.
+     * "1", "true") and rejecting anything else strictly. Public so the
+     * connector casts the framework keys it reads raw (after_commit) with
+     * the same rules and error paths as compilation.
+     */
+    public static function boolean(mixed $value, string $path): bool
     {
         if (is_bool($value)) {
             return $value;
@@ -775,7 +821,14 @@ final class ConnectionCompiler
         self::invalid($path, 'must be a boolean or an env-style boolean string (e.g. "1", "true")');
     }
 
-    private static function integer(mixed $value, string $path): int
+    /**
+     * Casts a config value to int, accepting signed digit strings (Laravel
+     * env() returns strings for .env numbers, e.g. "64") and rejecting
+     * anything else strictly; the caller range-checks. Public so the
+     * connector casts the framework keys it reads raw (block_for) with the
+     * same rules and error paths as compilation.
+     */
+    public static function integer(mixed $value, string $path): int
     {
         if (is_int($value)) {
             return $value;

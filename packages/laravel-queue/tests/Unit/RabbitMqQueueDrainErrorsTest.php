@@ -44,6 +44,8 @@ it('drainSettlementErrors throws ConnectionException on StaleGeneration error', 
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'StaleGeneration',
         'message' => 'stale generation detected',
     ]);
@@ -57,6 +59,8 @@ it('drainSettlementErrors throws ConnectionException on Transport error', functi
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'Transport',
         'message' => 'transport error',
     ]);
@@ -70,6 +74,8 @@ it('drainSettlementErrors does not throw on non-connection errors', function ():
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'AlreadySettled',
         'message' => 'delivery already settled',
     ]);
@@ -84,6 +90,8 @@ it('drainSettlementErrors clears errors after draining', function (): void {
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'AlreadySettled',
         'message' => 'delivery already settled',
     ]);
@@ -98,6 +106,8 @@ it('drainSettlementErrors logs non-connection errors at warning level', function
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'AlreadySettled',
         'message' => 'delivery already settled',
     ]);
@@ -113,10 +123,10 @@ it('drainSettlementErrors logs MaxAttempts errors at error level', function (): 
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'MaxAttempts',
         'message' => 'delivery attempts 25 exceed the configured maximum of 20 — acknowledged and dropped (no dead-letter exchange configured)',
-        'message_id' => 'msg-poison-1',
-        'attempts' => 25,
     ]);
 
     Log::spy();
@@ -124,7 +134,8 @@ it('drainSettlementErrors logs MaxAttempts errors at error level', function (): 
 
     Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled'
         && str_contains((string) ($context['message'] ?? ''), 'acknowledged and dropped')
-        && ($context['attempts'] ?? null) === 25);
+        && ($context['delivery_tag'] ?? null) === 1
+        && ($context['subscription'] ?? null) === 'auto');
 });
 
 it('drainSettlementErrors logs a refused delayed release at error level without throwing', function (): void {
@@ -132,9 +143,10 @@ it('drainSettlementErrors logs a refused delayed release at error level without 
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 2,
+        'subscription' => 'auto',
         'error_kind' => 'InvalidDelay',
         'message' => 'delay exceeds the largest configured TTL bucket (30000 ms); message msg-late rejected with requeue=false toward the dead-letter exchange',
-        'message_id' => 'msg-late',
     ]);
 
     Log::spy();
@@ -157,6 +169,8 @@ it('pop calls drainSettlementErrors before getting deliveries', function (): voi
     warmConsumerCache($queue);
     $consumer = $pool->consumerFor('__auto__.orders-eu');
     $consumer->pushError([
+        'delivery_tag' => 1,
+        'subscription' => 'auto',
         'error_kind' => 'StaleGeneration',
         'message' => 'stale generation on pop',
     ]);

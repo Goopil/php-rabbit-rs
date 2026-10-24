@@ -118,7 +118,7 @@ describe('queue scoping on shared profiles', function () {
         [$queue, $pool] = makeScopingQueue(true);
         $pool->pushDelivery('__auto__.orders-eu', new Delivery(
             '{"job":"ProcessOrder","data":{}}',
-            ['message_id' => 'scoped-1', 'subscription' => 'auto', 'attempts' => 1],
+            ['message_id' => 'scoped-1', 'subscription' => 'auto', 'attempts' => 1, 'state' => 'pending', 'headers' => []],
         ));
 
         $job = $queue->pop('orders-eu');
@@ -132,7 +132,7 @@ describe('queue scoping on shared profiles', function () {
         [$queue, $pool] = makeScopingQueue(true);
         $pool->pushDelivery('__auto__.orders-eu', new Delivery(
             '{"job":"ProcessOrder","data":{}}',
-            ['message_id' => 'scoped-2', 'subscription' => 'auto', 'attempts' => 1],
+            ['message_id' => 'scoped-2', 'subscription' => 'auto', 'attempts' => 1, 'state' => 'pending', 'headers' => []],
         ));
 
         $job = $queue->pop();
@@ -172,7 +172,7 @@ describe('queue scoping on shared profiles', function () {
         [$queue, $pool] = makeScopingQueue(false);
         $pool->pushDelivery('__auto__.orders-eu', new Delivery(
             '{"job":"ProcessOrder","data":{}}',
-            ['message_id' => 'scoped-4', 'subscription' => 'auto', 'attempts' => 1],
+            ['message_id' => 'scoped-4', 'subscription' => 'auto', 'attempts' => 1, 'state' => 'pending', 'headers' => []],
         ));
 
         $job = $queue->pop('orders-eu');
@@ -186,7 +186,7 @@ describe('queue scoping on shared profiles', function () {
         [$queue, $pool] = makeAlphaBetaQueue();
         $pool->pushDelivery('__auto__.beta', new Delivery(
             '{"job":"ProcessBeta","data":{}}',
-            ['message_id' => 'scoped-3', 'subscription' => 'auto', 'attempts' => 1],
+            ['message_id' => 'scoped-3', 'subscription' => 'auto', 'attempts' => 1, 'state' => 'pending', 'headers' => []],
         ));
 
         $job = $queue->pop('beta');

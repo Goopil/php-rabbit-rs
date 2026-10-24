@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{fmt::Write as _, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use rabbit_rs_core::{
@@ -11,12 +11,15 @@ use rabbit_rs_core::{
     },
     topology::delay::{DelayStrategy, TtlBucketPlan},
     transport::{
-        ExchangeKind, ExchangeSpec, PublishConfirmation, PublisherChannel, QueueSpec,
+        ExchangeKind, ExchangeSpec, HeaderValue, PublishConfirmation, PublisherChannel, QueueSpec,
         ReturnedMessage, Transport, TransportError,
         mock::{MockTransport, TransportOperation},
+        wire_publish_properties,
     },
 };
 use tokio::time::Instant;
+
+use amq_protocol::types::{AMQPValue, ShortString};
 
 mod common;
 
@@ -1328,6 +1331,135 @@ async fn close_with_a_wedged_transport_drops_loudly_at_the_quiesce_deadline() {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded wire-write phase: the pre-confirm transport publish future is
+// bounded by min(request deadline, confirm timeout) like every other phase —
+// a transport publish that never resolves must not hold the permit, the byte
+// reservation, and the waiter forever.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn wire_write_parked_past_the_request_deadline_fails_terminally_on_it() {
+    let transport = MockTransport::default();
+    // The wire-write never completes on its own: the transport publish
+    // parks in its gate past the request deadline.
+    let gate = transport.push_publish_gate();
+
+    let mut config = config_safety();
+    // Exactly one "payload" (7 bytes) fits the budget: a second publish of
+    // the same size can only be accepted once the parked one released its
+    // byte reservation.
+    config.max_buffered_bytes = 7;
+    let actor = actor_safety(&transport, config).await;
+
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(1);
+    let request = PublishRequest::new(
+        Destination::new("jobs", "high"),
+        Bytes::from_static(b"payload"),
+        MessageProperties::new("wedged"),
+        deadline,
+    );
+    let waiter = actor.try_publish(request).expect("publish");
+    gate.wait_entered().await;
+    assert!(
+        publish_operations(&transport).is_empty(),
+        "the gated wire-write must not reach the transport while parked"
+    );
+
+    // Advance exactly to the request deadline. The wire-write bound is
+    // min(request deadline, now + confirm timeout) — the deadline (1s)
+    // elapses before the confirm timeout (5s), so the waiter must resolve
+    // terminally right here.
+    tokio::time::advance(Duration::from_secs(1)).await;
+
+    let error = tokio::time::timeout(Duration::from_secs(10), waiter.wait())
+        .await
+        .expect("the waiter must resolve terminally once the request deadline passes")
+        .expect_err("a wire-write parked past its deadline must fail, not confirm");
+    assert_eq!(error.kind(), PublishErrorKind::Timeout);
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(1),
+        "the waiter must resolve exactly on the request deadline"
+    );
+    assert_eq!(
+        actor.available_permits(),
+        32,
+        "the capacity permit must be released with the terminal outcome"
+    );
+
+    // The terminal outcome releases the byte reservation too: the same
+    // payload size is accepted again, and the publisher stays alive.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let second = actor
+        .try_publish(request_safety("after", b"payload"))
+        .expect("the byte reservation must be released with the terminal outcome");
+    assert!(
+        matches!(second.wait().await, Ok(PublishOutcome::Confirmed { .. })),
+        "the publisher must stay alive after a timed-out wire-write"
+    );
+    wait_for_publish_count(&transport, 1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn publish_commands_queued_behind_close_release_their_byte_reservation_on_exit() {
+    let transport = MockTransport::default();
+    // The publish gate parks the actor on the in-flight future so nothing is
+    // consumed from the command channel while it is being filled.
+    let gate = transport.push_publish_gate();
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let parked = actor
+        .try_publish(request_safety("parked", b"payload"))
+        .expect("parked publish");
+    gate.wait_entered().await;
+
+    // Enqueue Close, then a publish command behind it. One yield lets the
+    // spawned closer complete its send while the actor is parked on the
+    // gated write, so the command channel holds [Close, publish] — the
+    // publish command is still inside the mpsc when the actor exits.
+    let closer = {
+        let actor = actor.clone();
+        tokio::spawn(async move { actor.close().await })
+    };
+    tokio::task::yield_now().await;
+    let queued = actor
+        .try_publish(request_safety("queued", b"payload"))
+        .expect("queued behind close");
+    assert_eq!(actor.buffered_bytes(), 14, "two payloads are reserved");
+
+    // The parked publication is attempted and confirmed inside the quiesce
+    // window; close then exits with the queued command still in its channel.
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    assert!(gate.release(), "gate released");
+    tokio::time::timeout(Duration::from_secs(10), closer)
+        .await
+        .expect("close join must not hang")
+        .expect("close task must not panic")
+        .expect("close must succeed");
+    assert!(
+        matches!(parked.wait().await, Ok(PublishOutcome::Confirmed { .. })),
+        "the parked publication must confirm within the quiesce window"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), queued.wait())
+            .await
+            .expect("the queued waiter must resolve once close completes")
+            .expect_err("a queued-but-never-consumed publication must fail loudly")
+            .kind(),
+        PublishErrorKind::Closed
+    );
+
+    // The queued command's byte reservation must be released when the actor
+    // exits with the command still in its channel.
+    assert_eq!(
+        actor.buffered_bytes(),
+        0,
+        "a publish command queued at actor exit must not leak its byte reservation"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Publisher delay tests (from publisher_delay.rs)
 // ---------------------------------------------------------------------------
 
@@ -1996,19 +2128,153 @@ async fn connection_event_clears_then_restores_the_blind_pump_channel() {
     assert!(gate.release(), "gate released");
     wait_for_publish_count(&transport, 2).await;
 
-    let published_ids: Vec<Option<String>> = publish_operations(&transport)
+    let published_ids: Vec<Option<Arc<str>>> = publish_operations(&transport)
         .into_iter()
         .map(|request| request.properties.message_id)
         .collect();
-    assert!(published_ids.contains(&Some("m1".to_owned())));
-    assert!(published_ids.contains(&Some("m3".to_owned())));
+    assert!(published_ids.contains(&Some(Arc::from("m1"))));
+    assert!(published_ids.contains(&Some(Arc::from("m3"))));
     assert!(
-        !published_ids.contains(&Some("m2".to_owned())),
+        !published_ids.contains(&Some(Arc::from("m2"))),
         "job queued while the channel was cleared must be dropped, got {published_ids:?}"
     );
 
     assert!(matches!(
         waiter.wait().await,
         Ok(PublishOutcome::Confirmed { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Wire property parity (Task 24 characterization: pinned before the refactor)
+// ---------------------------------------------------------------------------
+
+/// Golden AMQP bytes of the `BasicProperties` the Lapin adapter serializes for
+/// the fixed request below, hex-encoded. Captured before the per-publish
+/// property string-sharing refactor (branch `fix/audit-2026-10-01`, HEAD
+/// `405914e`); the wire conversion must keep producing exactly these bytes —
+/// one property-flags bitmask followed by the present short-string/typed
+/// fields, headers in `BTreeMap` order.
+const GOLDEN_WIRE_PROPERTIES_HEX: &str = "b480106170706c69636174696f6e2f6a736f6e000000380a782d617474656d7074736c000000000000000308782d6f726967696e5300000008776f726b65722d310b782d726574727961626c657401020d74726163652d6162632d31323314776972652d7061726974792d3030303030303432";
+
+/// Serializes AMQP basic properties exactly as the wire encoder does: the
+/// property-flags bitmask followed by each present field, into a byte buffer.
+fn serialize_basic_properties(properties: &amq_protocol::protocol::BasicProperties) -> Vec<u8> {
+    use amq_protocol::frame::WriteContext;
+    use amq_protocol::protocol::basic::gen_properties;
+
+    gen_properties(properties)(WriteContext::from(Vec::new()))
+        .expect("basic properties must serialize")
+        .into_inner()
+        .0
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(out, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    out
+}
+
+#[tokio::test(start_paused = true)]
+async fn wire_properties_for_a_fixed_request_are_byte_identical() {
+    let mut properties = MessageProperties::new("wire-parity-00000042");
+    properties.content_type = Some(Arc::from("application/json"));
+    properties.correlation_id = Some(Arc::from("trace-abc-123"));
+    properties
+        .headers
+        .insert("x-attempts".to_owned(), HeaderValue::Integer(3));
+    properties.headers.insert(
+        "x-origin".to_owned(),
+        HeaderValue::Binary(Bytes::from_static(b"worker-1")),
+    );
+    properties
+        .headers
+        .insert("x-retryable".to_owned(), HeaderValue::Boolean(true));
+
+    let transport = MockTransport::default();
+    transport.push_confirmation(Ok(PublishConfirmation::Ack(None)));
+    let actor = actor_safety(&transport, config_safety()).await;
+
+    let waiter = actor
+        .try_publish(PublishRequest::new(
+            Destination::new("jobs", "high"),
+            Bytes::from_static(b"payload"),
+            properties,
+            Instant::now() + Duration::from_secs(30),
+        ))
+        .expect("publish accepted");
+    wait_for_publish_count(&transport, 1).await;
+    let _ = waiter.wait().await;
+
+    // Pre-wire parity: the routed transport request carries the publication's
+    // properties unchanged (routing, delay, and flags included).
+    let recorded = find_publish(&transport);
+    assert_eq!(recorded.exchange.as_ref(), "jobs");
+    assert_eq!(recorded.routing_key.as_ref(), "high");
+    assert!(recorded.mandatory, "safe mode publishes mandatory");
+    assert_eq!(
+        recorded.properties.content_type.as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(
+        recorded.properties.correlation_id.as_deref(),
+        Some("trace-abc-123")
+    );
+    assert_eq!(
+        recorded.properties.message_id.as_deref(),
+        Some("wire-parity-00000042")
+    );
+    assert_eq!(recorded.properties.delay_ms, None);
+    assert!(recorded.properties.persistent);
+    assert_eq!(recorded.properties.headers.len(), 3);
+    assert_eq!(
+        recorded.properties.headers.get("x-attempts"),
+        Some(&HeaderValue::Integer(3))
+    );
+    assert_eq!(
+        recorded.properties.headers.get("x-origin"),
+        Some(&HeaderValue::Binary(Bytes::from_static(b"worker-1")))
+    );
+    assert_eq!(
+        recorded.properties.headers.get("x-retryable"),
+        Some(&HeaderValue::Boolean(true))
+    );
+
+    // Wire parity: the bytes the adapter serializes for the recorded request
+    // must match the pre-refactor golden exactly.
+    let wire = wire_publish_properties(&recorded);
+    assert_eq!(
+        hex(&serialize_basic_properties(&wire)),
+        GOLDEN_WIRE_PROPERTIES_HEX
+    );
+
+    // ...and the property values themselves are the expected AMQP types.
+    assert_eq!(wire.delivery_mode(), &Some(2));
+    assert_eq!(
+        wire.content_type().as_ref().map(ShortString::as_str),
+        Some("application/json")
+    );
+    assert_eq!(
+        wire.correlation_id().as_ref().map(ShortString::as_str),
+        Some("trace-abc-123")
+    );
+    assert_eq!(
+        wire.message_id().as_ref().map(ShortString::as_str),
+        Some("wire-parity-00000042")
+    );
+    let wire_headers = wire.headers().as_ref().expect("AMQP headers");
+    assert!(matches!(
+        wire_headers.inner().get("x-attempts"),
+        Some(AMQPValue::LongLongInt(3))
+    ));
+    assert!(matches!(
+        wire_headers.inner().get("x-origin"),
+        Some(AMQPValue::LongString(value)) if value.as_bytes() == b"worker-1"
+    ));
+    assert!(matches!(
+        wire_headers.inner().get("x-retryable"),
+        Some(AMQPValue::Boolean(true))
     ));
 }

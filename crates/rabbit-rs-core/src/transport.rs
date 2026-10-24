@@ -72,6 +72,11 @@ pub enum TransportErrorKind {
 pub struct TransportError {
     kind: TransportErrorKind,
     message: String,
+    /// The AMQP reply code the transport extracted from the broker's
+    /// protocol exception, when one was raised (e.g. `540` for
+    /// `NOT_IMPLEMENTED`). Callers classify on this instead of matching the
+    /// Display text, whose phrasing depends on the client and broker version.
+    protocol_code: Option<u16>,
 }
 
 impl TransportError {
@@ -96,6 +101,18 @@ impl TransportError {
         Self::new(TransportErrorKind::Protocol, message)
     }
 
+    /// A protocol failure carrying the AMQP reply code the transport
+    /// extracted from the broker's exception (e.g. `540` for
+    /// `NOT_IMPLEMENTED`).
+    #[must_use]
+    pub fn protocol_with_code(code: u16, message: impl Into<String>) -> Self {
+        Self {
+            kind: TransportErrorKind::Protocol,
+            message: message.into(),
+            protocol_code: Some(code),
+        }
+    }
+
     #[must_use]
     pub fn closed(message: impl Into<String>) -> Self {
         Self::new(TransportErrorKind::Closed, message)
@@ -104,6 +121,13 @@ impl TransportError {
     #[must_use]
     pub const fn kind(&self) -> TransportErrorKind {
         self.kind
+    }
+
+    /// The AMQP reply code carried by a protocol failure, when the transport
+    /// could extract one from the broker's exception.
+    #[must_use]
+    pub const fn protocol_code(&self) -> Option<u16> {
+        self.protocol_code
     }
 
     #[must_use]
@@ -118,6 +142,7 @@ impl TransportError {
         Self {
             kind,
             message: message.into(),
+            protocol_code: None,
         }
     }
 }
@@ -198,11 +223,19 @@ pub struct BindingSpec {
     pub routing_key: String,
 }
 
+/// The per-publication wire properties.
+///
+/// The string fields share the caller's `Arc<str>` allocations (see
+/// [`crate::publisher::MessageProperties`]) instead of re-owning a fresh
+/// `String` per publish: routing and the wire conversion clone the `Arc`
+/// pointer, and the adapter materializes exactly one owned short-string per
+/// property at the wire boundary. This is a minor breaking change of the
+/// public field types (documented in the changelog).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishProperties {
-    pub content_type: Option<String>,
-    pub correlation_id: Option<String>,
-    pub message_id: Option<String>,
+    pub content_type: Option<Arc<str>>,
+    pub correlation_id: Option<Arc<str>>,
+    pub message_id: Option<Arc<str>>,
     pub delay_ms: Option<u64>,
     pub headers: PublishHeaders,
     pub persistent: bool,
@@ -228,6 +261,21 @@ pub struct PublishRequest {
     pub payload: Bytes,
     pub mandatory: bool,
     pub properties: PublishProperties,
+}
+
+/// Builds the wire `BasicProperties` the Lapin adapter sends for `request`,
+/// without a broker connection.
+///
+/// Test-support only: the mock transport records the pre-wire
+/// [`PublishRequest`], and this exposes the final property conversion so
+/// parity tests can pin the serialized properties (content type, correlation
+/// id, message id, headers) across refactors. It deliberately surfaces the
+/// adapter-internal AMQP type for that purpose and is never compiled outside
+/// test builds.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn wire_publish_properties(request: &PublishRequest) -> ::lapin::protocol::BasicProperties {
+    self::lapin::publish_properties(request)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

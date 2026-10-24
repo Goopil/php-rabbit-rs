@@ -19,7 +19,7 @@ describe('multi-subscription worker', function () {
         $pool->pushDelivery('main', multiVhostDelivery('orders_low', 4));
         $pool->pushDelivery('main', multiVhostDelivery('billing', 6));
 
-        $jobs = [$queue->pop(), $queue->pop(), $queue->pop()];
+        $jobs = [$queue->pop('main'), $queue->pop('main'), $queue->pop('main')];
 
         expect($compiled['native']['brokers'])->toHaveCount(1)
             ->and($compiled['native']['brokers'][0]['name'])->toBe('main')
@@ -75,7 +75,7 @@ describe('multi-subscription worker', function () {
     it('timeout without delivery returns null', function () {
         [$queue, $pool] = multiVhostQueue($this->app, blockFor: 3);
 
-        expect($queue->pop())->toBeNull();
+        expect($queue->pop('main'))->toBeNull();
         expect($pool->consumerFor('main')->timeouts)->toBe([3_000]);
     });
 
@@ -86,7 +86,7 @@ describe('multi-subscription worker', function () {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('workers.main.subscriptions.ghost');
 
-        $queue->pop();
+        $queue->pop('main');
     });
 
     it('native consumer failure becomes a queue exception', function () {
@@ -95,7 +95,7 @@ describe('multi-subscription worker', function () {
         $pool->consumerFor('main')->throwOnNext($native);
 
         try {
-            $queue->pop();
+            $queue->pop('main');
             self::fail('The native consumer failure was not translated.');
         } catch (QueueException $exception) {
             self::assertSame($native, $exception->getPrevious());
@@ -108,7 +108,7 @@ describe('multi-subscription worker', function () {
         $pool->consumerFor('main')->throwOnNext($native);
 
         try {
-            $queue->pop();
+            $queue->pop('main');
             self::fail('The native connection failure was not preserved.');
         } catch (ConnectionException $exception) {
             self::assertSame($native, $exception);
@@ -181,7 +181,10 @@ function multiVhostDelivery(string $subscription, int $attempts): Delivery
 function multiVhostConfig(): array
 {
     return [
-        'queue' => 'main',
+        // No `queue` key: every queue is declared as a subscription (the
+        // compiler rejects an uncovered queue key). The tests below address
+        // the whole profile by its name ('main', the connection name), which
+        // round-robins all its subscriptions.
         'hosts' => 'orders-rabbit:5672',
         'vhost' => '/orders-eu',
         'username' => 'worker',

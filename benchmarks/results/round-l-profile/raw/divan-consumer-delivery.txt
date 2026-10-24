@@ -1,0 +1,10 @@
+# Divan evidence — re-run for the task-17 review fix (fix/audit-2026-10-01).
+# Command: rtk cargo bench -p rabbit-rs-core --features bench --bench consumer_delivery
+# Load conditions: 13:49  up 18 days,  7:46, 4 users, load averages: 7.23 10.97 12.00 (background IDE/VM load, see README 'Machine and environment context').
+# Original Task-17 session values: delivery_ack_round_trip median 2.874 µs, delivery_ack_burst(64) median 179.3 µs (~2.8 µs/delivery)
+consumer_delivery           fastest       │ slowest       │ median        │ mean          │ samples │ iters
+├─ delivery_ack_burst                     │               │               │               │         │
+│  ├─ 16                    44.87 µs      │ 1.541 ms      │ 45.95 µs      │ 61.53 µs      │ 100     │ 100
+│  ╰─ 64                    169.8 µs      │ 296.8 µs      │ 184 µs        │ 186 µs        │ 100     │ 100
+╰─ delivery_ack_round_trip  2.082 µs      │ 45.16 µs      │ 3.041 µs      │ 3.582 µs      │ 100     │ 100
+

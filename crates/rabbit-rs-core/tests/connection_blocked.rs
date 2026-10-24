@@ -197,6 +197,101 @@ async fn blocked_events_log_the_broker_reason() {
     actor.close().await.expect("close");
 }
 
+/// When two brokers share the same Metrics instance, the `connection_blocked`
+/// gauge must count how many brokers are currently blocked, not act as a
+/// simple on/off flag. Broker B unblocking must not erase the fact that broker
+/// A remains blocked.
+#[tokio::test(start_paused = true)]
+async fn multi_broker_blocked_gauge_counts_brokers() {
+    // Two independent transports / brokers sharing the SAME metrics instance.
+    let transport_a = Arc::new(MockTransport::default());
+    transport_a.push_connect_result(Ok(()));
+    let transport_b = Arc::new(MockTransport::default());
+    transport_b.push_connect_result(Ok(()));
+
+    let metrics = Metrics::default();
+
+    let actor_a = ConnectionActor::spawn_with_dependencies_and_metrics(
+        transport_a.clone() as Arc<dyn rabbit_rs_core::transport::Transport>,
+        broker("broker_a", "/", "guest"),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        metrics.clone(),
+    );
+    actor_a.start().await.expect("actor A started");
+    let states_a = actor_a.subscribe();
+    wait_for_state(&states_a, ready(1)).await;
+
+    let actor_b = ConnectionActor::spawn_with_dependencies_and_metrics(
+        transport_b.clone() as Arc<dyn rabbit_rs_core::transport::Transport>,
+        broker("broker_b", "/", "guest"),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        metrics.clone(),
+    );
+    actor_b.start().await.expect("actor B started");
+    let states_b = actor_b.subscribe();
+    wait_for_state(&states_b, ready(1)).await;
+
+    // Both brokers report Ready at generation 1 with gauge == 0.
+    assert_eq!(
+        metrics.snapshot().connection_blocked,
+        0,
+        "gauge starts at zero"
+    );
+
+    // Broker A becomes blocked.
+    transport_a.push_blocked("memory alarm triggered");
+    wait_until(
+        || metrics.snapshot().connection_blocked == 1,
+        "gauge increments for A blocked",
+    )
+    .await;
+
+    // Broker B also becomes blocked.
+    transport_b.push_blocked("disk alarm triggered");
+    wait_until(
+        || metrics.snapshot().connection_blocked == 2,
+        "gauge increments for B blocked (count 2)",
+    )
+    .await;
+    assert_eq!(
+        metrics.snapshot().connection_blocked_total,
+        2,
+        "episode counter recorded both episodes"
+    );
+
+    // Broker B unblocks — gauge must drop to 1 (A still blocked), NOT 0.
+    transport_b.push_unblocked();
+    wait_until(
+        || metrics.snapshot().connection_blocked == 1,
+        "gauge decrements for B unblocked (A still blocked)",
+    )
+    .await;
+    assert_eq!(
+        metrics.snapshot().connection_blocked_total,
+        2,
+        "unblocked must not touch the episode counter"
+    );
+
+    // Broker A unblocks — gauge should go back to 0.
+    transport_a.push_unblocked();
+    wait_until(
+        || metrics.snapshot().connection_blocked == 0,
+        "gauge decrements for A unblocked (all clear)",
+    )
+    .await;
+
+    // Connections remain Ready at generation 1.
+    assert!(ready(1)(&states_a.borrow().clone()));
+    assert!(ready(1)(&states_b.borrow().clone()));
+
+    actor_a.close().await.expect("close A");
+    actor_b.close().await.expect("close B");
+}
+
 /// A blocked reason longer than the log cap is truncated to 200 characters.
 #[tokio::test(start_paused = true)]
 async fn oversized_blocked_reasons_are_truncated() {

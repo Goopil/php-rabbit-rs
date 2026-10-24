@@ -13,6 +13,11 @@ use crate::pool::{ConnectionHandle, ConnectionKey};
 
 const DEFAULT_SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 
+/// Upper bound on the process pool registry. Pools beyond this cap are
+/// evicted oldest-idle-first on acquire, so dropping pool objects without
+/// `close()` cannot accumulate clients, actors, and AMQP sockets forever.
+const MAX_POOLS: usize = 16;
+
 /// Supplies the current process identifier, and can be replaced in tests.
 pub trait PidProvider: Send + Sync {
     fn current_pid(&self) -> u32;
@@ -63,10 +68,17 @@ impl RuntimeFactory for TokioRuntimeFactory {
     }
 }
 
+struct PoolEntry {
+    handle: Arc<ConnectionHandle>,
+    /// Last instant this pool was handed out, used to evict the oldest
+    /// zero-claim entry once the registry exceeds its cap.
+    last_used: Instant,
+}
+
 struct ProcessState {
     pid: u32,
     runtime: Runtime,
-    pools: HashMap<ConnectionKey, Arc<ConnectionHandle>>,
+    pools: HashMap<ConnectionKey, PoolEntry>,
 }
 
 /// Lazily owns exactly one runtime and one set of pools per operating-system process.
@@ -165,24 +177,44 @@ impl RuntimeRegistry {
             });
         }
 
-        match state.as_mut() {
+        let (handle, evicted) = match state.as_mut() {
             Some(process) => {
-                if let Some(handle) = process.pools.get(&key)
-                    && !handle.is_closed()
+                if let Some(entry) = process.pools.get_mut(&key)
+                    && !entry.handle.is_closed()
                 {
+                    entry.handle.add_claim();
+                    entry.last_used = Instant::now();
+                    (entry.handle.clone(), None)
+                } else {
+                    let handle = Arc::new(ConnectionHandle::new(process.runtime.handle().clone()));
                     handle.add_claim();
-                    return Ok(handle.clone());
+                    process.pools.insert(
+                        key,
+                        PoolEntry {
+                            handle: handle.clone(),
+                            last_used: Instant::now(),
+                        },
+                    );
+                    let evicted = Self::take_oldest_idle_pool(process);
+                    (handle, evicted)
                 }
-
-                let handle = Arc::new(ConnectionHandle::new(process.runtime.handle().clone()));
-                handle.add_claim();
-                process.pools.insert(key, handle.clone());
-                Ok(handle)
             }
-            None => Err(RuntimeCreationError::new(io::Error::other(
-                "runtime factory returned without initializing process state",
-            ))),
+            None => {
+                return Err(RuntimeCreationError::new(io::Error::other(
+                    "runtime factory returned without initializing process state",
+                )));
+            }
+        };
+        drop(state);
+
+        if let Some(evicted) = evicted {
+            // Closed outside the registry lock: the close runs on the process
+            // runtime and shares the shutdown budget with registry close, so
+            // it must not pin the mutex for its whole duration.
+            Self::close_evicted_pool(&evicted, self.shutdown_budget);
         }
+
+        Ok(handle)
     }
 
     /// Closes all process-local handles. Repeated calls have no effect.
@@ -208,13 +240,13 @@ impl RuntimeRegistry {
             return;
         };
         let deadline = Instant::now() + budget;
-        for handle in process.pools.values() {
-            handle.close();
+        for entry in process.pools.values() {
+            entry.handle.close();
         }
         let clients = process
             .pools
             .values()
-            .filter_map(|handle| handle.initialized_client())
+            .filter_map(|entry| entry.handle.initialized_client())
             .cloned()
             .collect::<Vec<_>>();
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -228,10 +260,66 @@ impl RuntimeRegistry {
         process.runtime.shutdown_timeout(remaining);
     }
 
+    /// Removes the zero-claim pool with the oldest last-use instant, once the
+    /// registry exceeds its cap.
+    ///
+    /// Returns `None` — leaving the registry untouched — when the registry is
+    /// within its cap, or when every pool still holds live claims: an in-use
+    /// pool is never closed. The latter case emits a warning because the
+    /// process footprint then stays above the cap until those pools go idle.
+    fn take_oldest_idle_pool(process: &mut ProcessState) -> Option<Arc<ConnectionHandle>> {
+        if process.pools.len() <= MAX_POOLS {
+            return None;
+        }
+        let victim = process
+            .pools
+            .iter()
+            .filter(|(_, entry)| entry.handle.live_claims() == 0)
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| *key);
+        let Some(key) = victim else {
+            crate::log::warn(
+                "runtime_registry",
+                format!(
+                    "{} process pools exceed the registry cap of {MAX_POOLS} and all hold live claims; eviction skipped",
+                    process.pools.len(),
+                ),
+            );
+            return None;
+        };
+        process.pools.remove(&key).map(|entry| entry.handle)
+    }
+
+    /// Tears an evicted pool down through the same close path as registry
+    /// shutdown: retire the handle, then close its initialized client within
+    /// the shared budget. Failures are logged and dropped — the evicting
+    /// acquire must still succeed, and the evicted pool is already removed
+    /// from the registry either way.
+    fn close_evicted_pool(handle: &ConnectionHandle, budget: Duration) {
+        handle.close();
+        let Some(client) = handle.initialized_client().cloned() else {
+            return;
+        };
+        let closed = handle
+            .runtime()
+            .block_on(async { tokio::time::timeout(budget, client.close()).await });
+        match closed {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => crate::log::warn(
+                "runtime_registry",
+                format!("evicted pool's client failed to close: {error}"),
+            ),
+            Err(_elapsed) => crate::log::warn(
+                "runtime_registry",
+                format!("evicted pool's client close exceeded its {budget:?} budget"),
+            ),
+        }
+    }
+
     fn invalidate_inherited_state(state: Option<ProcessState>) {
         if let Some(process) = state {
-            for handle in process.pools.values() {
-                handle.close();
+            for entry in process.pools.values() {
+                entry.handle.close();
             }
             // Tokio worker threads do not survive fork, so the inherited runtime
             // must neither run shutdown futures nor wait for those vanished threads.
@@ -288,7 +376,7 @@ mod tests {
 
     use tokio::runtime::{Builder, Runtime};
 
-    use super::{PidProvider, RuntimeFactory, RuntimeRegistry, TokioRuntimeFactory};
+    use super::{MAX_POOLS, PidProvider, RuntimeFactory, RuntimeRegistry, TokioRuntimeFactory};
     use crate::{
         client::ClientPool,
         config::{
@@ -680,5 +768,60 @@ mod tests {
             factory.worker_threads, 1,
             "I/O-bound runtime should default to 1 worker thread"
         );
+    }
+
+    #[test]
+    fn evicting_the_oldest_idle_pool_closes_its_client() {
+        let (registry, _pid, _factory) = registry();
+        let transport = Arc::new(MockTransport::default());
+        let victim = install_connected_client(
+            &registry,
+            ConnectionKey::from_bytes([9; 32]),
+            "victim",
+            transport.clone(),
+        );
+        assert!(victim.release_claim(), "the test owns exactly one claim");
+
+        // Push the registry past its cap with idle pools: the connected pool
+        // is the oldest zero-claim entry and must be evicted through the
+        // regular close path, tearing its connection down.
+        let fillers = u8::try_from(MAX_POOLS).expect("cap fits u8");
+        for byte in 20..20 + fillers {
+            let handle = registry
+                .acquire(ConnectionKey::from_bytes([byte; 32]))
+                .expect("filler handle");
+            assert!(handle.release_claim(), "the test owns exactly one claim");
+        }
+
+        assert!(victim.is_closed(), "the oldest idle pool must be evicted");
+        assert!(
+            transport
+                .operations()
+                .iter()
+                .any(|operation| matches!(operation, TransportOperation::CloseConnection)),
+            "eviction must tear the evicted pool's connection down"
+        );
+    }
+
+    #[test]
+    fn eviction_skips_while_every_pool_holds_a_claim() {
+        let (registry, _pid, _factory) = registry();
+
+        let count = u8::try_from(MAX_POOLS).expect("cap fits u8") + 1;
+        let handles: Vec<_> = (0..count)
+            .map(|byte| {
+                registry
+                    .acquire(ConnectionKey::from_bytes([30 + byte; 32]))
+                    .expect("in-use handle")
+            })
+            .collect();
+
+        // Every pool is in use: the registry may sit above its cap, but
+        // eviction must never close an in-use pool.
+        for (index, handle) in handles.iter().enumerate() {
+            assert!(!handle.is_closed(), "in-use pool {index} must stay open");
+        }
+
+        registry.close();
     }
 }

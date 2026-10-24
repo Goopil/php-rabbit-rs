@@ -35,6 +35,16 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     protected const CONTENT_TYPE_JSON = 'application/json';
 
     /**
+     * Native publishBatch bounds, mirrored from the extension's conversion
+     * budget (crates/rabbit-rs-php/src/conversion.rs): a call carrying more
+     * than 256 messages or 1 MiB of cumulative payload is rejected wholesale,
+     * before anything is sent. bulk() chunks prepared batches under them.
+     */
+    public const BATCH_MAX_MESSAGES = 256;
+
+    public const BATCH_MAX_PAYLOAD_BYTES = 1_048_576;
+
+    /**
      * Exact message the native consumer carries when the set is closed
      * (core's `ConsumerError::closed()`): the seam used to recognize a
      * closed-set pop without a dedicated exception kind.
@@ -162,16 +172,40 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         return $this->size($queue);
     }
 
+    /**
+     * Delayed jobs are not a state AMQP exposes on the job queue: delayed
+     * publishes park in the TTL bucket queues (or on the plugin), and
+     * nothing on the wire marks a ready message as delayed — there is no
+     * gauge to read. Always 0 by design.
+     *
+     * @param  string|null  $queue
+     */
     public function delayedSize($queue = null)
     {
         return 0;
     }
 
+    /**
+     * Reserved jobs are not a state AMQP exposes: an unacked delivery shows
+     * up in the queue's unacked gauge, never in the ready count this driver
+     * reads via a passive size probe — there is no per-job reserved gauge to
+     * read. Always 0 by design.
+     *
+     * @param  string|null  $queue
+     */
     public function reservedSize($queue = null)
     {
         return 0;
     }
 
+    /**
+     * The oldest pending job's creation time is not a state AMQP exposes:
+     * the broker reports a ready-message count only, never per-message
+     * metadata over a passive probe — there is no timestamp to read. Always
+     * null by design.
+     *
+     * @param  string|null  $queue
+     */
     public function creationTimeOfOldestPendingJob($queue = null)
     {
         return null;
@@ -253,6 +287,14 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      * (after-commit jobs are deferred and reported through the transaction
      * callback), or null when only deferred jobs were given.
      *
+     * Immediate jobs publish through `publishBatch` in chunks that respect
+     * the native batch bounds ({@see BATCH_MAX_MESSAGES},
+     * {@see BATCH_MAX_PAYLOAD_BYTES}) instead of one oversized call the
+     * native layer would reject wholesale. Delivery stays at-least-once
+     * with partial success: a chunk that fails after earlier chunks were
+     * published keeps those publications, and the caller retry re-publishes
+     * every job — the stable message_id keeps the duplicates identifiable.
+     *
      * @param  array<array-key, \Closure|string|object>|string  $jobs
      * @param  mixed  $data
      * @param  string|null  $queue
@@ -268,7 +310,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         [$afterCommit, $immediate] = $this->partitionJobsByAfterCommit($jobs);
         $messageIds = $immediate === []
             ? []
-            : $this->publishBatch($this->prepareBatch($immediate, $data, $queue), $queue);
+            : $this->publishBatchChunked($this->prepareBatch($immediate, $data, $queue), $queue);
 
         if ($afterCommit !== []) {
             // The parent method only exists since Laravel 13; the driver still
@@ -282,7 +324,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
             $messages = $this->prepareBatch($afterCommit, $data, $queue);
             $this->container->make('db.transactions')->addCallback(
-                fn (): array => $this->publishBatch($messages, $queue),
+                fn (): array => $this->publishBatchChunked($messages, $queue),
             );
         }
 
@@ -295,7 +337,10 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     protected function partitionJobsByAfterCommit(array $jobs): array
     {
-        if (! $this->container->bound('db.transactions')) {
+        // Same typed-property initialization check as drainSettlementErrors:
+        // fake-driven tests construct the queue without a container, and the
+        // graceful fallback treats every job as immediate.
+        if (! isset($this->container) || ! $this->container->bound('db.transactions')) { // @phpstan-ignore-line
             return [[], $jobs];
         }
 
@@ -378,6 +423,75 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         return $messageIds;
     }
 
+    /**
+     * Publishes a prepared batch in chunks that respect the native
+     * `publishBatch` bounds ({@see BATCH_MAX_MESSAGES},
+     * {@see BATCH_MAX_PAYLOAD_BYTES}): the native layer rejects any single
+     * call beyond either bound wholesale, before sending anything, so an
+     * unchunked bulk past 256 messages or 1 MiB of payload would publish
+     * nothing at all.
+     *
+     * Each chunk is a regular `publishBatch` (the Horizon subclass keeps
+     * firing its batch events per chunk), and settlement errors drain after
+     * every chunk so a pipelined publish failure surfaces with its chunk
+     * instead of deferring past the whole bulk. A chunk that fails after
+     * earlier chunks were published keeps those publications: delivery is
+     * at-least-once, the caller retry re-publishes, and the stable
+     * message_id keeps the duplicates identifiable.
+     *
+     * @param  list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>  $messages
+     * @return list<string>
+     */
+    protected function publishBatchChunked(array $messages, mixed $queue): array
+    {
+        $messageIds = [];
+        foreach ($this->chunkBatchWithinNativeBounds($messages) as $chunk) {
+            $messageIds = [...$messageIds, ...$this->publishBatch($chunk, $queue)];
+            $this->drainSettlementErrors();
+        }
+
+        return $messageIds;
+    }
+
+    /**
+     * Splits a prepared batch into chunks within the native publishBatch
+     * bounds: at most {@see BATCH_MAX_MESSAGES} messages carrying at most
+     * {@see BATCH_MAX_PAYLOAD_BYTES} cumulative payload bytes each. Payload
+     * size is measured on the native message payload — the exact bytes the
+     * native conversion budget accumulates. A single payload beyond the
+     * payload bound cannot be split: it forms its own chunk and fails in the
+     * native per-message conversion with the limit named in the error.
+     *
+     * @param  list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>  $messages
+     * @return list<list<array{job: mixed, delay: mixed, payload: string, native: array<string, mixed>}>>
+     */
+    private function chunkBatchWithinNativeBounds(array $messages): array
+    {
+        $chunks = [];
+        $chunk = [];
+        $chunkPayloadBytes = 0;
+
+        foreach ($messages as $message) {
+            $payloadBytes = strlen((string) $message['native']['payload']);
+            if ($chunk !== []
+                && (count($chunk) >= self::BATCH_MAX_MESSAGES
+                    || $chunkPayloadBytes + $payloadBytes > self::BATCH_MAX_PAYLOAD_BYTES)) {
+                $chunks[] = $chunk;
+                $chunk = [];
+                $chunkPayloadBytes = 0;
+            }
+
+            $chunk[] = $message;
+            $chunkPayloadBytes += $payloadBytes;
+        }
+
+        if ($chunk !== []) {
+            $chunks[] = $chunk;
+        }
+
+        return $chunks;
+    }
+
     private function jobDelay(mixed $job): mixed
     {
         if (! is_object($job)) {
@@ -397,10 +511,22 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      *
      * Publish outcomes surface at the next operation (same pattern as
      * settlement errors after a pop): connection-level failures
-     * (`Transport`, `Closed`) throw {@see ConnectionException}; every other
-     * kind (returned as unroutable, nack, timeout, backpressure) throws
-     * {@see QueueException}, mirroring how a synchronous publish failure
-     * surfaces.
+     * (`Transport`) throw {@see ConnectionException}; every other kind —
+     * returned as unroutable, nack, timeout, backpressure, including
+     * `Closed`, which `client_exception` maps to the base native exception —
+     * throws {@see QueueException}, mirroring how a synchronous publish
+     * failure surfaces.
+     *
+     * Consumer settlement errors resolve differently: the first
+     * connection-level kind (`StaleGeneration`, `Transport`) throws
+     * {@see ConnectionException} carrying the drained message and ends the
+     * sweep — the link or the connection generation is gone, and the broker
+     * redelivers. A `MaxAttempts` or `InvalidDelay` settlement is terminal
+     * poison policy (attempts above the cap, or a release delay the compiled
+     * delay strategy refuses): with no dead-letter exchange it is an
+     * explicit, documented loss, so it is logged at error level with the
+     * core's error context. Every other kind is logged at warning level and
+     * swept past.
      */
     public function drainSettlementErrors(): void
     {
@@ -409,12 +535,12 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         foreach ($this->consumers as $consumer) {
             $errors = $consumer->drainErrors();
             foreach ($errors as $error) {
-                $kind = $error['error_kind'] ?? '';
+                $kind = $error['error_kind'];
                 if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
                     // Native exception messages are set only at throw time:
                     // the extension's static factory throws a typed
                     // ConnectionException carrying the drained message.
-                    ConnectionException::throw($error['message'] ?? 'settlement error: '.$kind);
+                    ConnectionException::throw($error['message']);
                 }
                 // The parent $container is a non-nullable typed property, but
                 // fake-driven unit tests construct the queue without it:
@@ -450,13 +576,13 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     private function drainPublishErrors(): void
     {
         foreach ($this->pool->drainErrors() as $error) {
-            $kind = $error['kind'] ?? '';
+            $kind = $error['kind'];
             if ($kind === 'Transport') {
-                ConnectionException::throw($error['message'] ?? 'publish error: '.$kind);
+                ConnectionException::throw($error['message']);
             }
 
             throw new QueueException(
-                $error['message'] ?? 'publish error: '.$kind,
+                $error['message'],
             );
         }
     }
@@ -483,15 +609,21 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             if ($this->workerProfiles->isShared($profile)) {
                 $profile = $this->workerProfiles->registerAutoProfile($queueName);
             }
-        } elseif ($queue === null) {
-            $profile = $queueName;
-        } elseif ($this->workerProfiles->hasProfile($queueName)) {
-            $profile = $queueName;
         } else {
-            throw new InvalidArgumentException(
-                "No worker profile subscribes to queue '{$queueName}': declare it in "
-                .'queue.connections.<name> (queue key or subscriptions).',
-            );
+            // No profile subscribes to the queue name itself. The name may
+            // still double as a worker profile — pop(null) targets the
+            // default queue's profile, an explicit pop may address the
+            // profile by name. Anything else would reach the native pool and
+            // die with its opaque `unknown worker profile` error, so it fails
+            // here with the actionable message instead (same message as the
+            // rejected explicit pop, mirrored for the pop(null) fallback).
+            if (! $this->workerProfiles->hasProfile($queueName)) {
+                throw new InvalidArgumentException(
+                    "No worker profile subscribes to queue '{$queueName}': declare it in "
+                    .'queue.connections.<name> (queue key or subscriptions).',
+                );
+            }
+            $profile = $queueName;
         }
         try {
             $consumer = $this->consumers[$profile] ??= $this->pool->consumer($profile);
@@ -521,7 +653,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             return null;
         }
         $metadata = $delivery->metadata();
-        $queueName = $this->workerProfiles->queue($profile, $metadata['subscription'] ?? null);
+        $queueName = $this->workerProfiles->queue($profile, $metadata['subscription']);
 
         // Only job-construction failures (unmarshable payload, missing
         // message id) are settled here; routing errors above must keep
@@ -637,9 +769,9 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
         $stats = $this->pool->stats();
         $probe->heartbeat(
-            (int) ($stats['deliveries_total'] ?? 0),
-            (int) ($stats['acks_total'] ?? 0),
-            (int) ($stats['rejects_total'] ?? 0),
+            $stats['deliveries_total'],
+            $stats['acks_total'],
+            $stats['rejects_total'],
         );
 
         return $probe;
@@ -666,6 +798,11 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     /**
      * Closes all cached consumers and clears the cache.
      *
+     * Each consumer's undrained settlement error records are surfaced first
+     * (see logPendingSettlementErrors): close would otherwise take them to
+     * the grave, the same silent loss the publish side guards against in
+     * logPendingPublishErrors.
+     *
      * This prevents AMQP channel leaks in long-lived processes (Octane,
      * daemons) where consumers would otherwise accumulate across requests
      * or worker lifecycles without ever being closed.
@@ -673,6 +810,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     public function closeConsumers(): void
     {
         foreach ($this->consumers as $consumer) {
+            $this->logPendingSettlementErrors($consumer);
             try {
                 $consumer->close();
             } catch (NativeException) {
@@ -718,6 +856,44 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             // Best-effort: the pool may already be closed or the container
             // partially torn down. The record is lost either way — surfacing
             // it must never fail the process teardown.
+        }
+    }
+
+    /**
+     * Last-resort net at consumer teardown, mirroring
+     * {@see logPendingPublishErrors} on the publish side: settlement errors
+     * surface at the next operation ({@see drainSettlementErrors}), and a
+     * consumer closed before that next operation — process shutdown, Octane
+     * request teardown — would take its undrained records to the grave.
+     * Teardown cannot propagate exceptions, so each record is logged with
+     * the native context instead of being thrown, at the same level and
+     * message the drain path uses.
+     */
+    private function logPendingSettlementErrors(Consumer $consumer): void
+    {
+        // Same typed-property initialization check as drainSettlementErrors:
+        // unit tests construct the queue without a container.
+        if (! isset($this->container)) { // @phpstan-ignore-line
+            return;
+        }
+
+        try {
+            foreach ($consumer->drainErrors() as $error) {
+                $kind = $error['error_kind'];
+                if (in_array($kind, ['MaxAttempts', 'InvalidDelay'], true)) {
+                    $this->container->make('log')->error(
+                        'rabbit-rs: poison delivery settled',
+                        $error,
+                    );
+
+                    continue;
+                }
+                $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+            }
+        } catch (\Throwable) {
+            // Best-effort: the consumer may already be closed or the container
+            // partially torn down. The record is lost either way — surfacing
+            // it must never fail the close path.
         }
     }
 

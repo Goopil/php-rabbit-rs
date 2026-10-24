@@ -48,9 +48,13 @@ final class RabbitMqStatusCommand extends Command
 
     /**
      * Native pool metrics per rabbit-rs connection, keyed by connection
-     * name. Same-process only: each connection owns one pool.
+     * name. Same-process only: each connection owns one pool. A connection
+     * that fails to compile or to create its pool renders as an error entry
+     * (`['error' => message]`) instead of aborting the whole report — the
+     * healthy pools still list. FAILURE is returned only when no connection
+     * produced stats at all.
      *
-     * @return array<string, mixed>|false
+     * @return array<string, array<string, mixed>>|false
      */
     private function collectStats(NativePoolFactory $pools): array|false
     {
@@ -63,18 +67,43 @@ final class RabbitMqStatusCommand extends Command
         }
 
         $stats = [];
-        try {
-            foreach ($connections as $name => $config) {
+        $errors = [];
+        foreach ($connections as $name => $config) {
+            try {
                 $compiled = ConnectionCompiler::compile($name, $config, RabbitRsConnections::packageDefaults());
                 $stats[$name] = $pools->make($compiled['native'])->stats();
+            } catch (\Throwable $e) {
+                // One broken connection must not abort the whole report.
+                $errors[$name] = $e->getMessage();
             }
-        } catch (\Throwable $e) {
-            $this->error('Failed to collect stats: '.$e->getMessage());
+        }
+
+        if ($errors !== [] && $stats === []) {
+            // Every connection failed: the report would carry no pool data.
+            $this->error('Failed to collect stats: '.self::describeErrors($errors));
 
             return false;
         }
 
+        foreach ($errors as $name => $message) {
+            $stats[$name] = ['error' => $message];
+        }
+
         return $stats;
+    }
+
+    /**
+     * Renders per-connection error messages as `name: message` pairs.
+     *
+     * @param  array<string, string>  $errors  connection name → error message
+     */
+    private static function describeErrors(array $errors): string
+    {
+        return implode('; ', array_map(
+            static fn (string $name, string $message): string => "{$name}: {$message}",
+            array_keys($errors),
+            $errors,
+        ));
     }
 
     /**
@@ -181,8 +210,23 @@ final class RabbitMqStatusCommand extends Command
     {
         $this->info('Rabbit RS Pool Status');
         $this->line('');
+        $this->line('  Pool stats are same-process counters — a CLI run shows zeros unless a queue worker shares this process.');
+        $this->line('');
 
         foreach ($stats as $name => $poolStats) {
+            if (is_string($poolStats['error'] ?? null)) {
+                // One writeln per fact: PendingCommand::expectsOutputToContain
+                // matches per write call, and the first expectation to match a
+                // write consumes it — the marker and the error detail must be
+                // separate writes to be individually assertable.
+                $this->line("  Connection:       {$name}");
+                $this->line('  Stats:            unavailable');
+                $this->error('  Error:            '.$poolStats['error']);
+                $this->line('');
+
+                continue;
+            }
+
             $this->line("  Connection:       {$name}");
             $this->line("  Handle:          {$poolStats['handle']}");
             $this->line("  PID:             {$poolStats['pid']}");

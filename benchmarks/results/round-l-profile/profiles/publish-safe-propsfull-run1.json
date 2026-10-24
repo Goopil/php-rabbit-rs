@@ -1,0 +1,30 @@
+{
+    "tool": "micro-publish",
+    "mode": "single",
+    "props": "full",
+    "safety": "safe",
+    "iters": 50000,
+    "ops": 50000,
+    "rate_ops_s": 67538.5,
+    "per_op_us": {
+        "p50": 1.542,
+        "p95": 2.75,
+        "p99": 9,
+        "mean": 14.806,
+        "max": 22459.125
+    },
+    "native_stats": {
+        "publishes_total": 50000,
+        "confirmations_total": 50000,
+        "returns_total": 0,
+        "reconnects_total": 0,
+        "publish_buffered": 0,
+        "dropped_publications_total": 0,
+        "confirmation_latency_us_p50": 7
+    },
+    "meta": {
+        "php": "8.5.6",
+        "rabbit_rs": "0.3.10",
+        "os": "Darwin 25.6.0"
+    }
+}

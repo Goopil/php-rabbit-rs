@@ -397,6 +397,86 @@ async fn state_reports_closed_after_the_coordinator_stops() {
 // messages are ever logged.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Delivery Debug redaction: header keys are diagnostics, header values are
+// application payload data and must never surface through Debug output.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn delivery_debug_output_redacts_header_values() {
+    use bytes::Bytes;
+    use rabbit_rs_core::{
+        consumer::{ConsumerSet, Subscription, SubscriptionPolicy},
+        metrics::Metrics,
+        pool::ConnectionKey,
+        transport::{Delivery as TransportDelivery, HeaderValue},
+    };
+
+    fn connection_key() -> ConnectionKey {
+        let cfg = config(
+            vec![broker("primary", "/", "guest")],
+            vec![worker_profile("main", "primary", "jobs", 4)],
+        );
+        ConnectionKey::from_config(&cfg)
+    }
+
+    let transport = MockTransport::default();
+    transport.keep_delivery_stream_open();
+    let mut headers = rabbit_rs_core::transport::Headers::new();
+    headers.insert(
+        "x-trace-id".to_owned(),
+        HeaderValue::Binary(Bytes::from_static(b"secret-trace-value")),
+    );
+    headers.insert("x-attempt".to_owned(), HeaderValue::Integer(3));
+    transport.push_delivery(Ok(TransportDelivery {
+        delivery_tag: 1,
+        exchange: "jobs".to_owned(),
+        routing_key: "high".to_owned(),
+        redelivered: false,
+        message_id: Some("1:1:1".to_owned()),
+        correlation_id: None,
+        headers: Arc::new(headers),
+        payload: Bytes::from_static(b"job-payload"),
+    }));
+
+    let channel = transport
+        .connect(&broker("primary", "/", "guest"))
+        .await
+        .expect("connection")
+        .open_consumer()
+        .await
+        .expect("consumer channel");
+    let subscription = Subscription::new("redact", connection_key(), "jobs", Arc::from(channel))
+        .prefetch(1)
+        .channel_id(1)
+        .policy(SubscriptionPolicy::new(1));
+    let consumer = ConsumerSet::spawn_with_metrics(vec![subscription], Metrics::default())
+        .await
+        .expect("consumer set");
+
+    let delivery = consumer.next().await.expect("delivery");
+    let debug = format!("{delivery:?}");
+
+    assert!(
+        debug.contains("payload_len"),
+        "debug must keep the payload length: {debug}"
+    );
+    assert!(
+        debug.contains("x-trace-id") && debug.contains("x-attempt"),
+        "debug must keep the header keys: {debug}"
+    );
+    assert!(
+        !debug.contains("secret-trace-value"),
+        "debug must never carry a header value: {debug}"
+    );
+    assert!(
+        !debug.contains("job-payload"),
+        "debug must never carry the payload: {debug}"
+    );
+
+    consumer.close().await.expect("close");
+}
+
 #[tokio::test(start_paused = true)]
 async fn log_records_never_leak_endpoints_or_credentials() {
     // Install the recorder before spawning: records emitted during startup

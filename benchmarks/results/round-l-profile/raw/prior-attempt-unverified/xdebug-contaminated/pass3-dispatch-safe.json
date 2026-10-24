@@ -1,0 +1,162 @@
+{
+    "benchmark": "driver-bench",
+    "phase": "E",
+    "ok": true,
+    "connection": "rabbit-rs",
+    "driver_package": "goopil/rabbit-rs-laravel",
+    "driver_package_version": "dev-main",
+    "mode": "dispatch",
+    "queue": "bench.goopil.driver-bench",
+    "count": 1000,
+    "rounds": 10,
+    "payload_body_bytes": 1024,
+    "payload_target_bytes": 1024,
+    "ops_total": 10000,
+    "time_total_s": 0.576504,
+    "avg_rate_ops_s": 17345.92,
+    "min_rate_ops_s": 15091.8,
+    "max_rate_ops_s": 18287.58,
+    "losses": 0,
+    "duplicates": null,
+    "late_arrivals_after_drain": 0,
+    "reconnects_total": 0,
+    "latency_ms": {
+        "source": "Queue::push call",
+        "p50": 0.054,
+        "p95": 0.067,
+        "p99": 0.118
+    },
+    "rounds_detail": [
+        {
+            "round": 0,
+            "ops": 1000,
+            "time_s": 0.057015,
+            "rate_ops_s": 17539.17,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 1,
+            "ops": 1000,
+            "time_s": 0.054682,
+            "rate_ops_s": 18287.58,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 2,
+            "ops": 1000,
+            "time_s": 0.057184,
+            "rate_ops_s": 17487.28,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 3,
+            "ops": 1000,
+            "time_s": 0.066261,
+            "rate_ops_s": 15091.8,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 4,
+            "ops": 1000,
+            "time_s": 0.057416,
+            "rate_ops_s": 17416.66,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 5,
+            "ops": 1000,
+            "time_s": 0.05729,
+            "rate_ops_s": 17455,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 6,
+            "ops": 1000,
+            "time_s": 0.056868,
+            "rate_ops_s": 17584.56,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 7,
+            "ops": 1000,
+            "time_s": 0.056304,
+            "rate_ops_s": 17760.58,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 8,
+            "ops": 1000,
+            "time_s": 0.056171,
+            "rate_ops_s": 17802.74,
+            "stall_recoveries": 0
+        },
+        {
+            "round": 9,
+            "ops": 1000,
+            "time_s": 0.057312,
+            "rate_ops_s": 17448.51,
+            "stall_recoveries": 0
+        }
+    ],
+    "config": {
+        "driver": "rabbit-rs",
+        "queue": "bench.goopil.driver-bench",
+        "hosts": "127.0.0.1:5672",
+        "vhost": "/",
+        "username": "***",
+        "password": "***",
+        "exchange": "",
+        "routing_key": "{queue}",
+        "prefetch": 64,
+        "safety": "safe",
+        "after_commit": false,
+        "block_for": 0,
+        "rabbit_rs_global": {
+            "heartbeat": 30,
+            "tls": {
+                "enabled": false,
+                "ca_cert": null,
+                "client_cert": null,
+                "client_key": null
+            },
+            "safety": "safe",
+            "confirm_timeout": 30000,
+            "prefetch": "64",
+            "wait_timeout": 30000,
+            "topology_mode": "declare",
+            "queue_type": "classic",
+            "queue_durable": true,
+            "delivery_limit": null,
+            "dead_letter": null,
+            "delay": {
+                "mode": "ttl"
+            },
+            "worker": "default",
+            "production_warning": true,
+            "best_effort": false,
+            "probes": {
+                "path": "/Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/driver-bench/storage/framework/rabbit-rs/probes"
+            },
+            "topology": {
+                "queue": {
+                    "type": "classic",
+                    "durable": true,
+                    "delivery_limit": null
+                },
+                "dead_letter": null
+            }
+        },
+        "connection": "rabbit-rs",
+        "mode": "dispatch"
+    },
+    "meta": {
+        "php": "8.5.6",
+        "sapi": "cli",
+        "extensions": {
+            "rabbit_rs": "0.3.10",
+            "amqp": false
+        },
+        "laravel": "v13.32.0",
+        "os": "Darwin 25.6.0"
+    }
+}

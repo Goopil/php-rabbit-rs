@@ -103,17 +103,26 @@ impl Metrics {
     }
 
     /// Records a broker backpressure episode (`connection.blocked`): the
-    /// episode counter grows and the gauge flags backpressure.
+    /// episode counter grows and the gauge counts how many brokers are currently
+    /// blocked.
     pub(crate) fn record_connection_blocked(&self) {
         increment(&self.inner.connection_blocked_total);
-        self.inner.connection_blocked.store(1, Ordering::Relaxed);
+        self.inner
+            .connection_blocked
+            .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Clears the backpressure gauge (on `connection.unblocked` or when the
-    /// connection goes away — a successor starts unblocked by definition).
+    /// Decrements the blocked-brokers gauge (on `connection.unblocked` or when
+    /// the connection goes away — a successor starts unblocked by definition).
+    /// The gauge never goes below zero.
     /// The episode counter is never reset.
     pub(crate) fn clear_connection_blocked(&self) {
-        self.inner.connection_blocked.store(0, Ordering::Relaxed);
+        let _ =
+            self.inner
+                .connection_blocked
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_sub(1))
+                });
     }
 }
 
@@ -139,8 +148,8 @@ struct MetricsInner {
     /// Broker backpressure episodes (`connection.blocked`) across all
     /// connections of this client.
     connection_blocked_total: AtomicU64,
-    /// Gauge: `1` while the broker is applying backpressure to any current
-    /// connection, `0` otherwise.
+    /// Gauge: number of brokers currently applying backpressure to connections
+    /// of this client; `0` when no broker is blocking.
     connection_blocked: AtomicU64,
     confirmation_latency: AtomicHistogram,
     settlement_latency: AtomicHistogram,

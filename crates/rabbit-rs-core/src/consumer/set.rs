@@ -305,10 +305,7 @@ async fn build_sources(
             .await
         {
             close_subscription_channels(subscriptions).await;
-            return Err(ConsumerError::new(
-                super::ConsumerErrorKind::Transport,
-                error.to_string(),
-            ));
+            return Err(ConsumerError::from_transport(error));
         }
         let stream = match subscription
             .channel
@@ -323,10 +320,7 @@ async fn build_sources(
             Ok(stream) => stream,
             Err(error) => {
                 close_subscription_channels(subscriptions).await;
-                return Err(ConsumerError::new(
-                    super::ConsumerErrorKind::Transport,
-                    error.to_string(),
-                ));
+                return Err(ConsumerError::from_transport(error));
             }
         };
         let (qos_tx, qos_rx) = watch::channel(subscription.prefetch.initial_value());

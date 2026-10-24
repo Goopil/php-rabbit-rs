@@ -2,6 +2,14 @@
 db-path = "~/.cargo/advisory-dbs"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+# RUSTSEC-2026-0367/-0368/-0369 (zip < 9: symlink/SUID permission escapes in
+# extract()). `zip` enters the tree only as ext-php-rs's Windows-only
+# build-dependency (`cfg(windows)`); it is never compiled on a supported
+# target (Linux glibc/musl, macOS) and no shipped artifact links it.
+# ext-php-rs 0.16.x pins `zip ^9.0` and clears the advisories; the
+# 0.15 -> 0.16 FFI migration is tracked in issue #359. Remove these entries
+# with that migration.
+ignore = ["RUSTSEC-2026-0367", "RUSTSEC-2026-0368", "RUSTSEC-2026-0369"]
 
 [licenses]
 allow = [

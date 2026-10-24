@@ -12,6 +12,7 @@
 #![cfg(feature = "integration")]
 
 use std::net::ToSocketAddrs;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -130,7 +131,7 @@ async fn publish_with_confirms(broker_config: &BrokerConfig, queue: &str, messag
             payload: Bytes::from_static(b"tls-hello"),
             mandatory: true,
             properties: PublishProperties {
-                message_id: Some(message_id.to_owned()),
+                message_id: Some(Arc::from(message_id)),
                 ..PublishProperties::default()
             },
         })

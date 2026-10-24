@@ -5,6 +5,44 @@ declare(strict_types=1);
 use Goopil\RabbitRs\Laravel\RabbitMqServiceProvider;
 
 describe('ExtensionVersion', function () {
+    it('rejects a loaded extension below the caret constraint at connection resolution', function () {
+        // The provider-method fake mechanism the suite already uses for
+        // extension_loaded() (bootedProviderWithFakeExtension), extended to
+        // the version: a loaded 0.2.x binary must fail at connection
+        // resolution — naming the loaded version, the required constraint,
+        // and the pie install path — instead of sailing through to a
+        // confusing native pool-creation error (deny_unknown_fields).
+        $provider = new class($this->app) extends RabbitMqServiceProvider
+        {
+            protected function nativeExtensionLoaded(): bool
+            {
+                return true;
+            }
+
+            protected function nativeExtensionVersion(): ?string
+            {
+                return '0.2.9';
+            }
+        };
+        $provider->register();
+        $provider->boot();
+
+        $this->app['config']->set('queue.connections.rabbit-rs', [
+            'driver' => 'rabbit-rs',
+            'queue' => 'default',
+        ]);
+
+        try {
+            $this->app['queue']->connection('rabbit-rs');
+            $this->fail('connection resolution should reject an extension below the caret constraint');
+        } catch (RuntimeException $exception) {
+            expect($exception->getMessage())
+                ->toContain('0.2.9')
+                ->toContain(RabbitMqServiceProvider::EXTENSION_CONSTRAINT)
+                ->toContain('pie install goopil/rabbit-rs-native');
+        }
+    });
+
     it('states the same extension version constraint everywhere', function () {
         $composer = json_decode(file_get_contents(__DIR__.'/../../composer.json'), true);
 

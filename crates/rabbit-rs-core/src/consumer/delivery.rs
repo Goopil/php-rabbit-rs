@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 
 use super::{SubscriptionId, actor::ControlCommand};
 use crate::pool::ConnectionKey;
+use crate::transport::TransportError;
 
 pub use crate::transport::Headers;
 
@@ -61,7 +62,13 @@ impl fmt::Debug for Delivery {
             .field("correlation_id", &self.correlation_id)
             .field("subscription", &self.subscription)
             .field("payload_len", &self.payload.len())
-            .field("headers", &self.headers)
+            // Header keys only: header values are application payload data
+            // and must never surface through Debug output (logs, error
+            // contexts, traces).
+            .field(
+                "header_keys",
+                &self.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            )
             .field("attempts", &self.attempts)
             .field("state", &self.state())
             .finish_non_exhaustive()
@@ -507,6 +514,11 @@ pub enum ConsumerErrorKind {
 pub struct ConsumerError {
     kind: ConsumerErrorKind,
     message: String,
+    /// The wrapped transport failure, when the error originates from one.
+    /// Carrying it keeps the transport classification (recoverability)
+    /// available to callers that route the error through recovery, instead of
+    /// flattening a permanent cause into a retryable message string.
+    transport_source: Option<TransportError>,
 }
 
 impl ConsumerError {
@@ -514,7 +526,25 @@ impl ConsumerError {
         Self {
             kind,
             message: message.into(),
+            transport_source: None,
         }
+    }
+
+    /// Wraps a transport failure: the classification (kind, recoverability)
+    /// travels with the error so recovery can honor a permanent cause.
+    pub(crate) fn from_transport(error: TransportError) -> Self {
+        let message = error.to_string();
+        Self {
+            kind: ConsumerErrorKind::Transport,
+            message,
+            transport_source: Some(error),
+        }
+    }
+
+    /// The wrapped transport failure, when this error carries one.
+    #[must_use]
+    pub fn transport_source(&self) -> Option<&TransportError> {
+        self.transport_source.as_ref()
     }
 
     pub(crate) fn closed() -> Self {

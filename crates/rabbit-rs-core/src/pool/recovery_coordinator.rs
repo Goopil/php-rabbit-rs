@@ -365,11 +365,14 @@ impl RecoveryCoordinatorHandle {
                 .cloned()
                 .ok_or_else(not_ready),
             Err(error) => {
+                // Surface the failure's real kind to the actor instead of a
+                // generic connection loss: on a healthy connection a
+                // permanent cause (e.g. ACCESS_REFUSED on `basic.consume`)
+                // must fail the pool, never loop re-establishment, while a
+                // transient one keeps the recoverable retry path.
                 let _ = self
                     .actor
-                    .connection_lost(TransportError::connection(format!(
-                        "consumer establishment failed: {error}"
-                    )))
+                    .connection_lost(loss_error(&error, "consumer establishment failed"))
                     .await;
                 Err(error)
             }
@@ -424,22 +427,33 @@ impl RecoveryCoordinatorHandle {
     }
 }
 
-/// Maps a failed recovery generation to the loss error the connection actor
-/// must act on: a permanent underlying cause (authentication, protocol) stays
-/// permanent so [`route_loss`] fails the pool, while every recoverable cause
-/// keeps the historical `recovery failed: …` connection error.
-fn recovery_loss_error(error: &CoordinatorError) -> TransportError {
+/// Maps a failed recovery step to the loss error the connection actor must
+/// act on: a permanent underlying cause (authentication, protocol, topology
+/// 404/406) stays permanent so [`route_loss`] fails the pool, while every
+/// recoverable cause keeps the historical `<context>: …` connection error.
+///
+/// Permanence is carried by the underlying transport error, whichever layer
+/// wrapped it: a `Topology` reconcile verdict, a bare `Transport` failure, or
+/// the transport cause a `Consumer`/`Publisher` error wraps (a refused
+/// `basic.consume`, a `QoS` precondition, a rejected `confirm.select`).
+/// Flattening those causes into a retryable connection error would reconnect
+/// and re-establish the refused topology forever.
+fn loss_error(error: &CoordinatorError, context: &'static str) -> TransportError {
     let transport = match error {
         CoordinatorError::Topology(reconcile) => Some(reconcile.transport_error().clone()),
         CoordinatorError::Transport(transport) => Some(transport.clone()),
-        CoordinatorError::Publisher(_)
-        | CoordinatorError::Consumer(_)
-        | CoordinatorError::Internal(_) => None,
+        CoordinatorError::Publisher(publish) => publish.transport_source().cloned(),
+        CoordinatorError::Consumer(consumer) => consumer.transport_source().cloned(),
+        CoordinatorError::Internal(_) => None,
     };
     match transport {
         Some(transport) if !transport.is_recoverable() => transport,
-        _ => TransportError::connection(format!("recovery failed: {error}")),
+        _ => TransportError::connection(format!("{context}: {error}")),
     }
+}
+
+fn recovery_loss_error(error: &CoordinatorError) -> TransportError {
+    loss_error(error, "recovery failed")
 }
 
 async fn run_coordinator(
@@ -516,7 +530,10 @@ async fn run_coordinator(
                         }
                     }
                     ConnectionState::Recovering { .. } | ConnectionState::Connecting { .. } => {
-                        if let Some(pub_handle) = &*publisher.lock().await {
+                        // Same rule as the recovery path: the slot lock must
+                        // not be held across the awaited actor round-trip.
+                        let pub_handle = publisher.lock().await.clone();
+                        if let Some(pub_handle) = pub_handle {
                             let _ = pub_handle
                                 .connection_event(PublisherConnectionEvent::Recovering {
                                     generation: last_generation,
@@ -525,7 +542,8 @@ async fn run_coordinator(
                         }
                     }
                     ConnectionState::FailedPermanent { kind, reason } => {
-                        if let Some(pub_handle) = &*publisher.lock().await {
+                        let pub_handle = publisher.lock().await.clone();
+                        if let Some(pub_handle) = pub_handle {
                             let error = transport_error_from_kind(kind, reason);
                             let _ = pub_handle
                                 .connection_event(PublisherConnectionEvent::FailedPermanent {
@@ -557,12 +575,18 @@ async fn run_coordinator(
 
 /// Closes the publisher and every cached consumer, then acknowledges the
 /// close command (shared by both select arms of the coordinator loop).
+///
+/// The publisher handle is taken out of the slot before the close round-trip:
+/// holding the slot lock across the awaited close would park
+/// `publisher()`/`wait_for_publisher` (no deadline) behind a shutdown that
+/// may itself be parked on the actor.
 async fn shutdown_coordinator(
     publisher: &SharedPublisher,
     consumers: &SharedConsumers,
     completed: oneshot::Sender<()>,
 ) {
-    if let Some(pub_handle) = publisher.lock().await.take() {
+    let pub_handle = publisher.lock().await.take();
+    if let Some(pub_handle) = pub_handle {
         let _ = pub_handle.close().await;
     }
     let consumers_map = std::mem::take(&mut *consumers.lock().await);
@@ -739,8 +763,13 @@ async fn recover_generation(
         .map_err(CoordinatorError::Topology)?;
 
     // Step 3: Initialize or update the publisher actor.
-    let mut pub_guard = publisher.lock().await;
-    if let Some(pub_handle) = pub_guard.as_ref() {
+    //
+    // The handle is cloned out of the slot and the lock released before the
+    // actor round-trip: holding the slot lock across the awaited
+    // `connection_event` would park `publisher()`/`wait_for_publisher` (no
+    // deadline) behind the whole adoption.
+    let adopted_publisher = publisher.lock().await.clone();
+    if let Some(pub_handle) = adopted_publisher {
         // A failed adoption (e.g. transient `enable_confirms` rejection on
         // the fresh channel) must fail the generation: the coordinator rolls
         // it back and recovery re-runs on a new generation, instead of
@@ -761,12 +790,11 @@ async fn recover_generation(
             context.metrics.clone(),
             Some(delay_strategy),
         );
-        *pub_guard = Some(handle);
+        *publisher.lock().await = Some(handle);
         // Wake publisher-acquisition waiters: the slot transition is invisible
         // to connection-state watchers (the state stays Ready across it).
         context.publisher_ready.send_replace(());
     }
-    drop(pub_guard);
 
     // Step 4: Re-establish consumers (open channels → QoS → basic_consume → update_generation).
     //
@@ -1003,5 +1031,76 @@ fn transport_error_from_kind(kind: TransportErrorKind, reason: String) -> Transp
         TransportErrorKind::Connection => TransportError::connection(reason),
         TransportErrorKind::Protocol => TransportError::protocol(reason),
         TransportErrorKind::Closed => TransportError::closed(reason),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permanent_consumer_cause_stays_permanent() {
+        let error = CoordinatorError::Consumer(ConsumerError::from_transport(
+            TransportError::authentication("ACCESS_REFUSED: no read permission on queue 'jobs'"),
+        ));
+
+        let loss = recovery_loss_error(&error);
+
+        assert_eq!(loss.kind(), TransportErrorKind::Authentication);
+        assert!(
+            !loss.is_recoverable(),
+            "a refused basic.consume must fail the pool, never loop re-establishment"
+        );
+    }
+
+    #[test]
+    fn permanent_publisher_cause_stays_permanent() {
+        let error = CoordinatorError::Publisher(PublishError::from_transport(
+            TransportError::protocol("PRECONDITION_FAILED - inequivalent arg 'x-queue-type'"),
+        ));
+
+        let loss = recovery_loss_error(&error);
+
+        assert_eq!(loss.kind(), TransportErrorKind::Protocol);
+        assert!(!loss.is_recoverable());
+    }
+
+    #[test]
+    fn transient_consumer_cause_keeps_the_retryable_connection_error() {
+        let error = CoordinatorError::Consumer(ConsumerError::from_transport(
+            TransportError::connection("connection reset"),
+        ));
+
+        let loss = recovery_loss_error(&error);
+
+        assert!(loss.is_recoverable());
+        assert!(
+            loss.to_string().starts_with("recovery failed: "),
+            "the historical retryable message is preserved: {loss}"
+        );
+    }
+
+    #[test]
+    fn internal_causes_stay_retryable() {
+        let loss =
+            recovery_loss_error(&CoordinatorError::internal("coordinator is already closed"));
+
+        assert!(loss.is_recoverable());
+    }
+
+    #[test]
+    fn on_demand_context_names_the_establishment() {
+        let error = CoordinatorError::Consumer(ConsumerError::from_transport(
+            TransportError::connection("connection reset"),
+        ));
+
+        let loss = loss_error(&error, "consumer establishment failed");
+
+        assert!(loss.is_recoverable());
+        assert!(
+            loss.to_string()
+                .starts_with("consumer establishment failed: "),
+            "the on-demand path keeps its own context prefix: {loss}"
+        );
     }
 }

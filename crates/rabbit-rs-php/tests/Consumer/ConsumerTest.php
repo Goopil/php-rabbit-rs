@@ -148,3 +148,50 @@ describe('delivery terminal state', function () {
         $pool->close();
     });
 });
+
+describe('timeout ceiling', function () {
+    it('rejects a next() timeout beyond the shared 24h ceiling', function () {
+        $pool = testingPool(defaultConfigWithWorkers(), [
+            'deliveries' => [['message_id' => 'ceiling-over', 'payload' => 'payload']],
+        ]);
+        $consumer = $pool->consumer('main');
+
+        try {
+            $consumer->next(86_400_001);
+            expect(false)->toBeTrue('a timeout beyond the 24h ceiling must throw a ValueError');
+        } catch (\ValueError $e) {
+            expect($e->getMessage())->toContain('timeoutMs: exceeds the 86400000 millisecond limit');
+        }
+
+        $pool->close();
+    });
+
+    it('accepts a next() timeout at the shared 24h ceiling', function () {
+        $pool = testingPool(defaultConfigWithWorkers(), [
+            'deliveries' => [['message_id' => 'ceiling-max', 'payload' => 'payload']],
+        ]);
+        $consumer = $pool->consumer('main');
+        $delivery = $consumer->next(86_400_000);
+
+        expect($delivery)->toBeInstanceOf(\Goopil\RabbitRs\Delivery::class);
+        expect($delivery->payload())->toBe('payload');
+
+        $pool->close();
+    });
+
+    it('rejects a nextBatch() timeout beyond the shared 24h ceiling', function () {
+        $pool = testingPool(defaultConfigWithWorkers(), [
+            'deliveries' => [['message_id' => 'batch-ceiling-over', 'payload' => 'payload']],
+        ]);
+        $consumer = $pool->consumer('main');
+
+        try {
+            $consumer->nextBatch(1, 86_400_001);
+            expect(false)->toBeTrue('a timeout beyond the 24h ceiling must throw a ValueError');
+        } catch (\ValueError $e) {
+            expect($e->getMessage())->toContain('timeoutMs: exceeds the 86400000 millisecond limit');
+        }
+
+        $pool->close();
+    });
+});

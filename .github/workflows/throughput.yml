@@ -25,7 +25,8 @@ concurrency:
 jobs:
   throughput:
     name: Throughput (all detected drivers)
-    runs-on: ubuntu-latest
+    # libclang 21 on ubuntu-latest (26.04) breaks ext-php-rs 0.15's bindgen; unpin after the ext-php-rs 0.16 migration
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

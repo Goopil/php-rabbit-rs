@@ -5,3 +5,5 @@ results/*
 !results/round-k-soak/
 !results/flush-timer-latency/
 !results/round-l-post-302/
+!results/round-l-profile/
+!results/round-l-gate/

@@ -11,7 +11,9 @@ use Illuminate\Queue\Events\WorkerStopping;
 /**
  * Boots an additional provider instance with the native extension reported as
  * loaded (fakes are used in place of the extension) so connection compilation
- * can be observed at connection resolution.
+ * can be observed at connection resolution. The fake reports the version the
+ * pinned constraint names, so the caret check accepts it like a current
+ * binary would be.
  */
 function bootedProviderWithFakeExtension(Container $app): RabbitMqServiceProvider
 {
@@ -20,6 +22,11 @@ function bootedProviderWithFakeExtension(Container $app): RabbitMqServiceProvide
         protected function nativeExtensionLoaded(): bool
         {
             return true;
+        }
+
+        protected function nativeExtensionVersion(): ?string
+        {
+            return ltrim(RabbitMqServiceProvider::EXTENSION_CONSTRAINT, '^');
         }
     };
     $provider->register();

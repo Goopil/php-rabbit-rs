@@ -1,0 +1,7 @@
+# Divan evidence — re-run for the task-17 review fix (fix/audit-2026-10-01).
+# Command: rtk cargo bench -p rabbit-rs-core --features bench --bench publisher
+# Load conditions: 13:49  up 18 days,  7:46, 4 users, load averages: 7.23 10.97 12.00 (background IDE/VM load, see README 'Machine and environment context').
+# Original Task-17 session values: pump_batch_128 median 104.2 µs (~0.81 µs/publish)
+publisher          fastest       │ slowest       │ median        │ mean          │ samples │ iters
+╰─ pump_batch_128  112.8 µs      │ 710.7 µs      │ 127.3 µs      │ 139.5 µs      │ 100     │ 100
+

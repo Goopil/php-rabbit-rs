@@ -221,3 +221,137 @@ async fn wedged_connect_attempt_cannot_block_recovery() {
     );
     handle.close().await.expect("close");
 }
+
+/// A channel open that never completes must not wedge the actor's command
+/// loop: `Close`, `ConnectionLost`, and transport error events queue behind
+/// it, so `Pool::close` used to hang until heartbeat detection (configurable
+/// up to 65535 s) happened to kill the socket. The actor must bound the
+/// per-command channel open by the same deadline as a connect attempt, route
+/// the stall through the normal connection-loss path, and then service the
+/// queued `Close`. The gate is never released; close must still complete
+/// within a bounded budget of paused time instead of never.
+#[tokio::test(start_paused = true)]
+async fn close_completes_within_budget_when_channel_open_is_gated() {
+    use rabbit_rs_core::{
+        metrics::Metrics,
+        pool::connection_actor::ConnectionActor,
+        recovery::{EqualJitter, TokioClock},
+    };
+
+    let transport = Arc::new(MockTransport::default());
+    // The broker accepts the channel.open but never answers (wedged socket
+    // behind a proxy): the open parks inside the actor's command arm.
+    let gate = transport.push_open_publisher_gate();
+
+    let handle = ConnectionActor::spawn_with_dependencies_and_metrics(
+        dyn_transport(&transport),
+        broker("primary", "/", "guest"),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        Metrics::default(),
+    );
+    handle.start().await.expect("actor started");
+
+    let states = handle.subscribe();
+    let mut ready = false;
+    for _ in 0..2000 {
+        if matches!(
+            states.borrow().clone(),
+            ConnectionState::Ready { generation: 1 }
+        ) {
+            ready = true;
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        ready,
+        "the actor must reach Ready before the channel is opened"
+    );
+
+    // A publisher open parks mid-command inside the actor...
+    let opener = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.open_publisher().await }
+    });
+    gate.wait_entered().await;
+
+    // ...and Close must still be serviced: the actor escapes through the
+    // bounded channel-open deadline (10 s of paused time), treats the
+    // connection as lost, and drains the queued commands. The budget is a
+    // generous but finite ceiling — the assertion is bounded progress, not
+    // the exact deadline, and never a heartbeat horizon.
+    tokio::time::timeout(Duration::from_secs(30), handle.close())
+        .await
+        .expect("close must complete while a channel open is gated")
+        .expect("close must succeed");
+
+    // The parked open must resolve too — as a failure, never a channel.
+    let open_result = opener.await.expect("open task must join");
+    assert!(
+        open_result.is_err(),
+        "the gated channel open must fail once the actor escapes"
+    );
+}
+
+/// A non-recoverable connection loss reported while the actor is still in
+/// the Connecting phase must fail the pool permanently — the same promotion
+/// `handle_recovering` already applies to a mid-recovery loss — instead of
+/// being swallowed by the command catch-all while the connect attempt keeps
+/// running.
+#[tokio::test(start_paused = true)]
+async fn permanent_connection_lost_during_connecting_fails_permanently() {
+    use rabbit_rs_core::{
+        metrics::Metrics,
+        pool::connection_actor::ConnectionActor,
+        recovery::{EqualJitter, TokioClock},
+    };
+
+    let transport = Arc::new(MockTransport::default());
+    // The first connect attempt never completes (mid-handshake stall).
+    let gate = transport.push_connect_gate();
+
+    let handle = ConnectionActor::spawn_with_dependencies_and_metrics(
+        dyn_transport(&transport),
+        broker("primary", "/", "guest"),
+        RecoveryPolicy::default(),
+        Arc::new(TokioClock),
+        Arc::new(EqualJitter),
+        Metrics::default(),
+    );
+    handle.start().await.expect("actor started");
+    gate.wait_entered().await;
+
+    // The transport reports the connection is gone for good while the
+    // connect attempt is still parked (e.g. the vhost vanished mid-handshake:
+    // a 404-class verdict a reconnect can never heal).
+    handle
+        .connection_lost(TransportError::protocol(
+            "NOT_FOUND - no vhost '/' in broker 'primary'",
+        ))
+        .await
+        .expect("loss delivered");
+
+    let states = handle.subscribe();
+    let mut failed = false;
+    for _ in 0..2000 {
+        if matches!(
+            states.borrow().clone(),
+            ConnectionState::FailedPermanent { .. }
+        ) {
+            failed = true;
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        failed,
+        "a permanent ConnectionLost during Connecting must fail the pool permanently"
+    );
+
+    handle.close().await.expect("close");
+}

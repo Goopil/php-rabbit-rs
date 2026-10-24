@@ -13,13 +13,14 @@ use crate::{
     metrics::{Metrics, MetricsSnapshot},
     pool::{RecoveryCoordinator, RecoveryCoordinatorConfig, RecoveryCoordinatorHandle},
     publisher::{
-        PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
+        Destination, PublishError, PublishErrorKind, PublishOutcome, PublishRequest, PublishWaiter,
         PublisherConfig, PublisherHandle,
     },
     recovery::ConnectionState,
+    topology::delay::DelayStrategy,
     transport::{
         BindingSpec, ExchangeKind, ExchangeSpec, FetchedMessage, Headers, PublisherChannel,
-        QueueSpec, Transport, TransportError, lapin::LapinTransport,
+        QueueSpec, Transport, TransportError, TransportErrorKind, lapin::LapinTransport,
     },
 };
 
@@ -35,6 +36,30 @@ const DELAY_PROBE_EXCHANGE: &str = "rabbit-rs.probe.delayed";
 /// `__auto__.` `auto_subscribe` path). Config profiles are not counted.
 const MAX_SYNTHESIZED_PROFILES: usize = 64;
 
+/// Typed delay-plugin verdict for a failed probe declare: the broker
+/// answered on a live channel that the `x-delayed-message` exchange type
+/// does not exist, so the plugin is provably absent.
+///
+/// The AMQP reply code decides, not the Display text:
+/// - `540` `NOT_IMPLEMENTED` — the reply code a `RabbitMQ` 3.x broker emits
+///   for an unknown exchange type;
+/// - `406` `PRECONDITION_FAILED` whose reply text names the exchange type —
+///   the channel-closing verdict a `RabbitMQ` 4.x broker emits instead.
+///
+/// The one text check on `406` separates the unknown-exchange-type verdict
+/// from an unrelated `406` argument mismatch (e.g. a stale probe exchange
+/// re-created with different arguments), which must stay inconclusive — an
+/// argument mismatch says nothing about the plugin. An error without a typed
+/// code never classifies: the code travels on the mapped transport error
+/// precisely so callers do not scrape Display text.
+fn delay_plugin_absent(error: &TransportError) -> bool {
+    match error.protocol_code() {
+        Some(540) => true,
+        Some(406) => error.to_string().contains("unknown exchange type"),
+        _ => false,
+    }
+}
+
 /// Returns the distinct broker names of a worker profile's subscriptions, in
 /// subscription order.
 fn worker_brokers(worker: &crate::config::WorkerProfile) -> Vec<String> {
@@ -45,6 +70,34 @@ fn worker_brokers(worker: &crate::config::WorkerProfile) -> Vec<String> {
         }
     }
     brokers
+}
+
+/// Destinations whose TTL bucket queues can hold deferred jobs for `queue`
+/// on `broker`: the `(queue, queue)` retry destination the consumer-side
+/// delayed release publishes through, plus every configured publish route of
+/// the broker with its `{queue}` template resolved to the cleared queue name
+/// (the destination a delayed publish through that route used). Mirrors the
+/// delay keep-alive's destination derivation, scoped to the cleared queue;
+/// the result is bounded by the configured route count (deduplicated).
+fn clear_route_destinations(
+    config: &ValidatedConfig,
+    broker: &str,
+    queue: &str,
+) -> Vec<Destination> {
+    let mut destinations = vec![Destination::new(queue, queue)];
+    for route in config.routes().values() {
+        if route.broker != broker {
+            continue;
+        }
+        let destination = Destination::new(
+            route.exchange.clone(),
+            route.routing_key.replace("{queue}", queue),
+        );
+        if !destinations.contains(&destination) {
+            destinations.push(destination);
+        }
+    }
+    destinations
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -538,6 +591,65 @@ impl ClientPool {
             .map_err(|error| ClientError::transport(&error))
     }
 
+    /// Purges a queue and the TTL delay bucket queues its publish route
+    /// synthesizes (`delay.mode = ttl`).
+    ///
+    /// This is the queue-clearing operation behind `queue:clear`: a plain
+    /// [`Self::purge_queue`] leaves deferred jobs sitting in the plan's
+    /// synthesized `rabbit-rs.delay.*` bucket queues, where they dead-letter
+    /// back into the cleared queue and still execute after the clear. The
+    /// swept buckets are derived from the compiled delay plan for
+    /// [`clear_route_destinations`] of the queue's broker.
+    ///
+    /// In plugin mode there is nothing to purge beyond the queue itself:
+    /// plugin-mode delayed messages live on the delayed exchange path and
+    /// cannot be purged selectively (they are already en route to their
+    /// destination queues).
+    ///
+    /// A bucket that is already gone — swept, GC'd by its `x-expires`, or
+    /// never declared — has nothing to purge: the broker answers the purge
+    /// with the missing-topology verdict (`NOT_FOUND`/`PRECONDITION_FAILED`,
+    /// the permanent-protocol classification) and the bucket is skipped
+    /// instead of failing the clear. Every other failure propagates: a dead
+    /// connection or a refused purge fails the clear.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for an unknown broker, connection failure,
+    /// channel failure, or a main-queue/bucket purge failure that is not the
+    /// missing-queue verdict above.
+    pub async fn clear_route(&self, broker: &str, queue: &str) -> Result<(), ClientError> {
+        self.purge_queue(broker, queue).await?;
+
+        let DelayStrategy::TtlBuckets(plan) = DelayStrategy::compile(&self.config) else {
+            // Plugin and auto strategies route deferred messages through the
+            // delayed exchange path; there are no bucket queues to sweep.
+            return Ok(());
+        };
+
+        for destination in clear_route_destinations(&self.config, broker, queue) {
+            for bucket in plan.buckets() {
+                // `queue_for` only fails for a delay past the largest bucket;
+                // a plan bucket always resolves into a concrete spec.
+                let Ok(spec) = plan.queue_for(&destination, *bucket) else {
+                    continue;
+                };
+                // A channel per bucket (the delay keep-alive's discipline): a
+                // missing bucket's channel-closing 404 must not poison the
+                // remaining buckets' purges.
+                let channel = self.admin_channel(broker).await?;
+                match channel.purge_queue(&spec.name).await {
+                    Ok(()) => {}
+                    // The bucket was already swept, GC'd by its `x-expires`,
+                    // or never declared: nothing to purge.
+                    Err(error) if error.kind() == TransportErrorKind::Protocol => {}
+                    Err(error) => return Err(ClientError::transport(&error)),
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Declares a queue on the given broker from a full spec.
     ///
     /// A failed declare closes the returned channel only: the admin-channel
@@ -689,17 +801,10 @@ impl ClientPool {
                 Ok(true)
             }
             // The broker answered on a live channel that the exchange type
-            // does not exist: the plugin is provably absent. Two phrasings
-            // cover the field: lapin's NOT-IMPLEMENTED reply code and the
-            // text a RabbitMQ 4.x broker without the plugin emits
-            // (verified against the lab broker: a channel-closing
-            // PRECONDITION_FAILED naming the exchange type).
-            Err(error)
-                if error.to_string().contains("NOT-IMPLEMENTED")
-                    || error.to_string().contains("unknown exchange type") =>
-            {
-                Ok(false)
-            }
+            // does not exist: the plugin is provably absent. The verdict keys
+            // on the typed AMQP reply code — never on the Display text, whose
+            // phrasing depends on the client and broker version.
+            Err(error) if delay_plugin_absent(&error) => Ok(false),
             Err(error) => Err(ClientError::transport(&error)),
         }
     }
@@ -1161,3 +1266,59 @@ impl fmt::Display for ClientError {
 }
 
 impl Error for ClientError {}
+
+#[cfg(test)]
+mod tests {
+    use super::delay_plugin_absent;
+    use crate::transport::TransportError;
+
+    /// The delay-plugin verdict keys on the AMQP reply code the transport
+    /// extracted from the broker's exception, never on the Display text: a
+    /// typed `540 NOT_IMPLEMENTED` with arbitrary text classifies as
+    /// plugin-absent, a typed `406` whose text does not name the exchange
+    /// type stays inconclusive, and an error without a typed code never
+    /// classifies — even when its Display text repeats the legacy strings the
+    /// detection used to scrape.
+    #[test]
+    fn delay_plugin_absent_keys_on_typed_reply_codes() {
+        let not_implemented = TransportError::protocol_with_code(
+            540,
+            "broker phrasing that names neither the legacy code nor the exchange type",
+        );
+        assert!(
+            delay_plugin_absent(&not_implemented),
+            "a typed 540 must classify as plugin-absent regardless of Display text"
+        );
+
+        // RabbitMQ 4.x answers the unknown exchange type with a channel-
+        // closing PRECONDITION_FAILED that names the type.
+        let precondition_unknown_type = TransportError::protocol_with_code(
+            406,
+            "PRECONDITION_FAILED - unknown exchange type 'x-delayed-message'",
+        );
+        assert!(
+            delay_plugin_absent(&precondition_unknown_type),
+            "a typed 406 naming the exchange type must classify as plugin-absent"
+        );
+
+        // An unrelated 406 argument mismatch must stay inconclusive: a probe
+        // declare that clashed with existing topology must not report the
+        // plugin as absent.
+        let precondition_mismatch = TransportError::protocol_with_code(
+            406,
+            "PRECONDITION_FAILED - inequivalent arg 'durable' for exchange 'rabbit-rs.probe.delayed'",
+        );
+        assert!(
+            !delay_plugin_absent(&precondition_mismatch),
+            "a 406 argument mismatch must stay inconclusive"
+        );
+
+        let untyped =
+            TransportError::protocol("NOT-IMPLEMENTED - unknown exchange type 'x-delayed-message'");
+        assert!(
+            !delay_plugin_absent(&untyped),
+            "an error without a typed reply code must never classify, \
+             whatever its Display text says"
+        );
+    }
+}

@@ -6,6 +6,7 @@ use Goopil\RabbitRs\Laravel\RabbitMqQueue;
 use Goopil\RabbitRs\Laravel\Support\WorkerProfileResolver;
 use Goopil\RabbitRs\Pool;
 use Illuminate\Container\Container;
+use Illuminate\Support\Facades\Log;
 
 /**
  * @return list<array<string, mixed>>
@@ -128,6 +129,92 @@ describe('closeConsumers', function (): void {
         $secondConsumer = $pool->consumerFor('__auto__.orders-eu');
 
         expect($firstConsumer)->not->toBe($secondConsumer);
+    });
+
+    it('logs undrained settlement errors before closing the consumer', function (): void {
+        [$queue, $pool] = makeCleanupQueue();
+        $queue->setContainer(app());
+
+        $queue->pop('orders-eu');
+        $consumer = $pool->consumerFor('__auto__.orders-eu');
+        $consumer->pushError([
+            'delivery_tag' => 1,
+            'subscription' => 'auto',
+            'error_kind' => 'AlreadySettled',
+            'message' => 'delivery already settled',
+        ]);
+
+        Log::spy();
+        $queue->closeConsumers();
+
+        expect(1)->toBe($consumer->closeCalls, 'the consumer must still be closed');
+
+        Log::shouldHaveReceived('warning', fn (string $message, array $context): bool => $message === 'rabbit-rs settlement error'
+            && ($context['error_kind'] ?? null) === 'AlreadySettled'
+            && ($context['delivery_tag'] ?? null) === 1
+            && ($context['subscription'] ?? null) === 'auto');
+    });
+
+    it('logs poison settlement records at error level before closing the consumer', function (): void {
+        [$queue, $pool] = makeCleanupQueue();
+        $queue->setContainer(app());
+
+        $queue->pop('orders-eu');
+        $consumer = $pool->consumerFor('__auto__.orders-eu');
+        $consumer->pushError([
+            'delivery_tag' => 2,
+            'subscription' => 'auto',
+            'error_kind' => 'MaxAttempts',
+            'message' => 'delivery attempts 25 exceed the configured maximum of 20 — acknowledged and dropped (no dead-letter exchange configured)',
+        ]);
+
+        Log::spy();
+        $queue->closeConsumers();
+
+        Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled'
+            && ($context['delivery_tag'] ?? null) === 2
+            && ($context['subscription'] ?? null) === 'auto');
+    });
+
+    it('never throws from closeConsumers when a pending settlement record is connection-level', function (): void {
+        [$queue, $pool] = makeCleanupQueue();
+        $queue->setContainer(app());
+
+        $queue->pop('orders-eu');
+        $consumer = $pool->consumerFor('__auto__.orders-eu');
+        $consumer->pushError([
+            'delivery_tag' => 1,
+            'subscription' => 'auto',
+            'error_kind' => 'StaleGeneration',
+            'message' => 'stale generation detected',
+        ]);
+
+        Log::spy();
+        $caught = null;
+        try {
+            $queue->closeConsumers();
+        } catch (Throwable $exception) {
+            $caught = $exception;
+        }
+
+        expect($caught)->toBeNull('consumer teardown must never throw')
+            ->and(1)->toBe($consumer->closeCalls);
+
+        Log::shouldHaveReceived('warning', fn (string $message, array $context): bool => $message === 'rabbit-rs settlement error'
+            && ($context['error_kind'] ?? null) === 'StaleGeneration');
+    });
+
+    it('logs nothing when no settlement records are pending', function (): void {
+        [$queue, $pool] = makeCleanupQueue();
+        $queue->setContainer(app());
+
+        $queue->pop('orders-eu');
+
+        Log::spy();
+        $queue->closeConsumers();
+
+        Log::shouldNotHaveReceived('warning');
+        Log::shouldNotHaveReceived('error');
     });
 });
 

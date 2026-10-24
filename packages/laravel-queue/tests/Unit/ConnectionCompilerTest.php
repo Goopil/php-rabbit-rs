@@ -198,6 +198,39 @@ describe('queue key', function (): void {
     ]);
 });
 
+describe('queue key coverage with subscriptions', function (): void {
+    it('rejects a queue key no subscription covers with both remediations', function (): void {
+        $compile = fn (): array => ConnectionCompiler::compile('orders', [
+            'queue' => 'default',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs']],
+        ]);
+
+        expect($compile)->toThrow(InvalidArgumentException::class, 'queue.connections.orders.queue')
+            ->and($compile)->toThrow(
+                InvalidArgumentException::class,
+                "the queue key is ignored when subscriptions are defined and no subscription consumes 'default' — "
+                .'remove the key, or add it as a subscription',
+            );
+    });
+
+    it('accepts a queue key one of the subscriptions covers', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'queue' => 'orders.jobs',
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs']],
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'])->toBe([subscription('jobs')]);
+    });
+
+    it('accepts a subscriptions connection without a queue key', function (): void {
+        $compiled = ConnectionCompiler::compile('orders', [
+            'subscriptions' => ['jobs' => ['queue' => 'orders.jobs']],
+        ]);
+
+        expect($compiled['native']['workers'][0]['subscriptions'])->toBe([subscription('jobs')]);
+    });
+});
+
 describe('bounds', function (): void {
     it('bounds wait_timeout between 1000 and 86400000', function (int $value, bool $valid): void {
         expectBounded(
@@ -503,7 +536,7 @@ describe('package defaults', function (): void {
 describe('subscriptions escape hatch', function (): void {
     it('replaces the derived subscription with the escape-hatch list', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
+            'queue' => 'orders.jobs',
             'best_effort' => true,
             'subscriptions' => [
                 'jobs' => ['queue' => 'orders.jobs'],
@@ -529,7 +562,7 @@ describe('subscriptions escape hatch', function (): void {
 
     it('falls back to the connection prefetch and casts env integers per subscription', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
+            'queue' => 'orders.jobs',
             'prefetch' => '32',
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => '2']],
         ]);
@@ -589,7 +622,7 @@ describe('subscriptions escape hatch', function (): void {
 
     it('accepts the full no_ack combination when best_effort opts in', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
+            'queue' => 'orders.jobs',
             'best_effort' => true,
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'early_ack' => true, 'no_ack' => true]],
         ]);
@@ -601,7 +634,7 @@ describe('subscriptions escape hatch', function (): void {
     it('bounds weight between 1 and 65535', function (int $value, bool $valid): void {
         expectBounded(
             fn (): array => ConnectionCompiler::compile('orders', [
-                'queue' => 'default',
+                'queue' => 'orders.jobs',
                 'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'weight' => $value]],
             ]),
             fn (array $compiled): int => $compiled['native']['workers'][0]['subscriptions'][0]['weight'],
@@ -643,7 +676,7 @@ describe('subscriptions escape hatch', function (): void {
 describe('adaptive prefetch', function (): void {
     it('keeps emitting a plain integer for the fixed mode', function (): void {
         $compiled = ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
+            'queue' => 'orders.jobs',
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'prefetch' => ['mode' => 'fixed', 'value' => 8]]],
         ]);
 
@@ -660,7 +693,7 @@ describe('adaptive prefetch', function (): void {
     it('forwards an adaptive prefetch config per subscription', function (): void {
         $adaptive = adaptivePrefetch();
         $compiled = ConnectionCompiler::compile('orders', [
-            'queue' => 'default',
+            'queue' => 'orders.jobs',
             'subscriptions' => ['jobs' => ['queue' => 'orders.jobs', 'prefetch' => $adaptive]],
         ]);
 

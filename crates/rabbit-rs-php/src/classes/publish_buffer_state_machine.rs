@@ -11,12 +11,14 @@
 //!   still buffered — never lost silently;
 //! - buffered counts and bytes track the model exactly, oldest-first;
 //! - the pending-error queue surfaces exactly the records the model expects
-//!   (pipelined drains record, synchronous paths raise instead);
+//!   (pipelined drains and the teardown flush record returned outcomes,
+//!   synchronous paths raise instead, teardown batch failures stay silent);
 //! - the actor-level metrics (confirmations, returns) match the scripted
 //!   broker responses exactly, so re-buffers and drops stay distinguishable
 //!   from confirmed deliveries;
 //! - teardown and a closed pool convert every unconfirmed publication into
-//!   an exactly-once drop instead of vanishing.
+//!   an exactly-once drop instead of vanishing, while returned publications
+//!   are surfaced as records.
 //!
 //! Batch failures are scripted through non-recoverable confirmation errors
 //! (`TransportError::protocol`), which resolve the waiter as a per-message
@@ -126,15 +128,16 @@ enum Transition {
     /// Pop-path synchronous flush (`flush_nonempty`): raises like
     /// [`Transition::ExplicitFlush`], no-op when the buffer is empty.
     PopFlush(BatchScript),
-    /// Destructor flush: quiesces drains, never records, never re-buffers —
-    /// anything the batch did not confirm is counted as dropped.
+    /// Destructor flush: quiesces drains, never re-buffers — unconfirmed
+    /// outcomes are counted as dropped, returned outcomes are recorded for
+    /// PHP surfacing, batch failures stay silent.
     Teardown(BatchScript),
     /// Closes the pool: later flushes fail with `Closed` and drop.
     CloseClient,
 }
 
-/// Which flush path ran: only the pipelined drain records pending errors —
-/// synchronous paths raise to the caller and the destructor stays silent.
+/// Which flush path ran: the pipelined drain and the teardown flush record
+/// pending errors, synchronous paths raise instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FlushSurface {
     Pipelined,
@@ -272,7 +275,8 @@ impl PublishBufferMachine {
     }
 
     /// Applies the destructor flush: sends happen, failures are never
-    /// re-buffered, and outcomes are never surfaced.
+    /// re-buffered, returned outcomes are surfaced as records, and batch
+    /// failures stay silent (counted as drops only).
     fn apply_teardown(state: &mut Model, script: BatchScript) {
         state.torn_down = true;
         if state.buffered.is_empty() {
@@ -292,6 +296,10 @@ impl PublishBufferMachine {
     /// before any wire write — so they are never sent, never confirmed, and
     /// consume no scripted confirmation; the scripted special outcome applies
     /// to the first healthy send.
+    ///
+    /// Returned outcomes are recorded as pending-error records on the
+    /// surfaces that record (`Pipelined`, `Teardown`); synchronous paths
+    /// raise instead. Batch-level failures record only on `Pipelined`.
     fn run_batch(
         state: &mut Model,
         batch: &[BufferedMsg],
@@ -342,7 +350,7 @@ impl PublishBufferMachine {
                     Outcome::Confirmed => state.terminal_acked.push(msg.id),
                     Outcome::Returned => {
                         state.terminal_returned.push(msg.id);
-                        if surface == FlushSurface::Pipelined {
+                        if matches!(surface, FlushSurface::Pipelined | FlushSurface::Teardown) {
                             state.errors.push((msg.id, "Returned"));
                         }
                     }

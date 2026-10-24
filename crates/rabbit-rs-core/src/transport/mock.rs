@@ -60,6 +60,11 @@ struct MockState {
     /// Publisher-channel confirm-mode results, mirroring a broker that
     /// rejects `confirm.select` transiently during recovery.
     enable_confirms_results: VecDeque<TransportResult<()>>,
+    /// Gates the next `enable_confirms` so a test can park the caller mid
+    /// round-trip — the publisher actor handles `Ready` inline, so parking
+    /// here parks everything upstream (the coordinator's publisher-slot
+    /// adoption) with it.
+    enable_confirms_gates: VecDeque<MockOperationGateWait>,
     /// Connection-level events armed on the event stream, mirroring a broker
     /// connection that dies (socket reset, heartbeat timeout) or applies
     /// backpressure (resource alarm).
@@ -74,6 +79,11 @@ struct MockState {
     /// Queue names passed to `queue_declare` on any channel, in call order.
     declared_queues: Mutex<Vec<String>>,
     connect_gates: VecDeque<MockOperationGateWait>,
+    /// Gates the next `open_publisher` so a test can park the connection
+    /// actor mid channel-open — the actor runs the open inline inside its
+    /// command arm, so parking here parks every queued command (including
+    /// `Close`) behind it.
+    open_publisher_gates: VecDeque<MockOperationGateWait>,
     /// Gates the next `declare_queue` so a test can park the caller mid
     /// declaration — the channel operation runs on the caller's task, not
     /// inside the connection actor loop, so everything else stays live.
@@ -187,6 +197,16 @@ impl MockTransport {
         gate
     }
 
+    /// Gates the next `open_publisher` so a test can park the caller mid
+    /// channel-open, like a broker that accepts `channel.open` but never
+    /// answers.
+    #[must_use]
+    pub fn push_open_publisher_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().open_publisher_gates.push_back(wait);
+        gate
+    }
+
     /// Pushes a gate that makes the next `declare_queue` call pending until
     /// the returned gate is released, parking the declaring task mid
     /// declaration.
@@ -245,6 +265,15 @@ impl MockTransport {
     pub fn push_publish_gate(&self) -> MockOperationGate {
         let (wait, gate) = operation_gate();
         self.state().publish_gates.push_back(wait);
+        gate
+    }
+
+    /// Gates the next `enable_confirms` so a test can park the caller mid
+    /// round-trip.
+    #[must_use]
+    pub fn push_enable_confirms_gate(&self) -> MockOperationGate {
+        let (wait, gate) = operation_gate();
+        self.state().enable_confirms_gates.push_back(wait);
         gate
     }
 
@@ -402,10 +431,12 @@ impl TransportConnection for MockConnection {
     }
 
     async fn open_publisher(&self) -> TransportResult<Box<dyn PublisherChannel>> {
-        {
+        let gate = {
             let mut state = self.state();
             state.operations.push(TransportOperation::OpenPublisher);
-        }
+            state.open_publisher_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         Ok(Box::new(MockPublisherChannel {
             state: self.state.clone(),
         }))
@@ -568,11 +599,19 @@ impl_topology_channel!(MockConsumerChannel, false);
 #[async_trait]
 impl PublisherChannel for MockPublisherChannel {
     async fn enable_confirms(&self) -> TransportResult<()> {
+        let gate = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.operations.push(TransportOperation::EnableConfirms);
+            state.enable_confirms_gates.pop_front()
+        };
+        wait_for_gate(gate).await;
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.operations.push(TransportOperation::EnableConfirms);
         state.enable_confirms_results.pop_front().unwrap_or(Ok(()))
     }
 

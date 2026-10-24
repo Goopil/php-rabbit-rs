@@ -734,9 +734,11 @@ async fn probe_delay_plugin_classifies_declare_outcomes() {
     );
 
     // Plugin absent: the pre-clean delete consumes the first scripted
-    // result, the declare consumes the second and reports NOT-IMPLEMENTED.
+    // result, the declare consumes the second and reports the typed
+    // `NOT_IMPLEMENTED` (540) reply code.
     transport.push_operation_result(Ok(()));
-    transport.push_operation_result(Err(TransportError::protocol(
+    transport.push_operation_result(Err(TransportError::protocol_with_code(
+        540,
         "NOT-IMPLEMENTED - unknown exchange type 'x-delayed-message'",
     )));
     assert!(
@@ -746,24 +748,27 @@ async fn probe_delay_plugin_classifies_declare_outcomes() {
             .expect("probe absent")
     );
 
-    // Same verdict for the text a real RabbitMQ 4.x broker without the
-    // plugin emits: the unknown exchange type is a channel-closing
-    // PRECONDITION_FAILED, not a NOT-IMPLEMENTED reply.
+    // Same verdict for the typed form a real RabbitMQ 4.x broker without the
+    // plugin produces: the unknown exchange type is a channel-closing
+    // PRECONDITION_FAILED (406), not a NOT-IMPLEMENTED reply.
     transport.push_operation_result(Ok(()));
-    transport.push_operation_result(Err(TransportError::protocol(
+    transport.push_operation_result(Err(TransportError::protocol_with_code(
+        406,
         "PRECONDITION_FAILED - unknown exchange type 'x-delayed-message'",
     )));
     assert!(
         !pool
             .probe_delay_plugin("default")
             .await
-            .expect("probe absent (real broker text)")
+            .expect("probe absent (real broker verdict)")
     );
 
     // Inconclusive: any other declare failure propagates so the caller can
-    // distinguish "plugin absent" from "probe could not run".
+    // distinguish "plugin absent" from "probe could not run" — including a
+    // typed refusal whose reply code is not a plugin verdict.
     transport.push_operation_result(Ok(()));
-    transport.push_operation_result(Err(TransportError::protocol(
+    transport.push_operation_result(Err(TransportError::protocol_with_code(
+        403,
         "ACCESS-REFUSED - access to exchange refused",
     )));
     assert!(pool.probe_delay_plugin("default").await.is_err());
@@ -1037,16 +1042,16 @@ async fn publish_batch_resolves_accepted_publications_when_a_broker_acquisition_
 
     // The accepted publication was resolved exactly once and the failed
     // broker's message was never published.
-    let published_ids: Vec<String> = common::publish_requests(&transport)
+    let published_ids: Vec<Arc<str>> = common::publish_requests(&transport)
         .iter()
         .filter_map(|request| request.properties.message_id.clone())
         .collect();
     assert!(
-        published_ids.contains(&"accepted".to_owned()),
+        published_ids.contains(&Arc::from("accepted")),
         "the accepted publication must be resolved: {published_ids:?}"
     );
     assert!(
-        !published_ids.contains(&"discarded".to_owned()),
+        !published_ids.contains(&Arc::from("discarded")),
         "the failed broker's message must not be published: {published_ids:?}"
     );
 

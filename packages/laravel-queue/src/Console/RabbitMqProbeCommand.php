@@ -72,13 +72,34 @@ final class RabbitMqProbeCommand extends Command
     /**
      * Signals the fresh workers to drain and waits for them; always exits 0
      * because Kubernetes sends SIGTERM to the container regardless.
+     *
+     * Before signaling anyone, the hook marks the drain: each tracked
+     * statefile carries `drain_requested` into its final draining write, and
+     * the fleet marker file makes the supervisor defer recycling clean-exited
+     * slots — without it, a SIGTERMed worker is instantly respawned under a
+     * fresh PID (new statefile) while this hook still believes the fleet
+     * drained. The markers are cleared after the bounded wait, whether or
+     * not the drain completed: the wait is over and the supervisor must
+     * resume recycling (the container's own SIGTERM stops the fleet right
+     * after).
      */
     private function prestop(string $directory): int
     {
         $targets = ProbeStatefile::fresh($directory, (float) $this->option('max-age'));
+
+        foreach ($targets as ['path' => $path]) {
+            ProbeStatefile::requestDrain($path);
+        }
+        ProbeStatefile::signalDrain($directory);
+
         $this->signal($targets);
 
-        $drained = $this->awaitDrain($targets, microtime(true) + (float) $this->option('timeout'));
+        $drained = $this->awaitDrain($directory, microtime(true) + (float) $this->option('timeout'));
+
+        ProbeStatefile::clearDrainSignal($directory);
+        foreach ($targets as ['path' => $path]) {
+            ProbeStatefile::clearDrainRequest($path);
+        }
 
         if ($targets === []) {
             $state = 'no fresh statefile';
@@ -112,12 +133,14 @@ final class RabbitMqProbeCommand extends Command
     }
 
     /**
-     * @param  list<array{pid: int, state: string, connected: bool, consumed: int, acked: int, nacked: int, path: string}>  $targets
+     * Polls the drain verdict until the fleet quiesces or the deadline
+     * expires: the hook's wait stays bounded by the --timeout budget, never
+     * an unbounded wait.
      */
-    private function awaitDrain(array $targets, float $deadline): bool
+    private function awaitDrain(string $directory, float $deadline): bool
     {
         while (true) {
-            if ($this->drained($targets)) {
+            if ($this->drained($directory)) {
                 return true;
             }
             if (microtime(true) >= $deadline) {
@@ -128,16 +151,18 @@ final class RabbitMqProbeCommand extends Command
     }
 
     /**
-     * Every target reached draining/stopped (a statefile that disappeared
-     * means the worker already exited).
-     *
-     * @param  list<array{pid: int, state: string, connected: bool, consumed: int, acked: int, nacked: int, path: string}>  $targets
+     * The fleet is quiesced: no fresh statefile reports a worker still
+     * consuming. The scan is deliberately directory-wide: the original
+     * targets age out of the freshness window once their workers exit, while
+     * a respawned worker (fresh PID, new statefile) shows up as a fresh
+     * booting/running file. Keying the verdict on the original targets alone
+     * is what let the hook report success while respawned workers kept
+     * consuming.
      */
-    private function drained(array $targets): bool
+    private function drained(string $directory): bool
     {
-        foreach ($targets as ['path' => $path]) {
-            $data = json_decode((string) @file_get_contents($path), true);
-            if (is_array($data) && ! in_array($data['state'] ?? '', ['draining', 'stopped'], true)) {
+        foreach (ProbeStatefile::fresh($directory, (float) $this->option('max-age')) as ['state' => $state]) {
+            if (! in_array($state, ['draining', 'stopped'], true)) {
                 return false;
             }
         }

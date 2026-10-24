@@ -87,13 +87,24 @@ impl EventBridge {
     /// Connection-state callbacks fire for every broker whose state changed
     /// since the previous drain; the backpressure callback fires when the
     /// backpressure metric increased. Without a live client (already dropped)
-    /// this is a no-op.
+    /// this is a no-op, and so is draining with no registered callback.
     ///
     /// Every registered callback is invoked even when an earlier one throws;
     /// the first thrown exception is rethrown as-is once the drain loop
     /// finishes so the enclosing operation surfaces it instead of silently
     /// destroying it (audit F-17).
     pub(crate) fn drain(&self) {
+        // Fast path: with no registered callback there is nothing to invoke,
+        // so skip the `connection_states()`/`metrics_snapshot()` work
+        // entirely — the common case on the publish/pop hot paths.
+        //
+        // Leaving `last_connection_states` and `last_backpressure_total`
+        // stale here is deliberate and correct: a callback registered later
+        // still diffs against those last-seen values and fires as soon as
+        // the observed state differs from them.
+        if self.connection_state_callbacks.is_empty() && self.backpressure_callbacks.is_empty() {
+            return;
+        }
         let Some(client) = self.client.upgrade() else {
             return;
         };
@@ -200,5 +211,98 @@ fn connection_state_parts(state: &ConnectionState) -> (String, i64) {
             ("failed_permanent".to_string(), 0)
         }
         ConnectionState::Closed => ("closed".to_string(), 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use rabbit_rs_core::config::{Config, SafetyMode};
+    use rabbit_rs_core::publisher::PublisherConfig;
+    use rabbit_rs_core::transport::mock::MockTransport;
+
+    use super::*;
+
+    /// Builds a live client pool backed by a mock transport, as the bridge
+    /// would see it from the PHP thread.
+    fn live_client() -> Arc<ClientPool> {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "brokers": [{
+                    "name": "default",
+                    "hosts": [{"host": "rabbit.local", "port": 5672}],
+                    "vhost": "/",
+                    "credentials": {"username": "guest", "password": "secret"},
+                    "tls": {"enabled": false},
+                    "heartbeat": 30
+                }],
+                "workers": [{
+                    "name": "main",
+                    "subscriptions": [{
+                        "name": "default",
+                        "broker": "default",
+                        "queue": "jobs",
+                        "weight": 1,
+                        "prefetch": 16
+                    }],
+                    "scheduler": {
+                        "strategy": "weighted_fair"
+                    }
+                }],
+                "topology_mode": "external"
+            }"#,
+        )
+        .expect("config JSON parses");
+        Arc::new(ClientPool::new_for_tests(
+            Arc::new(config.validate().expect("config is valid")),
+            Arc::new(MockTransport::default()),
+            PublisherConfig::with_safety(8, Duration::from_secs(30), SafetyMode::Safe),
+        ))
+    }
+
+    fn assert_last_seen_state_untouched(bridge: &EventBridge) {
+        assert!(
+            bridge
+                .last_connection_states
+                .lock()
+                .expect("connection state mutex poisoned")
+                .is_empty(),
+            "no connection state may be recorded without registered callbacks"
+        );
+        assert_eq!(
+            *bridge
+                .last_backpressure_total
+                .lock()
+                .expect("backpressure mutex poisoned"),
+            0,
+            "no backpressure level may be recorded without registered callbacks"
+        );
+    }
+
+    /// Pins the empty-registry fast path of [`EventBridge::drain`]: with no
+    /// registered callback, draining must not consult the client nor record
+    /// last-seen state, and must stay a no-op across repeated drains.
+    #[test]
+    fn drain_with_empty_registries_keeps_last_seen_state_untouched() {
+        let bridge = EventBridge::shared(&live_client());
+
+        bridge.drain();
+        bridge.drain();
+
+        assert_last_seen_state_untouched(&bridge);
+    }
+
+    /// A bridge whose client was dropped must drain without panicking, with
+    /// or without registered callbacks.
+    #[test]
+    fn drain_without_a_live_client_is_a_no_op() {
+        let client = live_client();
+        let bridge = EventBridge::shared(&client);
+        drop(client);
+
+        bridge.drain();
+
+        assert_last_seen_state_untouched(&bridge);
     }
 }

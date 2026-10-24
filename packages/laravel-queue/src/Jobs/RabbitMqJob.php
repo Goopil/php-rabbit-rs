@@ -28,8 +28,12 @@ class RabbitMqJob extends Job implements JobContract
     ) {
         $metadata = $delivery->metadata();
 
-        $messageId = $metadata['message_id'] ?? null;
-        if (! is_string($messageId) || $messageId === '') {
+        // The native metadata contract always carries message_id (the core
+        // synthesizes "generation:channel:tag" when the AMQP property is
+        // absent); only an empty id — a foreign publisher's empty message-id
+        // property — is rejected here.
+        $messageId = $metadata['message_id'];
+        if ($messageId === '') {
             throw new InvalidArgumentException(
                 "Delivery is missing required 'message_id' metadata — cannot create job"
             );
@@ -49,7 +53,7 @@ class RabbitMqJob extends Job implements JobContract
         $this->queue = $queue;
         $this->rawBody = $rawBody;
         $this->jobId = $messageId;
-        $this->deliveryAttempts = (int) ($metadata['attempts'] ?? 0);
+        $this->deliveryAttempts = $metadata['attempts'];
     }
 
     public function getJobId(): string

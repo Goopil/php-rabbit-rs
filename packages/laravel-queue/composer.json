@@ -4,6 +4,14 @@
     "description": "Laravel queue driver for the Rabbit RS native extension",
     "type": "library",
     "license": "MIT",
+    "homepage": "https://github.com/Goopil/php-rabbit-rs",
+    "authors": [
+        {
+            "name": "Zachary Volpi",
+            "email": "hello@zvolpi.ch"
+        }
+    ],
+    "keywords": ["rabbitmq", "amqp", "laravel", "queue", "rust"],
     "require": {
         "php": "^8.4",
         "illuminate/queue": "^12.0 || ^13.0",
@@ -35,11 +43,11 @@
         }
     },
     "suggest": {
-        "ext-rabbit_rs": "Required to dispatch and consume jobs (^0.3.10). composer install succeeds without it; connections fail at resolution time until the native extension is loaded (pie install goopil/rabbit-rs-native).",
+        "ext-rabbit_rs": "Required to dispatch and consume jobs (^0.3.11). composer install succeeds without it; connections fail at resolution time until the native extension is loaded (pie install goopil/rabbit-rs-native).",
         "laravel/horizon": "Required to use the Horizon dashboard integration (worker=horizon)"
     },
     "scripts": {
-        "analyse": "phpstan --no-progress",
+        "analyse": "phpstan --no-progress --memory-limit=1G",
         "lint": "pint --test",
         "test": "pest"
     },

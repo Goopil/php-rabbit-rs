@@ -33,8 +33,11 @@ final class RabbitMqConnector implements ConnectorInterface
     /**
      * Compiles the queue connection lazily: one connection = one broker = one
      * native pool. Framework keys (queue, after_commit, block_for) stay read
-     * from the raw connection config; `worker` also falls back to the package
-     * defaults so RABBIT_RS_WORKER applies without a per-connection key.
+     * from the raw connection config — after_commit and block_for cast
+     * through the compiler's casters, so env-wired strings work and failures
+     * name their queue.connections.<name>.<key> path; `worker` also falls
+     * back to the package defaults so RABBIT_RS_WORKER applies without a
+     * per-connection key.
      *
      * @param  array<string, mixed>  $config
      */
@@ -49,16 +52,22 @@ final class RabbitMqConnector implements ConnectorInterface
         if (! is_string($defaultQueue) || $defaultQueue === '') {
             throw new InvalidArgumentException('queue must be a non-empty string');
         }
-        $dispatchAfterCommit = $config['after_commit'] ?? false;
-        if (! is_bool($dispatchAfterCommit)) {
-            throw new InvalidArgumentException('after_commit must be a boolean');
-        }
-        $blockFor = $config['block_for'] ?? null;
-        if ($blockFor !== null && (! is_int($blockFor) || $blockFor < 0)) {
-            throw new InvalidArgumentException('block_for must be a non-negative integer or null');
-        }
-        if ($blockFor !== null && $blockFor > intdiv(PHP_INT_MAX, 1000)) {
-            throw new InvalidArgumentException('block_for exceeds the supported millisecond range');
+
+        // Framework keys are read from the raw connection config through the
+        // compiler's casters, so env-wired strings cast like compiled keys
+        // and every failure names its exact config path.
+        $path = 'queue.connections.'.$name;
+        $dispatchAfterCommit = ConnectionCompiler::boolean($config['after_commit'] ?? false, $path.'.after_commit');
+
+        $blockFor = null;
+        if (($config['block_for'] ?? null) !== null) {
+            $blockFor = ConnectionCompiler::integer($config['block_for'], $path.'.block_for');
+            if ($blockFor < 0) {
+                throw new InvalidArgumentException($path.'.block_for: must be a non-negative integer or null');
+            }
+            if ($blockFor > intdiv(PHP_INT_MAX, 1000)) {
+                throw new InvalidArgumentException($path.'.block_for: exceeds the supported millisecond range');
+            }
         }
 
         $class = self::workerClass($config, $this->defaults);
