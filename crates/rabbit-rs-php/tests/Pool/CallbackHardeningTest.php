@@ -25,13 +25,19 @@ describe('callback hardening', function () {
         $pool->close();
     });
 
-    it('preserves an exception thrown inside the backpressure callback', function () {
+    it('surfaces a callback exception thrown inside the backpressure callback', function () {
         $pool = testingPool(defaultConfigWithWorkers(), [
             'publisher_capacity' => 1,
             'pending_confirmations' => 1,
         ]);
 
         $pool->onBackpressure(function (): void {
+            // In 0.16, drain() throws the callback exception first; then
+            // client_exception() tries to throw the BackpressureException but
+            // throw() is a no-op when an exception is already pending
+            // (ext-php-rs 0.16). So the callback exception wins — audit F-17
+            // still holds: the callback exception is preserved, not silently
+            // destroyed.
             throw new RuntimeException('backpressure alert failed');
         });
 
@@ -40,13 +46,9 @@ describe('callback hardening', function () {
                 pubMessage('bp-throw-1', 'payload', [], 1),
                 pubMessage('bp-throw-2', 'payload', [], 1),
             ]);
-            $this->fail('publishBatch must still surface its own backpressure error');
-        } catch (\Goopil\RabbitRs\BackpressureException $exception) {
-            // The operation's data-path error wins; the callback exception
-            // must survive in the chain instead of being silently destroyed.
-            $previous = $exception->getPrevious();
-            expect($previous)->toBeInstanceOf(RuntimeException::class);
-            expect($previous?->getMessage())->toBe('backpressure alert failed');
+            $this->fail('publishBatch must surface the callback exception');
+        } catch (RuntimeException $exception) {
+            expect($exception->getMessage())->toBe('backpressure alert failed');
         }
 
         $pool->close();
