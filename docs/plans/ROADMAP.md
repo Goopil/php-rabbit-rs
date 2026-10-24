@@ -254,6 +254,23 @@ with the feature, never in a later docs pass.
   `PublishBufferBackpressureTest` has an intermittent CI-only null-refusal
   failure mode (#139, unrelated to the fixed mutex race; diagnostic
   instrumentation kept in the test to capture the next occurrence).
+- **Release v0.3.11 (2026-10-24)** — Round L stabilization shipped (patch tag
+  after MR #344); post-release housekeeping followed same day (#362/#363).
+- **ext-php-rs 0.15.15 → 0.16.3 migration (2026-10-24, issue #359)** —
+  PRs #364/#365. Pin moved to `=0.16.3`; the event-bridge rethrow path
+  migrated to 0.16's `ExceptionPending`/`take_exception` model with an
+  accepted behavior change: when a callback exception and a drain error
+  collide, the callback exception now wins (first-wins; 0.16 `throw()` is a
+  no-op while an exception is pending) instead of 0.15's drain-error-with-
+  `previous` shape. `zend_ce_error` + `zend_throw_exception` added to the
+  Zend link stubs (nextest exit 104 on Linux); zip advisory ignores cleared
+  (cargo-deny green); stubs regenerated with cargo-php 0.2.1 (zero diff).
+  Host CI jobs unpinned from `ubuntu-24.04` to `ubuntu-latest` with
+  `LIBCLANG_PATH: /usr/lib/llvm-21/lib`: ubuntu-26.04 ships libclang
+  20/21/22 and clang-sys loads the newest (22), whose parser dropped LLVM
+  ≤21's `__builtin_ia32_*` builtins, failing the ext-php-rs build
+  (runner-probed 2026-10-24; bindgen target flags were a dead end).
+  Plan: `docs/superpowers/plans/2026-10-24-ext-php-rs-016-migration.md`.
 
 ## Round K — consolidation: stability + memory evidence (post-1.0, 2026-09-05)
 
@@ -316,7 +333,7 @@ gate green; no hot-path changes.
 ## Round L — audit 2026-10-01 stabilization (post-1.0)
 
 **DELIVERED 2026-10-07** — all 24 tasks complete on branch
-`fix/audit-2026-10-01` (MR #344); patch tag v0.3.11 pending on merge. The
+`fix/audit-2026-10-01` (MR #344); patch tag v0.3.11 shipped 2026-10-24. The
 round also fixed the missing Zend link stubs that broke the Linux test
 binaries in CI (`_call_user_function_impl` and siblings).
 
