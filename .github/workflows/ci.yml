@@ -56,12 +56,21 @@ jobs:
           echo "=== install bindgen-cli 0.73.2 and probe ==="
           cargo install bindgen-cli --version 0.73.2 --quiet
           H=/usr/lib/llvm-21/lib/clang/21/include/xmmintrin.h
-          echo "--- bindgen NO extra args ---"
-          bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
-          echo "--- bindgen BINDGEN_EXTRA_CLANG_ARGS='--target=x86_64-unknown-linux-gnu' ---"
-          BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-unknown-linux-gnu" bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
-          echo "--- bindgen BINDGEN_EXTRA_CLANG_ARGS='-target x86_64-unknown-linux-gnu' ---"
-          BINDGEN_EXTRA_CLANG_ARGS="-target x86_64-unknown-linux-gnu" bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "=== builtin names per LLVM version (rename theory) ==="
+          for D in /usr/lib/llvm-20 /usr/lib/llvm-21 /usr/lib/llvm-22; do
+            F=$D/lib/clang/*/include/xmmintrin.h
+            if [ -f $(ls $F 2>/dev/null | head -1) ]; then
+              echo "$D: ia32=$(grep -c '__builtin_ia32_sqrtss' $F 2>/dev/null) x86=$(grep -c '__builtin_x86_sqrtss' $F 2>/dev/null)"
+            else echo "$D: no xmmintrin"; fi
+          done
+          echo "--- bindgen --clang-args direct (bypasses env var) ---"
+          bindgen --clang-args="-target x86_64-unknown-linux-gnu" "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "--- bindgen with LIBCLANG_PATH forced to 21, no extra args ---"
+          LIBCLANG_PATH=/usr/lib/llvm-21/lib bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "--- bindgen with LIBCLANG_PATH forced to 21 + --target env ---"
+          LIBCLANG_PATH=/usr/lib/llvm-21/lib BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-unknown-linux-gnu" bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
+          echo "--- bindgen with LIBCLANG_PATH forced to 22 ---"
+          LIBCLANG_PATH=/usr/lib/llvm-22/lib bindgen "$H" -o /dev/null 2>&1 | grep -m1 -E "error" || echo PARSE-OK
           echo "=== probe done ==="
 
       - name: Check formatting
