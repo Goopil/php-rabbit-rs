@@ -596,11 +596,6 @@ log "starting ${SERVER} server"
 "start_$(server_fn_suffix)"
 wait_server_up
 
-# Publications that must be on the broker when phase 3 starts. A server
-# that loses a parked batch on the way reduces this count; the assertions
-# below make the loss explicit instead of failing silently later.
-TOTAL_EXPECTED=10
-
 # Phase 1: publish x5 with no follow-up op; publications park in the buffer.
 log "phase 1: publish x5 (parked), then reload"
 scenario publish 5
@@ -610,26 +605,47 @@ scenario wait-depth 5 30
 scenario wait-buffered 0 15
 log "phase 1 ok: reload flushed the parked publications (depth 5, buffer 0)"
 
+# Phase 1b: recycle UNDER sustained publish load (issue #369, audit F2).
+# The idle reload of phase 1 cannot produce the cross-thread MSHUTDOWN
+# timing: with workers>1, publishes arriving while workers recycle park a
+# request inside the shared runtime while another worker tears down — the
+# exact overlap a production Octane reload hits. Every dispatch asserts
+# HTTP 200 and the final depth is exact, so a torn-down runtime (worker
+# panic or lost parked batch) fails loudly.
+log "phase 1b: 120 publishes under a concurrent reload"
+scenario publish 120 &
+PUBLISH_PID=$!
+sleep 1
+reload_server
+wait "${PUBLISH_PID}" || fail "publishes failed while workers were recycling"
+reload_server   # flush whatever parked in workers recycled after the first one
+scenario wait-buffered 0 15
+# 5 (phase 1, flushed) + 120 (phase 1b, flushed by the two reloads).
+TOTAL_EXPECTED=125
+scenario wait-depth "${TOTAL_EXPECTED}" 60
+log "phase 1b ok: recycled under load, all 120 publications on the broker (depth ${TOTAL_EXPECTED})"
+
 # Phase 2: publish x5 again, then graceful stop.
 log "phase 2: publish x5 (parked), then octane:stop"
 scenario publish 5
 scenario wait-buffered 5 15
-scenario wait-depth 5 15   # batch 2 is parked, NOT yet on the broker
+scenario wait-depth "${TOTAL_EXPECTED}" 15   # batch 2 is parked, NOT yet on the broker
 stop_server
 wait_server_gone
 if stop_flush_expected; then
+    TOTAL_EXPECTED=$((TOTAL_EXPECTED + 5))
     scenario wait-depth "${TOTAL_EXPECTED}" 30
     log "phase 2 ok: graceful stop flushed the parked publications (depth ${TOTAL_EXPECTED}, no loss)"
-    EXPECTED_DRAIN="${TOTAL_EXPECTED}"
 else
     # Upstream octane SIGKILLs swoole-family workers on stop: the parked
     # batch dies with the process (documented limit, not a driver bug).
     # Assert the loss explicitly so the harness can always DETECT it, then
-    # certify the reload-flush path only.
-    scenario wait-depth 5 15
+    # certify the reload-flush path only. The depth stays at
+    # TOTAL_EXPECTED: the 5 parked publications are gone.
+    scenario wait-depth "${TOTAL_EXPECTED}" 15
     log "phase 2: ${SERVER} octane:stop SIGKILLs workers (upstream laravel/octane) — the 5 parked publications are lost; graceful-stop flush not certifiable on this server"
-    EXPECTED_DRAIN=5
 fi
+EXPECTED_DRAIN="${TOTAL_EXPECTED}"
 
 # Phase 3: restart, consume everything, ack, drain to zero.
 log "phase 3: restart, consume ${EXPECTED_DRAIN} via CLI worker, ack all, drain to 0"
