@@ -571,7 +571,7 @@ Installing the Rabbit RS native extension and the Laravel queue driver.
 
 #### Thread safety
 
-ZTS binaries ship from 0.3.14 on **Linux**; macOS ZTS is deliberately deferred — ZTS demand is Linux/Docker (the official FrankenPHP images), revisit on demand. PIE selects the matching binary for a ZTS PHP installation (`composer.json` declares `"support-zts": true`).
+ZTS binaries ship from 0.3.14 across the **full Linux grid** (glibc and musl, x86_64 and arm64 — the same matrix grpc-php-rs publishes); macOS ZTS is deliberately deferred — ZTS demand is Linux/Docker (the official FrankenPHP images), revisit on demand. PIE selects the matching binary for a ZTS PHP installation (`composer.json` declares `"support-zts": true`).
 
 The extension keeps a process-global runtime and connection registry whose shared state is mutex/atomic-protected — the Rust core is memory-safe under concurrent PHP threads, and Zend values never cross threads. The ZTS-specific lifecycle hazard is fixed: the module's MSHUTDOWN no longer closes the process-global registry on ZTS builds (the close is gated on non-ZTS), so a worker-thread teardown — a FrankenPHP worker recycle — never kills the shared runtime under surviving threads ([thread-safety audit](zts-thread-safety-audit.md)). Shared pools give competing-consumer semantics: deliveries are split between PHP threads, a one-shot re-fetch signal can be consumed by whichever thread calls `next()` next, and one request closing a `Consumer` closes the shared composite for every request on that fingerprint.
 
@@ -760,7 +760,7 @@ Both packages share the same version number: a release `1.2.0` produces `goopil/
 
 #### PIE build matrix
 
-The CI produces **36 pre-compiled release artifacts** per release — 32 Linux cells (PHP 8.2, 8.3, 8.4, and 8.5 × x86_64/arm64 × glibc/musl × NTS/ZTS) plus 4 macOS arm64 cells (8.2–8.5, NTS) — covering every supported combination. macOS ZTS is deliberately deferred (see [Thread safety](#thread-safety)).
+The CI produces **36 pre-compiled release artifacts** per release — 32 Linux cells (PHP 8.2, 8.3, 8.4, and 8.5 × x86_64/arm64 × glibc/musl × NTS/ZTS — the same Linux grid grpc-php-rs ships) plus 4 macOS arm64 cells (8.2–8.5, NTS) — covering every supported combination. macOS ZTS is deliberately deferred (see [Thread safety](#thread-safety)).
 
 The authoritative matrix is the build matrix in [`.github/workflows/release.yml`](../.github/workflows/release.yml). `release/pie-matrix.json` predates the widened matrix (PHP 8.2/8.3 and ZTS) and still lists the V1 NTS-only entries; it and `scripts/validate-distribution.sh` are pending the matching update.
 

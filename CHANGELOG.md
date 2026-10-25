@@ -8,6 +8,50 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-10-25
+
+ZTS shipping release: Linux ZTS binaries join the distribution (the full
+Linux grid — glibc and musl, x86_64 and arm64 — matching the matrix
+grpc-php-rs publishes), and the PHP 8.2/8.3 install paths gain their
+`pie install` validation.
+
+### Added
+
+- **Linux ZTS binaries** ship for PHP 8.2-8.5 on glibc and musl, x86_64
+  and arm64 (8 digest-pinned `php:N-zts[-alpine]` build images, 36 build
+  cells, 108 release assets). `composer.json` flips to `"support-zts":
+  true`, so `pie install` now resolves on the official FrankenPHP images.
+  Release matrix comment documents the deferrals: no macOS ZTS.
+- **ZTS install-path validation**: `verify-pie-install` gains real ZTS
+  cells (glibc x86_64, PHP 8.4 and 8.5, inside the digest-pinned ZTS
+  images), plus a build-side Thread Safety assertion so a mis-pinned
+  build image fails loudly.
+- **PHP 8.2/8.3 install-path validation**: native runner cells for the
+  8.2/8.3 glibc x86_64 paths, closing the gap tracked in issue #366.
+
+### Fixed
+
+- **ZTS module shutdown (issue #369, audit F1)**: the MSHUTDOWN handler
+  no longer closes the process-global `RuntimeRegistry` on ZTS builds —
+  under ZTS the close runs on every worker-thread teardown (FrankenPHP
+  worker recycles) and would kill the shared Tokio runtime under the
+  surviving threads (parked timer futures panic). The registry is
+  reclaimed at process exit, the only moment the close has value. NTS
+  behavior is unchanged. Certification: the nightly harness now runs 3
+  workers recycling under sustained publish load, green before and after
+  the fix (runs 40231010571 / 40231733197).
+- **Release publish triggers downstream workflows**: the publish step
+  uses the PAT instead of `GITHUB_TOKEN` (whose events GitHub drops to
+  prevent recursion) — `install-images.yml` now fires automatically on
+  every release (missed on v0.3.13, dispatched manually).
+
+### Changed
+
+- Docs: the Thread safety section reflects the shipped state (audit F3),
+  the PHP requirements sections state 8.2-8.5 across both packages, and
+  the Octane guide documents that `pie install` works on official
+  FrankenPHP images from this release.
+
 ## [0.3.13] - 2026-10-25
 
 Support-surface and evidence release: PHP 8.2/8.3 joins the support matrix,

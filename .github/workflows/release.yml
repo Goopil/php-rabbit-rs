@@ -302,7 +302,8 @@ jobs:
 
           # Asset arithmetic: 36 matrix cells x 3 assets per cell (ZIP +
           # SHA256 + SBOM) = 108. 36 = 32 Linux build cells (4 PHP versions
-          # x 2 arches x 2 libcs x 2 thread-safety modes) + 4 macOS cells.
+          # x 2 arches x 2 libcs x 2 thread-safety modes — the same Linux
+          # grid grpc-php-rs ships) + 4 macOS cells (NTS).
           if [[ "${ASSET_COUNT}" -ne 108 ]]; then
             echo "::error::Expected 108 assets (36 ZIP + 36 SHA256 + 36 SBOM), found ${ASSET_COUNT}"
             exit 1
