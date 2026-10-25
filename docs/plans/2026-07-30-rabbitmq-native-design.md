@@ -8,7 +8,7 @@ Build a PHP extension written in Rust and a Laravel package capable of publishin
 
 ## V1 scope
 
-- PHP 8.4 and 8.5 (NTS only).
+- PHP 8.4 and 8.5 (NTS only) — widened to 8.2–8.5 in 2026-10 (issue #366).
 - Laravel 12 and 13.
 - RabbitMQ 4.2.9 or newer.
 - Linux x86_64 and ARM64.

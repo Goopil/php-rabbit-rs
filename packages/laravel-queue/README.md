@@ -21,7 +21,7 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 
 ## Requirements
 
-- PHP **8.4** or **8.5**
+- PHP **8.2**, **8.3**, **8.4**, or **8.5**
 - Laravel **12** or **13**
 - `ext-rabbit_rs` — the native extension (see [Installation](#installation))
 - `laravel/horizon` — **optional**, only needed for Horizon dashboard integration (see [Laravel Horizon](docs/reference.md#laravel-horizon))

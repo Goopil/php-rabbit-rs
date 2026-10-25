@@ -14,7 +14,7 @@ pie install goopil/rabbit-rs-native
 composer require goopil/rabbit-rs-laravel
 ```
 
-Details — macOS (Homebrew), Docker, manual binaries: the [installation guide](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#installation). Requirements: PHP 8.4/8.5, Laravel 12/13, a reachable RabbitMQ 4.2.9+ broker.
+Details — macOS (Homebrew), Docker, manual binaries: the [installation guide](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#installation). Requirements: PHP 8.2–8.5, Laravel 12/13, a reachable RabbitMQ 4.2.9+ broker.
 
 ## 1. Hello world
 

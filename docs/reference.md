@@ -561,7 +561,7 @@ Installing the Rabbit RS native extension and the Laravel queue driver.
 
 ### Prerequisites
 
-- PHP 8.4 or 8.5 (**NTS only** — ZTS is not supported in V1, see [Thread safety](#thread-safety))
+- PHP 8.2, 8.3, 8.4, or 8.5 (**NTS only** — ZTS is not supported in V1, see [Thread safety](#thread-safety))
 - Linux x86_64 or ARM64 (glibc or musl), or macOS Apple Silicon
 - RabbitMQ 4.2.9 or newer (reachable from your PHP process — the CI lab runs 4.2.9)
 - [PIE](https://github.com/php/pie) 1.4.10+ for extension installation (the version the release pipeline validates against)
@@ -581,7 +581,7 @@ pie install goopil/rabbit-rs-native
 
 PIE selects the correct pre-compiled binary for your environment:
 
-- PHP version (8.4 or 8.5)
+- PHP version (8.2, 8.3, 8.4, or 8.5)
 - Architecture (x86_64 or arm64)
 - Operating system (linux or darwin)
 - libc (glibc or musl on Linux, bsdlibc on macOS)
@@ -691,7 +691,7 @@ The `install.sh` script wraps `cargo php install` with the correct manifest path
 
 - Rust 1.98.1 (pinned in `rust-toolchain.toml`)
 - `cargo-php` (install with `cargo install cargo-php`)
-- PHP 8.4 or 8.5 with development headers
+- PHP 8.2, 8.3, 8.4, or 8.5 with development headers
 - `libssl-dev` (or `openssl-devel` / `openssl-dev` depending on your distro)
 
 ### Why Composer doesn't modify system PHP
