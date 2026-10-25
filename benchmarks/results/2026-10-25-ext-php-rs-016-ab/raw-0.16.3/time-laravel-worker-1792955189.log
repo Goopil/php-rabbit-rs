@@ -1,0 +1,19 @@
+PHP Deprecated:  Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/react/promise/src/functions.php on line 369
+        1.55 real         0.37 user         0.16 sys
+            67600384  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+                8048  page reclaims
+                 105  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                1540  messages sent
+                1316  messages received
+                   0  signals received
+                  17  voluntary context switches
+               15354  involuntary context switches
+          3374730140  instructions retired
+          1615401576  cycles elapsed
+            46236176  peak memory footprint

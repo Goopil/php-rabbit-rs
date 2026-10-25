@@ -1,0 +1,10 @@
+
+Deprecated: Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+=== laravel-worker / rabbit-rs / round 0 (warmup) ===
+  Publish: 113370 msg/s | Consume: 6215 msg/s | losses 0 | duplicates 0
+
+=== laravel-worker / rabbit-rs / round 1 ===
+  Publish: 103191 msg/s | Consume: 14939 msg/s | losses 0 | duplicates 0
+
+Partial written to benchmarks/results/2026-10-25-ext-php-rs-016-ab/raw-0.15.15/partial-rabbit-rs.json

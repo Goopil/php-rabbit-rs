@@ -1,0 +1,80 @@
+{
+    "derived_from": {
+        "throughput": "raw-<label>\/comparison-results.json (runs, warmup=false, ok=true; median of consume_rate over 5 rounds)",
+        "memory": "raw-<label>\/rss-metrics.json (medians over 5 invocations)"
+    },
+    "scenarios": {
+        "sustained-consume": {
+            "0.15.15": {
+                "consume_rate_median_msg_per_s": 25326.8,
+                "consume_rates_all_rounds": [
+                    22792.5,
+                    22673.1,
+                    25368.2,
+                    27809.6,
+                    25326.8
+                ],
+                "peak_rss_time_kb_median": 115312,
+                "steady_state_rss_kb_median": 106784,
+                "losses_total": 0,
+                "duplicates_total": 0
+            },
+            "0.16.3": {
+                "consume_rate_median_msg_per_s": 27119.7,
+                "consume_rates_all_rounds": [
+                    27119.7,
+                    26797.1,
+                    29843.3,
+                    32778.7,
+                    24195.2
+                ],
+                "peak_rss_time_kb_median": 115200,
+                "steady_state_rss_kb_median": 103344,
+                "losses_total": 0,
+                "duplicates_total": 0
+            },
+            "throughput_delta_msg_per_s": 1792.9,
+            "throughput_delta_pct": 7.1,
+            "peak_rss_delta_kb": -112,
+            "peak_rss_delta_pct": -0.1,
+            "steady_rss_delta_kb": -3440,
+            "steady_rss_delta_pct": -3.2
+        },
+        "laravel-worker": {
+            "0.15.15": {
+                "consume_rate_median_msg_per_s": 16143.8,
+                "consume_rates_all_rounds": [
+                    16143.8,
+                    12469.3,
+                    18745.4,
+                    25795.3,
+                    14939.1
+                ],
+                "peak_rss_time_kb_median": 65792,
+                "steady_state_rss_kb_median": 55880,
+                "losses_total": 0,
+                "duplicates_total": 0
+            },
+            "0.16.3": {
+                "consume_rate_median_msg_per_s": 18048.9,
+                "consume_rates_all_rounds": [
+                    18048.9,
+                    18455.9,
+                    13849.4,
+                    21634.7,
+                    17606.6
+                ],
+                "peak_rss_time_kb_median": 66112,
+                "steady_state_rss_kb_median": 57680,
+                "losses_total": 0,
+                "duplicates_total": 0
+            },
+            "throughput_delta_msg_per_s": 1905.1,
+            "throughput_delta_pct": 11.8,
+            "peak_rss_delta_kb": 320,
+            "peak_rss_delta_pct": 0.5,
+            "steady_rss_delta_kb": 1800,
+            "steady_rss_delta_pct": 3.2
+        }
+    }
+}

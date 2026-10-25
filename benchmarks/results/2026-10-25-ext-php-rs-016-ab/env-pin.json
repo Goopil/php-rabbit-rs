@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-25",
+  "purpose": "Same-driver A/B: extension built on ext-php-rs 0.15.15 (pre-migration) vs ext-php-rs 0.16.3 (current main, v0.3.12). Migration commit 63e5800 (callbacks/bridge rework + module lifecycle).",
+  "builds": {
+    "0.15.15": {
+      "git_commit": "159e45b5cf03702121a599263d222f65aa25d9f7",
+      "commit_subject": "Merge pull request #360 from Goopil/chore/rust-deps-refresh (last ext-php-rs 0.15.15 pin)",
+      "ext_php_rs_pin": "=0.15.15 (crates/rabbit-rs-php/Cargo.toml at that commit)",
+      "ext_php_rs_lock": "0.15.15 (that commit's Cargo.lock)",
+      "extension_version": "0.3.11 (phpversion('rabbit_rs'), verified live before the run)",
+      "build": "cargo build -p rabbit-rs-php --release in throwaway worktree /Users/zacharyvolpi/dev/perso/rabbit-rs-ab015 (git worktree add --detach, at 159e45b), Rust 1.98.1 (rust-toolchain.toml), release profile",
+      "dylib": "/Users/zacharyvolpi/dev/perso/rabbit-rs-ab015/target/release/librabbit_rs_php.dylib"
+    },
+    "0.16.3": {
+      "git_commit": "3cbabf3e037027dc132feedde74e7f2ae174234f",
+      "commit_subject": "docs: Add the Docker install channel and migration guide links to the README (HEAD of main; docs-only after the migration commit 63e5800 'feat(php-ext): Migrate to ext-php-rs 0.16.3')",
+      "ext_php_rs_pin": "=0.16.3 (crates/rabbit-rs-php/Cargo.toml)",
+      "ext_php_rs_lock": "0.16.3 (Cargo.lock)",
+      "extension_version": "0.3.12 (phpversion('rabbit_rs'), verified live before the run)",
+      "build": "cargo build -p rabbit-rs-php --release from the main checkout (built 2026-10-25 19:40 by the issue-368 lane; no .rs file under crates/ is newer than the dylib)",
+      "dylib": "/Users/zacharyvolpi/dev/perso/rabbit-rs/target/release/librabbit_rs_php.dylib"
+    }
+  },
+  "environment": {
+    "broker": "local RabbitMQ lab, ./scripts/lab-up.sh with-plugin, restarted fresh for this session; 3-node cluster, clients on 127.0.0.1:5672, vhost /; RabbitMQ 4.2.9 / Erlang 27.3.4.16; image built from lab/rabbitmq/rabbitmq/Dockerfile pinned to rabbitmq@sha256:f093e74d14814d28e3d52e7dee5873ab8e8c2e671e9e11019654bd3443183095 (+ delayed-message-exchange 4.2.0), local image sha256:771f6dbbb394...22d27c; toxiproxy container failed to bind on this host (ports 24500-24509 held by an unrelated ssh tunnel) - not used by these scenarios",
+    "php": "8.5.6 (cli, Homebrew, NTS) for both builds; harness: benchmarks/src/run-comparison.php (main checkout, unchanged driver wrapper vs 159e45b apart from safety-mode labels)",
+    "hardware": "Apple M2 Max (Mac14,6), 12 cores, 32 GB (34,359,738,368 B), macOS 26.6.2 (Darwin 25.6.0), Docker in colima",
+    "rust": "1.98.1 (pinned)",
+    "workload": "1024 B payload, durable classic queue, persistent delivery, integrity gates losses==0 && duplicates==0 on every measured round"
+  },
+  "protocol": {
+    "scenarios": {
+      "sustained-consume": "50,000 msgs: blind batched fill (unmeasured) -> measured drain, push consume, manual ACK per message, prefetch 128",
+      "laravel-worker": "10,000 msgs: blind fill (unmeasured) -> measured drain, dedicated consumer pop + ACK per message, prefetch 64 (the Laravel-worker shape)"
+    },
+    "cycles": "5 interleaved cycles per scenario, 0.15.15 -> 0.16.3 back-to-back within each cycle; cycle 1 ran with --warmup=1 (one warmup round excluded from medians) for both builds; 5 measured rounds per build per scenario",
+    "same_command": "identical invocation for both builds, only the loaded .dylib path changes (-d extension=<path>, never installed system-wide)",
+    "memory": "per invocation: ps sampling of the PHP process every 100 ms (rss in KB) + /usr/bin/time -l maximum resident set size (macOS bytes, converted to KB); peak and steady-state (median of second-half samples) reported"
+  }
+}

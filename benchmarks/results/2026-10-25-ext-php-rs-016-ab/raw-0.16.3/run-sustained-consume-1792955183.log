@@ -1,0 +1,7 @@
+
+Deprecated: Case statements followed by a semicolon (;) are deprecated, use a colon (:) instead in /Users/zacharyvolpi/dev/perso/rabbit-rs/benchmarks/vendor/react/promise/src/functions.php on line 369
+
+=== sustained-consume / rabbit-rs / round 0 ===
+  Publish: 36056 msg/s | Consume: 29843 msg/s | losses 0 | duplicates 0
+
+Partial written to benchmarks/results/2026-10-25-ext-php-rs-016-ab/raw-0.16.3/partial-rabbit-rs.json

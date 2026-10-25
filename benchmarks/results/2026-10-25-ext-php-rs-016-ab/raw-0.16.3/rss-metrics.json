@@ -1,0 +1,162 @@
+{
+    "label": "0.16.3",
+    "note": "ps rss in KB; \/usr\/bin\/time -l maximum resident set size (macOS bytes) converted to KB. steady_median = median RSS over the second half of the run; delta = peak_ps - first sample.",
+    "scenarios": {
+        "laravel-worker": {
+            "invocations": 5,
+            "first_kb_median": 10128,
+            "peak_ps_kb_median": 64384,
+            "last_kb_median": 64384,
+            "steady_median_kb_median": 57680,
+            "delta_peak_minus_first_kb_median": 54208,
+            "time_max_rss_kb_median": 66112,
+            "per_invocation": [
+                {
+                    "ts": 1792955156,
+                    "samples": 19,
+                    "first_kb": 8848,
+                    "peak_ps_kb": 107120,
+                    "last_kb": 107120,
+                    "steady_median_kb": 107024,
+                    "delta_peak_minus_first_kb": 98272
+                },
+                {
+                    "ts": 1792955167,
+                    "samples": 10,
+                    "first_kb": 8784,
+                    "peak_ps_kb": 62992,
+                    "last_kb": 62992,
+                    "steady_median_kb": 56032,
+                    "delta_peak_minus_first_kb": 54208
+                },
+                {
+                    "ts": 1792955178,
+                    "samples": 10,
+                    "first_kb": 13136,
+                    "peak_ps_kb": 62256,
+                    "last_kb": 62256,
+                    "steady_median_kb": 55376,
+                    "delta_peak_minus_first_kb": 49120
+                },
+                {
+                    "ts": 1792955189,
+                    "samples": 12,
+                    "first_kb": 11152,
+                    "peak_ps_kb": 64384,
+                    "last_kb": 64384,
+                    "steady_median_kb": 57928,
+                    "delta_peak_minus_first_kb": 53232
+                },
+                {
+                    "ts": 1792955198,
+                    "samples": 10,
+                    "first_kb": 10128,
+                    "peak_ps_kb": 65232,
+                    "last_kb": 65232,
+                    "steady_median_kb": 57680,
+                    "delta_peak_minus_first_kb": 55104
+                }
+            ],
+            "time_per_invocation": [
+                {
+                    "ts": 1792955156,
+                    "max_rss_kb": 107936
+                },
+                {
+                    "ts": 1792955167,
+                    "max_rss_kb": 66048
+                },
+                {
+                    "ts": 1792955178,
+                    "max_rss_kb": 66112
+                },
+                {
+                    "ts": 1792955189,
+                    "max_rss_kb": 66016
+                },
+                {
+                    "ts": 1792955198,
+                    "max_rss_kb": 66352
+                }
+            ]
+        },
+        "sustained-consume": {
+            "invocations": 5,
+            "first_kb_median": 8848,
+            "peak_ps_kb_median": 111632,
+            "last_kb_median": 111632,
+            "steady_median_kb_median": 103344,
+            "delta_peak_minus_first_kb_median": 102688,
+            "time_max_rss_kb_median": 115200,
+            "per_invocation": [
+                {
+                    "ts": 1792955144,
+                    "samples": 54,
+                    "first_kb": 8848,
+                    "peak_ps_kb": 111536,
+                    "last_kb": 103440,
+                    "steady_median_kb": 103344,
+                    "delta_peak_minus_first_kb": 102688
+                },
+                {
+                    "ts": 1792955162,
+                    "samples": 26,
+                    "first_kb": 8384,
+                    "peak_ps_kb": 113632,
+                    "last_kb": 113632,
+                    "steady_median_kb": 108528,
+                    "delta_peak_minus_first_kb": 105248
+                },
+                {
+                    "ts": 1792955173,
+                    "samples": 25,
+                    "first_kb": 9312,
+                    "peak_ps_kb": 111968,
+                    "last_kb": 111968,
+                    "steady_median_kb": 109216,
+                    "delta_peak_minus_first_kb": 102656
+                },
+                {
+                    "ts": 1792955183,
+                    "samples": 28,
+                    "first_kb": 9200,
+                    "peak_ps_kb": 111520,
+                    "last_kb": 100784,
+                    "steady_median_kb": 102112,
+                    "delta_peak_minus_first_kb": 102320
+                },
+                {
+                    "ts": 1792955194,
+                    "samples": 23,
+                    "first_kb": 8272,
+                    "peak_ps_kb": 111632,
+                    "last_kb": 111632,
+                    "steady_median_kb": 103064,
+                    "delta_peak_minus_first_kb": 103360
+                }
+            ],
+            "time_per_invocation": [
+                {
+                    "ts": 1792955144,
+                    "max_rss_kb": 115168
+                },
+                {
+                    "ts": 1792955162,
+                    "max_rss_kb": 115152
+                },
+                {
+                    "ts": 1792955173,
+                    "max_rss_kb": 115632
+                },
+                {
+                    "ts": 1792955183,
+                    "max_rss_kb": 115200
+                },
+                {
+                    "ts": 1792955194,
+                    "max_rss_kb": 115248
+                }
+            ]
+        }
+    }
+}
