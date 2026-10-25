@@ -8,6 +8,51 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-10-25
+
+Support-surface and evidence release: PHP 8.2/8.3 joins the support matrix,
+Docker install images ship on every release, and the benchmark story becomes
+public and reproducible — including the correction of the circulating
+4-6x consumer-throughput claim (issues #366/#367/#368).
+
+### Added
+
+- **PHP 8.2 and 8.3** join 8.4/8.5: both `composer.json` ranges widen to
+  `^8.2` (native extension and Laravel driver), and the release matrix builds
+  digest-pinned PIE binaries for all four PHP versions across
+  linux glibc/musl, x86_64/ARM64 and macOS ARM64 (issue #366).
+- **Docker install images**: every release publishes `COPY --from`-usable
+  images to `ghcr.io/goopil/php-rabbit-rs` — `latest-php8.2` …
+  `latest-php8.5`, `-alpine` variants (`libgcc` bundled) and version-pinned
+  tags (issue #366).
+- **Migration guides** from `php-amqplib` (raw API) and
+  `laravel-queue-rabbitmq` (Laravel driver), each ending in a 15-minute
+  switch checklist (issue #367).
+- **Public, reproducible driver comparison** (`BENCHMARK.md` +
+  `benchmarks/run-comparison.sh`): pinned environment, archived raw data,
+  negative results included — raw push-consume is 1.36x vs php-amqplib
+  (ext-amqp leads that cell); the large multiplier is the polling-vs-push
+  workload shape (9.8-10.9x on the Laravel-worker shape). Confirmed publish
+  is the weakest cell and is published as-is (issue #368).
+- **ZTS thread-safety audit** (`docs/zts-thread-safety-audit.md`): ZTS
+  remains deferred; shipping it requires one targeted fix (gating the
+  MSHUTDOWN runtime close under `!PHP_ZTS`) and a `--workers>1`
+  certification run (issue #369).
+
+### Fixed
+
+- **Octane (FrankenPHP) reload path**: the harness now drives the worker
+  recycle through FrankenPHP's graceful worker-restart endpoint. Upstream
+  `octane:reload` (Caddy config PATCH) answers 500 with the ext-php-rs 0.16
+  module — no recycle, no code swap, no data loss; documented workaround in
+  `packages/laravel-queue/docs/octane.md`.
+
+### Verified
+
+- ext-php-rs 0.15 -> 0.16 same-driver A/B: +7.1% sustained-consume,
+  +11.8% Laravel-worker-shape throughput, peak RSS unchanged (+-0.5%)
+  (`benchmarks/results/2026-10-25-ext-php-rs-016-ab/`).
+
 ## [0.3.12] - 2026-10-25
 
 Dependency refresh release: the native extension now builds against
