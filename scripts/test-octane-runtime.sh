@@ -607,23 +607,26 @@ log "phase 1 ok: reload flushed the parked publications (depth 5, buffer 0)"
 
 # Phase 1b: recycle UNDER sustained publish load (issue #369, audit F2).
 # The idle reload of phase 1 cannot produce the cross-thread MSHUTDOWN
-# timing: with workers>1, publishes arriving while workers recycle park a
-# request inside the shared runtime while another worker tears down — the
+# timing, and the first version of this phase raced nothing: 120
+# dispatches finished in ~0.2s, well before the reload fired. 1000
+# dispatches stream for ~2s while TWO recycles run mid-stream — a request
+# parked inside the shared runtime while another worker tears down, the
 # exact overlap a production Octane reload hits. Every dispatch asserts
 # HTTP 200 and the final depth is exact, so a torn-down runtime (worker
-# panic or lost parked batch) fails loudly.
-log "phase 1b: 120 publishes under a concurrent reload"
-scenario publish 120 &
+# panic or lost parked batch) fails loudly either way.
+log "phase 1b: 1000 publishes under two concurrent reloads"
+scenario publish 1000 &
 PUBLISH_PID=$!
-sleep 1
+sleep 0.3
+reload_server
 reload_server
 wait "${PUBLISH_PID}" || fail "publishes failed while workers were recycling"
-reload_server   # flush whatever parked in workers recycled after the first one
+reload_server   # flush whatever parked in workers recycled after the last one
 scenario wait-buffered 0 15
-# 5 (phase 1, flushed) + 120 (phase 1b, flushed by the two reloads).
-TOTAL_EXPECTED=125
+# 5 (phase 1, flushed) + 1000 (phase 1b, flushed by the three reloads).
+TOTAL_EXPECTED=1005
 scenario wait-depth "${TOTAL_EXPECTED}" 60
-log "phase 1b ok: recycled under load, all 120 publications on the broker (depth ${TOTAL_EXPECTED})"
+log "phase 1b ok: recycled under load, all 1000 publications on the broker (depth ${TOTAL_EXPECTED})"
 
 # Phase 2: publish x5 again, then graceful stop.
 log "phase 2: publish x5 (parked), then octane:stop"
