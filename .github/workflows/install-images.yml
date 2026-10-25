@@ -1,0 +1,157 @@
+name: Install images
+
+# Publishes COPY --from-usable install images to ghcr.io/<owner>/<repo> after a
+# release is published. Each image carries the released NTS extension binary
+# for its PHP version, libc, and architecture, enabled through the
+# official-image conf.d directory, so Docker-first users add the extension
+# with a single line and no build tools:
+#
+#   COPY --from=ghcr.io/Goopil/php-rabbit-rs:latest-php8.5 /usr/local/ /usr/local/
+#
+# Triggering on release:published (not tag push) guarantees the release assets
+# are complete and publicly downloadable before any image references them.
+# The images never rebuild the extension: the attested release binaries are
+# the only source. PIE remains the primary documented install path.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to package (e.g. v0.3.12)"
+        required: true
+
+concurrency:
+  group: install-images-${{ github.event.release.tag_name || inputs.version }}
+  cancel-in-progress: false
+
+# Least-privilege default; jobs raise only the scopes they need.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: ${{ matrix.php }}-${{ matrix.libc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.2", "8.3", "8.4", "8.5"]
+        libc: ["glibc", "musl"]
+    steps:
+      - name: Resolve release, image name, base image, and tags
+        id: meta
+        env:
+          PHP: ${{ matrix.php }}
+          LIBC: ${{ matrix.libc }}
+        run: |
+          set -e
+          TAG="${{ github.event.release.tag_name || inputs.version }}"
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Expected a vX.Y.Z release tag, got '${TAG}'"
+            exit 1
+          fi
+          # GHCR rejects mixed-case image paths.
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "tag=${TAG}"
+            echo "version=${TAG#v}"
+            echo "image=${IMAGE}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Digest-pinned multi-arch indexes (linux/amd64 + linux/arm64),
+          # the exact pins release.yml's build-linux compiles against — see
+          # the bump policy there: re-resolve the tag with
+          # `docker buildx imagetools inspect php:<tag>` and replace one
+          # line, or the case arm fails loudly on a new matrix cell.
+          case "${PHP}-${LIBC}" in
+            "8.2-glibc") image='php@sha256:f7c6b9fc4b410e6fa01160cf72b1c19bce7d5e35fd065c9290fceb15097a480b' ;;
+            "8.3-glibc") image='php@sha256:98d555ff97b3865140ad31032508c3ca089fa97a8944b14ca9dc03ea05d788cd' ;;
+            "8.4-glibc") image='php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc' ;;
+            "8.5-glibc") image='php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0' ;;
+            "8.2-musl") image='php@sha256:8854cc5e636820f38267855e97d0825659bc6acaf0891aa9701ec7e5c9ecc165' ;;
+            "8.3-musl") image='php@sha256:86a7a8f46bbf73120a19cf72246f606b6de9aaa84a00971c25d187fbae44c211' ;;
+            "8.4-musl") image='php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19' ;;
+            "8.5-musl") image='php@sha256:763e2dc50d4b0cf8d02a1d8fbeedd43f9be879c0be928b1d6f247d45c81fa28f' ;;
+            *) echo "::error::No pinned base image for PHP ${PHP} (${LIBC}). Add a digest to the map above."; exit 1 ;;
+          esac
+          echo "base=${image}" >> "$GITHUB_OUTPUT"
+
+          # Floating tags for the current release line, immutable tags for
+          # reproducible builds. The musl cells publish the -alpine variants.
+          {
+            echo "tags<<TAGS_EOF"
+            echo "${IMAGE}:latest-php${PHP}"
+            echo "${IMAGE}:${TAG}-php${PHP}"
+            if [[ "${LIBC}" == "musl" ]]; then
+              echo "${IMAGE}:latest-php${PHP}-alpine"
+              echo "${IMAGE}:${TAG}-php${PHP}-alpine"
+            fi
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download the released binaries into the build context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PHP: ${{ matrix.php }}
+          LIBC: ${{ matrix.libc }}
+        run: |
+          set -e
+          mkdir -p context /tmp/assets
+          # Missing assets fail loudly here instead of producing a broken image.
+          gh release download "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir /tmp/assets --clobber \
+            --pattern "php_rabbit_rs-v${VERSION}_php${PHP}-x86_64-linux-${LIBC}-nts.zip" \
+            --pattern "php_rabbit_rs-v${VERSION}_php${PHP}-arm64-linux-${LIBC}-nts.zip"
+          unzip -o "/tmp/assets/php_rabbit_rs-*_php${PHP}-x86_64-linux-${LIBC}-nts.zip" -d /tmp/so-amd64
+          unzip -o "/tmp/assets/php_rabbit_rs-*_php${PHP}-arm64-linux-${LIBC}-nts.zip" -d /tmp/so-arm64
+          cp /tmp/so-amd64/rabbit_rs.so context/rabbit_rs-amd64.so
+          cp /tmp/so-arm64/rabbit_rs.so context/rabbit_rs-arm64.so
+
+      - name: Write the install-image Dockerfile
+        run: |
+          cat > context/Dockerfile <<'DOCKERFILE'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          ARG TARGETARCH
+          # libgcc: runtime dependency of the Rust-built musl artifact (the
+          # musl release build disables crt-static — see release.yml).
+          RUN if command -v apk >/dev/null 2>&1; then apk add --no-cache libgcc; fi
+          COPY rabbit_rs-${TARGETARCH}.so /tmp/rabbit_rs.so
+          RUN set -e; \
+              cp /tmp/rabbit_rs.so "$(php-config --extension-dir)/rabbit_rs.so"; \
+              docker-php-ext-enable rabbit_rs; \
+              rm -f /tmp/rabbit_rs.so; \
+              php -m | grep -qx rabbit_rs \
+                || { echo "ERROR: rabbit_rs failed to load in $(php -r 'echo PHP_VERSION;') (${TARGETARCH})"; php -m; exit 1; }
+          DOCKERFILE
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: context
+          file: context/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BASE_IMAGE=${{ steps.meta.outputs.base }}
+          cache-from: type=gha,scope=install-${{ matrix.php }}-${{ matrix.libc }}
+          cache-to: type=gha,mode=max,scope=install-${{ matrix.php }}-${{ matrix.libc }}

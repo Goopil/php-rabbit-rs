@@ -8,7 +8,7 @@
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=Goopil_php-rabbit-rs&metric=alert_status)](https://sonarcloud.io/dashboard?id=Goopil_php-rabbit-rs)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/Goopil/php-rabbit-rs?utm_source=badge)
 [![Packagist](https://img.shields.io/packagist/v/goopil/rabbit-rs-laravel)](https://packagist.org/packages/goopil/rabbit-rs-laravel)
-[![PHP](https://img.shields.io/badge/PHP-8.4%20%7C%208.5-informational)](https://www.php.net/supported-versions.php)
+[![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5-informational)](https://www.php.net/supported-versions.php)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Rabbit RS is a native RabbitMQ runtime for PHP and Laravel workers, designed to stay alive. Your application keeps using Laravel's standard queue API; Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption in a native Rust runtime.
@@ -96,7 +96,7 @@ No extra configuration required: pop the queue directly — it is the connection
 
 | Dimension | Support |
 |-----------|---------|
-| PHP | 8.4 and 8.5, NTS (ZTS is deferred to V2) |
+| PHP | 8.2, 8.3, 8.4, and 8.5, NTS (ZTS is deferred to V2) |
 | Laravel | 12 and 13 (for the Laravel queue driver) |
 | SAPIs | CLI, PHP-FPM, and Octane (FrankenPHP, RoadRunner, Open Swoole, Swoole) |
 | RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
@@ -133,7 +133,7 @@ brew tap goopil/rabbit-rs
 brew install rabbit-rs
 ```
 
-Requires PHP 8.4 or 8.5 (Homebrew PHP for the tap).
+Requires PHP 8.2, 8.3, 8.4, or 8.5 (Homebrew PHP for the tap).
 
 **Manual install (Apple Silicon):**
 

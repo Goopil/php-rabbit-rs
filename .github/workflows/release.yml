@@ -86,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.4", "8.5"]
+        php: ["8.2", "8.3", "8.4", "8.5"]
         arch: ["x86_64", "arm64"]
         ts: ["nts"]
         libc: ["glibc", "musl"]
@@ -105,8 +105,12 @@ jobs:
           # with `docker buildx imagetools inspect php:<tag>` and replace one
           # line, or the case arm fails loudly on a new matrix cell.
           case "${PHP}-${LIBC}" in
+            "8.2-glibc") image='php@sha256:f7c6b9fc4b410e6fa01160cf72b1c19bce7d5e35fd065c9290fceb15097a480b' ;;
+            "8.3-glibc") image='php@sha256:98d555ff97b3865140ad31032508c3ca089fa97a8944b14ca9dc03ea05d788cd' ;;
             "8.4-glibc") image='php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc' ;;
             "8.5-glibc") image='php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0' ;;
+            "8.2-musl") image='php@sha256:8854cc5e636820f38267855e97d0825659bc6acaf0891aa9701ec7e5c9ecc165' ;;
+            "8.3-musl") image='php@sha256:86a7a8f46bbf73120a19cf72246f606b6de9aaa84a00971c25d187fbae44c211' ;;
             "8.4-musl") image='php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19' ;;
             "8.5-musl") image='php@sha256:763e2dc50d4b0cf8d02a1d8fbeedd43f9be879c0be928b1d6f247d45c81fa28f' ;;
             *) echo "::error::No pinned base image for PHP ${PHP} (${LIBC}). Add a digest to the map above."; exit 1 ;;
@@ -185,7 +189,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ["8.4", "8.5"]
+        php: ["8.2", "8.3", "8.4", "8.5"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -273,17 +277,17 @@ jobs:
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 30 ]]; then
-            echo "::error::Expected 30 assets (10 ZIP + 10 SHA256 + 10 SBOM), found ${ASSET_COUNT}"
+          if [[ "${ASSET_COUNT}" -ne 60 ]]; then
+            echo "::error::Expected 60 assets (20 ZIP + 20 SHA256 + 20 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
           SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
-          [[ "${ZIP_COUNT}" -eq 10 ]] || { echo "::error::Expected 10 ZIPs, found ${ZIP_COUNT}"; exit 1; }
-          [[ "${SHA_COUNT}" -eq 10 ]] || { echo "::error::Expected 10 SHA256, found ${SHA_COUNT}"; exit 1; }
-          [[ "${SBOM_COUNT}" -eq 10 ]] || { echo "::error::Expected 10 SBOMs, found ${SBOM_COUNT}"; exit 1; }
+          [[ "${ZIP_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
           # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
@@ -311,8 +315,8 @@ jobs:
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
-          echo "OK: 10 ZIPs + 10 SHA256 + 10 SBOMs verified"
-          echo "OK: 10 provenance + 10 SBOM attestations verified"
+          echo "OK: 20 ZIPs + 20 SHA256 + 20 SBOMs verified"
+          echo "OK: 20 provenance + 20 SBOM attestations verified"
 
   verify-pie-install:
     name: PIE install end-to-end (${{ matrix.label }})
@@ -324,7 +328,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Install-path validation per platform/libc combination. All 8
+          # Install-path validation per platform/libc combination. All 16
           # Linux build cells are compiled and smoke-tested in build-linux;
           # these jobs prove that a real `pie install` selects and loads the
           # matching pre-packaged binary from the published release. The
