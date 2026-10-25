@@ -271,6 +271,13 @@ with the feature, never in a later docs pass.
   ≤21's `__builtin_ia32_*` builtins, failing the ext-php-rs build
   (runner-probed 2026-10-24; bindgen target flags were a dead end).
   Plan: `docs/superpowers/plans/2026-10-24-ext-php-rs-016-migration.md`.
+- **Housekeeping sweep (2026-10-25)** — post-migration cleanup: #359 closed
+  (migration complete); obsolete #355 closed (superseded by the 0.16.3 pin);
+  all 6 open dependabot PRs merged (setup-php 2.40.0, upload-artifact 7.0.2,
+  install-action, codeql-action, CodSpeedHQ/action, laravel/framework in the
+  driver bench — their stale branches had been failing cargo-deny against
+  the pre-#364 yanked-crate lockfile state and were rebased first); 0 open
+  security alerts.
 
 ## Round K — consolidation: stability + memory evidence (post-1.0, 2026-09-05)
 
