@@ -115,6 +115,7 @@ Rabbit RS is distributed via three channels:
 | `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (Linux and macOS binaries) |
 | `goopil/rabbit-rs-laravel` | [Packagist](https://packagist.org) | Laravel queue driver (PHP source) |
 | `rabbit-rs` | [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs) | Native PHP extension (macOS binary, alternative to PIE) |
+| `ghcr.io/goopil/php-rabbit-rs` | Docker install images | Copy the pre-compiled extension into your PHP image (Linux) |
 
 PIE selects the correct pre-compiled binary for your PHP version, architecture, operating system, libc, and thread-safety mode — including macOS Apple Silicon. Homebrew offers the same macOS binaries through the tap. Composer installs the Laravel bridge but does **not** install, verify, or modify system PHP: `ext-rabbit_rs` is a Composer suggestion and the driver fails at connection resolution until the extension is loaded (PIE installs the binary).
 
@@ -157,6 +158,16 @@ cd php-rabbit-rs
 
 Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from source with `./scripts/install.sh --release`.
 
+### Docker (Linux)
+
+Copy the pre-compiled extension into your PHP image — no build tools, no PIE step:
+
+```dockerfile
+COPY --from=ghcr.io/goopil/php-rabbit-rs:latest-php8.5 /usr/local/ /usr/local/
+```
+
+Tags: `latest-php8.2` through `latest-php8.5`, `-alpine` variants (`libgcc` bundled), and version-pinned tags (`v0.3.12-php8.5-alpine`), published on each release by [install-images.yml](.github/workflows/install-images.yml). The images carry the NTS binary — ZTS is deferred (see [Octane notes](packages/laravel-queue/docs/octane.md)).
+
 **Not V1 distribution channels:**
 
 - PECL
@@ -164,7 +175,7 @@ Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from 
 - Composer plugins that install binaries
 - Full PHP images bundling the extension
 
-These are explicitly out of scope for V1. Use PIE to install the extension in your Dockerfile — see [Installation](docs/reference.md#installation).
+These are explicitly out of scope for V1. Use PIE or the Docker install images above in your Dockerfile — see [Installation](docs/reference.md#installation).
 
 ## Stability
 
@@ -195,6 +206,7 @@ Read before betting a pipeline on this.
 | Getting started (Laravel driver) | [packages/laravel-queue/docs/getting-started.md](packages/laravel-queue/docs/getting-started.md) |
 | Reference — configuration, usage, topology, operations, recipes | [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
+| Migration guides — from `php-amqplib` / from `laravel-queue-rabbitmq` | [docs/migration-from-php-amqplib.md](docs/migration-from-php-amqplib.md) · [docs/migration-from-laravel-queue-rabbitmq.md](docs/migration-from-laravel-queue-rabbitmq.md) |
 | Laravel example app — job, Dockerfile, supervisor config | [examples/laravel/](examples/laravel/) |
 | Development guide | [docs/development.md](docs/development.md) |
 | Security policy — reporting vulnerabilities | [SECURITY.md](SECURITY.md) |
