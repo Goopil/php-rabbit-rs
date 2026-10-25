@@ -99,7 +99,12 @@ function toxiproxyRequest(string $api, string $method, string $path, ?string $pa
         'content' => $payload,
     ]]);
     $body = @file_get_contents($api.$path, false, $context);
-    $headers = http_get_last_response_headers() ?? [];
+    // http_get_last_response_headers() is PHP 8.4+; $http_response_header
+    // is the pre-8.4 equivalent, set in this same scope by the stream
+    // wrapper (the verify cells run PHP 8.2/8.3).
+    $headers = function_exists('http_get_last_response_headers')
+        ? (http_get_last_response_headers() ?? [])
+        : ($http_response_header ?? []);
     $status = isset($headers[0]) && preg_match('#HTTP/\S+\s+(\d+)#', (string) $headers[0], $m) === 1
         ? (int) $m[1]
         : 0;
