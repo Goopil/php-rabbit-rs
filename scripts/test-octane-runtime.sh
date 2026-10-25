@@ -410,7 +410,7 @@ EOF
         exit 2
     fi
 
-    log "starting Octane FrankenPHP server in docker (workers=1, ext via mounted ini)"
+    log "starting Octane FrankenPHP server in docker (workers=3, ext via mounted ini)"
     SERVER_CONTAINER="rabbitrs-octane-frankenphp"
     docker rm -f "${SERVER_CONTAINER}" >/dev/null 2>&1 || true
 
@@ -418,6 +418,9 @@ EOF
     printf 'extension=/repo/target/frankenphp-ext/librabbit_rs_php.so\n' \
         > "${RUNTIME_ROOT}/.frankenphp-ini/rabbit-rs.ini"
 
+    # workers=3 (issue #369 F2): the reload/stop recycles must exercise the
+    # cross-thread MSHUTDOWN timing under ZTS — a single worker certifies
+    # zero concurrency.
     if ! docker run -d --name "${SERVER_CONTAINER}" \
         -v "${PROJECT_ROOT}:/repo" \
         -v "${RUNTIME_ROOT}/.frankenphp-ini:/usr/local/etc/php/conf.d-zz" \
@@ -429,7 +432,7 @@ EOF
         -p "2019:2019" \
         "${FRANKENPHP_DERIVED_IMAGE}" \
         php artisan octane:start --server=frankenphp \
-            --host=0.0.0.0 --port=8000 --workers=1 --max-requests=500; then
+            --host=0.0.0.0 --port=8000 --workers=3 --max-requests=500; then
         fail "failed to start the FrankenPHP container"
     fi
 
