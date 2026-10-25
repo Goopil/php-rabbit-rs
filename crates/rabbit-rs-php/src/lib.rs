@@ -28,7 +28,14 @@ use ext_php_rs::prelude::{ModuleBuilder, php_module};
 use rabbit_rs_core::runtime::RuntimeRegistry;
 
 extern "C" fn module_shutdown(_module_type: i32, _module_number: i32) -> i32 {
-    RuntimeRegistry::global().close();
+    // ZTS (issue #369): MSHUTDOWN runs on every worker-thread teardown (e.g.
+    // FrankenPHP worker recycling), and closing the process-global registry
+    // there kills the shared Tokio runtime under the surviving threads —
+    // parked timer futures panic. The registry is reclaimed at process exit,
+    // the only moment the close has value under ZTS. NTS keeps the close.
+    if !ext_php_rs::PHP_ZTS {
+        RuntimeRegistry::global().close();
+    }
     0
 }
 
