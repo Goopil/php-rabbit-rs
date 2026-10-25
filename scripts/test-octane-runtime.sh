@@ -199,8 +199,9 @@ prepare_runtime_app() {
     cd "${RUNTIME_APP}"
 
     if [[ ! -f vendor/autoload.php ]]; then
-        # The app's composer.lock is gitignored: on a fresh checkout only
-        # `composer update` can resolve the tree (install needs a lock).
+        # The app's composer.lock is committed (since ecb982b), so
+        # `composer install` resolves the pinned tree; `composer update`
+        # only runs as a fallback for a missing/wiped lock.
         if [[ -f composer.lock ]]; then
             composer install --no-interaction 2>&1 | tail -3
         else
@@ -448,7 +449,8 @@ EOF
 # in the buffer. FrankenPHP's own admin endpoint recycles the workers in place
 # with a graceful shutdown — workerstop hooks run and the publish buffer
 # flushes — which is exactly the recycle the reload phase certifies (the
-# endpoint is exercised by upstream FrankenPHP CI on ext-php-rs 0.16 modules).
+# endpoint is exercised by upstream FrankenPHP CI on ext-php-rs 0.16 modules,
+# though the route itself is experimental upstream in v1.12.7).
 reload_frankenphp() {
     docker exec "${SERVER_CONTAINER}" \
         curl -fsS -X POST http://localhost:2019/frankenphp/workers/restart

@@ -150,7 +150,7 @@ runs land once these workflows are pushed).
 | Server | Status |
 |--------|--------|
 | RoadRunner | Certified — full scenario green locally (real-server harness; pinned `rr` v2025.1.15, sha256-verified); PR CI + nightly runs pending first push. `octane:reload` recycles workers in place; graceful stop flushes; no loss; drain to zero |
-| FrankenPHP | Certified — full no-loss scenario green locally (pinned `dunglas/frankenphp:php8.4` digest, ZTS in-image extension build); nightly run pending first push. `octane:reload` recycles workers in place; graceful stop flushes; no loss; drain to zero. Reload is driven through FrankenPHP's graceful worker-restart admin endpoint (`POST /frankenphp/workers/restart`): upstream octane's Caddy config PATCH (`octane:reload`) fails to boot the re-applied workers with the ext-php-rs 0.16 module (PATCH answers 500, no recycle) — use the endpoint or a server restart for reloads until that is fixed upstream; parked publications are delayed, never lost |
+| FrankenPHP | Certified — full no-loss scenario green locally (pinned `dunglas/frankenphp:php8.4` digest, ZTS in-image extension build); nightly run pending first push. In-place worker recycle via the admin worker-restart endpoint (`POST /frankenphp/workers/restart`, the harness's reload path) with a graceful flush; upstream `octane:reload` answers 500 with ext-php-rs 0.16 — no recycle, no code swap, no data loss (stale workers keep running); graceful stop flushes; no loss; drain to zero. The stale `octane:reload` PATCH fails to boot the re-applied workers with the 0.16 module — use the endpoint, `octane:restart`, or a server restart for reloads until that is fixed upstream |
 | Open Swoole | Certified — full scenario green locally: the reload flush path is certified (no loss) and the harness asserts the stop loss explicitly; nightly run pending first push. Documented upstream limit: `octane:stop` SIGKILLs workers (laravel/octane Swoole `ServerProcessInspector::stopServer`), so publications parked at stop are lost |
 | Swoole | Harness delivered; CI verification pending first nightly run (requires ext-swoole, which the certification dev machine could not build) |
 
@@ -181,6 +181,11 @@ This triggers `WorkerReload`, which flushes all pools **and forgets the
 resolved queue connections**. New requests create fresh AMQP connections and
 recompile every connection from the current config — env-based broker or
 credential rotation takes effect without a restart.
+
+On FrankenPHP, use `octane:restart` (or the admin worker-restart endpoint,
+`POST /frankenphp/workers/restart`) instead: upstream `octane:reload` is
+broken with ext-php-rs 0.16 (the Caddy config PATCH answers 500 and never
+recycles the workers).
 
 ## Fork safety
 
