@@ -301,6 +301,32 @@ Commit `Add Rabbit RS PHP client`, push to fork, `gh pr create --repo johanrhodi
 
 ---
 
+### Task 7: Root-cause the Octane phase-1 runtime regression (gate-blocking)
+
+**Files:** TBD by bisect outcome — suspect `crates/rabbit-rs-php/` (0.16.3 migration, 63e5800) or the Runtime app's Octane version; no preemptive code changes.
+
+**Interfaces:**
+- Consumes: Task 1's committed lock (startup now green); the harness A/B method from `.superpowers/sdd/2026-10-25-promotion-readiness/task-1-report.md` (round 2).
+- Produces: either an extension fix (commit on main) or a corrected lock pin (octane 2.21.0) — whatever the discriminating A/B proves. The gate (Task 3) stays blocked until the nightly's `Octane runtime (frankenphp)` job is green end to end.
+
+Background (verified 2026-10-25): with the lock, the local harness gets past startup but fails phase 1 deterministically (2/2): `FAIL: server container rabbitrs-octane-frankenphp is still running after octane:stop`. An A/B at `bdbd49dd` (last green, Octane 2.21.0) passes all phases. Two axes changed since the last green: extension source (`bdbd49dd..HEAD`, includes the 0.16.3 migration 63e5800) AND Octane version (2.21 → 2.20 in the committed lock). Note the timeline: the 10/15 CI red was the Octane-2.22 STARTUP timeout, which masked everything until the lock fix exposed the phase-1 failure.
+
+- [ ] **Step 1: Run the discriminating A/B — old commit, new lock's Octane version**
+
+Worktree at `bdbd49dd`, pin the Runtime app to the committed lock's Octane (`composer require laravel/octane:2.20.0 --no-interaction` in the Runtime app or equivalent lock edit), run `./scripts/test-octane-runtime.sh --server=frankenphp` (~12 min).
+- FAILS at phase 1 → the regression is in extension source: go to Step 2.
+- PASSES → the regression is the Octane version: regenerate the Runtime lock at Octane **2.21.0** (the last green CI version), re-run the harness, expect green, commit the corrected lock (`fix(ci): Pin the Runtime app to Octane 2.21.0, the last green cert state`), update the report, DONE.
+
+- [ ] **Step 2 (only if Step 1 fails): bisect the extension axis**
+
+Bisect `bdbd49dd..HEAD` over the extension-affecting commits only (63e5800 = Cargo.toml pin + callbacks/bridge, a30b17b = zend stubs, 548474e = deny.toml; skip docs/lock-only commits) with the harness as the test. On the guilty commit: root-cause the mechanism (hypothesis to check first: the 0.16 runtime/worker threads surviving SIGTERM, so `octane:stop` never terminates the workers), fix it minimally on main (TDD: a focused test reproducing the lifecycle if feasible in Rust; otherwise harness-verified), run `rtk cargo fmt --all` + the focused checks + `./scripts/check.sh`, commit, and re-run the full harness frankenphp to green.
+
+- [ ] **Step 3: Record the mechanism**
+
+Append the root cause, the discriminating evidence, and the fix to the task report; the gate watch (Task 3) resumes after this lands.
+
+---
+
 ### Task 6: Track PR outcomes
 
 **Files:** SDD ledger only.
