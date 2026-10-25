@@ -8,7 +8,7 @@
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=Goopil_php-rabbit-rs&metric=alert_status)](https://sonarcloud.io/dashboard?id=Goopil_php-rabbit-rs)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/Goopil/php-rabbit-rs?utm_source=badge)
 [![Packagist](https://img.shields.io/packagist/v/goopil/rabbit-rs-laravel)](https://packagist.org/packages/goopil/rabbit-rs-laravel)
-[![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5-informational)](https://www.php.net/supported-versions.php)
+[![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5%20NTS%20%2B%20ZTS-informational)](https://www.php.net/supported-versions.php)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Rabbit RS is a native RabbitMQ runtime for PHP and Laravel workers, designed to stay alive. Your application keeps using Laravel's standard queue API; Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption in a native Rust runtime.
@@ -96,7 +96,7 @@ No extra configuration required: pop the queue directly — it is the connection
 
 | Dimension | Support |
 |-----------|---------|
-| PHP | 8.2, 8.3, 8.4, and 8.5, NTS (ZTS is deferred to V2) |
+| PHP | 8.2, 8.3, 8.4, and 8.5 — NTS and ZTS on Linux; NTS only on macOS (ZTS deferred) |
 | Laravel | 12 and 13 (for the Laravel queue driver) |
 | SAPIs | CLI, PHP-FPM, and Octane (FrankenPHP, RoadRunner, Open Swoole, Swoole) |
 | RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
@@ -166,7 +166,7 @@ Copy the pre-compiled extension into your PHP image — no build tools, no PIE s
 COPY --from=ghcr.io/goopil/php-rabbit-rs:latest-php8.5 /usr/local/ /usr/local/
 ```
 
-Tags: `latest-php8.2` through `latest-php8.5`, `-alpine` variants (`libgcc` bundled), and version-pinned tags (`v0.3.13-php8.5-alpine`), published on each release by [install-images.yml](.github/workflows/install-images.yml). The images carry the NTS binary — ZTS is deferred (see [Octane notes](packages/laravel-queue/docs/octane.md)).
+Tags: `latest-php8.2` through `latest-php8.5`, `-alpine` variants (`libgcc` bundled), and version-pinned tags (`v0.3.13-php8.5-alpine`), published on each release by [install-images.yml](.github/workflows/install-images.yml). The images carry the NTS binary only: they COPY over `php:N-cli` bases, which are NTS. For ZTS (e.g. the official FrankenPHP images), install via PIE or download the Linux ZTS release assets directly (see [Octane notes](packages/laravel-queue/docs/octane.md)).
 
 **Not V1 distribution channels:**
 

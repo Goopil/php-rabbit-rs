@@ -1,5 +1,14 @@
 # ZTS Thread-Safety Audit — Pre-Implementation Gate for Issue #369
 
+> **Status (2026-10-25, release 0.3.14):** findings applied — F1 fixed in
+> d730029 (the MSHUTDOWN registry close is gated under
+> `!ext_php_rs::PHP_ZTS`), F2 fixed by upgrading the harness to three workers
+> recycling under sustained load (a26faad..c75add3), F3 documented
+> (93fc227/d730029). Empirical note: the predicted teardown panic was NOT
+> reproducible through the graceful recycle path in three nightly attempts,
+> the last with verified worker overlap — F1 is kept as static-analysis
+> hardening. ZTS binaries ship from 0.3.14, Linux only (macOS ZTS deferred).
+
 Status: audit complete (read-only). Scope: whether *shipping* ZTS prebuilt
 binaries (`support-zts: true` + ZTS release assets) is safe, given that the
 nightly harness already builds and certifies an in-image ZTS extension.

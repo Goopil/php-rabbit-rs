@@ -18,7 +18,7 @@
     "php-ext": {
         "extension-name": "rabbit_rs",
         "priority": 80,
-        "support-zts": false,
+        "support-zts": true,
         "support-nts": true,
         "os-families": ["linux", "darwin"],
         "download-url-method": ["pre-packaged-binary"]

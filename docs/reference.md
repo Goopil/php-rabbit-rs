@@ -561,7 +561,7 @@ Installing the Rabbit RS native extension and the Laravel queue driver.
 
 ### Prerequisites
 
-- PHP 8.2, 8.3, 8.4, or 8.5 (**NTS only** — ZTS is not supported in V1, see [Thread safety](#thread-safety))
+- PHP 8.2, 8.3, 8.4, or 8.5 (NTS and ZTS on Linux; NTS only on macOS — ZTS deferred, see [Thread safety](#thread-safety))
 - Linux x86_64 or ARM64 (glibc or musl), or macOS Apple Silicon
 - RabbitMQ 4.2.9 or newer (reachable from your PHP process — the CI lab runs 4.2.9)
 - [PIE](https://github.com/php/pie) 1.4.10+ for extension installation (the version the release pipeline validates against)
@@ -571,7 +571,11 @@ Installing the Rabbit RS native extension and the Laravel queue driver.
 
 #### Thread safety
 
-V1 ships **NTS binaries only**. PIE will not match a ZTS PHP installation (`composer.json` declares `"support-zts": false`). The extension keeps a process-global runtime and connection registry whose shared state is mutex/atomic-protected — the Rust core is memory-safe under concurrent PHP threads, and Zend values never cross threads. ZTS is not deferred over data races but over lifecycle and semantics certification ([thread-safety audit](zts-thread-safety-audit.md)): under ZTS the module's MSHUTDOWN must not close the process-global registry (a worker-thread teardown — e.g. a FrankenPHP worker recycle — must not kill the shared runtime under surviving threads, fixed in issue #369), and shared pools give competing-consumer semantics: deliveries are split between PHP threads, a one-shot re-fetch signal can be consumed by whichever thread calls `next()` next, and one request closing a `Consumer` closes the shared composite for every request on that fingerprint. Shipping ZTS binaries additionally requires a green multi-worker FrankenPHP certification run and a deliberate `support-zts` flip — tracked in [`docs/plans/ROADMAP.md`](plans/ROADMAP.md) (Parked — ZTS).
+ZTS binaries ship from 0.3.14 on **Linux**; macOS ZTS is deliberately deferred — ZTS demand is Linux/Docker (the official FrankenPHP images), revisit on demand. PIE selects the matching binary for a ZTS PHP installation (`composer.json` declares `"support-zts": true`).
+
+The extension keeps a process-global runtime and connection registry whose shared state is mutex/atomic-protected — the Rust core is memory-safe under concurrent PHP threads, and Zend values never cross threads. The ZTS-specific lifecycle hazard is fixed: the module's MSHUTDOWN no longer closes the process-global registry on ZTS builds (the close is gated on non-ZTS), so a worker-thread teardown — a FrankenPHP worker recycle — never kills the shared runtime under surviving threads ([thread-safety audit](zts-thread-safety-audit.md)). Shared pools give competing-consumer semantics: deliveries are split between PHP threads, a one-shot re-fetch signal can be consumed by whichever thread calls `next()` next, and one request closing a `Consumer` closes the shared composite for every request on that fingerprint.
+
+Certification: the nightly FrankenPHP harness runs three workers recycling under sustained publish load (`scripts/test-octane-runtime.sh`) with an in-image ZTS build, green both before and after the MSHUTDOWN fix (runs 40231010571 and 40231733197). The fix is kept as static-analysis hardening — the teardown panic it guards against was not reproducible through the graceful recycle path.
 
 ### Step 1 — Install the native extension
 
@@ -585,7 +589,7 @@ PIE selects the correct pre-compiled binary for your environment:
 - Architecture (x86_64 or arm64)
 - Operating system (linux or darwin)
 - libc (glibc or musl on Linux, bsdlibc on macOS)
-- Thread safety (NTS only in V1)
+- Thread safety (NTS and ZTS on Linux; NTS only on macOS)
 
 It copies the shared object (`rabbit_rs.so`) to your PHP extension directory and enables it in the active PHP configuration.
 
@@ -756,20 +760,9 @@ Both packages share the same version number: a release `1.2.0` produces `goopil/
 
 #### PIE build matrix
 
-The CI produces **8 pre-compiled release artifacts** (V1 is NTS-only, see [Thread safety](#thread-safety)) covering all supported combinations:
+The CI produces **36 pre-compiled release artifacts** per release — 32 Linux cells (PHP 8.2, 8.3, 8.4, and 8.5 × x86_64/arm64 × glibc/musl × NTS/ZTS) plus 4 macOS arm64 cells (8.2–8.5, NTS) — covering every supported combination. macOS ZTS is deliberately deferred (see [Thread safety](#thread-safety)).
 
-| PHP | Architecture | libc | Thread safety |
-|-----|-------------|------|---------------|
-| 8.4 | x86_64 | glibc | NTS |
-| 8.4 | x86_64 | musl | NTS |
-| 8.4 | arm64 | glibc | NTS |
-| 8.4 | arm64 | musl | NTS |
-| 8.5 | x86_64 | glibc | NTS |
-| 8.5 | x86_64 | musl | NTS |
-| 8.5 | arm64 | glibc | NTS |
-| 8.5 | arm64 | musl | NTS |
-
-The matrix is defined in [`release/pie-matrix.json`](../release/pie-matrix.json).
+The authoritative matrix is the build matrix in [`.github/workflows/release.yml`](../.github/workflows/release.yml). `release/pie-matrix.json` predates the widened matrix (PHP 8.2/8.3 and ZTS) and still lists the V1 NTS-only entries; it and `scripts/validate-distribution.sh` are pending the matching update.
 
 #### Functional coverage of the matrix
 
@@ -790,6 +783,8 @@ Every cell above is compiled, load-smoked, checksum-verified, and attested by th
 
 "Build-only" means the release pipeline compiles the artifact for that cell and proves it loads with the target PHP, but no AMQP traffic is exercised there; the runtime path it shares with a functional sibling is the only broker-level evidence. The functional bar itself is deliberately small — extension load, 5 messages published and confirmed, consumed and acked with the queue drained, and one outage/recovery scenario (publish 2 into a disabled Toxiproxy proxy, require both to buffer and confirm after the network heals) — so a release asset that cannot deliver against a real broker fails somewhere in CI, not in production.
 
+The ZTS Linux cells follow the same bar: every ZTS cell is load-smoked against its pinned `php:N-zts` image at build time with an explicit thread-safety assertion, and the glibc x86_64 ZTS path (PHP 8.4 and 8.5) additionally runs the release PIE install + AMQP smoke; the remaining ZTS cells share those runtime paths.
+
 #### How pre-packaged binaries work
 
 Each artifact is a ZIP archive containing a single `rabbit_rs.so` compiled for the exact combination of PHP version, architecture, operating system, libc, and thread-safety mode. The naming convention follows PIE's expected format, which includes the `v` prefix from the git tag:
@@ -802,23 +797,19 @@ For example:
 
 ```
 php_rabbit_rs-v1.2.0_php8.5-x86_64-linux-glibc-nts.zip
+php_rabbit_rs-v1.2.0_php8.4-x86_64-linux-glibc-zts.zip
 php_rabbit_rs-v1.2.0_php8.5-arm64-darwin-bsdlibc-nts.zip
 ```
 
-Every artifact carries an **explicit** thread-safety suffix (`-nts` in V1). PIE (1.4.10+, the version the release pipeline validates) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds, planned for V2); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. On macOS, PIE derives the `bsdlibc` libc token from its `LibcFlavour` detection (`otool`, shipped with Xcode Command Line Tools, resolves to `bsdlibc`). The convention is enforced in two places that must stay consistent:
+Every artifact carries an **explicit** thread-safety suffix (`-nts` or `-zts`). PIE (1.4.10+, the version the release pipeline validates) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. On macOS, PIE derives the `bsdlibc` libc token from its `LibcFlavour` detection (`otool`, shipped with Xcode Command Line Tools, resolves to `bsdlibc`). The authoritative matrix lives in `.github/workflows/release.yml` (`-${{ matrix.ts }}` appended to every asset name) via the `.github/actions/package-release-asset` composite action; `release/pie-matrix.json` and `scripts/validate-distribution.sh` predate the widened matrix (PHP 8.2/8.3, ZTS) and are pending the matching update.
 
-- `release/pie-matrix.json` — machine-readable matrix (`ts_suffix` is always `-nts` in V1; ZTS entries are excluded)
-- `.github/workflows/release.yml` — release build (`-${{ matrix.ts }}` appended to every asset name) via the `.github/actions/package-release-asset` composite action
-
-`scripts/validate-distribution.sh` fails if any of them drifts from the pattern expected by PIE.
-
-macOS artifacts (`arm64-darwin-bsdlibc-nts`) are part of the PIE matrix — `composer.json` declares `os-families: ["linux", "darwin"]`. The release pipeline compiles and smoke-loads both macOS builds, and the Homebrew formula (alternative install channel) consumes the same assets, so there is a single name per binary; the formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
+macOS artifacts (`arm64-darwin-bsdlibc-nts`) are part of the PIE matrix — `composer.json` declares `os-families: ["linux", "darwin"]`; macOS ZTS is deliberately deferred (see [Thread safety](#thread-safety)). The release pipeline compiles and smoke-loads both macOS builds, and the Homebrew formula (alternative install channel) consumes the same assets, so there is a single name per binary; the formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
 
 #### End-to-end PIE validation
 
 Once the release is published, the release pipeline blocks on two verification stages against the published release:
 
-- **`verify-pie-install`** runs a real `pie install` on every supported platform/libc combination: Linux glibc x86_64 (PHP 8.4 and 8.5) on native runners, Linux glibc arm64, musl x86_64, and musl arm64 (PHP 8.4) inside the same digest-pinned, multi-arch PHP images the build job uses, and macOS arm64 (PHP 8.4) on an Apple Silicon runner. Each job asserts that `rabbit_rs` loads and that `phpversion('rabbit_rs')` equals the release version.
+- **`verify-pie-install`** runs a real `pie install` on the install paths: Linux glibc x86_64 (PHP 8.2, 8.3, 8.4, and 8.5) on native runners, Linux glibc arm64, musl x86_64, and musl arm64 (PHP 8.4) plus the ZTS glibc x86_64 path (PHP 8.4 and 8.5) inside the same digest-pinned, multi-arch PHP images the build job uses, and macOS arm64 (PHP 8.4) on an Apple Silicon runner. Each job asserts that `rabbit_rs` loads and that `phpversion('rabbit_rs')` equals the release version.
 - **`verify-pie-upgrade-rollback`** installs the previous published release, upgrades it to the new release, then rolls back to the previous one, asserting the installed extension version at each step. A missing previous release fails the job loudly instead of silently skipping the gate.
 
 The Homebrew formula update and the Laravel package split run only after both stages succeed, so a release that PIE cannot install, upgrade, or roll back never reaches those channels.
@@ -835,7 +826,7 @@ Attestations are stored in the GitHub attestations API and verified with:
     gh attestation verify <asset.zip> --repo Goopil/php-rabbit-rs \
         --predicate-type https://slsa.dev/provenance/v1
 
-Each release therefore contains **30 assets**: 10 ZIPs, 10 SHA256 files, and 10 SBOM files, plus 20 attestations (provenance + SBOM) stored in the attestations API (not listed as release assets).
+Each release therefore contains **108 assets**: 36 ZIPs, 36 SHA256 files, and 36 SBOM files, plus 72 attestations (provenance + SBOM) stored in the attestations API (not listed as release assets).
 
 #### Build characteristics
 
@@ -847,13 +838,13 @@ Each release therefore contains **30 assets**: 10 ZIPs, 10 SHA256 files, and 10 
 
 Releases follow a strict order to ensure version coherence:
 
-1. **CI builds all 10 PIE artifacts** — each tested with the target PHP, checksum verified
+1. **CI builds all 36 PIE artifacts** — each tested with the target PHP, checksum verified
 2. **Laravel package is split** — the monorepo's `packages/laravel-queue/` is split into the `Goopil/rabbit-rs-laravel` mirror repository via `scripts/split-laravel-package.sh`
 3. **Native extension is tagged on Packagist** — `goopil/rabbit-rs-native` appears as a PIE package
 4. **Laravel package is tagged on Packagist** — `goopil/rabbit-rs-laravel` appears as a Composer package
 5. **GitHub release is published** — only after all binaries are produced, the Laravel tag is pushed, and both Packagist metadata entries are verified
 
-The validation script [`scripts/validate-distribution.sh`](../scripts/validate-distribution.sh) checks: root package name and type (`goopil/rabbit-rs-native`, `php-ext`), extension name, download method, NTS support with the V1 ZTS exclusion, dual Linux/darwin OS family, Laravel package name and namespace, version coherence between Cargo and both packages, exactly 10 PIE matrix entries (8 Linux + 2 macOS, NTS only) with unique suffixes, the minimum glibc version, the PIE asset naming convention across the packaging script, the release workflow and this document, and — when archives are present — exactly 30 files (10 ZIP + 10 SHA-256 + 10 SBOM) with verified checksums and CycloneDX SBOMs.
+The validation script [`scripts/validate-distribution.sh`](../scripts/validate-distribution.sh) checks: root package name and type (`goopil/rabbit-rs-native`, `php-ext`), extension name, download method, thread-safety flags, dual Linux/darwin OS family, Laravel package name and namespace, version coherence between Cargo and both packages, the PIE matrix entries with unique suffixes, the minimum glibc version, the PIE asset naming convention across the packaging script, the release workflow and this document, and — when archives are present — the per-cell ZIP + SHA-256 + SBOM inventory with verified checksums and CycloneDX SBOMs. The script predates the widened release matrix (PHP 8.2/8.3, ZTS) and still asserts the V1 NTS-only matrix; it is pending the matching update.
 
 #### Not V1 distribution channels
 

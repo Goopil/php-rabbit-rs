@@ -88,7 +88,7 @@ jobs:
       matrix:
         php: ["8.2", "8.3", "8.4", "8.5"]
         arch: ["x86_64", "arm64"]
-        ts: ["nts"]
+        ts: ["nts", "zts"]
         libc: ["glibc", "musl"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -98,22 +98,34 @@ jobs:
         env:
           PHP: ${{ matrix.php }}
           LIBC: ${{ matrix.libc }}
+          TS: ${{ matrix.ts }}
         run: |
           # Digest-pinned multi-arch indexes (linux/amd64 + linux/arm64) so a
           # base-image push cannot change the shipped toolchain. Each index
-          # serves both matrix arches. Bump deliberately: re-resolve the tag
-          # with `docker buildx imagetools inspect php:<tag>` and replace one
+          # serves both matrix arches; the *-zts tags are the official ZTS
+          # images — the compiled binary's thread safety follows the image's
+          # PHP, which is why every arm is keyed on the thread-safety mode.
+          # Bump deliberately: re-resolve the tag with
+          # `docker buildx imagetools inspect php:<tag>` and replace one
           # line, or the case arm fails loudly on a new matrix cell.
-          case "${PHP}-${LIBC}" in
-            "8.2-glibc") image='php@sha256:f7c6b9fc4b410e6fa01160cf72b1c19bce7d5e35fd065c9290fceb15097a480b' ;;
-            "8.3-glibc") image='php@sha256:98d555ff97b3865140ad31032508c3ca089fa97a8944b14ca9dc03ea05d788cd' ;;
-            "8.4-glibc") image='php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc' ;;
-            "8.5-glibc") image='php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0' ;;
-            "8.2-musl") image='php@sha256:8854cc5e636820f38267855e97d0825659bc6acaf0891aa9701ec7e5c9ecc165' ;;
-            "8.3-musl") image='php@sha256:86a7a8f46bbf73120a19cf72246f606b6de9aaa84a00971c25d187fbae44c211' ;;
-            "8.4-musl") image='php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19' ;;
-            "8.5-musl") image='php@sha256:763e2dc50d4b0cf8d02a1d8fbeedd43f9be879c0be928b1d6f247d45c81fa28f' ;;
-            *) echo "::error::No pinned base image for PHP ${PHP} (${LIBC}). Add a digest to the map above."; exit 1 ;;
+          case "${PHP}-${LIBC}-${TS}" in
+            "8.2-glibc-nts") image='php@sha256:f7c6b9fc4b410e6fa01160cf72b1c19bce7d5e35fd065c9290fceb15097a480b' ;;
+            "8.3-glibc-nts") image='php@sha256:98d555ff97b3865140ad31032508c3ca089fa97a8944b14ca9dc03ea05d788cd' ;;
+            "8.4-glibc-nts") image='php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc' ;;
+            "8.5-glibc-nts") image='php@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0' ;;
+            "8.2-musl-nts") image='php@sha256:8854cc5e636820f38267855e97d0825659bc6acaf0891aa9701ec7e5c9ecc165' ;;
+            "8.3-musl-nts") image='php@sha256:86a7a8f46bbf73120a19cf72246f606b6de9aaa84a00971c25d187fbae44c211' ;;
+            "8.4-musl-nts") image='php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19' ;;
+            "8.5-musl-nts") image='php@sha256:763e2dc50d4b0cf8d02a1d8fbeedd43f9be879c0be928b1d6f247d45c81fa28f' ;;
+            "8.2-glibc-zts") image='php@sha256:0227eab4966ad23febbd819a9d4deeb3e694bdf667890eb69fbefd74993c6986' ;;
+            "8.3-glibc-zts") image='php@sha256:84012f0a33e747a6b45f32bb605b1788e61a4c0be842fa123edf28082edc0db6' ;;
+            "8.4-glibc-zts") image='php@sha256:0c7d3ed951840347bef318bdd4b2e0181a13781c95d80a3cbe158ce37be78e45' ;;
+            "8.5-glibc-zts") image='php@sha256:0923ee6f3cf3bb447440e67b226d11b248423f3f94fb0192341cee1e64684bc8' ;;
+            "8.2-musl-zts") image='php@sha256:af08a63c3aea47f69f6d9dd2a924c283a85d74206dec86922db2c6acc3cafe04' ;;
+            "8.3-musl-zts") image='php@sha256:71d48884d946d9316401e221e6f04ee5d5226334c0fc1938b0f277b294e48e47' ;;
+            "8.4-musl-zts") image='php@sha256:64cbfa66653e4ed4024b5c8764c74e9cee3a5521ff8283367cc3f57c97283477' ;;
+            "8.5-musl-zts") image='php@sha256:8fda3ebc575cff9f5565896534afee1686aaf752e3781ac0ad0afc61099506d3' ;;
+            *) echo "::error::No pinned base image for PHP ${PHP} (${LIBC}, ${TS}). Add a digest to the map above."; exit 1 ;;
           esac
           echo "image=${image}" >> "$GITHUB_OUTPUT"
 
@@ -131,11 +143,13 @@ jobs:
       - name: Build and smoke test in Docker
         env:
           LIBC: ${{ matrix.libc }}
+          TS: ${{ matrix.ts }}
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/src" \
             -w /src \
             -e LIBC \
+            -e TS \
             ${{ steps.docker.outputs.image }} \
             sh -c '
               set -e
@@ -164,14 +178,21 @@ jobs:
                 }
                 echo \"OK: rabbit_rs loaded, version \" . phpversion(\"rabbit_rs\") . \"\\n\";
               "
+              # The asset name carries matrix.ts, but the thread safety of
+              # the binary follows the base image PHP: assert the pairing so
+              # a wrong image pin cannot ship a mislabeled asset (the load
+              # smoke above only proves binary and image agree with each
+              # other, not with the name).
+              php -i | grep -q "Thread Safety => $([ "$TS" = "zts" ] && echo enabled || echo disabled)" \
+                || { echo "ERROR: base image PHP thread safety does not match matrix ts=${TS}"; exit 1; }
             '
 
       - name: Package, upload, and attest
         uses: ./.github/actions/package-release-asset
         with:
           # Unified PIE naming convention: every Linux artifact carries an
-          # explicit thread-safety suffix (-nts in V1 — the matrix is
-          # NTS-only, see docs/reference.md and scripts/validate-distribution.sh).
+          # explicit thread-safety suffix from matrix.ts (-nts / -zts; PIE
+          # requires the -zts token to match a ZTS PHP). See docs/reference.md.
           asset-base: php_rabbit_rs-v${{ needs.create-release.outputs.version }}_php${{ matrix.php }}-${{ matrix.arch }}-linux-${{ matrix.libc }}-${{ matrix.ts }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -188,6 +209,8 @@ jobs:
       artifact-metadata: write
     strategy:
       fail-fast: false
+      # macOS ZTS deliberately deferred — ZTS demand is Linux/Docker
+      # (FrankenPHP official images); revisit on demand.
       matrix:
         php: ["8.2", "8.3", "8.4", "8.5"]
     steps:
@@ -277,17 +300,20 @@ jobs:
           echo "Found ${ASSET_COUNT} assets:"
           echo "${ASSETS_JSON}"
 
-          if [[ "${ASSET_COUNT}" -ne 60 ]]; then
-            echo "::error::Expected 60 assets (20 ZIP + 20 SHA256 + 20 SBOM), found ${ASSET_COUNT}"
+          # Asset arithmetic: 36 matrix cells x 3 assets per cell (ZIP +
+          # SHA256 + SBOM) = 108. 36 = 32 Linux build cells (4 PHP versions
+          # x 2 arches x 2 libcs x 2 thread-safety modes) + 4 macOS cells.
+          if [[ "${ASSET_COUNT}" -ne 108 ]]; then
+            echo "::error::Expected 108 assets (36 ZIP + 36 SHA256 + 36 SBOM), found ${ASSET_COUNT}"
             exit 1
           fi
 
           ZIP_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.zip$')"
           SHA_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sha256$')"
           SBOM_COUNT="$(echo "${ASSETS_JSON}" | grep -c '\.sbom\.json$')"
-          [[ "${ZIP_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 ZIPs, found ${ZIP_COUNT}"; exit 1; }
-          [[ "${SHA_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SHA256, found ${SHA_COUNT}"; exit 1; }
-          [[ "${SBOM_COUNT}" -eq 20 ]] || { echo "::error::Expected 20 SBOMs, found ${SBOM_COUNT}"; exit 1; }
+          [[ "${ZIP_COUNT}" -eq 36 ]] || { echo "::error::Expected 36 ZIPs, found ${ZIP_COUNT}"; exit 1; }
+          [[ "${SHA_COUNT}" -eq 36 ]] || { echo "::error::Expected 36 SHA256, found ${SHA_COUNT}"; exit 1; }
+          [[ "${SBOM_COUNT}" -eq 36 ]] || { echo "::error::Expected 36 SBOMs, found ${SBOM_COUNT}"; exit 1; }
 
           # Verify every ZIP has matching SHA256 and SBOM
           for zip in $(echo "${ASSETS_JSON}" | grep '\.zip$'); do
@@ -315,8 +341,8 @@ jobs:
               || { echo "::error::Attestation verification failed for ${name}"; exit 1; }
           done
 
-          echo "OK: 20 ZIPs + 20 SHA256 + 20 SBOMs verified"
-          echo "OK: 20 provenance + 20 SBOM attestations verified"
+          echo "OK: 36 ZIPs + 36 SHA256 + 36 SBOMs verified"
+          echo "OK: 36 provenance + 36 SBOM attestations verified"
 
   verify-pie-install:
     name: PIE install end-to-end (${{ matrix.label }})
@@ -328,19 +354,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Install-path validation per platform/libc combination. All 16
-          # Linux build cells are compiled and smoke-tested in build-linux;
-          # these jobs prove that a real `pie install` selects and loads the
-          # matching pre-packaged binary from the published release. The
-          # primary glibc x86_64 combination is exercised on both PHP
-          # versions; every other platform/libc combination is exercised on
-          # PHP 8.4 (its build cell already covers PHP 8.5). The macOS cell
+          # Install-path validation. All 36 build cells (32 Linux + 4 macOS)
+          # are compiled and smoke-tested in build-linux; these jobs prove
+          # that a real `pie install` selects and loads the matching
+          # pre-packaged binary from the published release. The primary
+          # glibc x86_64 NTS combination is exercised on all four PHP
+          # versions (8.2 and 8.3 close the install-path gap tracked in
+          # issue #366); every other platform/libc combination is exercised
+          # on PHP 8.4 (its build cell already covers PHP 8.5). The two ZTS
+          # cells run inside the digest-pinned php:N-zts images: the
+          # runners' setup-php PHP is NTS, so a ZTS target PHP is only
+          # reachable through the docker_image mechanism. The macOS cell
           # proves PIE resolves the darwin-bsdlibc asset on an Apple Silicon
-          # runner (build-macos already compiles and smoke-loads 8.4 and 8.5).
-          # GitHub macOS runners ship no Docker for the lab, so the macOS
-          # cell stops at PIE install + load + version match; broker smoke
-          # for the darwin binary is covered by the RC functional matrix's
-          # macos-arm64 cell (Homebrew RabbitMQ + --skip-recovery).
+          # runner (build-macos already compiles and smoke-loads 8.4 and
+          # 8.5). GitHub macOS runners ship no Docker for the lab, so the
+          # macOS cell stops at PIE install + load + version match; broker
+          # smoke for the darwin binary is covered by the RC functional
+          # matrix's macos-arm64 cell (Homebrew RabbitMQ + --skip-recovery).
+          - label: Linux glibc x86_64 PHP 8.2
+            runner: ubuntu-latest
+            php: "8.2"
+            docker_image: ""
+          - label: Linux glibc x86_64 PHP 8.3
+            runner: ubuntu-latest
+            php: "8.3"
+            docker_image: ""
           - label: Linux glibc x86_64 PHP 8.4
             runner: ubuntu-latest
             php: "8.4"
@@ -368,6 +406,19 @@ jobs:
             php: ""
             # Same digest-pinned index as the musl x86_64 cell.
             docker_image: php@sha256:2f389f933c3cc58cc622bd243bb4ecff7e6553e2de4387a239bca640c988be19
+          - label: Linux glibc x86_64 PHP 8.4 ZTS
+            runner: ubuntu-latest
+            php: ""
+            # Digest-pinned multi-arch index, same pin as build-linux
+            # (8.4-glibc-zts); the container PHP is ZTS, so PIE must
+            # resolve the -zts asset.
+            docker_image: php@sha256:0c7d3ed951840347bef318bdd4b2e0181a13781c95d80a3cbe158ce37be78e45
+          - label: Linux glibc x86_64 PHP 8.5 ZTS
+            runner: ubuntu-latest
+            php: ""
+            # Digest-pinned multi-arch index, same pin as build-linux
+            # (8.5-glibc-zts).
+            docker_image: php@sha256:0923ee6f3cf3bb447440e67b226d11b248423f3f94fb0192341cee1e64684bc8
           - label: macOS arm64 PHP 8.4
             runner: macos-15
             php: "8.4"
