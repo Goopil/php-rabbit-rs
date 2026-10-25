@@ -189,4 +189,5 @@ $pool->close();
 - [Reliability](reference.md#reliability) — the at-least-once contract, recovery, replay buffer semantics
 - [Troubleshooting](reference.md#troubleshooting) — common errors and diagnosis
 - [Development guide](development.md) — building the extension from source
+- [Migration guides](migration-from-php-amqplib.md) — switching from php-amqplib (raw API) or [laravel-queue-rabbitmq](migration-from-laravel-queue-rabbitmq.md) (Laravel driver)
 - [Laravel queue driver](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/getting-started.md) — the same engine behind Laravel's `Queue` API
