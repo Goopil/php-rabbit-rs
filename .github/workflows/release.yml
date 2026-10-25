@@ -625,9 +625,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # Publish with the PAT, not GITHUB_TOKEN: events raised by GITHUB_TOKEN
+      # do not trigger other workflows (recursion guard), so release:published
+      # consumers like install-images.yml would never fire.
       - name: Publish release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest --repo "${GITHUB_REPOSITORY}"
 
       - name: Trigger Packagist update
