@@ -16,7 +16,9 @@ composer require goopil/rabbit-rs-laravel
 
 Details — macOS (Homebrew), Docker, manual binaries: the [installation guide](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#installation). Requirements: PHP 8.2–8.5, Laravel 12/13, a reachable RabbitMQ 4.2.9+ broker.
 
-## 1. Hello world
+## 1. Your first job in 3 minutes
+
+Prerequisites: the native extension installed ([Install](#install)) and a reachable RabbitMQ at `127.0.0.1:5672` — the repo's lab broker (`docker compose up -d rabbitmq` in `benchmarks/`, credentials `rabbit_rs` / `rabbit_rs_lab`) or your own (a stock install uses `guest` / `guest`).
 
 Add one connection to `config/queue.php` — one connection = one broker/vhost = one native pool:
 
@@ -36,27 +38,77 @@ Add one connection to `config/queue.php` — one connection = one broker/vhost =
 QUEUE_CONNECTION=rabbit-rs   # .env
 ```
 
-Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 1000. Dispatch and consume:
+Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 1000.
 
-```php
-// app/Jobs/ProcessOrder.php — a standard Laravel job, nothing to change
-class ProcessOrder implements ShouldQueue
-{
-    use Dispatchable, Queueable;
-
-    public function __construct(public int $orderId) {}
-}
-
-ProcessOrder::dispatch(42);
-ProcessOrder::dispatch(43)->delay(now()->addMinutes(5));
-```
+Generate the job:
 
 ```bash
-php artisan queue:work rabbit-rs     # consume one connection
-php artisan rabbit-rs:work           # or: supervised fan-out, one child per rabbit-rs connection
+php artisan make:job SendWelcomeEmail
 ```
 
-The queue is declared on first use (`topology_mode: declare`). `rabbit-rs:work` supervises the children — crash restarts with exponential backoff, graceful stop on `SIGTERM`/`SIGINT`.
+```php
+// app/Jobs/SendWelcomeEmail.php
+namespace App\Jobs;
+
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Log;
+
+class SendWelcomeEmail implements ShouldQueue
+{
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
+
+    public function __construct(public readonly string $email) {}
+
+    public function handle(): void
+    {
+        Log::info("Welcome email for {$this->email}");
+
+        // Mail::to($this->email)->send(new WelcomeMail($this->email));
+    }
+}
+```
+
+Dispatch it from a route:
+
+```php
+// routes/web.php
+use App\Jobs\SendWelcomeEmail;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/welcome/{email}', function (string $email) {
+    SendWelcomeEmail::dispatch($email);
+
+    return "Queued a welcome email for {$email}.";
+});
+```
+
+Open the route (e.g. `/welcome/ada@example.com`) and watch the worker:
+
+```bash
+php artisan queue:work rabbit-rs
+```
+
+```text
+2026-10-25 10:00:00 App\Jobs\SendWelcomeEmail ..................... RUNNING
+2026-10-25 10:00:00 App\Jobs\SendWelcomeEmail .......... 2.12ms DONE
+```
+
+That is Laravel's standard worker output; the `Log::info` line lands in `storage/logs/laravel.log`. In the management UI (`http://localhost:15672`, same credentials as the broker), the Queues tab lists the `default` queue — stop the worker, dispatch again, and one message is sitting in it.
+
+The queue is declared on first use (`topology_mode: declare`). In production, run the supervised worker and let a process supervisor own its lifetime:
+
+```bash
+php artisan rabbit-rs:work    # one supervised queue:work child per rabbit-rs connection, crash restarts with backoff
+```
+
+The [Supervisor config example](https://github.com/Goopil/php-rabbit-rs/blob/main/examples/laravel/worker-supervisor.conf) covers restart-on-boot; every connection key (TLS, vhost, exchange, safety mode) is in [Configuration](reference.md#configuration).
 
 ## 2. Reliability
 
