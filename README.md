@@ -166,7 +166,7 @@ Copy the pre-compiled extension into your PHP image — no build tools, no PIE s
 COPY --from=ghcr.io/goopil/php-rabbit-rs:latest-php8.5 /usr/local/ /usr/local/
 ```
 
-Tags: `latest-php8.2` through `latest-php8.5`, `-alpine` variants (`libgcc` bundled), and version-pinned tags (`v0.3.12-php8.5-alpine`), published on each release by [install-images.yml](.github/workflows/install-images.yml). The images carry the NTS binary — ZTS is deferred (see [Octane notes](packages/laravel-queue/docs/octane.md)).
+Tags: `latest-php8.2` through `latest-php8.5`, `-alpine` variants (`libgcc` bundled), and version-pinned tags (`v0.3.13-php8.5-alpine`), published on each release by [install-images.yml](.github/workflows/install-images.yml). The images carry the NTS binary — ZTS is deferred (see [Octane notes](packages/laravel-queue/docs/octane.md)).
 
 **Not V1 distribution channels:**
 
