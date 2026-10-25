@@ -12,4 +12,7 @@
 /core.*
 /storage
 /bootstrap/cache
-/composer.lock
+# The certification environment must be reproducible: the lock is committed
+# and refreshed deliberately (same policy as the digest-pinned FrankenPHP
+# image). Re-certifying against a newer Octane = regenerate this file.
+!/composer.lock
