@@ -551,7 +551,14 @@ jobs:
       - name: Authenticate Composer for the GitHub API (release access)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
+        run: |
+          composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
+          # PIE runs under sudo and sudo drops the environment ("-E" is
+          # ignored), so root's COMPOSER_HOME has no auth: composer hits the
+          # GitHub API unauthenticated, shared runner IPs exhaust the 60/h
+          # anonymous limit, and composer falls back to the ssh transport
+          # (no key on runners → publickey failure). Give root its own auth.
+          sudo env COMPOSER_ALLOW_SUPERUSER=1 composer config --global --auth github-oauth.github.com "${GITHUB_TOKEN}"
 
       - name: Resolve the previous published release
         id: previous
