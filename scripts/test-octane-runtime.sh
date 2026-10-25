@@ -7,7 +7,7 @@ set -euo pipefail
 # against the RabbitMQ lab and drives the #218 certification scenario through
 # the RUNNING server:
 #
-#   publish x5 -> octane:reload -> publish x5 -> graceful stop
+#   publish x5 -> reload -> publish x5 -> graceful stop
 #     -> queue depth == 10 (no loss) + parked publications flushed
 #     -> restart -> consume 10 -> ack all -> depth 0 -> worker process gone
 #
@@ -439,8 +439,19 @@ EOF
 # Reload/stop must run INSIDE the container: the octane state file records
 # container-namespace PIDs, and the host-side artisan commands would answer
 # "Octane server is not running" when inspecting them.
+#
+# Not `octane:reload`: that PATCHes the Caddy admin config with
+# must-revalidate, and on the pinned image with the ext-php-rs 0.16 module the
+# re-applied workers fail to boot ("too many consecutive failures: worker ...
+# has not reached frankenphp_handle_request()", PATCH answers 500). Caddy then
+# keeps the old app, workers never recycle, and parked publications would sit
+# in the buffer. FrankenPHP's own admin endpoint recycles the workers in place
+# with a graceful shutdown — workerstop hooks run and the publish buffer
+# flushes — which is exactly the recycle the reload phase certifies (the
+# endpoint is exercised by upstream FrankenPHP CI on ext-php-rs 0.16 modules).
 reload_frankenphp() {
-    docker exec "${SERVER_CONTAINER}" php artisan octane:reload --server=frankenphp
+    docker exec "${SERVER_CONTAINER}" \
+        curl -fsS -X POST http://localhost:2019/frankenphp/workers/restart
 }
 
 stop_frankenphp() {
@@ -540,23 +551,6 @@ stop_flush_expected() {
     [[ "${SERVER}" != "swoole" && "${SERVER}" != "openswoole" ]]
 }
 
-# Whether octane:reload recycles workers in place, keeping the server up.
-#
-# FrankenPHP does not: laravel/octane's FrankenPHP
-# ServerProcessInspector::reloadServer() PATCHes the Caddy admin config
-# endpoint (Cache-Control: must-revalidate), which on the pinned
-# dunglas/frankenphp image (digest-pinned above) shuts the whole
-# frankenphp app down instead of recycling workers in place. The PHP
-# workers still shut down gracefully — the parked publications are
-# flushed to the broker before the process exits (verified against the
-# broker) — so no data is lost; the harness restarts the server across
-# the reload and asserts the same no-loss outcome. This is an
-# availability difference (brief downtime on reload), not a data-safety
-# one.
-reload_recycles_workers() {
-    [[ "${SERVER}" != "frankenphp" ]]
-}
-
 start_server()    { "start_$(server_fn_suffix)"; }
 reload_server()   { "reload_$(server_fn_suffix)"; }
 stop_server()     { "stop_$(server_fn_suffix)"; }
@@ -603,28 +597,13 @@ wait_server_up
 TOTAL_EXPECTED=10
 
 # Phase 1: publish x5 with no follow-up op; publications park in the buffer.
-log "phase 1: publish x5 (parked), then octane:reload"
+log "phase 1: publish x5 (parked), then reload"
 scenario publish 5
 scenario wait-buffered 5 15
-if reload_recycles_workers; then
-    reload_server
-    scenario wait-depth 5 30
-    scenario wait-buffered 0 15
-    log "phase 1 ok: reload flushed the parked publications (depth 5, buffer 0)"
-else
-    # FrankenPHP: the upstream octane reload shuts the whole frankenphp
-    # app down (see reload_recycles_workers) — but the workers shut down
-    # gracefully, flushing parked publications to the broker before the
-    # process exits. Restart across the reload and assert the same
-    # no-loss outcome the in-place recycle provides elsewhere.
-    reload_server || true
-    wait_server_gone
-    "start_$(server_fn_suffix)"
-    wait_server_up
-    scenario wait-depth 5 30
-    scenario wait-buffered 0 15
-    log "phase 1 ok: upstream octane reload shut the whole frankenphp app down; workers flushed on the way out (depth 5, buffer 0, no loss; server restarted)"
-fi
+reload_server
+scenario wait-depth 5 30
+scenario wait-buffered 0 15
+log "phase 1 ok: reload flushed the parked publications (depth 5, buffer 0)"
 
 # Phase 2: publish x5 again, then graceful stop.
 log "phase 2: publish x5 (parked), then octane:stop"
@@ -663,7 +642,7 @@ stop_server
 wait_server_gone
 
 echo ""
-if stop_flush_expected && reload_recycles_workers; then
+if stop_flush_expected; then
     echo "PASS: ${SERVER} certified — publish -> reload -> graceful stop -> no loss -> drain to zero"
 else
     echo "PASS: ${SERVER} certified with a documented limitation — see the certification table in packages/laravel-queue/docs/reference.md"
