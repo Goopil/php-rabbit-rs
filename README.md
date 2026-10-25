@@ -166,6 +166,19 @@ Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from 
 
 These are explicitly out of scope for V1. Use PIE to install the extension in your Dockerfile — see [Installation](docs/reference.md#installation).
 
+## Stability
+
+Stability is proven by scheduled kill-soaks, not by hope. The nightly soak
+runs a sustained publish/consume worker against a real RabbitMQ cluster and
+kills the broker repeatedly: the archived 60-minute run completed with
+**0 missing messages** and **297/297 automatic reconnects**
+(`benchmarks/results/round-k-soak/`), and every scenario in the chaos suite
+asserts the zero-loss invariant. Results are re-verified nightly in CI
+([soak workflow](https://github.com/Goopil/php-rabbit-rs/actions/workflows/soak.yml)).
+
+Delivery stays **at-least-once** under all of it — see
+[Limitations](#limitations) for what that means in practice.
+
 ## Limitations
 
 Read before betting a pipeline on this.
