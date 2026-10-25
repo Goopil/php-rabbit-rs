@@ -8,6 +8,13 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+### Fixed
+
+- The AMQP smoke harness reads toxiproxy response headers via the stream
+  wrapper on PHP < 8.4 (`http_get_last_response_headers()` exists from
+  8.4 only); the new 8.2/8.3 verify cells crashed on it after the
+  extension had already passed the full AMQP scenario.
+
 ## [0.3.14] - 2026-10-25
 
 ZTS shipping release: Linux ZTS binaries join the distribution (the full
