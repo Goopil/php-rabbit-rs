@@ -17,7 +17,7 @@ final class ExtensionConstraint
 {
     /**
      * Composer caret constraint check, limited to the ^major.minor[.patch]
-     * shape the package pins (ext-rabbit_rs ^0.3.11): on 0.x the caret admits
+     * shape the package pins (ext-rabbit_rs ^0.3.12): on 0.x the caret admits
      * only the declared minor. Unknown *constraint* shapes pass — the check
      * cannot reason about a constraint it does not recognize.
      */

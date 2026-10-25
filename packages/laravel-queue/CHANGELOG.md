@@ -4,6 +4,15 @@ All notable changes to `goopil/rabbit-rs-laravel`, the Laravel queue driver for 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — while the project is pre-1.0, breaking changes may occur in minor releases.
 
+## [0.3.12] - 2026-10-25
+
+### Changed
+
+- `EXTENSION_CONSTRAINT` moves to `^0.3.12` in lockstep with the native
+  extension release, which now builds against ext-php-rs 0.16.3 (event-callback
+  exception precedence changed upstream — see the workspace changelog). No
+  driver code changes.
+
 ## [0.3.11] - 2026-10-22
 
 ### Fixed

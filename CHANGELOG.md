@@ -8,6 +8,11 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-10-25
+
+Dependency refresh release: the native extension now builds against
+ext-php-rs 0.16.3 (issue #359, PRs #364/#365).
+
 ### Changed
 
 - **Event-callback exception precedence (ext-php-rs 0.16)**: when a user-registered
@@ -17,6 +22,8 @@ Releases `v0.0.1` and `v0.0.2` predate this changelog; their tags remain availab
   exception chained as `previous`; 0.16 makes throwing while an exception is pending a
   no-op, so the first exception wins. Publications are still re-buffered and counted —
   no message loss. (issue #359)
+- The Laravel package's `EXTENSION_CONSTRAINT` moves to `^0.3.12` in lockstep with
+  the extension release (release-policy verification in the pipeline enforces it).
 
 ## [0.3.11] - 2026-10-22
 
