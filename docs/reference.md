@@ -635,6 +635,31 @@ RUN composer require goopil/rabbit-rs-laravel
 
 For a complete Dockerfile example, see [examples/laravel/Dockerfile](../examples/laravel/Dockerfile).
 
+#### macOS: Homebrew and manual install
+
+Apple Silicon (ARM64) users have two alternatives to PIE:
+
+**Homebrew:**
+
+```bash
+brew tap goopil/rabbit-rs
+brew install rabbit-rs
+```
+
+Requires PHP 8.2, 8.3, 8.4, or 8.5 (Homebrew PHP for the tap).
+
+**Manual binary install** — download the pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and load it by hand:
+
+```bash
+# Download the matching asset for your PHP version
+unzip php_rabbit_rs-*_php8.4-arm64-darwin-bsdlibc-nts.zip
+cp rabbit_rs.so $(php-config --extension-dir)/rabbit_rs.so
+echo "extension=rabbit_rs" > $(php-config --ini-dir)/ext-rabbit_rs.ini
+php -m | grep rabbit_rs
+```
+
+Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from source instead (see [Local compilation with Cargo](#local-compilation-with-cargo)).
+
 ### Step 2 — Install the Laravel queue driver
 
 ```bash

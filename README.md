@@ -108,8 +108,6 @@ No extra configuration required: pop the queue directly — it is the connection
 
 ## Distribution channels
 
-Rabbit RS is distributed via three channels:
-
 | Package | Channel | Purpose |
 |---------|---------|---------|
 | `goopil/rabbit-rs-native` | [PIE](https://github.com/php/pie) | Native PHP extension (Linux and macOS binaries) |
@@ -117,50 +115,12 @@ Rabbit RS is distributed via three channels:
 | `rabbit-rs` | [Homebrew](https://github.com/Goopil/homebrew-rabbit-rs) | Native PHP extension (macOS binary, alternative to PIE) |
 | `ghcr.io/goopil/php-rabbit-rs` | Docker install images | Copy the pre-compiled extension into your PHP image (Linux) |
 
-PIE selects the correct pre-compiled binary for your PHP version, architecture, operating system, libc, and thread-safety mode — including macOS Apple Silicon. Homebrew offers the same macOS binaries through the tap. Composer installs the Laravel bridge but does **not** install, verify, or modify system PHP: `ext-rabbit_rs` is a Composer suggestion and the driver fails at connection resolution until the extension is loaded (PIE installs the binary).
+PIE selects the correct pre-compiled binary for your PHP version, architecture, operating system, libc, and thread-safety mode. Composer installs the Laravel bridge but does **not** install, verify, or modify system PHP: `ext-rabbit_rs` is a Composer suggestion, and the driver fails at connection resolution until the extension is loaded (PIE installs the binary).
 
-### macOS
+- Linux: PIE (Quick start above) or the Docker install images below.
+- macOS (Homebrew or manual binary): [docs/reference.md](docs/reference.md#installation).
 
-**PIE (Apple Silicon):**
-
-```bash
-pie install goopil/rabbit-rs-native
-```
-
-**Homebrew (Apple Silicon, alternative):**
-
-```bash
-brew tap goopil/rabbit-rs
-brew install rabbit-rs
-```
-
-Requires PHP 8.2, 8.3, 8.4, or 8.5 (Homebrew PHP for the tap).
-
-**Manual install (Apple Silicon):**
-
-On Apple Silicon (ARM64), download the pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and load it manually:
-
-```bash
-# Download the matching asset for your PHP version
-unzip php_rabbit_rs-*_php8.4-arm64-darwin-bsdlibc-nts.zip
-cp rabbit_rs.so $(php-config --extension-dir)/rabbit_rs.so
-echo "extension=rabbit_rs" > $(php-config --ini-dir)/ext-rabbit_rs.ini
-php -m | grep rabbit_rs
-```
-
-Alternatively, build from source:
-
-```bash
-git clone https://github.com/Goopil/php-rabbit-rs.git
-cd php-rabbit-rs
-./scripts/install.sh --release
-```
-
-Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from source with `./scripts/install.sh --release`.
-
-### Docker (Linux)
-
-Copy the pre-compiled extension into your PHP image — no build tools, no PIE step:
+Docker (Linux) — copy the pre-compiled extension into your PHP image, no build tools, no PIE step:
 
 ```dockerfile
 COPY --from=ghcr.io/goopil/php-rabbit-rs:latest-php8.5 /usr/local/ /usr/local/
@@ -168,14 +128,7 @@ COPY --from=ghcr.io/goopil/php-rabbit-rs:latest-php8.5 /usr/local/ /usr/local/
 
 Tags: `latest-php8.2` through `latest-php8.5`, `-alpine` variants (`libgcc` bundled), and version-pinned tags (`v0.3.14-php8.5-alpine`), published on each release by [install-images.yml](.github/workflows/install-images.yml). The images carry the NTS binary only: they COPY over `php:N-cli` bases, which are NTS. For ZTS (e.g. the official FrankenPHP images), install via PIE or download the Linux ZTS release assets directly (see [Octane notes](packages/laravel-queue/docs/octane.md)).
 
-**Not V1 distribution channels:**
-
-- PECL
-- Debian/RPM/APK packages
-- Composer plugins that install binaries
-- Full PHP images bundling the extension
-
-These are explicitly out of scope for V1. Use PIE or the Docker install images above in your Dockerfile — see [Installation](docs/reference.md#installation).
+PECL, Debian/RPM/APK packages, Composer binary plugins, and full PHP images bundling the extension are explicitly out of scope for V1 — see [Installation](docs/reference.md#installation).
 
 ## Stability
 
@@ -213,22 +166,12 @@ Read before betting a pipeline on this.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Quick reference:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide, and [docs/development.md](docs/development.md) for architecture, build system, test strategy, and common pitfalls. Quick reference:
 
 ```bash
-# Build the extension
-cargo build -p rabbit-rs-php --features extension-tests
-
-# Run tests
-./scripts/test-laravel.sh          # Laravel Unit + Feature (no extension)
-./scripts/test-extension.sh        # PHP extension (Pest + PHPT)
-cargo test -p rabbit-rs-core       # Rust core
-
-# Quality gate
-./scripts/check.sh
+cargo build -p rabbit-rs-php --features extension-tests   # build the extension
+./scripts/check.sh                                        # quality gate: fmt + clippy + nextest + composer validate
 ```
-
-For architecture, build system, test strategy, and common pitfalls, see [docs/development.md](docs/development.md).
 
 ## License
 
