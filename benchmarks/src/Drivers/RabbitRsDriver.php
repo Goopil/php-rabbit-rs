@@ -26,7 +26,7 @@ class RabbitRsDriver extends AbstractBenchmark
     public function safetyMode(): ?string
     {
         return match ($this->scenarioMode) {
-            ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => 'blind',
+            ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER, ScenarioMode::SUSTAINED_CONSUME => 'blind',
             ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => 'safe',
         };
     }
@@ -98,7 +98,7 @@ class RabbitRsDriver extends AbstractBenchmark
             ],
             'publisher' => [
                 'confirms' => match ($this->scenarioMode) {
-                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER => false,
+                    ScenarioMode::FIRE_AND_FORGET, ScenarioMode::AUTO_ACK, ScenarioMode::LARAVEL_WORKER, ScenarioMode::SUSTAINED_CONSUME => false,
                     ScenarioMode::BATCH_CONFIRM, ScenarioMode::LARAVEL_DISPATCH => true,
                 },
                 'safety' => $this->safetyMode(),

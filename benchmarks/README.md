@@ -114,6 +114,12 @@ tax, plus a publisher flush-cadence A/B), and `flush-timer-latency/`
 (lone-publish landing latency). Each archive README carries its own protocol,
 session context, and framing rules.
 
+The public, reproducible driver comparison against php-amqplib and ext-amqp
+(issue #368) lives in `results/2026-10-25-issue-368/`; run it with
+`./benchmarks/run-comparison.sh` (one command: lab + release extension +
+3 interleaved drivers × 4 scenarios, merged into one JSON) and see the
+top-level `BENCHMARK.md` for the summary table and pinned scenario spec.
+
 #### Re-baselining
 
 The baseline is machine-specific: it records exactly which machine, versions and

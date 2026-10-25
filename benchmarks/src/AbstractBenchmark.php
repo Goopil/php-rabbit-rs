@@ -11,6 +11,8 @@ abstract class AbstractBenchmark
 
     private array $receivedMessageIds = [];
     private int $duplicateCount = 0;
+    // Publications the current phase expects; reportLosses() gates against it.
+    private int $expectedCount = Config::MESSAGE_COUNT;
 
     protected string $scenarioMode = ScenarioMode::BATCH_CONFIRM;
 
@@ -117,6 +119,7 @@ abstract class AbstractBenchmark
         $this->publishLatencies = [];
         $this->receivedMessageIds = [];
         $this->duplicateCount = 0;
+        $this->expectedCount = Config::MESSAGE_COUNT;
     }
 
     protected function recordLatency(float $ms): void
@@ -149,7 +152,7 @@ abstract class AbstractBenchmark
 
     protected function reportLosses(): array
     {
-        $expected = Config::MESSAGE_COUNT;
+        $expected = $this->expectedCount;
         $received = count($this->receivedMessageIds);
         $losses = $expected - $received;
         return [
@@ -157,6 +160,50 @@ abstract class AbstractBenchmark
             'received' => $received,
             'losses' => max(0, $losses),
             'duplicates' => $this->duplicateCount,
+        ];
+    }
+
+    /**
+     * Expect $count publications in the current phase (phase-driven harnesses
+     * that publish a custom count instead of Config::MESSAGE_COUNT).
+     */
+    public function expectCount(int $count): void
+    {
+        $this->expectedCount = $count;
+    }
+
+    /**
+     * Payload template size in bytes for phase-driven harnesses that pin it
+     * per scenario (the comparison runs everything at the Laravel size).
+     */
+    public function setPayloadBytes(int $bytes): void
+    {
+        $this->payloadBytes = $bytes;
+    }
+
+    /**
+     * Phase controls for harnesses that drive publish/consume phases manually
+     * (issue #368 comparison) instead of through runBenchmark().
+     */
+    public function beginPhase(): void
+    {
+        $this->resetTracking();
+    }
+
+    /**
+     * Public snapshot of the current phase: losses/duplicates plus the
+     * end-to-end publish→consume latency percentiles recorded so far.
+     *
+     * @return array{expected: int, received: int, losses: int, duplicates: int, latency_ms: array{p50: float, p95: float, p99: float}}
+     */
+    public function phaseReport(): array
+    {
+        return $this->reportLosses() + [
+            'latency_ms' => [
+                'p50' => $this->percentile(0.50),
+                'p95' => $this->percentile(0.95),
+                'p99' => $this->percentile(0.99),
+            ],
         ];
     }
 

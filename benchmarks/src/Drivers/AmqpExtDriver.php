@@ -81,7 +81,8 @@ class AmqpExtDriver extends AbstractBenchmark
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK
-            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
+            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER
+            || $this->scenarioMode === ScenarioMode::SUSTAINED_CONSUME) {
             $this->publishFireAndForget($count);
             return;
         }

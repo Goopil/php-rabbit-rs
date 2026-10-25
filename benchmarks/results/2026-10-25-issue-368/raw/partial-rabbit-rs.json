@@ -1,0 +1,486 @@
+{
+    "env": {
+        "issue": 368,
+        "date": "2026-10-25T18:45:45+00:00",
+        "broker": {
+            "host": "127.0.0.1",
+            "port": 5672,
+            "vhost": "\/",
+            "user": "***",
+            "version": "4.2.9",
+            "lab_profile": "with-plugin",
+            "kill_container": "rabbitrs-rabbitmq-1-1"
+        },
+        "payload_bytes": 1024,
+        "counts": {
+            "publish-fanout": 50000,
+            "sustained-consume": 50000,
+            "laravel-worker": 10000,
+            "broker-kill": 100000
+        },
+        "hardware": {
+            "os": "Darwin 25.6.0",
+            "machine": "arm64",
+            "model": "Mac14,6",
+            "cpu": "Apple M2 Max",
+            "cores": 12,
+            "memory_bytes": 34359738368
+        },
+        "fairness": {
+            "payload_bytes": 1024,
+            "prefetch": 128,
+            "publish-fanout": {
+                "mode": "batch-confirm",
+                "publish": "confirmed, batches of 256, persistent; amqplib sets the mandatory flag, ext-amqp does not, rabbit-rs has no mandatory flag on this API",
+                "consume (unmeasured drain)": "scenario consume path"
+            },
+            "sustained-consume": {
+                "mode": "sustained-consume",
+                "fill (unmeasured)": "blind batched publish (256\/batch), persistent",
+                "drain (measured)": "push consumption (basic_consume \/ AMQPQueue::consume \/ dedicated consumer), manual ACK per message, prefetch 128"
+            },
+            "laravel-worker": {
+                "mode": "laravel-worker",
+                "protocol": "10,000 messages x rounds, 1024 B, prefetch 64 \u2014 same shape as the archived round-l lineage",
+                "fill (unmeasured)": "blind publish (rabbit-rs: batched; amqplib\/ext-amqp: per-message loop), persistent",
+                "drain (measured)": "rabbit-rs: dedicated consumer pop + ACK per message; amqplib\/ext-amqp: basic_get polling + ACK per message"
+            },
+            "broker-kill": {
+                "mode": "sustained-consume",
+                "kill": "docker restart of the broker container (graceful SIGTERM shutdown + boot), armed KILL_DELAY seconds into the drain",
+                "recovery": "driver-internal recovery if it has one; otherwise an identical harness-level driver restart (tearDown+setUp) between drain attempts until KILL_TIMEOUT"
+            },
+            "rabbit-rs": "Pool: dedicated consumer channel, prefetch 128, early_ack=false, no_ack=false, heartbeat 30; publisher blind (sustained-consume) or safe confirms (publish-fanout), flush_interval 1 ms, persistent delivery enforced by the core",
+            "amqplib": "php-amqplib 3.x AMQPStreamConnection: two connections (pub\/cons), basic_qos(0,128), push consume via basic_consume, manual ACK per message; confirmed publish batches of 256 via wait_for_pending_acks(5), persistent, mandatory=true; heartbeat 60, read\/write timeout 60\/10",
+            "amqp-ext": "pecl amqp: one connection, two channels, setPrefetchCount(128), push consume via AMQPQueue::consume, manual ACK per message; confirmed publish batches of 256 via waitForConfirm(5), persistent, mandatory not set; read timeout 1 s during consume"
+        }
+    },
+    "php": "8.5.6",
+    "runs": [
+        {
+            "scenario": "publish-fanout",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": true,
+            "count": 50000,
+            "safety": "safe",
+            "publish_seconds": 2.879,
+            "consume_seconds": 1.585,
+            "publish_rate": 17367.9,
+            "consume_rate": 31550.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2837.297292,
+                "p95": 3349.065333,
+                "p99": 3384.646916
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "rabbit-rs",
+            "round": 1,
+            "warmup": false,
+            "count": 50000,
+            "safety": "safe",
+            "publish_seconds": 2.659,
+            "consume_seconds": 1.619,
+            "publish_rate": 18803.1,
+            "consume_rate": 30891.8,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2543.205209,
+                "p95": 3124.566959,
+                "p99": 3162.643041
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": true,
+            "count": 50000,
+            "safety": "blind",
+            "publish_seconds": 1.008,
+            "consume_seconds": 1.453,
+            "publish_rate": 49599.5,
+            "consume_rate": 34400.6,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 1864.153583,
+                "p95": 1992.087959,
+                "p99": 2010.65375
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "rabbit-rs",
+            "round": 1,
+            "warmup": false,
+            "count": 50000,
+            "safety": "blind",
+            "publish_seconds": 0.949,
+            "consume_seconds": 1.401,
+            "publish_rate": 52700.3,
+            "consume_rate": 35692.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 1866.687417,
+                "p95": 1915.740041,
+                "p99": 1932.135333
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": true,
+            "count": 10000,
+            "safety": "blind",
+            "publish_seconds": 0.059,
+            "consume_seconds": 0.494,
+            "publish_rate": 168894.3,
+            "consume_rate": 20257.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 762.519125,
+                "p95": 964.465791,
+                "p99": 994.322209
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "rabbit-rs",
+            "round": 1,
+            "warmup": false,
+            "count": 10000,
+            "safety": "blind",
+            "publish_seconds": 0.055,
+            "consume_seconds": 0.426,
+            "publish_rate": 180431.3,
+            "consume_rate": 23501.3,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 749.212875,
+                "p95": 911.301625,
+                "p99": 928.40275
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "safe",
+            "publish_seconds": 2.828,
+            "consume_seconds": 1.373,
+            "publish_rate": 17683.4,
+            "consume_rate": 36413.6,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2580.495708,
+                "p95": 3208.537584,
+                "p99": 3313.577375
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "blind",
+            "publish_seconds": 0.953,
+            "consume_seconds": 1.385,
+            "publish_rate": 52453.1,
+            "consume_rate": 36106.3,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 1869.689417,
+                "p95": 1913.685708,
+                "p99": 1923.748334
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": "blind",
+            "publish_seconds": 0.05,
+            "consume_seconds": 0.419,
+            "publish_rate": 198931.9,
+            "consume_rate": 23845.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 744.628791,
+                "p95": 900.590917,
+                "p99": 916.901833
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "safe",
+            "publish_seconds": 3.213,
+            "consume_seconds": 1.971,
+            "publish_rate": 15562.3,
+            "consume_rate": 25369.9,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 3200.418083,
+                "p95": 3664.121375,
+                "p99": 3711.915541
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "blind",
+            "publish_seconds": 1.361,
+            "consume_seconds": 2.704,
+            "publish_rate": 36729.4,
+            "consume_rate": 18493.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2921.519917,
+                "p95": 3259.7635,
+                "p99": 3284.351625
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": "blind",
+            "publish_seconds": 0.072,
+            "consume_seconds": 0.803,
+            "publish_rate": 139485.1,
+            "consume_rate": 12448.6,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 944.030625,
+                "p95": 1278.410875,
+                "p99": 1299.440167
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "safe",
+            "publish_seconds": 3.38,
+            "consume_seconds": 1.654,
+            "publish_rate": 14793.8,
+            "consume_rate": 30235.8,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2969.174209,
+                "p95": 3816.714292,
+                "p99": 3882.917417
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "blind",
+            "publish_seconds": 1.245,
+            "consume_seconds": 2.018,
+            "publish_rate": 40158.4,
+            "consume_rate": 24777,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2484.234083,
+                "p95": 2560.150083,
+                "p99": 2581.376417
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": "blind",
+            "publish_seconds": 0.053,
+            "consume_seconds": 0.605,
+            "publish_rate": 187037.4,
+            "consume_rate": 16517.5,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 835.663333,
+                "p95": 1082.9425,
+                "p99": 1105.263167
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "safe",
+            "publish_seconds": 3.47,
+            "consume_seconds": 2.038,
+            "publish_rate": 14407.7,
+            "consume_rate": 24532,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 3323.608292,
+                "p95": 3900.48825,
+                "p99": 3969.312416
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": "blind",
+            "publish_seconds": 1.06,
+            "consume_seconds": 1.913,
+            "publish_rate": 47158.2,
+            "consume_rate": 26134.6,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2266.7115,
+                "p95": 2397.095166,
+                "p99": 2410.964292
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": "blind",
+            "publish_seconds": 0.055,
+            "consume_seconds": 0.614,
+            "publish_rate": 182482.6,
+            "consume_rate": 16296,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 818.5645,
+                "p95": 1087.834667,
+                "p99": 1109.334125
+            },
+            "reconnects": 0,
+            "ok": true
+        },
+        {
+            "scenario": "broker-kill",
+            "driver": "rabbit-rs",
+            "round": 0,
+            "warmup": false,
+            "count": 100000,
+            "safety": "blind",
+            "kill": {
+                "container": "rabbitrs-rabbitmq-1-1",
+                "delay_seconds": 2,
+                "method": "docker restart (graceful SIGTERM + boot)"
+            },
+            "fill_seconds": 3.136,
+            "drain_seconds": 13.889,
+            "attempts": 2,
+            "harness_recoveries": 1,
+            "survived": true,
+            "received": 100000,
+            "losses": 0,
+            "duplicates": 46,
+            "latency_ms": {
+                "p50": 11364.701333,
+                "p95": 11491.675167,
+                "p99": 11508.658625
+            },
+            "reconnects": 0,
+            "last_error": "protocol error: AMQP hard error: CONNECTION-FORCED: CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'",
+            "ok": true
+        }
+    ]
+}

@@ -89,7 +89,8 @@ class AmqplibDriver extends AbstractBenchmark
 
         if ($this->scenarioMode === ScenarioMode::FIRE_AND_FORGET
             || $this->scenarioMode === ScenarioMode::AUTO_ACK
-            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER) {
+            || $this->scenarioMode === ScenarioMode::LARAVEL_WORKER
+            || $this->scenarioMode === ScenarioMode::SUSTAINED_CONSUME) {
             for ($i = 0; $i < $count; $i++) {
                 $ts = hrtime(true);
                 $msg = new AMQPMessage(pack('P', $ts) . $this->createMessage((string) $i), [

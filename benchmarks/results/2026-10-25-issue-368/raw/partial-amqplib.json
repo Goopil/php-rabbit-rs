@@ -1,0 +1,486 @@
+{
+    "env": {
+        "issue": 368,
+        "date": "2026-10-25T18:46:03+00:00",
+        "broker": {
+            "host": "127.0.0.1",
+            "port": 5672,
+            "vhost": "\/",
+            "user": "***",
+            "version": "4.2.9",
+            "lab_profile": "with-plugin",
+            "kill_container": "rabbitrs-rabbitmq-1-1"
+        },
+        "payload_bytes": 1024,
+        "counts": {
+            "publish-fanout": 50000,
+            "sustained-consume": 50000,
+            "laravel-worker": 10000,
+            "broker-kill": 100000
+        },
+        "hardware": {
+            "os": "Darwin 25.6.0",
+            "machine": "arm64",
+            "model": "Mac14,6",
+            "cpu": "Apple M2 Max",
+            "cores": 12,
+            "memory_bytes": 34359738368
+        },
+        "fairness": {
+            "payload_bytes": 1024,
+            "prefetch": 128,
+            "publish-fanout": {
+                "mode": "batch-confirm",
+                "publish": "confirmed, batches of 256, persistent; amqplib sets the mandatory flag, ext-amqp does not, rabbit-rs has no mandatory flag on this API",
+                "consume (unmeasured drain)": "scenario consume path"
+            },
+            "sustained-consume": {
+                "mode": "sustained-consume",
+                "fill (unmeasured)": "blind batched publish (256\/batch), persistent",
+                "drain (measured)": "push consumption (basic_consume \/ AMQPQueue::consume \/ dedicated consumer), manual ACK per message, prefetch 128"
+            },
+            "laravel-worker": {
+                "mode": "laravel-worker",
+                "protocol": "10,000 messages x rounds, 1024 B, prefetch 64 \u2014 same shape as the archived round-l lineage",
+                "fill (unmeasured)": "blind publish (rabbit-rs: batched; amqplib\/ext-amqp: per-message loop), persistent",
+                "drain (measured)": "rabbit-rs: dedicated consumer pop + ACK per message; amqplib\/ext-amqp: basic_get polling + ACK per message"
+            },
+            "broker-kill": {
+                "mode": "sustained-consume",
+                "kill": "docker restart of the broker container (graceful SIGTERM shutdown + boot), armed KILL_DELAY seconds into the drain",
+                "recovery": "driver-internal recovery if it has one; otherwise an identical harness-level driver restart (tearDown+setUp) between drain attempts until KILL_TIMEOUT"
+            },
+            "rabbit-rs": "Pool: dedicated consumer channel, prefetch 128, early_ack=false, no_ack=false, heartbeat 30; publisher blind (sustained-consume) or safe confirms (publish-fanout), flush_interval 1 ms, persistent delivery enforced by the core",
+            "amqplib": "php-amqplib 3.x AMQPStreamConnection: two connections (pub\/cons), basic_qos(0,128), push consume via basic_consume, manual ACK per message; confirmed publish batches of 256 via wait_for_pending_acks(5), persistent, mandatory=true; heartbeat 60, read\/write timeout 60\/10",
+            "amqp-ext": "pecl amqp: one connection, two channels, setPrefetchCount(128), push consume via AMQPQueue::consume, manual ACK per message; confirmed publish batches of 256 via waitForConfirm(5), persistent, mandatory not set; read timeout 1 s during consume"
+        }
+    },
+    "php": "8.5.6",
+    "runs": [
+        {
+            "scenario": "publish-fanout",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": true,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.214,
+            "consume_seconds": 2.55,
+            "publish_rate": 41173.1,
+            "consume_rate": 19607.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2365.244791,
+                "p95": 2983.022584,
+                "p99": 3037.083834
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "amqplib",
+            "round": 1,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.288,
+            "consume_seconds": 2.545,
+            "publish_rate": 38816.5,
+            "consume_rate": 19649.3,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2425.033583,
+                "p95": 2977.937083,
+                "p99": 3032.656
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": true,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 0.775,
+            "consume_seconds": 2.56,
+            "publish_rate": 64544.3,
+            "consume_rate": 19531.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2170.642625,
+                "p95": 2974.677833,
+                "p99": 3045.122667
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "amqplib",
+            "round": 1,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 0.771,
+            "consume_seconds": 2.57,
+            "publish_rate": 64863.2,
+            "consume_rate": 19453.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2179.398833,
+                "p95": 2984.121708,
+                "p99": 3052.479875
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": true,
+            "count": 10000,
+            "safety": null,
+            "publish_seconds": 0.153,
+            "consume_seconds": 4.56,
+            "publish_rate": 65202.4,
+            "consume_rate": 2193.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 2875.995,
+                "p95": 4854.046625,
+                "p99": 5022.012417
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "amqplib",
+            "round": 1,
+            "warmup": false,
+            "count": 10000,
+            "safety": null,
+            "publish_seconds": 0.154,
+            "consume_seconds": 4.653,
+            "publish_rate": 65073.5,
+            "consume_rate": 2149.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 3052.275666,
+                "p95": 4959.587041,
+                "p99": 5114.430917
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.255,
+            "consume_seconds": 2.564,
+            "publish_rate": 39849.1,
+            "consume_rate": 19502.3,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2409.056875,
+                "p95": 2995.458416,
+                "p99": 3050.172375
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 0.787,
+            "consume_seconds": 2.574,
+            "publish_rate": 63558.6,
+            "consume_rate": 19425.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2183.950916,
+                "p95": 2989.896792,
+                "p99": 3060.651375
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": null,
+            "publish_seconds": 0.155,
+            "consume_seconds": 4.504,
+            "publish_rate": 64583.2,
+            "consume_rate": 2220.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 2846.59075,
+                "p95": 4807.588375,
+                "p99": 4969.983375
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.297,
+            "consume_seconds": 2.557,
+            "publish_rate": 38549.8,
+            "consume_rate": 19557.6,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2390.99625,
+                "p95": 2993.128083,
+                "p99": 3048.685083
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 0.809,
+            "consume_seconds": 2.719,
+            "publish_rate": 61833.9,
+            "consume_rate": 18386.9,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2322.799917,
+                "p95": 3137.762875,
+                "p99": 3204.083166
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": null,
+            "publish_seconds": 0.159,
+            "consume_seconds": 6.58,
+            "publish_rate": 62856.6,
+            "consume_rate": 1519.8,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 3920.912959,
+                "p95": 6729.703459,
+                "p99": 7012.678541
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.905,
+            "consume_seconds": 2.767,
+            "publish_rate": 26241.2,
+            "consume_rate": 18072.7,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 3064.314833,
+                "p95": 3401.950333,
+                "p99": 3415.292916
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 0.828,
+            "consume_seconds": 2.609,
+            "publish_rate": 60364.2,
+            "consume_rate": 19165,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2228.507792,
+                "p95": 3030.207916,
+                "p99": 3090.864459
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": null,
+            "publish_seconds": 0.16,
+            "consume_seconds": 6.692,
+            "publish_rate": 62429.4,
+            "consume_rate": 1494.4,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 3862.804041,
+                "p95": 6904.975375,
+                "p99": 7135.254625
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "publish-fanout",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.482,
+            "consume_seconds": 2.59,
+            "publish_rate": 33738.5,
+            "consume_rate": 19305.1,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2602.6605,
+                "p95": 3049.226666,
+                "p99": 3080.884083
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "sustained-consume",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 50000,
+            "safety": null,
+            "publish_seconds": 1.009,
+            "consume_seconds": 2.627,
+            "publish_rate": 49560.6,
+            "consume_rate": 19029.7,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 50000,
+            "latency_ms": {
+                "p50": 2412.036209,
+                "p95": 3058.314958,
+                "p99": 3114.788375
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "laravel-worker",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 10000,
+            "safety": null,
+            "publish_seconds": 0.161,
+            "consume_seconds": 6.652,
+            "publish_rate": 62282.9,
+            "consume_rate": 1503.3,
+            "losses": 0,
+            "duplicates": 0,
+            "received": 10000,
+            "latency_ms": {
+                "p50": 4027.852667,
+                "p95": 6849.171,
+                "p99": 7086.214417
+            },
+            "reconnects": null,
+            "ok": true
+        },
+        {
+            "scenario": "broker-kill",
+            "driver": "amqplib",
+            "round": 0,
+            "warmup": false,
+            "count": 100000,
+            "safety": null,
+            "kill": {
+                "container": "rabbitrs-rabbitmq-1-1",
+                "delay_seconds": 2,
+                "method": "docker restart (graceful SIGTERM + boot)"
+            },
+            "fill_seconds": 1.689,
+            "drain_seconds": 15.537,
+            "attempts": 8,
+            "harness_recoveries": 7,
+            "survived": true,
+            "received": 100000,
+            "losses": 0,
+            "duplicates": 61,
+            "latency_ms": {
+                "p50": 11327.63075,
+                "p95": 12847.798167,
+                "p99": 12985.8265
+            },
+            "reconnects": null,
+            "last_error": "Driver not set up",
+            "ok": true
+        }
+    ]
+}
