@@ -23,7 +23,6 @@ FILES=(
 )
 
 # Stale claims: the support contract these phrases state is no longer true.
-# - the distribution is NTS-only, 10 archives / 30 assets (2026-08-31);
 # - the supported broker floor is RabbitMQ 4.2.9+;
 # - delay.mode=auto is a documented alias for the plugin driver, with no
 #   TTL fallback;
@@ -33,10 +32,12 @@ FILES=(
 #   in historical records, which this script deliberately does not scan;
 # - the ext-rabbit_rs pin as of the rename (^0.3.6): the live constraint is
 #   the `suggest` entry in packages/laravel-queue/composer.json (^0.3.10).
+# The former "NTS and ZTS" stale-claim rule was retired when Linux ZTS
+# binaries shipped in 0.3.14: the phrase now states the true contract
+# (NTS+ZTS on Linux, NTS only on macOS).
 PATTERNS=(
   '16 release archives'
   'RabbitMQ 4\.3'
-  'NTS and ZTS'
   'plugin when available'
   'TTL buckets otherwise'
   'Goopil/rabbit-rs([^a-z-]|$)'
