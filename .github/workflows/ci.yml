@@ -38,7 +38,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: cargo-nextest
 
@@ -77,7 +77,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
 
       - name: Install clippy-sarif
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: clippy-sarif
 
@@ -106,7 +106,7 @@ jobs:
         uses: ./.github/actions/rust-setup
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: cargo-deny
 
@@ -295,7 +295,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: cargo-nextest
 
