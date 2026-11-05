@@ -29,6 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
+      - name: Provision libclang 21 (self-sufficient LIBCLANG_PATH pin)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
+
       - name: Install Rust 1.98
         uses: ./.github/actions/rust-setup
         with:
@@ -69,6 +72,9 @@ jobs:
         uses: ./.github/actions/rust-setup
         with:
           components: clippy
+
+      - name: Provision libclang 21 (self-sufficient LIBCLANG_PATH pin)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
 
       - name: Install clippy-sarif
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177
@@ -285,6 +291,9 @@ jobs:
         with:
           components: clippy
 
+      - name: Provision libclang 21 (self-sufficient LIBCLANG_PATH pin)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177
         with:
@@ -407,6 +416,9 @@ jobs:
 
       - name: Install Rust 1.98
         uses: ./.github/actions/rust-setup
+
+      - name: Provision libclang 21 (self-sufficient LIBCLANG_PATH pin)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
 
       - name: Cache Rust build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9

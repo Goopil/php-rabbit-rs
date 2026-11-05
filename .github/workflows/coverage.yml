@@ -29,6 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
+      - name: Provision libclang 21 (self-sufficient LIBCLANG_PATH pin)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
+
       - name: Install Rust 1.98
         uses: ./.github/actions/rust-setup
         with:
@@ -93,7 +96,7 @@ jobs:
           extensions: json
 
       - name: Install system deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
 
       - name: Build, test, and export LCOV
         run: ./scripts/coverage-php-ext.sh
@@ -132,7 +135,7 @@ jobs:
           extensions: json
 
       - name: Install system deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq libclang-21-dev
 
       - name: Cache Composer dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9

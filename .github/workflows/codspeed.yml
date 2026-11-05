@@ -42,7 +42,7 @@ jobs:
           coverage: none
 
       - name: Install system deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libclang-21-dev
 
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed --locked --quiet || true

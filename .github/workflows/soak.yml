@@ -46,7 +46,7 @@ jobs:
           extensions: json
 
       - name: Install system dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq libclang-21-dev
 
       - name: Build release PHP extension
         run: cargo build --release --locked --manifest-path crates/rabbit-rs-php/Cargo.toml
