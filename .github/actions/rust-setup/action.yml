@@ -5,6 +5,10 @@ inputs:
     description: Toolchain components (comma separated)
     required: false
     default: ""
+  cache-suffix:
+    description: Extra key segment isolating the cache namespace (e.g. per PHP version)
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -17,8 +21,13 @@ runs:
     - name: Cache Cargo
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       with:
-        # Share one cache namespace across all host-side jobs (they are
-        # job-scoped by default, verified via the Actions caches API: ten
-        # disjoint v0-rust-<job> keys). The lockfile hash stays in the key,
-        # so lockfile changes still invalidate.
-        shared-key: rabbit-rs
+        # Share one cache namespace across all host-side jobs, EXCEPT that the
+        # namespace must be split per PHP version (cache-suffix). Restored
+        # target/ artifacts carry ext-php-rs bindings generated against one
+        # PHP module API, and cargo reuses them blindly: a PHP 8.5 job
+        # restoring a PHP 8.4 job's cache rebuilds the workspace crates
+        # against 8.4 bindings and produces an extension that PHP 8.5 cannot
+        # load ("Module compiled with module API=20240924") — this is what
+        # kept the nightly Functional matrix red in Oct-Nov 2026. The
+        # lockfile hash stays in the key, so lockfile changes still invalidate.
+        shared-key: rabbit-rs${{ inputs.cache-suffix }}

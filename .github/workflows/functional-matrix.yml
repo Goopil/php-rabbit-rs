@@ -41,6 +41,12 @@ jobs:
 
       - name: Install Rust 1.98
         uses: ./.github/actions/rust-setup
+        with:
+          # Only host-side job on a PHP version other than 8.4: isolating its
+          # cache namespace keeps PHP-8.4-bound ext-php-rs artifacts out of
+          # the build (a restored 8.4 binding set survives cargo's freshness
+          # check and yields an extension PHP 8.5 refuses to load).
+          cache-suffix: php85
 
       - name: Setup PHP 8.5
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962
