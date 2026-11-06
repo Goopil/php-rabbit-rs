@@ -41,7 +41,7 @@ serde_json = "1.0"
 tokio = { version = "1.53", features = ["test-util", "process"] }
 rabbit-rs-core = { path = ".", features = ["test-support"] }
 proptest = "1.11"
-proptest-state-machine = "0.8"
+proptest-state-machine = "0.9"
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 
 [[bench]]
