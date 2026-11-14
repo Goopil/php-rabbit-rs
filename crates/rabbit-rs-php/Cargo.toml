@@ -30,7 +30,7 @@ tokio = { version = "1.53", features = ["time"] }
 [dev-dependencies]
 rabbit-rs-core = { path = "../rabbit-rs-core", features = ["test-support"] }
 proptest = "1.11"
-proptest-state-machine = "0.8"
+proptest-state-machine = "0.9"
 zend-link-stubs = { path = "zend-link-stubs" }
 divan = { version = "5.0.1", package = "codspeed-divan-compat" }
 
