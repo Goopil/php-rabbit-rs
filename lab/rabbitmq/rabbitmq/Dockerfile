@@ -6,9 +6,10 @@ ARG PLUGIN_SHA256=f168b2c09810cde3726961d31f38e3408e6a7fbff3929908d6f962061d8e70
 ARG PLUGIN_URL=https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v${PLUGIN_VERSION}/rabbitmq_delayed_message_exchange-${PLUGIN_VERSION}.ez
 
 # HTTPS enforced via curl -fsSL; GitHub Releases 5xx/504 transients are
-# retried; integrity verified via the sha256 checksum below.
+# retried (10 x 5 s resists a ~1 min outage); integrity verified via the
+# sha256 checksum below.
 RUN apk add --no-cache curl ca-certificates \
-    && curl -fsSL --retry 5 --retry-delay 2 -o "/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-${PLUGIN_VERSION}.ez" "${PLUGIN_URL}" \
+    && curl -fsSL --retry 10 --retry-delay 5 -o "/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-${PLUGIN_VERSION}.ez" "${PLUGIN_URL}" \
     && echo "${PLUGIN_SHA256}  /opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-${PLUGIN_VERSION}.ez" \
         | sha256sum -c \
     && apk del curl
