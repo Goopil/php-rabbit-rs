@@ -9,6 +9,10 @@ updates:
     labels:
       - dependencies
       - rust
+    groups:
+      rust:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -19,6 +23,10 @@ updates:
     labels:
       - dependencies
       - ci
+    groups:
+      ci:
+        patterns:
+          - "*"
 
   - package-ecosystem: composer
     directory: /packages/laravel-queue
@@ -29,6 +37,10 @@ updates:
     labels:
       - dependencies
       - php
+    groups:
+      laravel-queue:
+        patterns:
+          - "*"
 
   - package-ecosystem: composer
     directory: /crates/rabbit-rs-php
@@ -39,6 +51,10 @@ updates:
     labels:
       - dependencies
       - php
+    groups:
+      php-ext:
+        patterns:
+          - "*"
 
   - package-ecosystem: composer
     directory: /benchmarks
@@ -49,6 +65,10 @@ updates:
     labels:
       - dependencies
       - php
+    groups:
+      php-benchmarks:
+        patterns:
+          - "*"
 
   - package-ecosystem: composer
     directory: /benchmarks/driver-bench
@@ -59,3 +79,7 @@ updates:
     labels:
       - dependencies
       - php
+    groups:
+      php-driver-bench:
+        patterns:
+          - "*"
