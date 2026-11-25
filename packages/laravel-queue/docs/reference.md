@@ -13,7 +13,7 @@ Reference documentation for the Laravel queue driver: configuration, usage, topo
 
 ## Usage
 
-The everyday path is the [getting started](getting-started.md); this page is the reference for the driver's API and runtime behaviour: dispatching, consuming, events, the job class, and Horizon.
+For everyday tasks, see [Using Rabbit RS with Laravel](usage.md). This page is the reference for the driver's API and runtime behaviour: dispatching, consuming, events, the job class, and Horizon.
 
 ### Dispatching jobs
 
@@ -1191,7 +1191,7 @@ Operating Rabbit RS in production: diagnostics, supervisor configuration, Kubern
 
 #### rabbit-rs:status
 
-The `rabbit-rs:status` command provides a read-only snapshot of the native pool:
+The `rabbit-rs:status` command provides a snapshot of the native pool in its own PHP process, plus optional broker-side queue counters. It cannot read native metrics from other worker processes:
 
 ```bash
 php artisan rabbit-rs:status

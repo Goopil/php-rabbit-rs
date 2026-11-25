@@ -10,9 +10,9 @@ Reference documentation for the native extension: the reliability contract, trou
 - [Installation](#installation) — prerequisites, PIE, Homebrew, Docker, multi-PHP, upgrades and rollback, distribution model
 ## Reliability
 
-Rabbit RS provides at-least-once delivery. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable. The guarantee is scoped to the live process: the publisher replay buffer is process memory, and a PHP crash can drop publications the broker never received — see [What the replay buffer is not](#what-the-replay-buffer-is-not).
+Rabbit RS provides at-least-once delivery. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain identifiable. The guarantee is scoped to the live process: the publisher replay buffer is process memory, and a PHP crash can drop publications the broker never received — see [What the replay buffer is not](#what-the-replay-buffer-is-not).
 
-The documented exception is `safety = blind`: an explicit fire-and-forget mode (silent loss possible), set per connection (`safety` key) or package-wide (env `RABBIT_RS_SAFETY`) as well as in the raw native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](../packages/laravel-queue/docs/reference.md#safety-modes).
+This contract applies to `safety = safe`. Both `unsafe` (no confirms or mandatory routing) and `blind` (fire-and-forget) can lose publications silently. Select the mode per connection (`safety` key), package-wide (`RABBIT_RS_SAFETY`), or in the native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](../packages/laravel-queue/docs/reference.md#safety-modes).
 
 ### At-least-once contract
 
@@ -21,7 +21,7 @@ The delivery contract is:
 - **No silent loss** — every publish on the confirmed delivery path (`safe` mode) is either confirmed or the caller is notified of failure
 - **Duplicates permitted** — in failure windows, the same message may be delivered more than once
 - **Duplicates identifiable** — each message carries a stable `message_id` (UUID from Laravel payload)
-- **Duplicates measurable** — metrics track redeliveries and duplicate counts
+- **Redeliveries observable** — metrics provide partial signals; identifying repeated business operations requires application-level tracking
 
 This means your jobs **must be idempotent**. Use the `message_id` to detect and handle duplicates at the application level.
 
@@ -131,7 +131,7 @@ When a connection drops before a publish is confirmed, the state is ambiguous �
 1. **Classifying unconfirmed publications as ambiguous** — the publish call does not resolve immediately
 2. **Placing them in a bounded in-memory replay buffer** — with the same `message_id`, payload, destination, and original deadline
 3. **Replaying them after recovery** — once the topology is restored and a new confirm-enabled channel is open
-4. **Reusing the original deadline** — the deadline is never reset by a reconnection
+4. **Preserving the deadline** — if it expires while the publication is parked during recovery, it is re-armed once with a fresh deadline; a live-connection confirm timeout remains terminal
 
 The replay buffer is **bounded** by the publisher's global buffer capacity — a shared budget for in-flight confirms and replayed publications (1024 publications and 64 MiB of buffered payload bytes by default). When the budget is exhausted, new publications receive `Backpressure` instead of being accepted.
 
@@ -604,8 +604,7 @@ Expected output:
 ```
 rabbit_rs
 
-Rabbit RS - High-performance RabbitMQ transport for PHP and Laravel, powered by Rust
-Version => 0.3.6
+Version => <installed version>
 ...
 ```
 
@@ -666,7 +665,7 @@ Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from 
 composer require goopil/rabbit-rs-laravel
 ```
 
-Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.3.10`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.3.14`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 The package auto-discovers the service provider in Laravel 12 and 13. If you disabled auto-discovery, register it manually:
 
@@ -678,13 +677,13 @@ The package auto-discovers the service provider in Laravel 12 and 13. If you dis
 ],
 ```
 
-### Step 3 — Publish the configuration
+### Step 3 — Publish the configuration (optional)
 
 ```bash
 php artisan vendor:publish --tag="rabbit-rs-config"
 ```
 
-This creates `config/rabbit-rs.php` with sensible defaults. See [Configuration](../packages/laravel-queue/docs/reference.md#configuration) for the full reference.
+This creates `config/rabbit-rs.php` with cross-cutting defaults. The package loads its defaults without publishing; configure your queue connection separately in `config/queue.php`. See [Configuration](../packages/laravel-queue/docs/reference.md#configuration) for the full reference.
 
 ### Step 4 — Verify the installation
 
@@ -692,7 +691,7 @@ This creates `config/rabbit-rs.php` with sensible defaults. See [Configuration](
 php artisan rabbit-rs:status
 ```
 
-This displays connection state, pool metrics, and consumer stats. For machine-readable output:
+This displays a snapshot for the status command’s own PHP process, not the native counters of existing workers. Optional management API counters reflect broker-side queue activity. For machine-readable output:
 
 ```bash
 php artisan rabbit-rs:status --format=json

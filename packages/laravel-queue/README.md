@@ -4,13 +4,13 @@ A RabbitMQ queue driver for Laravel, built for **high-throughput, long-running w
 
 ## Why?
 
-The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the connection pool, publisher confirms, consumer scheduling, and connection recovery into a native Rust extension — fewer context switches, bounded memory, and at-least-once delivery without silent loss.
+The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the connection pool, publisher confirms, consumer scheduling, and connection recovery into a native Rust extension with bounded buffers and a confirmed delivery path designed for at-least-once delivery. The replay buffer is process-local; see [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability) for the crash and duplicate-handling limits.
 
 ## Features
 
 - **Native connection pooling** — one AMQP connection per vhost, publisher channels pooled, consumer channels dedicated
 - **Publisher confirms & mandatory returns** — in `safe` mode every publish is tracked to ACK, return, or timeout; a mandatory return takes precedence over its following ACK
-- **At-least-once delivery** — unconfirmed publishes survive connection recovery in bounded process memory and are replayed with the same `message_id` and original deadline
+- **At-least-once delivery** — unconfirmed publishes survive connection recovery in bounded process memory and are replayed with the same `message_id` and original deadline (with one fresh deadline if it expires while parked during recovery)
 - **Connection-generation-aware ACKs** — stale ACKs are rejected so RabbitMQ redelivers
 - **Deterministic recovery** — connection, channels, exchanges, queues, bindings, QoS, then consumers
 - **Weighted-fair scheduler** — multiple subscriptions per worker with configurable weights (weighted-fair cannot starve by construction)
@@ -23,14 +23,16 @@ The standard Laravel RabbitMQ drivers run in userspace PHP. Rabbit RS moves the 
 
 - PHP **8.2**, **8.3**, **8.4**, or **8.5**
 - Laravel **12** or **13**
-- `ext-rabbit_rs` — the native extension (see [Installation](#installation))
+- RabbitMQ **4.2.9 or newer**
+- `ext-rabbit_rs` — a compatible native extension (see [Installation](#installation))
 - `laravel/horizon` — **optional**, only needed for Horizon dashboard integration (see [Laravel Horizon](docs/reference.md#laravel-horizon))
 
 ## Installation
 
 ```bash
-# Native extension (Linux via PIE)
+# Native extension (Linux or macOS via PIE)
 pie install goopil/rabbit-rs-native
+php --ri rabbit_rs
 
 # Laravel queue driver (service provider auto-discovered)
 composer require goopil/rabbit-rs-laravel
@@ -43,7 +45,7 @@ Full guide — macOS (Homebrew or manual binary), Docker, multi-PHP, upgrades an
 
 ## Quick Start
 
-The full walkthrough — reliability, scaling, and operations levels — is in [docs/getting-started.md](docs/getting-started.md).
+For a complete first job, follow the [getting started guide](docs/getting-started.md). For dispatching, workers, retries, and testing, see [Using Rabbit RS with Laravel](docs/usage.md).
 
 ### Queue connection
 
@@ -54,11 +56,15 @@ Add the connection to `config/queue.php`:
     'rabbit-rs' => [
         'driver' => 'rabbit-rs',
         'queue' => env('RABBIT_RS_QUEUE', 'default'),
+        'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+        'vhost' => env('RABBIT_RS_VHOST', '/'),
+        'username' => env('RABBIT_RS_USERNAME', 'guest'),
+        'password' => env('RABBIT_RS_PASSWORD', 'guest'),
     ],
 ],
 ```
 
-Set `QUEUE_CONNECTION=rabbit-rs` in your `.env`.
+Set `QUEUE_CONNECTION=rabbit-rs` in your `.env` and rebuild Laravel's config cache if applicable. Use credentials and a broker reachable from your PHP process. The connection-only environment variables above are read because they are explicitly wired with `env()` in this example.
 
 ### Dispatch and consume
 
@@ -102,7 +108,7 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | `RABBIT_RS_VHOST` | `/` | AMQP virtual host (wired on the connection) |
 | `RABBIT_RS_USERNAME` | `guest` | Broker username (wired on the connection) |
 | `RABBIT_RS_PASSWORD` | `guest` | Broker password (wired on the connection) |
-| `RABBIT_RS_EXCHANGE` | `laravel.jobs` | Publishing exchange (wired on the connection) |
+| `RABBIT_RS_EXCHANGE` | `laravel.jobs` | Publishing exchange (wire `env()` on the connection to use this variable) |
 | `RABBIT_RS_HEARTBEAT` | `30` | AMQP heartbeat in seconds |
 | `RABBIT_RS_TLS` | `false` | Enable TLS |
 | `RABBIT_RS_TLS_CA_CERT` | — | Path to CA certificate |
@@ -127,12 +133,12 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 | Command | Purpose |
 | ------- | ------- |
 | `php artisan rabbit-rs:work` | Supervised fan-out worker — one child per connection, crash restart with exponential backoff (`--connection`, `--queue`, `--workers`, `--max-restarts`, `--backoff`) |
-| `php artisan rabbit-rs:status` | Per-connection pool metrics and counters; `--format=json` for monitoring |
+| `php artisan rabbit-rs:status` | Same-process pool metrics and optional broker queue counters; `--format=json` |
 | `php artisan rabbit-rs:doctor` | One-shot health report per connection — `ok`/`warn`/`fail` checks, non-zero exit on failure (CI-friendly) |
 | `php artisan rabbit-rs:topology` | Preflight topology check; `--fix` declares missing topology |
 | `php artisan rabbit-rs:probe` | Kubernetes probes (`startup`/`ready`/`alive`/`prestop`) over the worker statefiles; exit 0 when healthy, 1 otherwise (`--max-age`, `--timeout`) |
 
-Details — dispatching, worker and queue resolution semantics, status counters, doctor checks, and topology verification: [docs/reference.md](docs/reference.md).
+Native pool metrics belong to the process that collects them: a fresh `rabbit-rs:status` process cannot report your workers' native counters. Broker queue counters can be queried via the optional management API. Details — dispatching, worker and queue resolution semantics, status counters, doctor checks, and topology verification: [docs/reference.md](docs/reference.md).
 
 ## Recipes
 

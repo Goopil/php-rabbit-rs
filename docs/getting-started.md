@@ -6,6 +6,8 @@ This page progresses from a minimal working setup to production operation. The f
 
 ## Install
 
+Requires PHP 8.2–8.5, [PIE](https://github.com/php/pie), and a reachable RabbitMQ 4.2.9+ broker. The example uses `guest` / `guest` on localhost.
+
 ```bash
 pie install goopil/rabbit-rs-native
 php --ri rabbit_rs   # verify it loads
@@ -41,6 +43,7 @@ $config = [
         'scheduler' => ['strategy' => 'weighted_fair'],
     ]],
     'topology_mode' => 'declare',
+    'delay' => ['mode' => 'ttl'], // works without the delayed-message plugin
 ];
 
 $pool = new Pool($config);
@@ -76,11 +79,11 @@ while (true) {
 }
 ```
 
-Because `topology_mode` is `declare`, the queue is created on first use. Use `verify` to check an externally provisioned topology, or `external` to never touch it — see [Topology management](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#topology).
+Because `topology_mode` is `declare`, the queue is created on first use. This example selects TTL delay mode so it works on a stock broker without the delayed-message plugin; see [Delayed messages](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#delayed-messages) for the trade-offs. Use `verify` to check an externally provisioned topology, or `external` to never touch it — see [Topology management](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#topology).
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and measurable. Your processing must be idempotent — the `message_id` you publish is the stable deduplication key. The full contract: [Reliability](reference.md#reliability).
+Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and measurable. Your processing must be idempotent — use a stable `message_id` or business key to detect repeated work. Redelivery counters are only a partial signal; they do not detect every duplicate. The full contract: [Reliability](reference.md#reliability).
 
 **Safety modes** — one key controls the publisher guarantees (`publisher.safety`):
 
@@ -156,7 +159,7 @@ $stats['publishes_total'];        // publications accepted
 $stats['confirmations_total'];    // broker confirms received
 $stats['returns_total'];          // mandatory returns (unroutable)
 $stats['publication_retries_total']; // replay retries across recovery
-$stats['duplicates_total'];       // deliveries flagged as redeliveries
+$stats['duplicates_total'];       // settled deliveries flagged as redeliveries in this process
 $stats['reconnects_total'];       // recovery events
 $stats['publish_buffered'];       // publications parked in the replay buffer
 $stats['confirmation_latency_p99']; // ms

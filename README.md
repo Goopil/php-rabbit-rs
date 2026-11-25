@@ -11,18 +11,21 @@
 [![PHP](https://img.shields.io/badge/PHP-8.2%20%7C%208.3%20%7C%208.4%20%7C%208.5%20NTS%20%2B%20ZTS-informational)](https://www.php.net/supported-versions.php)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Rabbit RS is a native RabbitMQ runtime for PHP and Laravel workers, designed to stay alive. Your application keeps using Laravel's standard queue API; Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption in a native Rust runtime.
+Rabbit RS is a RabbitMQ client for PHP backed by a native Rust extension, with an optional Laravel queue driver. Use the extension directly in any PHP application, or keep Laravel's standard queue API while Rabbit RS handles connections, publisher confirms, recovery, and long-running consumption.
 
 The product is built around one feature: the **long-running consumer** — a worker that multiplexes many queues per broker connection, survives broker restarts and network failures, and keeps settling deliveries through recovery without manual intervention. A supervised fan-out command runs one worker per connection to span vhosts and brokers.
 
-Delivery is **at-least-once**. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain measurable.
+Delivery is **at-least-once**. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain identifiable.
 
-## Quick start
+## Quick start: Laravel
+
+You need PHP 8.2–8.5, Laravel 12 or 13, [PIE](https://github.com/php/pie), and a reachable RabbitMQ 4.2.9+ broker. The examples below use a local broker with `guest` credentials; configure your own credentials for other environments. For plain PHP, follow the [native extension guide](docs/getting-started.md).
 
 **Step 1 — Install the native extension:**
 
 ```bash
 pie install goopil/rabbit-rs-native
+php --ri rabbit_rs
 ```
 
 **Step 2 — Install the Laravel queue driver:**
@@ -41,6 +44,7 @@ Add a rabbit-rs connection to `config/queue.php` (one connection = one broker = 
         'driver' => 'rabbit-rs',
         'queue' => env('RABBIT_RS_QUEUE', 'default'),
         'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+        'vhost' => env('RABBIT_RS_VHOST', '/'),
         'username' => env('RABBIT_RS_USERNAME', 'guest'),
         'password' => env('RABBIT_RS_PASSWORD', 'guest'),
     ],
@@ -55,17 +59,12 @@ php artisan vendor:publish --tag="rabbit-rs-config"
 
 **Step 4 — Publish and consume a job:**
 
+Set `QUEUE_CONNECTION=rabbit-rs` in `.env` (and rebuild Laravel's config cache if applicable), or choose the connection explicitly when dispatching. For an existing queued job:
+
 ```php
-// app/Jobs/ProcessOrder.php
-class ProcessOrder implements ShouldQueue
-{
-    use Dispatchable, Queueable;
+use App\Jobs\ProcessOrder;
 
-    public function __construct(public int $orderId) {}
-}
-
-// Dispatch
-ProcessOrder::dispatch(42);
+ProcessOrder::dispatch(42)->onConnection('rabbit-rs');
 ```
 
 ```bash
@@ -102,7 +101,7 @@ No extra configuration required: pop the queue directly — it is the connection
 | RabbitMQ | 4.2.9 or newer (the CI lab runs 4.2.9) |
 | Platforms | Linux x86_64 or ARM64 (glibc or musl) — pre-compiled binaries via PIE; macOS ARM64 — pre-compiled binary from [GitHub Releases](https://github.com/Goopil/php-rabbit-rs/releases) and Homebrew |
 | Native extension | `ext-rabbit_rs` as a Composer suggestion (version range declared in the driver's `composer.json`): `composer install` succeeds without it, and connections fail at resolution with a typed error until you `pie install goopil/rabbit-rs-native` |
-| Delivery | At-least-once: duplicates are permitted and measured (`duplicates_total`, `messages_redelivered`); silent loss after confirmed-path acceptance is a bug |
+| Delivery | At-least-once in the confirmed delivery path; duplicates are possible and redelivery counters provide partial signals |
 
 - **Rust** 1.98.1 (contributors only — see [Contributing](#contributing))
 
@@ -147,8 +146,8 @@ Delivery stays **at-least-once** under all of it — see
 
 Read before betting a pipeline on this.
 
-1. **At-least-once means duplicates are possible — by contract, and measured.** The broker redelivers any delivery that is not acknowledged (worker crash, channel loss, recovery), so consumers must treat an extra copy as normal: **jobs must be idempotent**. Duplicates are counted per run and become possible after any reconnect. The counters (`duplicates_total`, `messages_redelivered`) and idempotency guidance live in [Reliability](docs/reference.md#reliability).
-2. **The replay buffer is in-process memory, not durability.** Unconfirmed publications survive *connection* recovery in a bounded in-process buffer (1024 publications / 64 MiB by default) and are replayed with the same `message_id` and original deadline. A **PHP process crash empties it**: the broker may never have received those messages, and nothing redelivers them to you. Broker redelivery after a crash covers the consume side (duplicates, not loss) — it is not publish durability. For cross-process durability you need an **external outbox**, which Rabbit RS does not include ([What the replay buffer is not](docs/reference.md#what-the-replay-buffer-is-not)).
+1. **At-least-once means duplicates are possible.** A worker crash, connection loss, or replay after an ambiguous publish can cause processing more than once: **jobs must be idempotent**. Broker redelivery counters are useful signals but do not identify every duplicate, especially a republished message. See [Reliability](docs/reference.md#measuring-duplicates).
+2. **The replay buffer is in-process memory, not durability.** Unconfirmed publications survive *connection* recovery in a bounded in-process buffer (1024 publications / 64 MiB by default) and are replayed with the same `message_id` and original deadline, with one fresh deadline if it expires while parked during recovery. A **PHP process crash empties it**: the broker may never have received those messages, and nothing redelivers them to you. Broker redelivery after a crash covers the consume side (duplicates, not loss) — it is not publish durability. For cross-process durability you need an **external outbox**, which Rabbit RS does not include ([What the replay buffer is not](docs/reference.md#what-the-replay-buffer-is-not)).
 
 ## Documentation
 
@@ -157,6 +156,7 @@ Read before betting a pipeline on this.
 | Getting started (native extension) | [docs/getting-started.md](docs/getting-started.md) |
 | Reference — installation, reliability, troubleshooting | [docs/reference.md](docs/reference.md) |
 | Getting started (Laravel driver) | [packages/laravel-queue/docs/getting-started.md](packages/laravel-queue/docs/getting-started.md) |
+| Using Rabbit RS with Laravel — jobs, workers, retries, testing | [packages/laravel-queue/docs/usage.md](packages/laravel-queue/docs/usage.md) |
 | Reference — configuration, usage, topology, operations, recipes | [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md) |
 | Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
 | Migration guides — from `php-amqplib` / from `laravel-queue-rabbitmq` | [docs/migration-from-php-amqplib.md](docs/migration-from-php-amqplib.md) · [docs/migration-from-laravel-queue-rabbitmq.md](docs/migration-from-laravel-queue-rabbitmq.md) |
