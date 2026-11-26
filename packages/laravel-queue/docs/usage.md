@@ -67,7 +67,7 @@ use App\Jobs\SendReminder;
 SendReminder::dispatch($user)->delay(now()->addMinutes(5));
 ```
 
-The default `auto` delay mode uses the RabbitMQ delayed-message plugin when it can verify that the plugin is available; otherwise it uses TTL queues. TTL mode groups delays into configured buckets, so a job may become available later than the requested time. The `blind` safety mode does not honor delays. See [Delayed messages](reference.md#delayed-messages) before choosing a mode.
+The default `auto` delay mode uses the RabbitMQ delayed-message plugin when it can verify that the plugin is available; otherwise it uses TTL queues. TTL mode groups delays into configured buckets, so a job may become available later than the requested time. In `blind` mode delayed publishes use the configured routing but remain unconfirmed and can be lost after hand-off. See [Delayed messages](reference.md#delayed-messages) before choosing a mode.
 
 ### Dispatch after a database transaction
 
@@ -126,6 +126,8 @@ Use a process supervisor such as systemd, Supervisor, or Kubernetes to keep `rab
 Queue workers are long-running processes and do not automatically load changed application code. Include Laravel's worker restart step in your deployment process, and make sure your process supervisor starts replacement workers. See Laravel's [queue workers and deployment](https://laravel.com/docs/12.x/queues#queue-workers-and-deployment) documentation.
 
 ## Retries and failed jobs
+
+For a worked idempotency example and side-by-side `safe`, `unsafe`, and fire-and-forget connections, see [Choosing a delivery mode](delivery-modes.md).
 
 Laravel's worker handles jobs using its normal attempts and failure lifecycle. Configure your job's retry policy and your application's failed-job storage as you would for Laravel queues; see Laravel's [dealing with failed jobs](https://laravel.com/docs/12.x/queues#dealing-with-failed-jobs).
 

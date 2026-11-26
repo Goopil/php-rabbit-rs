@@ -6,7 +6,7 @@ to the `rabbit_rs` native extension. It maps the php-amqplib API you use today t
 `Goopil\RabbitRs\Pool` API and states the semantic differences that need a decision
 from you, not just a rename.
 
-For the Laravel path, see [Migrating from laravel-queue-rabbitmq](migration-from-laravel-queue-rabbitmq.md).
+For the Laravel path, see [Migrating from laravel-queue-rabbitmq](../packages/laravel-queue/docs/migration-from-laravel-queue-rabbitmq.md).
 
 > **Verify against your version.** The php-amqplib signatures below were checked
 > against the upstream `master` branch (3.x line) at the time of writing. Method and
@@ -90,6 +90,7 @@ $pool = new Pool([
         'scheduler' => ['strategy' => 'weighted_fair'],
     ]],
     'topology_mode' => 'declare',
+    'delay' => ['mode' => 'ttl'], // works without the delayed-message plugin
 ]);
 ```
 
@@ -111,7 +112,7 @@ use PhpAmqpLib\Message\AMQPMessage;
 
 $msg = new AMQPMessage(json_encode(['hello' => 'world']), [
     'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-    'message_id' => uniqid('', true),
+    'message_id' => bin2hex(random_bytes(16)),
 ]);
 
 $channel->set_ack_handler(function (AMQPMessage $message): void {
@@ -137,7 +138,7 @@ $pool->publish([
     'exchange' => '',
     'routing_key' => 'hello',
     'payload' => json_encode(['hello' => 'world']),
-    'message_id' => uniqid('', true),
+    'message_id' => bin2hex(random_bytes(16)),
     'timeout_ms' => 5000,
 ]);
 $pool->flush(); // barrier: every publish above is confirmed, returned, or timed out when this returns
@@ -222,11 +223,10 @@ roles: `reject()` for the requeue-or-terminal decision, `ackThrough()` for the
 
 The contract is unchanged in kind (it is what you already implement around
 php-amqplib) but explicit and enforced: once a message is accepted into the confirmed
-delivery path, silent loss is unacceptable; duplicates are permitted, identifiable,
-and measurable. A worker that crashes between receiving and acknowledging causes a
-redelivery, so your processing must be idempotent. The `duplicates_total` counter in
-`stats()` counts deliveries flagged as redeliveries, so you can measure the duplicate
-rate instead of inferring it.
+delivery path, silent loss is unacceptable; duplicates are permitted and identifiable. A worker that crashes between receiving and acknowledging causes a
+redelivery, so your processing must be idempotent. `duplicates_total` counts broker-flagged
+redeliveries settled by the current process; it is a partial signal and does not count
+every duplicate publication.
 
 ### Publisher confirms on by default
 
@@ -311,6 +311,6 @@ and [Getting started](getting-started.md).
    terminal reject → `reject(false)`.
 6. **Smoke-test (2 min)** — publish one message, consume it, then check
    `stats()`: `publishes_total` is accounted for by `confirmations_total` and
-   `returns_total` (nothing left buffered or timed out).
+   `returns_total` and handle any reported errors. A returned publication can also receive a broker ACK, so the counters are not mutually exclusive.
 7. **Cut over (1 min)** — remove `php-amqplib/php-amqplib` from `composer.json` and
    run your suite.

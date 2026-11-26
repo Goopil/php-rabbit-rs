@@ -127,7 +127,7 @@ The [Supervisor config example](https://github.com/Goopil/php-rabbit-rs/blob/mai
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and measurable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability).
+Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and must remain identifiable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability).
 
 The `safety` key selects the publisher guarantees (default `safe`: publisher confirms plus mandatory routing — there is no separate `mandatory` switch, it follows the safety mode). In `safe` mode every publish is tracked to ACK, return, or timeout; unconfirmed publications survive connection recovery in bounded process memory and are replayed with their original `message_id`. That replay buffer is **process memory, not durability**: it does not survive a PHP crash, and cross-process durability needs an external outbox.
 
@@ -220,6 +220,8 @@ Details: [Operations](reference.md#operations) (supervision, Kubernetes, metrics
 
 ## Going further
 
+- [Choosing a delivery mode](delivery-modes.md) — idempotent processing, fire-and-forget, and using different modes together
+- [Migrating from laravel-queue-rabbitmq](migration-from-laravel-queue-rabbitmq.md) — map configuration and review differences before switching
 - [Using Rabbit RS with Laravel](usage.md) — dispatch jobs, run workers, handle failures, and test your application
 - [Configuration](reference.md#configuration) — every connection key, subscriptions escape hatch, safety/delay/topology modes, validation
 - [Topology management](reference.md#topology) — declare/verify/external, dead-letter wiring

@@ -140,6 +140,14 @@ The published `config/rabbit-rs.php` wires cross-cutting defaults; connection-on
 
 Native pool metrics belong to the process that collects them: a fresh `rabbit-rs:status` process cannot report your workers' native counters. Broker queue counters can be queried via the optional management API. Details — dispatching, worker and queue resolution semantics, status counters, doctor checks, and topology verification: [docs/reference.md](docs/reference.md).
 
+## Delivery modes
+
+Use `safe` for confirmed publishing, and make jobs idempotent when effects must not be repeated. Use `blind` only when silent loss is acceptable. See [Choosing a delivery mode](docs/delivery-modes.md) for `unsafe`, fire-and-forget, and using different modes together.
+
+## Migrating
+
+Moving from `vladimir-yuldashev/laravel-queue-rabbitmq`? Follow the [migration guide](docs/migration-from-laravel-queue-rabbitmq.md) for configuration mapping and behavioral differences.
+
 ## Recipes
 
 Task-oriented guides in the repository docs:

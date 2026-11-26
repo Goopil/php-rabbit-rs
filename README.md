@@ -151,18 +151,25 @@ Read before betting a pipeline on this.
 
 ## Documentation
 
-| Topic | File |
-|-------|------|
-| Getting started (native extension) | [docs/getting-started.md](docs/getting-started.md) |
-| Reference — installation, reliability, troubleshooting | [docs/reference.md](docs/reference.md) |
-| Getting started (Laravel driver) | [packages/laravel-queue/docs/getting-started.md](packages/laravel-queue/docs/getting-started.md) |
-| Using Rabbit RS with Laravel — jobs, workers, retries, testing | [packages/laravel-queue/docs/usage.md](packages/laravel-queue/docs/usage.md) |
-| Reference — configuration, usage, topology, operations, recipes | [packages/laravel-queue/docs/reference.md](packages/laravel-queue/docs/reference.md) |
-| Benchmark harness and archived results | [benchmarks/README.md](benchmarks/README.md) |
-| Migration guides — from `php-amqplib` / from `laravel-queue-rabbitmq` | [docs/migration-from-php-amqplib.md](docs/migration-from-php-amqplib.md) · [docs/migration-from-laravel-queue-rabbitmq.md](docs/migration-from-laravel-queue-rabbitmq.md) |
-| Laravel example app — job, Dockerfile, supervisor config | [examples/laravel/](examples/laravel/) |
-| Development guide | [docs/development.md](docs/development.md) |
-| Security policy — reporting vulnerabilities | [SECURITY.md](SECURITY.md) |
+### Laravel queue driver
+
+- [Get started](packages/laravel-queue/docs/getting-started.md) — install the driver and process your first job.
+- [Use Rabbit RS with Laravel](packages/laravel-queue/docs/usage.md) — dispatch jobs, run workers, handle failures, and test.
+- [Choose delivery modes](packages/laravel-queue/docs/delivery-modes.md) — idempotent effects, fire-and-forget, and combining modes.
+- [Configure and operate](packages/laravel-queue/docs/reference.md) — connection settings, topology, diagnostics, and deployment.
+- [Migrate from laravel-queue-rabbitmq](packages/laravel-queue/docs/migration-from-laravel-queue-rabbitmq.md) — configuration mapping and behavioral differences.
+- [Octane](packages/laravel-queue/docs/octane.md), [management API](packages/laravel-queue/docs/management-api.md), and [recipes](packages/laravel-queue/docs/recipes.md) — specific integrations and operational patterns.
+- [Example application](examples/laravel/) — a job, Dockerfile, and supervisor configuration.
+
+### PHP extension
+
+- [Get started](docs/getting-started.md) — install the extension and publish and consume in plain PHP.
+- [Use the PHP extension](docs/usage.md) — publish, consume, settle, recover, and inspect a pool.
+- [PHP API signatures](crates/rabbit-rs-php/stubs/rabbit_rs.stub.php) — generated class, method, and configuration documentation.
+- [Installation, reliability, and troubleshooting](docs/reference.md) — supported platforms, delivery guarantees, and common errors.
+- [Migrate from php-amqplib](docs/migration-from-php-amqplib.md) — API mapping and semantic differences.
+
+For contributors: [development](docs/development.md), [benchmarks](benchmarks/README.md), and [security policy](SECURITY.md).
 
 ## Contributing
 
