@@ -1,6 +1,10 @@
 # Octane Integration
 
-Rabbit RS integrates with [Laravel Octane](https://laravel.com/docs/octane) to support long-lived worker processes. This chapter covers the lifecycle hooks, configuration, and pitfalls. The everyday driver reference lives in [reference.md](reference.md).
+Rabbit RS integrates with [Laravel Octane](https://laravel.com/docs/octane) to support long-lived worker processes. Configure a Rabbit RS queue connection as usual; the package registers its Octane lifecycle hooks automatically.
+
+Start your chosen Octane server and your queue workers as separate processes. See [Running workers](usage.md#running-workers) for the queue side.
+
+Before deployment, review the [server-specific notes](#supported-octane-servers): reload and shutdown behavior differs between servers, and a forced shutdown can lose unconfirmed in-memory publications.
 
 **Contents**
 
@@ -24,11 +28,6 @@ Called after each request via `$app->terminating()`:
 - Does **not** close the native pool — connections are reused across requests
 - Prevents AMQP channel leaks that would accumulate if consumers were never closed
 
-```php
-// Triggered automatically
-OctaneLifecycle::flush();
-```
-
 ### reload (worker reload)
 
 Called when Octane reloads the worker (e.g., after `php artisan octane:reload`):
@@ -37,17 +36,11 @@ Called when Octane reloads the worker (e.g., after `php artisan octane:reload`):
 - **Flushes the pool factory** — all native pools are closed and recreated on next use
 - **Forgets the queue manager's resolved connections** — the next request
   recompiles every rabbit-rs connection from the current config, so broker and
-  credential rotation via env variables takes effect immediately (no stale
-  brokers serving the boot-time snapshot)
+  credential changes in the current Laravel configuration take effect on the next resolution
 
 Because connections are compiled lazily at resolution time (see
 [Configuration](reference.md#configuration)), `octane:reload` picks up fresh config
-automatically — no manual normalization step exists or is needed.
-
-```php
-// Triggered by WorkerReload event
-OctaneLifecycle::reload();
-```
+on the next resolution. If Laravel configuration is cached, update the cache and restart or reload the relevant application processes as appropriate.
 
 ### stop (worker shutdown)
 
@@ -56,11 +49,6 @@ Called when the Octane worker stops:
 - Closes cached consumers
 - Flushes the pool factory — all native pools are closed
 - Ensures clean shutdown of AMQP connections
-
-```php
-// Triggered by WorkerStopping event
-OctaneLifecycle::stop();
-```
 
 ## Event registration
 
@@ -92,7 +80,7 @@ This is critical for Octane because:
 ### What this means for your code
 
 - **Do not** store Rabbit RS `Pool` or `Consumer` objects in statics or singletons that persist across requests
-- **Do not** pass Request objects, user models, or session data to publish/consume calls — use owned data (strings, arrays, serializable values)
+- Follow Laravel's job serialization guidance: pass the data your job needs and avoid retaining request-scoped objects across requests
 - **Do** rely on the service container to resolve fresh instances each request
 - **Do** let the Octane lifecycle hooks clean up consumers between requests
 
@@ -165,13 +153,13 @@ on `octane:stop` for a loss-free drain on Swoole/Open Swoole — drain via
 On process-based runtimes, each Octane worker is a separate PHP process with its own native pool; connections are not shared between workers. Thread-based runtimes (e.g. FrankenPHP workers) share one OS process, and the native runtime registry is process-local — prefer process-based workers for hard pool isolation. Under ZTS the worker threads also share one native client pool per connection fingerprint (competing-consumer semantics: deliveries split between threads, a request-scoped consumer close is visible to the other requests on that fingerprint); see the native extension's Thread safety documentation for the full semantics and the release certification evidence. Set the worker count based on your CPU cores and RabbitMQ connection limits:
 
 ```bash
-# Start with 4 workers (each has its own connection pool)
+# Start with 4 workers; pool isolation depends on the server's process model
 php artisan octane:start --workers=4
 ```
 
 ### Flushing the pool
 
-If you need to force-close all connections (e.g., before a deployment), use:
+On servers where Octane reload is supported, use the following command to reload workers and close their existing pools:
 
 ```bash
 php artisan octane:reload
@@ -179,8 +167,7 @@ php artisan octane:reload
 
 This triggers `WorkerReload`, which flushes all pools **and forgets the
 resolved queue connections**. New requests create fresh AMQP connections and
-recompile every connection from the current config — env-based broker or
-credential rotation takes effect without a restart.
+recompile every connection from the current Laravel config. Rebuild a stale configuration cache before reloading.
 
 On FrankenPHP, use `octane:restart` (or the admin worker-restart endpoint,
 `POST /frankenphp/workers/restart`) instead: upstream `octane:reload` is
