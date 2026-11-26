@@ -63,6 +63,14 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
     /** @var array<string, Consumer> */
     private array $consumers = [];
 
+    /** @var list<array{kind: string, message_id: string, message: string}> */
+    private array $pendingPublishErrors = [];
+
+    /** @var list<array{delivery_tag: int, subscription: string, error_kind: string, message: string}> */
+    private array $pendingSettlementErrors = [];
+
+    private bool $drainingSettlementErrors = false;
+
     private MessageMapper $messages;
 
     /**
@@ -151,6 +159,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
     public function size($queue = null)
     {
+        $this->surfaceRetainedPublishError();
         $queueName = $this->queueName($queue);
         $route = $this->route($queueName);
 
@@ -213,6 +222,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
     public function clear($queue = null): int
     {
+        $this->surfaceRetainedPublishError();
         $queueName = $this->queueName($queue);
         $route = $this->route($queueName);
 
@@ -239,6 +249,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
     public function push($job, $data = '', $queue = null)
     {
+        $this->surfaceRetainedPublishError();
         $queueName = $this->queueName($queue);
 
         return $this->enqueueUsing(
@@ -261,11 +272,14 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function pushRaw($payload, $queue = null, array $options = [])
     {
+        $this->surfaceRetainedPublishError();
+
         return $this->publish($payload, $queue, $options);
     }
 
     public function later($delay, $job, $data = '', $queue = null)
     {
+        $this->surfaceRetainedPublishError();
         $queueName = $this->queueName($queue);
 
         return $this->enqueueUsing(
@@ -302,6 +316,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function bulk($jobs, $data = '', $queue = null)
     {
+        $this->surfaceRetainedPublishError();
         $jobs = array_values((array) $jobs);
         if ($jobs === []) {
             return [];
@@ -393,6 +408,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     protected function publishBatch(array $messages, mixed $queue): array
     {
+        $this->surfaceRetainedPublishError();
         foreach ($messages as $message) {
             $this->raiseJobQueueingEvent(
                 $queue,
@@ -530,61 +546,102 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function drainSettlementErrors(): void
     {
-        $this->drainPublishErrors();
+        if ($this->drainingSettlementErrors) {
+            return;
+        }
 
-        foreach ($this->consumers as $consumer) {
-            $errors = $consumer->drainErrors();
-            foreach ($errors as $error) {
-                $kind = $error['error_kind'];
-                if (in_array($kind, ['StaleGeneration', 'Transport'], true)) {
-                    // Native exception messages are set only at throw time:
-                    // the extension's static factory throws a typed
-                    // ConnectionException carrying the drained message.
-                    ConnectionException::throw($error['message']);
-                }
-                // The parent $container is a non-nullable typed property, but
-                // fake-driven unit tests construct the queue without it:
-                // isset() is the only safe initialization check, and PHPStan
-                // cannot model typed-property initialization.
-                if (! isset($this->container)) { // @phpstan-ignore-line
-                    continue;
-                }
-                // A MaxAttempts or InvalidDelay settlement is terminal poison
-                // policy (attempts above the cap, or a release delay the
-                // compiled delay strategy refuses): with no dead-letter
-                // exchange it is an explicit, documented loss, so it is logged
-                // at error level with the core's error context.
-                if (in_array($kind, ['MaxAttempts', 'InvalidDelay'], true)) {
-                    $this->container->make('log')->error('rabbit-rs: poison delivery settled', $error);
+        $this->drainingSettlementErrors = true;
+        try {
+            $this->drainPublishErrors();
+            $this->surfaceRetainedSettlementErrors();
+            foreach ($this->consumers as $consumer) {
+                // Only drain another bounded native queue after the previous one
+                // is fully accounted for. An exception leaves its remainder here.
+                $this->pendingSettlementErrors = $consumer->drainErrors();
+                $this->surfaceRetainedSettlementErrors();
+            }
+        } finally {
+            $this->drainingSettlementErrors = false;
+        }
+    }
 
-                    continue;
-                }
-                $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+    private function surfaceRetainedSettlementErrors(): void
+    {
+        while ($this->pendingSettlementErrors !== []) {
+            $error = array_shift($this->pendingSettlementErrors);
+            if (in_array($error['error_kind'], ['StaleGeneration', 'Transport'], true)) {
+                ConnectionException::throw($error['message']);
+            }
+            if (isset($this->container)) { // @phpstan-ignore-line
+                $this->logSettlementErrorAtTeardown($error);
+            } else {
+                $this->fallbackSettlementLog($error);
             }
         }
     }
 
+    /** @param array{delivery_tag: int, subscription: string, error_kind: string, message: string} $error */
+    private function logSettlementError(array $error): void
+    {
+        if (in_array($error['error_kind'], ['MaxAttempts', 'InvalidDelay'], true)) {
+            $this->container->make('log')->error('rabbit-rs: poison delivery settled', $error);
+
+            return;
+        }
+        $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+    }
+
+    /** @param array{delivery_tag: int, subscription: string, error_kind: string, message: string} $error */
+    private function fallbackSettlementLog(array $error): void
+    {
+        error_log('rabbit-rs: settlement error could not be logged through Laravel: '.json_encode($error, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR));
+    }
+
+    /** @param array{delivery_tag: int, subscription: string, error_kind: string, message: string} $error */
+    private function logSettlementErrorAtTeardown(array $error): void
+    {
+        try {
+            $this->logSettlementError($error);
+        } catch (\Throwable) {
+            $this->fallbackSettlementLog($error);
+        }
+    }
+
     /**
-     * Surfaces one drained pipelined publish failure per call: the records
-     * were processed by the native drain, and only the first failure is
-     * raised — the same behavior as a synchronous publish raising its first
-     * flush error. Connection-level failures (`Transport`) throw
+     * Surfaces one drained pipelined publish failure per call and retains
+     * the rest for subsequent calls. Connection-level failures (`Transport`) throw
      * {@see ConnectionException}; everything else — including `Closed`,
      * which `client_exception` maps to the base native exception — throws
      * {@see QueueException}.
      */
     private function drainPublishErrors(): void
     {
-        foreach ($this->pool->drainErrors() as $error) {
-            $kind = $error['kind'];
-            if ($kind === 'Transport') {
-                ConnectionException::throw($error['message']);
-            }
-
-            throw new QueueException(
-                $error['message'],
-            );
+        if ($this->pendingPublishErrors === []) {
+            $this->pendingPublishErrors = $this->pool->drainErrors();
         }
+        $this->surfaceRetainedPublishError();
+    }
+
+    private function surfaceRetainedPublishError(): void
+    {
+        if ($this->pendingPublishErrors === []) {
+            return;
+        }
+
+        $error = array_shift($this->pendingPublishErrors);
+        $message = $error['message'];
+        if ($error['message_id'] !== '') {
+            $message = 'message '.$error['message_id'].': '.$message;
+        }
+        if ($error['kind'] === 'Transport') {
+            ConnectionException::throw($message);
+        }
+        // Older supported versions of the extension do not expose this factory.
+        if ($error['kind'] === 'Backpressure' && method_exists(BackpressureException::class, 'throw')) { // @phpstan-ignore function.alreadyNarrowedType
+            BackpressureException::throw($message);
+        }
+
+        throw new QueueException($message);
     }
 
     /**
@@ -792,6 +849,8 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function stats(): array
     {
+        $this->surfaceRetainedPublishError();
+
         return $this->pool->stats();
     }
 
@@ -809,6 +868,12 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
      */
     public function closeConsumers(): void
     {
+        if (isset($this->container)) { // @phpstan-ignore-line
+            while ($this->pendingSettlementErrors !== []) {
+                $error = array_shift($this->pendingSettlementErrors);
+                $this->logSettlementErrorAtTeardown($error);
+            }
+        }
         foreach ($this->consumers as $consumer) {
             $this->logPendingSettlementErrors($consumer);
             try {
@@ -816,6 +881,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
             } catch (NativeException) {
                 // Best-effort: a closed or stale consumer is already cleaned up.
             }
+            $this->logPendingSettlementErrors($consumer);
         }
         $this->consumers = [];
     }
@@ -845,17 +911,31 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         }
 
         try {
+            foreach ($this->pendingPublishErrors as $error) {
+                $this->logPublishErrorAtTeardown($error);
+            }
+            $this->pendingPublishErrors = [];
             $errors = $this->pool->drainErrors();
             foreach ($errors as $error) {
-                $this->container->make('log')->error(
-                    'rabbit-rs: publication outcome never surfaced before process teardown',
-                    $error,
-                );
+                $this->logPublishErrorAtTeardown($error);
             }
         } catch (\Throwable) {
             // Best-effort: the pool may already be closed or the container
             // partially torn down. The record is lost either way — surfacing
             // it must never fail the process teardown.
+        }
+    }
+
+    /** @param array{kind: string, message_id: string, message: string} $error */
+    private function logPublishErrorAtTeardown(array $error): void
+    {
+        try {
+            $this->container->make('log')->error(
+                'rabbit-rs: publication outcome never surfaced before process teardown',
+                $error,
+            );
+        } catch (\Throwable) {
+            error_log('rabbit-rs: publication outcome could not be logged through Laravel: '.json_encode($error, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR));
         }
     }
 
@@ -879,16 +959,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
 
         try {
             foreach ($consumer->drainErrors() as $error) {
-                $kind = $error['error_kind'];
-                if (in_array($kind, ['MaxAttempts', 'InvalidDelay'], true)) {
-                    $this->container->make('log')->error(
-                        'rabbit-rs: poison delivery settled',
-                        $error,
-                    );
-
-                    continue;
-                }
-                $this->container->make('log')->warning('rabbit-rs settlement error', $error);
+                $this->logSettlementErrorAtTeardown($error);
             }
         } catch (\Throwable) {
             // Best-effort: the consumer may already be closed or the container
@@ -919,6 +990,7 @@ class RabbitMqQueue extends Queue implements ClearableQueue, QueueContract
         array $options,
         ?int $delayMilliseconds = null,
     ): string {
+        $this->surfaceRetainedPublishError();
         $this->assertDelayPlugin($delayMilliseconds);
 
         $queueName = $this->queueName($queue);

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\BackpressureException;
 use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Laravel\Exceptions\QueueException;
 use Goopil\RabbitRs\Laravel\RabbitMqQueue;
@@ -38,6 +39,163 @@ function warmConsumerCache(RabbitMqQueue $queue, string $queueName = 'orders-eu'
 {
     $queue->pop($queueName);
 }
+
+it('surfaces every drained publish failure across successive calls', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError(['kind' => 'Transport', 'message_id' => 'one', 'message' => 'transport one']);
+    $pool->pushPublishError(['kind' => 'Returned', 'message_id' => 'two', 'message' => 'returned two']);
+
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(ConnectionException::class, 'transport one');
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(QueueException::class, 'returned two');
+    $queue->drainSettlementErrors();
+});
+
+it('surfaces a retained publish failure before the next queue operation', function (string $operation): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError(['kind' => 'Returned', 'message_id' => 'one', 'message' => 'returned one']);
+    $pool->pushPublishError(['kind' => 'Returned', 'message_id' => 'two', 'message' => 'returned two']);
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(QueueException::class, 'returned one');
+
+    expect(fn () => match ($operation) {
+        'push' => $queue->pushRaw('{}'),
+        'size' => $queue->size(),
+        'clear' => $queue->clear(),
+        'stats' => $queue->stats(),
+        'bulk' => $queue->bulk(['ExampleJob']),
+    })->toThrow(QueueException::class, 'returned two');
+})->with(['push', 'size', 'clear', 'stats', 'bulk']);
+
+it('preserves backpressure type and message identity on a drained publish error', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError(['kind' => 'Backpressure', 'message_id' => 'message-123', 'message' => 'pipeline saturated']);
+
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(BackpressureException::class, 'message-123');
+});
+
+it('identifies a publish even when its id appears incidentally in the error text', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError(['kind' => 'Returned', 'message_id' => 'x', 'message' => 'maximum capacity']);
+
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(QueueException::class, 'message x: maximum capacity');
+});
+
+it('continues draining later settlement errors if the logger throws', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->pushError(['delivery_tag' => 1, 'subscription' => 'auto', 'error_kind' => 'AlreadySettled', 'message' => 'first settlement']);
+    $consumer->pushError(['delivery_tag' => 2, 'subscription' => 'auto', 'error_kind' => 'MaxAttempts', 'message' => 'second settlement']);
+    Log::shouldReceive('warning')->once()->andThrow(new RuntimeException('logger unavailable'));
+    Log::shouldReceive('error')->once()->withArgs(fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled' && ($context['delivery_tag'] ?? null) === 2);
+
+    $queue->drainSettlementErrors();
+});
+
+it('retains later settlement errors when a connection error interrupts the drain', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->pushError(['delivery_tag' => 1, 'subscription' => 'auto', 'error_kind' => 'Transport', 'message' => 'link down']);
+    $consumer->pushError(['delivery_tag' => 2, 'subscription' => 'auto', 'error_kind' => 'MaxAttempts', 'message' => 'poison two']);
+    Log::spy();
+
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(ConnectionException::class, 'link down');
+    $queue->drainSettlementErrors();
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled' && ($context['delivery_tag'] ?? null) === 2)->once();
+});
+
+it('retains settlement errors when the logger reenters the drain', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->pushError(['delivery_tag' => 1, 'subscription' => 'auto', 'error_kind' => 'AlreadySettled', 'message' => 'first']);
+    $consumer->pushError(['delivery_tag' => 2, 'subscription' => 'auto', 'error_kind' => 'Transport', 'message' => 'link down']);
+    $consumer->pushError(['delivery_tag' => 3, 'subscription' => 'auto', 'error_kind' => 'MaxAttempts', 'message' => 'poison']);
+    $reentered = false;
+    Log::shouldReceive('warning')->once()->andReturnUsing(function () use ($queue, &$reentered): void {
+        if (! $reentered) {
+            $reentered = true;
+            $queue->drainSettlementErrors();
+        }
+    });
+    Log::shouldReceive('error')->once()->withArgs(fn (string $message, array $context): bool => ($context['delivery_tag'] ?? null) === 3);
+
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(ConnectionException::class, 'link down');
+    $queue->drainSettlementErrors();
+    expect($reentered)->toBeTrue();
+});
+
+it('drains existing settlement errors before closing an older consumer', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->rejectDrainAfterClose = true;
+    $consumer->pushError(['delivery_tag' => 41, 'subscription' => 'auto', 'error_kind' => 'MaxAttempts', 'message' => 'before close']);
+    Log::spy();
+
+    $queue->closeConsumers();
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => ($context['delivery_tag'] ?? null) === 41)->once();
+});
+
+it('logs a retained publish failure if the queue is destroyed before the next drain', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    $pool->pushPublishError(['kind' => 'Returned', 'message_id' => 'one', 'message' => 'returned one']);
+    $pool->pushPublishError(['kind' => 'Returned', 'message_id' => 'two', 'message' => 'returned two']);
+    Log::spy();
+
+    try {
+        $queue->drainSettlementErrors();
+        $this->fail('The first returned publication must be surfaced');
+    } catch (QueueException $exception) {
+        expect($exception->getMessage())->toContain('returned one');
+    }
+    unset($exception);
+    $queue->__destruct();
+    unset($queue);
+    gc_collect_cycles();
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => str_contains($message, 'never surfaced') && ($context['message_id'] ?? null) === 'two')->once();
+});
+
+it('logs retained settlement failures when consumers close before the next drain', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->pushError(['delivery_tag' => 1, 'subscription' => 'auto', 'error_kind' => 'Transport', 'message' => 'link down']);
+    $consumer->pushError(['delivery_tag' => 2, 'subscription' => 'auto', 'error_kind' => 'InvalidDelay', 'message' => 'poison two']);
+    Log::spy();
+
+    expect(fn () => $queue->drainSettlementErrors())->toThrow(ConnectionException::class, 'link down');
+    $queue->closeConsumers();
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled' && ($context['delivery_tag'] ?? null) === 2)->once();
+});
+
+it('continues reporting settlement errors when a logger call fails during close', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->pushError(['delivery_tag' => 1, 'subscription' => 'auto', 'error_kind' => 'AlreadySettled', 'message' => 'first settlement']);
+    $consumer->pushError(['delivery_tag' => 2, 'subscription' => 'auto', 'error_kind' => 'MaxAttempts', 'message' => 'second settlement']);
+    Log::shouldReceive('warning')->once()->andThrow(new RuntimeException('logger unavailable'));
+    Log::shouldReceive('error')->once()->withArgs(fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled' && ($context['delivery_tag'] ?? null) === 2);
+
+    $queue->closeConsumers();
+});
+
+it('logs a settlement failure produced while the consumer closes', function (): void {
+    [$queue, $pool] = makeDrainQueue();
+    warmConsumerCache($queue);
+    $consumer = $pool->consumerFor('__auto__.orders-eu');
+    $consumer->onClose(fn () => $consumer->pushError([
+        'delivery_tag' => 42,
+        'subscription' => 'auto',
+        'error_kind' => 'MaxAttempts',
+        'message' => 'settlement failed during close',
+    ]));
+    Log::spy();
+
+    $queue->closeConsumers();
+    Log::shouldHaveReceived('error', fn (string $message, array $context): bool => $message === 'rabbit-rs: poison delivery settled' && ($context['delivery_tag'] ?? null) === 42)->once();
+});
 
 it('drainSettlementErrors throws ConnectionException on StaleGeneration error', function (): void {
     [$queue, $pool] = makeDrainQueue();

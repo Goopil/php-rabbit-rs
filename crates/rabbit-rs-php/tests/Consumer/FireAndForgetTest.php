@@ -3,6 +3,13 @@
 declare(strict_types=1);
 
 describe('fire-and-forget settlement', function () {
+    it('allows remaining settlement errors to be drained after close', function () {
+        $pool = testingPool(defaultConfigWithWorkers(), []);
+        $consumer = $pool->consumer('main');
+        $consumer->close();
+        expect($consumer->drainErrors())->toBeArray();
+        $pool->close();
+    });
     describe('single delivery', function () {
         beforeEach(function () {
             $this->pool = testingPool(defaultConfigWithWorkers(), [

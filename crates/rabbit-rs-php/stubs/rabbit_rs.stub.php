@@ -9,6 +9,15 @@ namespace Goopil\RabbitRs {
      */
     class BackpressureException extends \Goopil\RabbitRs\Exception {
         public function __construct() {}
+
+        /**
+         * Throws a backpressure exception carrying the given message.
+         *
+         * @return never
+         *
+         * @param string $message
+         */
+        public static function throw(string $message): void {}
     }
 
     /**
@@ -93,7 +102,8 @@ namespace Goopil\RabbitRs {
         /**
          * Drains settlement errors that have surfaced asynchronously since the
          * last call. Returns an array of error hashes, each containing
-         * `delivery_tag`, `subscription`, `error_kind`, and `message`.
+         * `delivery_tag`, `subscription`, `error_kind`, and `message`. It also
+         * remains available after close, including errors recorded during close.
          *
          * @return list<array{delivery_tag: int, subscription: string,
          *   error_kind: string, message: string}>
@@ -311,7 +321,8 @@ namespace Goopil\RabbitRs {
          * Closing releases this pool's claim on the shared connection handle:
          * sibling pools built from the same configuration fingerprint keep
          * working, and the shared connection itself is torn down only when the
-         * last claim closes.
+         * last claim closes. Publication failures retained during the flush can
+         * be read with `drainErrors()` after closing.
          *
          * @return void
          */
@@ -358,7 +369,8 @@ namespace Goopil\RabbitRs {
          * flush, returning one hash per record with `kind`, `message_id`, and
          * `message`. The queue is cleared by this call; the same records would
          * otherwise surface as exceptions at the next publish/flush/size/
-         * clear/stats operation.
+         * clear/stats operation. It remains available after an explicit close so
+         * callers can inspect failures retained during shutdown.
          *
          * @return list<array{kind: string, message_id: string, message: string}>
          */

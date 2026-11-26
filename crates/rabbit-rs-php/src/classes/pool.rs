@@ -587,11 +587,16 @@ impl Pool {
     /// flush, returning one hash per record with `kind`, `message_id`, and
     /// `message`. The queue is cleared by this call; the same records would
     /// otherwise surface as exceptions at the next publish/flush/size/
-    /// clear/stats operation.
+    /// clear/stats operation. It remains available after an explicit close so
+    /// callers can inspect failures retained during shutdown.
     ///
     /// @return list<array{kind: string, message_id: string, message: string}>
     pub fn drainErrors(&self) -> PhpResult<ZBox<ZendHashTable>> {
-        self.ensure_open("Goopil\\RabbitRs\\Pool::drainErrors")?;
+        if self.pid != std::process::id() {
+            return rabbit_exception(
+                "Goopil\\RabbitRs\\Pool::drainErrors cannot use a pool inherited across fork",
+            );
+        }
         self.bridge.drain();
         let errors = self.publish_buffer.take_errors();
         let mut table = ZendHashTable::new();
@@ -610,18 +615,27 @@ impl Pool {
     /// Closing releases this pool's claim on the shared connection handle:
     /// sibling pools built from the same configuration fingerprint keep
     /// working, and the shared connection itself is torn down only when the
-    /// last claim closes.
+    /// last claim closes. Publication failures retained during the flush can
+    /// be read with `drainErrors()` after closing.
     pub fn close(&self) -> PhpResult<()> {
         if self.pid != std::process::id() {
             return rabbit_exception("cannot close a pool inherited across fork");
         }
+        if !self.claim_open.load(Ordering::Acquire) {
+            return Ok(());
+        }
         // Flush before closing under full-deadline semantics: an explicit
-        // close() keeps the caller's timeout contract. If flush fails the
-        // error is deferred (swallowed) so close always proceeds; retriable
+        // close() keeps the caller's timeout contract. Flush failures are
+        // retained for drainErrors(); retriable
         // publications were re-buffered by flush_batch and are counted as
         // dropped by the destructor's bounded flush; deadline-expired
         // publications are counted by rebuffer itself (audit F-18).
-        let _ = self.flush();
+        let _ = self.publish_buffer.flush_all_for_close();
+        if matches!(self.client.safety_mode(), SafetyMode::Blind) {
+            // As with flush(), wait until previously enqueued blind publishes
+            // have been handed to the transport before releasing the claim.
+            let _ = self.handle.runtime().block_on(self.client.flush_blind());
+        }
         if !self.claim_open.swap(false, Ordering::AcqRel) {
             return Ok(());
         }
@@ -725,22 +739,105 @@ impl Pool {
 
     /// Surfaces the oldest pending publish error (recorded by the pipelined
     /// flush or a sync flush surplus) as the exception its kind maps to,
-    /// mirroring the sync `client_exception` mapping. Only the first record
-    /// is raised — a backlog never repeats the same failure across
-    /// operations — and every discarded surplus record is counted in
-    /// `dropped_error_records_total` (surfaced by `stats()`) instead of
-    /// vanishing silently.
+    /// mirroring the sync `client_exception` mapping. Remaining records stay
+    /// in the bounded queue for later operations or an explicit drain.
     fn surface_publish_errors(&self) -> PhpResult<()> {
-        let errors = self.publish_buffer.take_errors();
-        let Some(first) = errors.first() else {
+        let Some(first) = self.publish_buffer.take_next_error() else {
             return Ok(());
         };
-        self.publish_buffer
-            .count_discarded_error_records(errors.len().saturating_sub(1));
+        let message = if first.message_id.is_empty() {
+            first.message
+        } else {
+            format!("message {}: {}", first.message_id, first.message)
+        };
         match first.kind.as_str() {
-            "Transport" => connection_exception(&first.message),
-            "Backpressure" => backpressure_exception(&first.message),
-            _ => rabbit_exception(&first.message),
+            "Transport" => connection_exception(&message),
+            "Backpressure" => backpressure_exception(&message),
+            _ => rabbit_exception(&message),
         }
+    }
+}
+
+#[cfg(all(test, feature = "extension-tests"))]
+mod close_tests {
+    use super::*;
+    use bytes::Bytes;
+    use rabbit_rs_core::config::{
+        BrokerConfig, Config, Credentials, DelayConfig, Endpoint, PublisherConfigSection,
+        TlsConfig, TopologyMode,
+    };
+    use rabbit_rs_core::publisher::{
+        Destination, MessageProperties, PublishRequest, PublisherConfig,
+    };
+    use rabbit_rs_core::transport::mock::MockTransport;
+    use zend_link_stubs as _;
+
+    #[test]
+    fn close_waits_for_already_enqueued_blind_publications() {
+        let config: Arc<rabbit_rs_core::config::ValidatedConfig> = Config {
+            brokers: vec![BrokerConfig {
+                name: "main".to_owned(),
+                hosts: vec![Endpoint::new("rabbit.local", 5672)],
+                vhost: "/blind-close-test".to_owned(),
+                credentials: Credentials::new("guest", "secret"),
+                tls: TlsConfig::disabled(),
+                heartbeat: Duration::from_secs(30),
+            }],
+            workers: Vec::new(),
+            topology_mode: TopologyMode::External,
+            routes: std::collections::BTreeMap::new(),
+            delay: DelayConfig::default(),
+            dead_letter: None,
+            delivery_limit: None,
+            publisher: PublisherConfigSection::default(),
+            consumer: rabbit_rs_core::config::ConsumerConfigSection::default(),
+            queue_type: rabbit_rs_core::transport::QueueKind::Quorum,
+            queue_durable: true,
+        }
+        .validate()
+        .expect("valid config")
+        .into();
+        let handle = RuntimeRegistry::global()
+            .acquire(ConnectionKey::from_config(&config))
+            .expect("connection handle");
+        let transport = Arc::new(MockTransport::default());
+        let gate = transport.push_publish_gate();
+        let client = Arc::new(ClientPool::new_for_tests(
+            Arc::clone(&config),
+            transport,
+            PublisherConfig::with_safety(1024, Duration::from_secs(30), SafetyMode::Blind),
+        ));
+        let pool = Pool::for_testing(
+            Arc::clone(&handle),
+            Arc::clone(&client),
+            DelayStrategy::compile(&config),
+            None,
+            None,
+        );
+        let request = PublishRequest::new(
+            Destination::new("jobs", "orders"),
+            Bytes::from_static(b"job"),
+            MessageProperties::new("blind-close"),
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        );
+        handle
+            .runtime()
+            .block_on(client.publish_batch(vec![("main".into(), request)]))
+            .expect("blind publication enqueued");
+        handle.runtime().block_on(gate.wait_entered());
+
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let controller = std::thread::spawn(move || {
+            let closed_before_release = closed_rx.recv_timeout(Duration::from_millis(200)).is_ok();
+            let _ = gate.release();
+            closed_before_release
+        });
+        let result = pool.close();
+        let _ = closed_tx.send(());
+        assert!(
+            !controller.join().expect("gate controller"),
+            "close returned before blind handoff"
+        );
+        assert!(result.is_ok(), "close failed");
     }
 }

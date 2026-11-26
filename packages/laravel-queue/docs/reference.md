@@ -881,16 +881,22 @@ never re-buffered; it surfaces at the earliest of:
   `pop()` (which drains pending publish errors first through
   `drainSettlementErrors()`); `Pool::drainErrors()` reads the raw records
   without throwing.
-- **Process teardown, as a guaranteed net.** A process whose final publish
+- **Process teardown, as a best-effort net.** A process whose final publish
   was returned and that performs no further queue operation (a lone dispatch
   in a CLI one-shot, or an FPM request that never touches the queue again)
   would otherwise take the record with it: `RabbitMqQueue::__destruct()`
   drains pending publish errors and logs each one at `error` level
   (`rabbit-rs: publication outcome never surfaced before process teardown`,
   with the native `kind`, `message_id`, and `message` context). A throw is
-  impossible at that point — destructors cannot propagate exceptions — so
-  the log entry plus the `returns_total` counter is the floor of the
-  contract.
+  impossible at that point — destructors cannot propagate exceptions. Logging
+  can itself fail during teardown, and a process crash can prevent it entirely.
+
+When several asynchronous publications fail, each queue operation surfaces
+one failure and retains the others for later calls. `Pool::drainErrors()` can
+instead retrieve the native pending records together. Pending error storage is
+bounded: if producers outpace error handling, the oldest native records can
+be evicted and `dropped_error_records_total` increases. Monitor that counter
+and drain errors promptly; it does not recover the identities of evicted records.
 
 `stats()['returns_total']` counts every mandatory return for the process
 lifetime of the pool (`rabbit-rs:status` exposes it), and `rabbit-rs:doctor`

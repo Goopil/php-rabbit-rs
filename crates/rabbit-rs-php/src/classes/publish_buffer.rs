@@ -198,15 +198,12 @@ impl PublishBuffer {
         pending.push_back(error);
     }
 
-    /// Counts error records that were discarded without ever being surfaced
-    /// to PHP (the surplus records a `surface_publish_errors` call drops
-    /// after raising its first error), so the loss stays observable via
-    /// `stats()`.
-    pub(crate) fn count_discarded_error_records(&self, count: usize) {
-        if count > 0 {
-            self.dropped_error_records
-                .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
-        }
+    /// Removes only the oldest error, leaving the rest available to callers.
+    pub(crate) fn take_next_error(&self) -> Option<PendingPublishError> {
+        self.pending_errors
+            .lock()
+            .expect("pending publish errors mutex poisoned")
+            .pop_front()
     }
 
     /// Drains and returns every pending publish error record.
@@ -415,7 +412,7 @@ impl PublishBuffer {
 
     /// Sends one batch through the client synchronously, re-buffering on
     /// failure. Kept for the explicit full-deadline flush paths.
-    fn flush_batch(&self, publishes: Vec<NativePublish>) -> PhpResult<()> {
+    fn flush_batch(&self, publishes: Vec<NativePublish>, record_all: bool) -> PhpResult<()> {
         if publishes.is_empty() {
             return Ok(());
         }
@@ -455,7 +452,7 @@ impl PublishBuffer {
                             reply.code
                         ),
                     };
-                    if first_error.is_none() {
+                    if first_error.is_none() && !record_all {
                         first_error = Some(rabbit_exception_message(error.message.clone()));
                     } else {
                         self.record_error(error);
@@ -464,6 +461,15 @@ impl PublishBuffer {
                 first_error.map_or(Ok(()), Err)
             }
             Err(error) => {
+                if record_all {
+                    for publish in &publishes {
+                        self.record_error(PendingPublishError {
+                            message_id: publish.request.properties.message_id.as_ref().to_owned(),
+                            kind: client_error_kind(&error).to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                }
                 // `publish_batch` discards per-message results after the first
                 // terminal failure, so every request of this flush is
                 // un-attempted or of unknown state. Conservatively re-buffer
@@ -782,7 +788,15 @@ impl PublishBuffer {
         self.quiesce();
         *self.last_flush.lock().expect("last_flush mutex poisoned") = Some(Instant::now());
         let publishes = self.take();
-        self.flush_batch(publishes)
+        self.flush_batch(publishes, false)
+    }
+
+    /// Flushes on explicit close, retaining every failure for a later drain.
+    pub(crate) fn flush_all_for_close(&self) -> PhpResult<()> {
+        self.quiesce();
+        *self.last_flush.lock().expect("last_flush mutex poisoned") = Some(Instant::now());
+        let publishes = self.take();
+        self.flush_batch(publishes, true)
     }
 
     /// Flushes the buffer when it holds publications; a no-op otherwise.
