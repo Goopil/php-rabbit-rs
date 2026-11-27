@@ -2,9 +2,11 @@
 
 The `rabbit_rs` extension is a standalone PHP extension written in Rust. It has no framework dependency: this guide uses plain PHP only. If you use Laravel, the [Laravel queue driver](https://github.com/Goopil/php-rabbit-rs/tree/main/packages/laravel-queue) wraps everything below behind the standard `Queue` API — see the [Laravel getting started](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/getting-started.md).
 
-This page progresses from a minimal working setup to production operation. The full API signatures live in the generated stub: [`crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`](https://github.com/Goopil/php-rabbit-rs/blob/main/crates/rabbit-rs-php/stubs/rabbit_rs.stub.php).
+Start here to publish and consume with plain PHP. For installation options, delivery guarantees, and troubleshooting, see the [reference](reference.md). The full API signatures live in the generated stub: [`crates/rabbit-rs-php/stubs/rabbit_rs.stub.php`](https://github.com/Goopil/php-rabbit-rs/blob/main/crates/rabbit-rs-php/stubs/rabbit_rs.stub.php).
 
 ## Install
+
+Requires PHP 8.2–8.5, [PIE](https://github.com/php/pie), and a reachable RabbitMQ 4.2.9+ broker. The example uses `guest` / `guest` on localhost.
 
 ```bash
 pie install goopil/rabbit-rs-native
@@ -41,6 +43,7 @@ $config = [
         'scheduler' => ['strategy' => 'weighted_fair'],
     ]],
     'topology_mode' => 'declare',
+    'delay' => ['mode' => 'ttl'], // works without the delayed-message plugin
 ];
 
 $pool = new Pool($config);
@@ -54,7 +57,7 @@ $pool->publish([
     'exchange' => '',
     'routing_key' => 'hello',
     'payload' => json_encode(['hello' => 'world']),
-    'message_id' => uniqid('', true),
+    'message_id' => bin2hex(random_bytes(16)),
     'timeout_ms' => 5000,
 ]);
 $pool->flush();
@@ -76,13 +79,13 @@ while (true) {
 }
 ```
 
-Because `topology_mode` is `declare`, the queue is created on first use. Use `verify` to check an externally provisioned topology, or `external` to never touch it — see [Topology management](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#topology).
+Because `topology_mode` is `declare`, the queue is created on first use. This example selects TTL delay mode so it works on a stock broker without the delayed-message plugin; see [Delayed messages](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#delayed-messages) for the trade-offs. Use `verify` to check an externally provisioned topology, or `external` to never touch it — see [Topology management](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#topology).
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and measurable. Your processing must be idempotent — the `message_id` you publish is the stable deduplication key. The full contract: [Reliability](reference.md#reliability).
+Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and must remain identifiable. Your processing must be idempotent — use a stable `message_id` or business key to detect repeated work. Redelivery counters are only a partial signal; they do not detect every duplicate. The full contract: [Reliability](reference.md#reliability).
 
-**Safety modes** — one key controls the publisher guarantees (`publisher.safety`):
+**Safety modes** — one key controls the publisher guarantees (`publisher.safety`). The [delivery modes guide](../packages/laravel-queue/docs/delivery-modes.md) compares loss, duplicates, and mixed workloads:
 
 | Mode | Behaviour |
 | ---- | --------- |
@@ -98,7 +101,7 @@ $pool->publishBatch(array_map(fn (int $i) => [
     'exchange' => '',
     'routing_key' => 'hello',
     'payload' => "message {$i}",
-    'message_id' => uniqid('', true),
+    'message_id' => bin2hex(random_bytes(16)),
     'timeout_ms' => 5000,
 ], range(1, 100)));
 $pool->flush(); // barrier: everything above is confirmed (or thrown) when this returns
@@ -155,10 +158,10 @@ $stats = $pool->stats();
 $stats['publishes_total'];        // publications accepted
 $stats['confirmations_total'];    // broker confirms received
 $stats['returns_total'];          // mandatory returns (unroutable)
-$stats['publication_retries_total']; // replay retries across recovery
-$stats['duplicates_total'];       // deliveries flagged as redeliveries
+$stats['publication_retries_total']; // publications re-armed after expiring during recovery
+$stats['duplicates_total'];       // settled deliveries flagged as redeliveries in this process
 $stats['reconnects_total'];       // recovery events
-$stats['publish_buffered'];       // publications parked in the replay buffer
+$stats['publish_buffered'];       // publications parked in the publish buffer
 $stats['confirmation_latency_p99']; // ms
 ```
 
@@ -176,7 +179,7 @@ $pool->onBackpressure(function (string $broker, int $inFlight, int $capacity): v
 });
 ```
 
-**Graceful shutdown** — close the consumer, then the pool. The pool also flushes buffered publications and closes consumer handles on garbage collection, so an explicit close is hygiene, not a requirement:
+**Graceful shutdown** — close the consumer, then the pool. The pool also attempts to flush buffered publications and close consumer handles on garbage collection. Explicit shutdown lets your application observe errors; it cannot protect against a process crash:
 
 ```php
 $consumer->close();
@@ -185,9 +188,10 @@ $pool->close();
 
 ## Going further
 
+- [Using the PHP extension](usage.md) — publishing, consuming, settlement, and diagnostics
 - [Installation](reference.md#installation) — platforms, PIE/Homebrew/Docker, distribution model, upgrades
 - [Reliability](reference.md#reliability) — the at-least-once contract, recovery, replay buffer semantics
 - [Troubleshooting](reference.md#troubleshooting) — common errors and diagnosis
 - [Development guide](development.md) — building the extension from source
-- [Migration guides](migration-from-php-amqplib.md) — switching from php-amqplib (raw API) or [laravel-queue-rabbitmq](migration-from-laravel-queue-rabbitmq.md) (Laravel driver)
+- [Migration guides](migration-from-php-amqplib.md) — switching from php-amqplib (raw API) or [laravel-queue-rabbitmq](../packages/laravel-queue/docs/migration-from-laravel-queue-rabbitmq.md) (Laravel driver)
 - [Laravel queue driver](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/getting-started.md) — the same engine behind Laravel's `Queue` API

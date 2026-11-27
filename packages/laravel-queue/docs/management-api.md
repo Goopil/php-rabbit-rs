@@ -1,10 +1,39 @@
-# Management API usage: hybrid behavior
+# Using the RabbitMQ management API
 
-Rabbit RS uses the RabbitMQ management API (`management_url`) when a
-connection configures it, and falls back to native AMQP operations through
-the `rabbit_rs` extension when it does not. This page records, per feature,
-which path runs with and without `management_url`, and the gaps that are
-protocol-impossible in pure AMQP.
+The management API is optional. Rabbit RS can publish and consume jobs without it. Configure it when you need broker-side counters or more complete topology checks.
+
+## Configure the management API
+
+Add the API base URL to your queue connection. Use a management-enabled RabbitMQ broker and credentials with the required permissions:
+
+```php
+// config/queue.php, inside the rabbit-rs connection
+'management_url' => env('RABBIT_RS_MANAGEMENT_URL', 'http://127.0.0.1:15672'),
+```
+
+The driver uses the connection's `username` and `password` for the management API. `RABBIT_RS_MANAGEMENT_URL` is an example: the variable is read only because this connection explicitly wires it with `env()`. For remote brokers, use an HTTPS URL and credentials appropriate to your environment.
+
+## What changes when it is configured?
+
+| Task | Management API configured | No management API |
+|---|---|---|
+| Publish and consume jobs | AMQP | AMQP |
+| Inspect queue counters | Broker-side counters available to `rabbit-rs:status` | Native counters are local to each PHP process |
+| Verify topology | Can check bindings and queue arguments | Can check queue and exchange existence; bindings and arguments cannot be verified |
+| Detect the delayed-message plugin | HTTP probe | Native AMQP probe |
+| Check dead-letter routing | Doctor uses the API to inspect its canary | Doctor uses native AMQP operations |
+
+Configure `management_url` per connection when using more than one broker or vhost. For a first connection, see [Getting started](getting-started.md). For diagnostic commands, see [Diagnostics](reference.md#diagnostics).
+
+## Delayed-message plugin
+
+In `auto` mode the driver checks for the plugin once per connection per process. When `management_url` is configured it checks the management API; otherwise it declares and removes a temporary exchange over AMQP. If the probe is inconclusive, `auto` selects TTL buckets. An explicit `plugin` mode uses the same cached verdict and warns if the result is inconclusive. See [Delayed messages](reference.md#delayed-messages).
+
+The AMQP probe needs permission to declare and delete its temporary exchange. Restart the relevant PHP processes after changing plugin availability so they obtain a fresh verdict.
+
+## Feature details
+
+The table below describes the individual paths and their limits.
 
 ## Behavior matrix
 
@@ -20,9 +49,9 @@ protocol-impossible in pure AMQP.
 | Unroutable stats (`rabbit-rs:doctor` publish outcomes) | Management API `return_unroutable` counter | **API-only**: no native equivalent |
 | Connection readiness / broker reachability | Native pool either way | Native |
 
-## Protocol-impossible gaps
+## Information unavailable through AMQP
 
-These cannot be replicated in pure AMQP, so they stay management-API-only:
+These checks require the management API because AMQP does not expose the required information:
 
 1. **Cumulative broker counters** — status `deliver_get`/`ack`/`redeliver` and
    the doctor's `return_unroutable`. AMQP exposes no broker-accumulated

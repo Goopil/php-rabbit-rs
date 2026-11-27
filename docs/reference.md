@@ -2,17 +2,19 @@
 
 Reference documentation for the native extension: the reliability contract, troubleshooting, and installation/distribution.
 
-**Contents**
+**Find what you need**
 
-- [Reliability](#reliability) — the at-least-once contract, safety modes, recovery, duplicates, metrics
-  - [At-least-once contract](#at-least-once-contract), [Publisher confirms](#publisher-confirms), [Mandatory returns](#mandatory-returns), [Connection recovery](#connection-recovery), [Delivery tokens and stale ACK rejection](#delivery-tokens-and-stale-ack-rejection), [Oversized deliveries](#oversized-deliveries), [Replay buffer](#replay-buffer), [Duplicates](#duplicates), [When to use an external outbox](#when-to-use-an-external-outbox), [Panic policy](#panic-policy), [Log facade](#log-facade), [Error typing](#error-typing), [TLS](#tls)
-- [Troubleshooting](#troubleshooting) — common errors and diagnosis (extension not loaded, connection failures, topology and permission errors, recovery diagnostics, backpressure, delayed messages)
-- [Installation](#installation) — prerequisites, PIE, Homebrew, Docker, multi-PHP, upgrades and rollback, distribution model
+- **First steps:** [native PHP getting started](getting-started.md), [using the extension](usage.md), [PHP API signatures](../crates/rabbit-rs-php/stubs/rabbit_rs.stub.php), [migrate from php-amqplib](migration-from-php-amqplib.md).
+- **Delivery and recovery:** [at-least-once contract](#at-least-once-contract), [publisher confirms](#publisher-confirms), [mandatory returns](#mandatory-returns), [connection recovery](#connection-recovery), [replay buffer](#replay-buffer), [duplicates](#duplicates), [external outbox](#when-to-use-an-external-outbox).
+- **Diagnose a problem:** [common errors and solutions](#common-errors-and-solutions), [TLS](#tls), [error typing](#error-typing).
+- **Install or upgrade:** [prerequisites](#prerequisites), [install the extension](#step-1--install-the-native-extension), [multiple PHP versions](#multiple-php-versions), [upgrading and rollback](#upgrading-and-rollback).
+- **Laravel:** [getting started](../packages/laravel-queue/docs/getting-started.md) and [driver reference](../packages/laravel-queue/docs/reference.md).
+
 ## Reliability
 
-Rabbit RS provides at-least-once delivery. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain identifiable and measurable. The guarantee is scoped to the live process: the publisher replay buffer is process memory, and a PHP crash can drop publications the broker never received — see [What the replay buffer is not](#what-the-replay-buffer-is-not).
+Rabbit RS provides at-least-once delivery. Once a message is accepted into the confirmed delivery path, silent loss is unacceptable; duplicates are permitted and must remain identifiable. The guarantee is scoped to the live process: the publisher replay buffer is process memory, and a PHP crash can drop publications the broker never received — see [What the replay buffer is not](#what-the-replay-buffer-is-not).
 
-The documented exception is `safety = blind`: an explicit fire-and-forget mode (silent loss possible), set per connection (`safety` key) or package-wide (env `RABBIT_RS_SAFETY`) as well as in the raw native extension configuration. Publisher confirms and mandatory routing are **derived from `safety`** by the `ConnectionCompiler` — there are no separate `confirms`/`mandatory` config keys; see [Configuration — Safety modes](../packages/laravel-queue/docs/reference.md#safety-modes).
+This contract applies to `safety = safe`. Both `unsafe` (no confirms or mandatory routing) and `blind` (fire-and-forget) can lose publications silently. Select the mode per connection (`safety` key), package-wide (`RABBIT_RS_SAFETY`), or in the native extension configuration. Laravel derives publisher confirms and mandatory routing from the connection’s `safety` key; separate `confirms` and `mandatory` connection keys are not accepted. The native publisher configuration still accepts legacy fields for compatibility; prefer `publisher.safety` for new configurations. See [Safety modes](../packages/laravel-queue/docs/reference.md#safety-modes).
 
 ### At-least-once contract
 
@@ -21,7 +23,7 @@ The delivery contract is:
 - **No silent loss** — every publish on the confirmed delivery path (`safe` mode) is either confirmed or the caller is notified of failure
 - **Duplicates permitted** — in failure windows, the same message may be delivered more than once
 - **Duplicates identifiable** — each message carries a stable `message_id` (UUID from Laravel payload)
-- **Duplicates measurable** — metrics track redeliveries and duplicate counts
+- **Redeliveries observable** — metrics provide partial signals; identifying repeated business operations requires application-level tracking
 
 This means your jobs **must be idempotent**. Use the `message_id` to detect and handle duplicates at the application level.
 
@@ -32,7 +34,7 @@ Publisher confirms are **enabled by default** (`safety = "safe"`, the default, d
 1. The publisher calls `confirm.select` on the channel
 2. Each published message is assigned a sequence number
 3. The broker sends `basic.ack` (confirmed) or `basic.nack` (rejected) with the sequence number
-4. The publish call resolves once its confirm is received. Batched publishes are **pipelined**: the call returns before confirmations resolve, and unconfirmed outcomes surface at the next operation (the next publish flush, `drainSettlementErrors()`, or `stats()`)
+4. The native `Pool::publish()` may return its message ID while the publication is buffered. In `safe` mode, call `Pool::flush()` to wait for buffered confirmations or an error; asynchronous failures can also surface on a later pool operation or through `Pool::drainErrors()`. `Pool::publishBatch()` awaits the batch outcomes.
 
 A confirm timeout (connection key `confirm_timeout`, default 30000 ms) ensures the call does not hang indefinitely. During a recovery, a publish parked in replay is retried once with a fresh deadline; a confirm timeout on a live connection stays terminal (unknown outcome → no automatic resend).
 
@@ -44,17 +46,17 @@ Measuring this yourself? Do not observe with the management API's sampled per-qu
 
 ### Mandatory returns
 
-Mandatory routing is **always on in safe mode** (`safety = "safe"`, which derives `mandatory = true`). When enabled:
+Mandatory routing is enabled for ordinary publishes in safe mode (`safety = "safe"`). Delayed-plugin publishes are an exception described below. When enabled:
 
 - The broker returns unroutable messages via `basic.return` instead of silently dropping them
 - `basic.return` is processed **before** the corresponding `basic.ack` — a return takes precedence over a following ACK
-- The publish call resolves with a `Returned` outcome, and the Laravel queue driver throws a `QueueException`
+- A returned publication is reported as an error; depending on timing it may surface during a later operation or an explicit `flush()`
 
-There is no separate `mandatory` config key: it is derived from `safety` (`safe` → confirms + mandatory, `unsafe` → neither — a synchronous socket write without outcome tracking, `blind` → neither — fire-and-forget through a bounded pump) — a connection key named `mandatory` hits the unknown-key rejection with an actionable error. The only mode with mandatory routing is `safe`.
+In the Laravel connection configuration, `mandatory` is derived from `safety` and is not a separate connection key. `safe` uses confirms and mandatory routing for ordinary publishes; `unsafe` and `blind` use neither. See [Safety modes](../packages/laravel-queue/docs/reference.md#safety-modes).
 
 #### Delayed publishes
 
-Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. Publisher confirms remain enabled — the publish still resolves only after the broker confirm, and the no-silent-loss contract is preserved by the confirmed `rabbit-rs.delayed` binding (see [Topology — Delay routing](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#delay-routing)). Delayed messages published through TTL bucket queues carry no `x-delay` header on the wire and remain mandatory.
+Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. Publisher confirms remain enabled, but a confirm is not proof that the eventual delayed delivery reached a queue. Ensure the delayed exchange and bindings are configured and verified (see [Topology — Delay routing](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#delay-routing)). Delayed messages published through TTL bucket queues carry no `x-delay` header on the wire and remain mandatory.
 
 ### Connection recovery
 
@@ -131,7 +133,7 @@ When a connection drops before a publish is confirmed, the state is ambiguous �
 1. **Classifying unconfirmed publications as ambiguous** — the publish call does not resolve immediately
 2. **Placing them in a bounded in-memory replay buffer** — with the same `message_id`, payload, destination, and original deadline
 3. **Replaying them after recovery** — once the topology is restored and a new confirm-enabled channel is open
-4. **Reusing the original deadline** — the deadline is never reset by a reconnection
+4. **Preserving the deadline** — if it expires while the publication is parked during recovery, it is re-armed once with a fresh deadline; a live-connection confirm timeout remains terminal
 
 The replay buffer is **bounded** by the publisher's global buffer capacity — a shared budget for in-flight confirms and replayed publications (1024 publications and 64 MiB of buffered payload bytes by default). When the budget is exhausted, new publications receive `Backpressure` instead of being accepted.
 
@@ -170,7 +172,7 @@ Native pool metrics — including `duplicates_total` — are **per-process by de
 
 `php artisan rabbit-rs:status` therefore observes two distinct things:
 
-**Native pool metrics (same-process only).** Useful from inside a long-lived process; always zeros in a fresh CLI process:
+**Native pool metrics (same-process only).** Useful inside a long-lived process; a fresh CLI process cannot report counters from existing workers:
 
 - `reconnects_total` — number of connection recoveries (each can cause duplicates)
 - `deliveries_total` — total deliveries received
@@ -257,7 +259,7 @@ TLS server name indication (SNI) and certificate hostname verification always us
 
 **Error:**
 ```
-The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.3.10 to be loaded.
+The Rabbit RS Laravel driver requires ext-rabbit_rs ^0.3.14 to be loaded.
 ```
 
 **Solution:**
@@ -301,8 +303,8 @@ ConnectionException: Failed to connect to broker
 # Check TCP connectivity
 nc -zv rabbit-host 5672
 
-# Check AMQP handshake (if rabbitmqadmin is installed)
-rabbitmqadmin --host=rabbit-host --port=5672 list vhosts
+# With a configured management API, use its HTTP port (normally 15672)
+rabbitmqadmin --host=rabbit-host --port=15672 list vhosts
 ```
 
 2. Check credentials and vhost:
@@ -322,11 +324,8 @@ rabbitmqctl list_permissions -p /your-vhost
 openssl s_client -connect rabbit-host:5671 -CAfile /path/to/ca.pem
 ```
 
-4. Check the status command:
-
-```bash
-php artisan rabbit-rs:status
-```
+4. For Laravel, run `php artisan rabbit-rs:doctor`; for standalone PHP, inspect
+   connection errors and callbacks in the process that owns the pool.
 
 **Common causes:**
 
@@ -362,13 +361,7 @@ RABBIT_RS_TOPOLOGY_MODE=verify
 RABBIT_RS_TOPOLOGY_MODE=external
 ```
 
-3. **Delete and recreate the queue** (data loss — use with caution):
-
-```bash
-rabbitmqctl delete_queue orders
-```
-
-4. **Align your config** with the existing queue arguments (type, durability, delivery_limit).
+3. **Align your configuration** with the existing queue arguments (type, durability, delivery limit). If the queue must be recreated, first plan for its existing messages and coordinate the change with the broker operator.
 
 **Error:**
 ```
@@ -397,9 +390,6 @@ ACCESS_REFUSED - access to queue 'orders' refused
 ```bash
 # Grant permissions
 rabbitmqctl set_permissions -p /your-vhost username ".*" ".*" ".*"
-
-# For read-only (verify mode)
-rabbitmqctl set_permissions -p /your-vhost username "^amq\.|^laravel\." "^amq\.|^laravel\." ".*"
 ```
 
 **Error:**
@@ -413,7 +403,7 @@ ACCESS_REFUSED - access to vhost '/production' refused
 
 ```bash
 # Grant vhost access
-rabbitmqctl set_vhost_permissions -p /production username ".*" ".*" ".*"
+rabbitmqctl set_permissions -p /production username ".*" ".*" ".*"
 ```
 
 #### Recovery diagnostics
@@ -422,14 +412,7 @@ rabbitmqctl set_vhost_permissions -p /production username ".*" ".*" ".*"
 
 **Diagnosis:**
 
-```bash
-php artisan rabbit-rs:status
-```
-
-Check:
-- `reconnects_total` — if increasing, the connection is unstable
-- `backpressure_total` — if high, the broker may be overloaded
-- `confirmation_latency_p99` — if high, the broker is slow to confirm
+Read `$pool->stats()` in the long-lived PHP process that owns the pool. Check `reconnects_total`, `backpressure_total`, and `confirmation_latency_p99`. A separate `php artisan rabbit-rs:status` process cannot read another process's native counters.
 
 **Common causes:**
 
@@ -446,7 +429,7 @@ Check:
 
 #### Debug logging
 
-Enable debug logging by listening to events:
+For Laravel, listen to events in a service provider. Standalone PHP applications can register `Pool::onConnectionState()` and `Pool::onBackpressure()` callbacks instead:
 
 ```php
 // In a service provider or EventServiceProvider
@@ -540,7 +523,7 @@ rabbitmqctl list_queues -p /your-vhost name messages | grep delay
 # A 3-second delay → bucket 5 (delivered after ~5 seconds)
 ```
 
-5. Check the publisher safety mode — in `blind` mode, delayed jobs are published immediately: the pump bypasses delay routing, so `delay_ms > 0` is not honored. Use `safe` or `unsafe` for delay routing:
+5. Check the publisher safety mode. `blind` mode uses delay routing but does not confirm the publication, so a failure after hand-off can lose it. For confirmed publishing, use `safe`:
 
 ```bash
 RABBIT_RS_SAFETY=safe
@@ -548,13 +531,7 @@ RABBIT_RS_SAFETY=safe
 
 #### Getting help
 
-If you cannot resolve an issue:
-
-1. Run `php artisan rabbit-rs:status --format=json` and save the output
-2. Run `php --ri rabbit_rs` and save the output
-3. Check [Reliability](#reliability) for delivery semantics
-4. Check the [troubleshooting checklist](https://github.com/Goopil/php-rabbit-rs/issues) for known issues
-5. Open an issue on [GitHub](https://github.com/Goopil/php-rabbit-rs/issues) with the diagnostic output
+If you cannot resolve an issue, collect `php --ri rabbit_rs`, the PHP and RabbitMQ versions, and sanitized errors and relevant configuration. Check [existing issues](https://github.com/Goopil/php-rabbit-rs/issues), then open an issue with a minimal reproduction. Remove credentials and private certificate material before sharing diagnostics.
 ## Installation
 
 Installing the Rabbit RS native extension and the Laravel queue driver.
@@ -604,8 +581,7 @@ Expected output:
 ```
 rabbit_rs
 
-Rabbit RS - High-performance RabbitMQ transport for PHP and Laravel, powered by Rust
-Version => 0.3.6
+Version => <installed version>
 ...
 ```
 
@@ -666,7 +642,7 @@ Intel Macs (x86_64) are not distributed as pre-compiled binaries — build from 
 composer require goopil/rabbit-rs-laravel
 ```
 
-Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.3.10`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Composer installs the PHP package. It does **not** install or modify system PHP binaries — that is PIE's job — and it does not verify the extension either: `ext-rabbit_rs` is a Composer *suggestion* (`^0.3.14`), so `composer install` succeeds without it, and a connection resolved without the extension (or with a version outside the constraint) fails at connection resolution with a typed error naming the install command (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 The package auto-discovers the service provider in Laravel 12 and 13. If you disabled auto-discovery, register it manually:
 
@@ -678,13 +654,13 @@ The package auto-discovers the service provider in Laravel 12 and 13. If you dis
 ],
 ```
 
-### Step 3 — Publish the configuration
+### Step 3 — Publish the configuration (optional)
 
 ```bash
 php artisan vendor:publish --tag="rabbit-rs-config"
 ```
 
-This creates `config/rabbit-rs.php` with sensible defaults. See [Configuration](../packages/laravel-queue/docs/reference.md#configuration) for the full reference.
+This creates `config/rabbit-rs.php` with cross-cutting defaults. The package loads its defaults without publishing; configure your queue connection separately in `config/queue.php`. See [Configuration](../packages/laravel-queue/docs/reference.md#configuration) for the full reference.
 
 ### Step 4 — Verify the installation
 
@@ -692,7 +668,7 @@ This creates `config/rabbit-rs.php` with sensible defaults. See [Configuration](
 php artisan rabbit-rs:status
 ```
 
-This displays connection state, pool metrics, and consumer stats. For machine-readable output:
+This displays a snapshot for the status command’s own PHP process, not the native counters of existing workers. Optional management API counters reflect broker-side queue activity. For machine-readable output:
 
 ```bash
 php artisan rabbit-rs:status --format=json
@@ -734,7 +710,7 @@ The separation is:
 | PIE | Downloads and installs the correct pre-compiled `.so` binary |
 | Composer | Installs the Laravel queue driver (PHP source); `ext-rabbit_rs` stays a suggestion — connections fail at connection resolution until the extension is loaded |
 
-The Laravel driver's `composer.json` declares `ext-rabbit_rs` as a *suggestion* (`^0.3.10`), not a requirement: `composer install` succeeds without the extension. The constraint is enforced at connection resolution — the driver fails with a typed error when the extension is missing or its version falls outside the constraint. Composer never installs the binary — that is PIE's role.
+The Laravel driver's `composer.json` declares `ext-rabbit_rs` as a *suggestion* (`^0.3.14`), not a requirement: `composer install` succeeds without the extension. The constraint is enforced at connection resolution — the driver fails with a typed error when the extension is missing or its version falls outside the constraint. Composer never installs the binary — that is PIE's role.
 
 ### Multiple PHP versions
 
@@ -752,17 +728,13 @@ PATH="/path/to/php/bin:$PATH" ./scripts/install.sh --release
 
 PIE installs are versioned replacements: installing a different version swaps the `rabbit_rs.so` binary and updates the active PHP configuration in place. Upgrades and rollbacks use the same `pie install` command with an explicit release tag.
 
-Upgrade (or reinstall) an exact version:
+To upgrade or roll back, replace `<release-tag>` with the desired published tag:
 
 ```bash
-pie install goopil/rabbit-rs-native:v0.3.5
+pie install "goopil/rabbit-rs-native:<release-tag>"
 ```
 
-Rollback = install the previous tag:
-
-```bash
-pie install goopil/rabbit-rs-native:v0.3.4
-```
+When using Laravel, choose a tag compatible with the installed driver's extension constraint.
 
 Check which version is active before and after:
 
@@ -770,7 +742,7 @@ Check which version is active before and after:
 php --ri rabbit_rs
 ```
 
-Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` tracks a specific `ext-rabbit_rs` constraint (`^0.3.10`). When moving across a version boundary — in either direction — upgrade or roll back the extension and the driver together. Composer cannot check loaded extensions (the constraint lives in `suggest`), so the driver enforces the constraint itself with a typed error at connection resolution: a half-upgraded system (new driver with old extension, or the reverse) fails loudly on the first connection instead of going unnoticed.
+Keep the Laravel queue driver in sync: `goopil/rabbit-rs-laravel` tracks a specific `ext-rabbit_rs` constraint (`^0.3.14`). When moving across a version boundary — in either direction — upgrade or roll back the extension and the driver together. Composer cannot check loaded extensions (the constraint lives in `suggest`), so the driver enforces the constraint itself with a typed error at connection resolution: a half-upgraded system (new driver with old extension, or the reverse) fails loudly on the first connection instead of going unnoticed.
 
 Every release exercises these paths in CI before it is finalized: the release pipeline installs the previous published release, upgrades it to the new release, and rolls back again (see [End-to-end PIE validation](#end-to-end-pie-validation)).
 
@@ -781,7 +753,7 @@ Rabbit RS distributes two packages in synchronized releases:
 - **`goopil/rabbit-rs-native`** — the native PHP extension, installed via [PIE](https://github.com/php/pie)
 - **`goopil/rabbit-rs-laravel`** — the Laravel queue driver, installed via [Composer](https://getcomposer.org)
 
-Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package suggests `ext-rabbit_rs ^0.3.10` — the constraint tracks the extension version until 1.0 and is enforced by a typed error at connection resolution (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
+Both packages share the same version number: a release `1.2.0` produces `goopil/rabbit-rs-native 1.2.0` and `goopil/rabbit-rs-laravel 1.2.0`. The Laravel package suggests `ext-rabbit_rs ^0.3.14` — the constraint tracks the extension version until 1.0 and is enforced by a typed error at connection resolution (see [Why Composer doesn't modify system PHP](#why-composer-doesnt-modify-system-php)).
 
 #### PIE build matrix
 
@@ -828,7 +800,7 @@ php_rabbit_rs-v1.2.0_php8.5-arm64-darwin-bsdlibc-nts.zip
 
 Every artifact carries an **explicit** thread-safety suffix (`-nts` or `-zts`). PIE (1.4.10+, the version the release pipeline validates) resolves NTS assets matched either with or without the `-nts` suffix (and requires `-zts` for ZTS builds); the explicit suffix is the repository convention so that asset names are unambiguous and self-describing. On macOS, PIE derives the `bsdlibc` libc token from its `LibcFlavour` detection (`otool`, shipped with Xcode Command Line Tools, resolves to `bsdlibc`). The authoritative matrix lives in `.github/workflows/release.yml` (`-${{ matrix.ts }}` appended to every asset name) via the `.github/actions/package-release-asset` composite action; `release/pie-matrix.json` and `scripts/validate-distribution.sh` predate the widened matrix (PHP 8.2/8.3, ZTS) and are pending the matching update.
 
-macOS artifacts (`arm64-darwin-bsdlibc-nts`) are part of the PIE matrix — `composer.json` declares `os-families: ["linux", "darwin"]`; macOS ZTS is deliberately deferred (see [Thread safety](#thread-safety)). The release pipeline compiles and smoke-loads both macOS builds, and the Homebrew formula (alternative install channel) consumes the same assets, so there is a single name per binary; the formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
+macOS artifacts (`arm64-darwin-bsdlibc-nts`) are part of the PIE matrix — `composer.json` declares `os-families: ["linux", "darwin"]`; macOS ZTS is deliberately deferred (see [Thread safety](#thread-safety)). The release pipeline compiles and smoke-loads the macOS builds, and the Homebrew formula (alternative install channel) consumes the same assets, so there is a single name per binary; the formula is audited and install-tested on a macOS ARM64 runner by [`homebrew-formula-test.yml`](../.github/workflows/homebrew-formula-test.yml) (formula-affecting pull requests and manual dispatch). The release pipeline itself does not reinstall through Homebrew on macOS — if that install path regresses, the formula test workflow fails on its next run rather than blocking the release.
 
 #### End-to-end PIE validation
 
@@ -886,8 +858,8 @@ This is a deliberate design decision: PIE is the PHP ecosystem's official extens
 
 ### Next steps
 
-- [Configuration reference](../packages/laravel-queue/docs/reference.md#configuration)
-- [Laravel usage](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#usage)
-- [Topology management](../packages/laravel-queue/docs/reference.md#topology)
+- [Using the PHP extension](usage.md)
+- [PHP API signatures](../crates/rabbit-rs-php/stubs/rabbit_rs.stub.php)
 - [Reliability](#reliability)
+- [Laravel configuration](../packages/laravel-queue/docs/reference.md#configuration)
 

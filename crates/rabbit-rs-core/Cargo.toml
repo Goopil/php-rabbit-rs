@@ -29,7 +29,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.11"
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "sync", "time"] }
-url = "2.5"
+url = "2.5.9"
 
 [dev-dependencies]
 # Used by the wire-property parity test to serialize the adapter's
