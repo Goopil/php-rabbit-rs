@@ -191,3 +191,57 @@ it('retains a confirmed delayed publication while its binding is temporarily abs
         }
     }
 })->with(['plugin', 'ttl', 'ttl_at_least_once']);
+
+it('observes custom delayed routing in declare mode before and after external binding', function () {
+    if (! extension_loaded('rabbit_rs')) {
+        $this->fail('ext-rabbit_rs is required for this experiment');
+    }
+    $queueName = uniqueQueue('rabbit-rs-it-custom-delay');
+    $exchange = uniqueQueue('rabbit-rs-it-custom-exchange');
+    $delayedExchange = $exchange.'.delayed';
+    $vhost = rawurlencode(ORDERS_VHOST);
+    $pool = null;
+    try {
+        grantRabbitRsConfigure();
+        [$pool, $queue] = integrationPoolAndQueue(
+            $this->app,
+            $queueName,
+            configOverrides: [
+                'exchange' => $exchange,
+                'routing_key' => '{queue}',
+                'delay' => ['mode' => 'plugin'],
+            ],
+            connectOverrides: ['block_for' => 1],
+            connectionName: 'rabbit-rs-custom-delay-evidence',
+        );
+        $id = $queue->later(5, 'stdClass', ['control' => true]);
+        $pool->flush();
+        [$status, $body] = DelayExperimentManagement::request('GET', '/api/exchanges/'.$vhost.'/'.rawurlencode($delayedExchange).'/bindings/source');
+        expect($status)->toBe(200);
+        $bindings = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        $matching = array_values(array_filter($bindings, static fn (array $binding): bool => ($binding['destination'] ?? null) === $queueName));
+        expect($matching)->toBe([], 'Declare mode did not provision a binding for this custom delayed exchange');
+
+        [$status] = DelayExperimentManagement::request('POST', '/api/bindings/'.$vhost.'/e/'.rawurlencode($delayedExchange).'/q/'.rawurlencode($queueName), [
+            'routing_key' => $queueName,
+            'arguments' => new stdClass,
+        ]);
+        expect($status)->toBe(201);
+        DelayExperimentManagement::binding($delayedExchange, $queueName);
+        $deadline = microtime(true) + 12;
+        $job = null;
+        do {
+            $job = $queue->pop();
+        } while ($job === null && microtime(true) < $deadline);
+        expect($job)->toBeInstanceOf(RabbitMqJob::class)
+            ->and($job->getJobId())->toBe($id);
+        $job->delete();
+    } finally {
+        if ($pool !== null) {
+            $pool->close();
+        }
+        deleteQueue($queueName);
+        DelayExperimentManagement::request('DELETE', '/api/exchanges/'.$vhost.'/'.rawurlencode($exchange));
+        DelayExperimentManagement::request('DELETE', '/api/exchanges/'.$vhost.'/'.rawurlencode($delayedExchange));
+    }
+});

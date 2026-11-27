@@ -28,6 +28,14 @@ This narrows the lifecycle risk: turning on the safer dead-letter policy alone d
 
 An earlier plugin run without a manually created custom delayed binding failed its positive control. Inspection of `topology/plan.rs` shows the plan binds the shared `rabbit-rs.delayed` exchange but does not add bindings for `{custom-exchange}.delayed`. Treat this as a separate candidate finding: add a focused regression with explicit management observations before classifying its scope.
 
+Further source review found that the topology plan explicitly treats custom delayed-exchange bindings as an infrastructure responsibility even in declare mode. The Laravel reference clearly describes this responsibility for external and verify modes, but does not state it equally clearly for declare mode. The earlier failed control therefore establishes a documentation/operational gap, not by itself a violation of the implementation's intended topology contract. Verify management bindings and the documented configuration before deciding whether to change topology behavior.
+
+On 2026-11-27, `DelayedRoutingAcceptanceTest.php --filter='observes custom delayed routing'` passed against the isolated broker (1 test, 7 assertions). After a confirmed plugin-delayed publication on a unique custom route in declare mode, the management API showed that the custom delayed exchange existed but had no binding to the test queue. The test then created and verified the queue-name binding before the delay elapsed; the control message arrived with its original ID and was acknowledged. This verifies the provisioning gap and the healthy externally provisioned control; it does not establish safe routing if the binding disappears later.
+
+## Run 2026-11-27: publish error retention
+
+The focused `PublishErrorRetentionTest.php` passed against the isolated real broker from the remediation worktree (1 test, 5 assertions): three distinct mandatory returns were accounted for, and the native publish-error eviction counter remained zero. This test covers the scenario it exercises, not the separate destructor-time or bounded-queue overflow cases.
+
 ### Cleanup limitation
 
 RabbitMQ 4.2.9 rejected both `if-unused=true` and `if-empty=true` queue-delete options for quorum queues with HTTP 400. The original TTL test's cleanup assertion therefore masked its main delivery failure. The experiment now retains TTL resources instead of forcing deletion. Do not run the lab's `down -v` scripts against a shared Compose project. The owned isolated lab remains available for inspection; cleanup requires verifying ownership and an explicit safe lifecycle for the retained test messages.
