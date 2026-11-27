@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Goopil\RabbitRs\ConnectionException;
 use Goopil\RabbitRs\Laravel\Jobs\RabbitMqJob;
 use PHPUnit\Framework\Assert;
 
@@ -323,6 +324,116 @@ it('recovers a pool after a proxy outage and delivers an outage-buffered publica
             try {
                 if ($downstreamCut) {
                     $proxy->removeTimeout('recovery-down');
+                }
+            } finally {
+                try {
+                    if ($pool !== null) {
+                        $pool->close();
+                    }
+                } finally {
+                    try {
+                        if ($queueOwned) {
+                            ReliabilityQueue::delete($queueName);
+                        }
+                    } finally {
+                        $proxy->close();
+                    }
+                }
+            }
+        }
+    }
+});
+
+it('redelivers an unacknowledged message after an established consumer loses its connection', function () {
+    if (! extension_loaded('rabbit_rs')) {
+        $this->fail('ext-rabbit_rs is required for real-broker reliability tests');
+    }
+
+    $queueName = uniqueQueue('rabbit-rs-it-consumer-recovery');
+    $proxy = ReliabilityProxy::create();
+    $pool = null;
+    $queueOwned = false;
+    $upstreamCut = false;
+    $downstreamCut = false;
+    try {
+        ReliabilityQueue::create($queueName, $queueOwned);
+        [$pool, $queue] = integrationPoolAndQueue(
+            $this->app,
+            $queueName,
+            connectOverrides: ['block_for' => 1],
+            connectionName: 'rabbit-rs-consumer-recovery-'.$proxy->name,
+            brokerHosts: ['127.0.0.1:'.$proxy->port],
+        );
+        $states = [];
+        $pool->onConnectionState(function (string $broker, string $state, int $generation) use (&$states): void {
+            $states[] = [$broker, $state, $generation];
+        });
+        $id = $queue->push('stdClass', ['phase' => 'unacknowledged']);
+        $pool->flush();
+        $held = $queue->pop();
+        expect($held)->toBeInstanceOf(RabbitMqJob::class)
+            ->and($held->getJobId())->toBe($id)
+            ->and($held->attempts())->toBe(1);
+        $baseline = $pool->stats()['reconnects_total'];
+        $faultStart = count($states);
+
+        $proxy->addTimeout('consumer-up', 'upstream');
+        $upstreamCut = true;
+        $proxy->addTimeout('consumer-down', 'downstream');
+        $downstreamCut = true;
+        $deadline = microtime(true) + 15;
+        do {
+            $pool->stats();
+            if (array_intersect(array_column(array_slice($states, $faultStart), 1), ['recovering', 'connecting', 'disconnected']) !== []) {
+                break;
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
+        expect(array_intersect(array_column(array_slice($states, $faultStart), 1), ['recovering', 'connecting', 'disconnected']))
+            ->not->toBeEmpty('The pool must observe the injected connection failure');
+        $proxy->removeTimeout('consumer-up');
+        $upstreamCut = false;
+        $proxy->removeTimeout('consumer-down');
+        $downstreamCut = false;
+
+        $deadline = microtime(true) + 20;
+        do {
+            $reconnects = $pool->stats()['reconnects_total'];
+            if ($reconnects > $baseline && in_array('ready', array_column(array_slice($states, $faultStart), 1), true)) {
+                break;
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
+        expect($reconnects)->toBeGreaterThan($baseline);
+        expect(array_column(array_slice($states, $faultStart), 1))->toContain('ready');
+
+        $deadline = microtime(true) + 15;
+        $redelivered = null;
+        $transientErrors = 0;
+        do {
+            try {
+                $redelivered = $queue->pop();
+            } catch (ConnectionException $exception) {
+                $transientErrors++;
+                if ($transientErrors > 5) {
+                    throw $exception;
+                }
+            }
+        } while ($redelivered === null && microtime(true) < $deadline);
+        expect($redelivered)->toBeInstanceOf(RabbitMqJob::class)
+            ->and($redelivered->getJobId())->toBe($id)
+            ->and($redelivered->attempts())->toBeGreaterThan(1)
+            ->and(json_decode($redelivered->getRawBody(), true, flags: JSON_THROW_ON_ERROR)['data']['phase'])->toBe('unacknowledged');
+        $redelivered->delete();
+    } finally {
+        try {
+            if ($upstreamCut) {
+                $proxy->removeTimeout('consumer-up');
+            }
+        } finally {
+            try {
+                if ($downstreamCut) {
+                    $proxy->removeTimeout('consumer-down');
                 }
             } finally {
                 try {

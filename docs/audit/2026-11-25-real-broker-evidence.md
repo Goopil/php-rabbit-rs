@@ -40,6 +40,8 @@ The focused `PublishErrorRetentionTest.php` passed against the isolated real bro
 
 After updating the investigation branch to include main revision `1c1aea2ace67b2fc486f521495c7d9865f51f0d3`, all three `RealBrokerReliabilityTest.php` scenarios passed against the isolated lab (62 assertions). The recovery scenario publishes a control message, cuts both proxy directions, observes a non-ready pool state, accepts a second message into the local publish buffer during the outage, restores the proxy, observes a reconnect and ready state, and consumes both messages with distinct original IDs. It allows duplicate deliveries and does not acknowledge the control immediately before the cut. The tests create unique queues and proxies, verify their deletion, and do not rewrite the vhost's shared permissions.
 
+A fourth scenario then established a consumer, received a uniquely identified publication without acknowledging it, cut and restored both proxy directions, and observed the pool reconnect. The broker redelivered the same ID and payload after recovery, with the Laravel attempt count increasing from one to more than one; the replacement delivery was acknowledged. The complete file passed four tests with 88 assertions. This observation does not test an acknowledgement issued with the stale pre-outage delivery token.
+
 The second publication was deliberately held in the local buffer until after recovery. This proves this buffered-outage path; it does **not** establish replay of an unconfirmed publication that had already reached the broker before the cut, nor durability across process termination. Those cases remain open.
 
 ### Cleanup limitation
