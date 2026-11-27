@@ -2,6 +2,11 @@
 
 declare(strict_types=1);
 
+it('throws a backpressure exception carrying its message from userland', function () {
+    expect(fn () => \Goopil\RabbitRs\BackpressureException::throw('message example: saturated'))
+        ->toThrow(\Goopil\RabbitRs\BackpressureException::class, 'message example: saturated');
+});
+
 describe('extension metadata', function () {
     it('is loaded', function () {
         expect(extension_loaded('rabbit_rs'))->toBeTrue();

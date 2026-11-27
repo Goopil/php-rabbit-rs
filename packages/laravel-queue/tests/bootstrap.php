@@ -134,7 +134,13 @@ namespace Goopil\RabbitRs {
     if (! class_exists(Pool::class, false)) {
         class Exception extends \Exception {}
 
-        final class BackpressureException extends Exception {}
+        final class BackpressureException extends Exception
+        {
+            public static function throw(string $message): never
+            {
+                throw new self($message);
+            }
+        }
 
         final class ConnectionException extends Exception
         {
@@ -248,6 +254,8 @@ namespace Goopil\RabbitRs {
 
             public int $closeCalls = 0;
 
+            public bool $rejectDrainAfterClose = false;
+
             /** @var list<Delivery> */
             private array $deliveries = [];
 
@@ -257,6 +265,13 @@ namespace Goopil\RabbitRs {
             private ?\Throwable $nextException = null;
 
             private bool $closed = false;
+
+            private ?\Closure $closeCallback = null;
+
+            public function onClose(\Closure $callback): void
+            {
+                $this->closeCallback = $callback;
+            }
 
             public function push(Delivery $delivery): void
             {
@@ -279,6 +294,9 @@ namespace Goopil\RabbitRs {
              */
             public function drainErrors(): array
             {
+                if ($this->closed && $this->rejectDrainAfterClose) {
+                    throw new Exception('consumer is closed');
+                }
                 $errors = $this->errors;
                 $this->errors = [];
 
@@ -325,6 +343,9 @@ namespace Goopil\RabbitRs {
             public function close(): void
             {
                 $this->closeCalls++;
+                if ($this->closeCallback !== null) {
+                    ($this->closeCallback)();
+                }
                 $this->closed = true;
             }
         }

@@ -31,6 +31,9 @@ describe('pool handle claims', function () {
 
         $probe->close();
 
+        expect($probe->droppedSettlementErrorsTotal())->toBe(0);
+        expect($live->stats()['closed'])->toBeFalse();
+
         // The live pool must keep working after the probe closed.
         expect($live->stats()['handle'])->toBe($liveHandle);
         expect($live->publish(pubMessage('after-probe')))->toBe('after-probe');

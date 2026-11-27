@@ -197,12 +197,17 @@ impl Consumer {
 
     /// Drains settlement errors that have surfaced asynchronously since the
     /// last call. Returns an array of error hashes, each containing
-    /// `delivery_tag`, `subscription`, `error_kind`, and `message`.
+    /// `delivery_tag`, `subscription`, `error_kind`, and `message`. It also
+    /// remains available after close, including errors recorded during close.
     ///
     /// @return list<array{delivery_tag: int, subscription: string,
     ///   error_kind: string, message: string}>
     pub fn drainErrors(&self) -> PhpResult<ZBox<ZendHashTable>> {
-        self.ensure_open("Goopil\\RabbitRs\\Consumer::drainErrors")?;
+        if self.pid != std::process::id() {
+            return rabbit_exception(
+                "Goopil\\RabbitRs\\Consumer::drainErrors cannot use a consumer inherited across fork",
+            );
+        }
         let errors = self.handle.drain_errors();
         let mut table = ZendHashTable::new();
         for (i, error) in errors.iter().enumerate() {

@@ -25,6 +25,16 @@ pub struct RabbitRsException;
 #[derive(Default)]
 pub struct BackpressureException;
 
+#[php_impl]
+impl BackpressureException {
+    /// Throws a backpressure exception carrying the given message.
+    ///
+    /// @return never
+    pub fn throw(message: String) -> PhpResult<()> {
+        Err(PhpException::from_class::<BackpressureException>(message))
+    }
+}
+
 /// Thrown on broker connection-level failures (transport errors, stale
 /// connection generations, source replacement).
 #[php_class]

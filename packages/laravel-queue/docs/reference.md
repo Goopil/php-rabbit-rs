@@ -880,16 +880,22 @@ never re-buffered; it surfaces at the earliest of:
   `pop()` (which drains pending publish errors first through
   `drainSettlementErrors()`); `Pool::drainErrors()` reads the raw records
   without throwing.
-- **Process teardown, as a guaranteed net.** A process whose final publish
+- **Process teardown, as a best-effort net.** A process whose final publish
   was returned and that performs no further queue operation (a lone dispatch
   in a CLI one-shot, or an FPM request that never touches the queue again)
   would otherwise take the record with it: `RabbitMqQueue::__destruct()`
   drains pending publish errors and logs each one at `error` level
   (`rabbit-rs: publication outcome never surfaced before process teardown`,
   with the native `kind`, `message_id`, and `message` context). A throw is
-  impossible at that point — destructors cannot propagate exceptions — so
-  the log entry plus the `returns_total` counter is the floor of the
-  contract.
+  impossible at that point — destructors cannot propagate exceptions. Logging
+  can itself fail during teardown, and a process crash can prevent it entirely.
+
+When several asynchronous publications fail, each queue operation surfaces
+one failure and retains the others for later calls. `Pool::drainErrors()` can
+instead retrieve the native pending records together. Pending error storage is
+bounded: if producers outpace error handling, the oldest native records can
+be evicted and `dropped_error_records_total` increases. Monitor that counter
+and drain errors promptly; it does not recover the identities of evicted records.
 
 `stats()['returns_total']` counts every mandatory return for the process
 lifetime of the pool (`rabbit-rs:status` exposes it), and `rabbit-rs:doctor`
@@ -1098,7 +1104,14 @@ Requires the `rabbitmq_delayed_message_exchange` plugin. Rabbit RS declares an `
 
 In `declare` mode, Rabbit RS also declares the `rabbit-rs.delayed` exchange (durable, `x-delayed-type: direct`) and binds every subscription queue to it with the queue name as the routing key, so delayed publishes reach each queue without extra provisioning. The declare requires `configure` permission on `rabbit-rs.*`.
 
-In `external` and `verify` modes, the exchange and its bindings are an infrastructure contract that must be provisioned externally: one `rabbit-rs.delayed` exchange per vhost (or `{route-exchange}.delayed` for custom route exchanges), plus a binding from each subscription queue using the queue name as the routing key.
+For a custom route exchange, declare mode does **not** provision bindings for
+`{route-exchange}.delayed`. Provision a binding to each destination queue with
+the route's actual routing key before publishing delayed jobs. With the default
+`{queue}` routing template, that key is the queue name. The plugin defers
+routing and delayed publishes are not mandatory, so a publisher confirmation
+does not prove the binding will exist when the delay expires.
+
+In `external` and `verify` modes, the exchange and its bindings are an infrastructure contract that must be provisioned externally: one `rabbit-rs.delayed` exchange per vhost (or `{route-exchange}.delayed` for custom route exchanges), plus a binding from each subscription queue using the actual routing key.
 
 Install the plugin:
 
@@ -1507,11 +1520,18 @@ For operating on these signals — incident playbooks, example alert rules, and 
 | `duplicates_total` | Deliveries the broker flagged as redeliveries (per-process; see [Reliability — Measuring duplicates](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#measuring-duplicates)) |
 | `dropped_publications_total` | Publications discarded without confirmed delivery (deadline-expired flush retries, un-attempted batches on a closing pool, unconfirmed leftovers at teardown) |
 | `dropped_error_records_total` | Publish error records evicted from the bounded drain queue before they could be read |
+| `dropped_settlement_errors_total` | Settlement error records evicted from bounded consumer queues before they could be read |
 | `publication_retries_total` | Publications whose deadline expired during a recovery suspension and were re-armed once |
 | `publish_buffered` | Publications currently parked in the publish buffer |
 | `publish_buffered_bytes` | Cumulative payload bytes currently parked in the publish buffer |
 | `confirmation_latency_p50/p95/p99` | Publisher confirmation latency (ms) |
 | `settlement_latency_p50/p95/p99` | Consumer settlement latency (ms) |
+
+Monitor `dropped_settlement_errors_total` alongside `dropped_error_records_total`:
+an increase means error details were evicted and cannot be recovered. Native
+`Pool::droppedSettlementErrorsTotal()` also remains readable after explicit
+close, without consuming the publication errors retained for
+`Pool::drainErrors()`. This counter is shared by pools using the same client.
 
 The snapshot also carries pool-handle state (`closed`, `pid`, `handle`) — see the `Pool::stats()` stub in `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` for the full shape.
 

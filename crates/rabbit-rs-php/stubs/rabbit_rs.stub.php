@@ -9,6 +9,15 @@ namespace Goopil\RabbitRs {
      */
     class BackpressureException extends \Goopil\RabbitRs\Exception {
         public function __construct() {}
+
+        /**
+         * Throws a backpressure exception carrying the given message.
+         *
+         * @return never
+         *
+         * @param string $message
+         */
+        public static function throw(string $message): void {}
     }
 
     /**
@@ -93,7 +102,8 @@ namespace Goopil\RabbitRs {
         /**
          * Drains settlement errors that have surfaced asynchronously since the
          * last call. Returns an array of error hashes, each containing
-         * `delivery_tag`, `subscription`, `error_kind`, and `message`.
+         * `delivery_tag`, `subscription`, `error_kind`, and `message`. It also
+         * remains available after close, including errors recorded during close.
          *
          * @return list<array{delivery_tag: int, subscription: string,
          *   error_kind: string, message: string}>
@@ -311,7 +321,8 @@ namespace Goopil\RabbitRs {
          * Closing releases this pool's claim on the shared connection handle:
          * sibling pools built from the same configuration fingerprint keep
          * working, and the shared connection itself is torn down only when the
-         * last claim closes.
+         * last claim closes. Publication failures retained during the flush can
+         * be read with `drainErrors()` after closing.
          *
          * @return void
          */
@@ -358,11 +369,22 @@ namespace Goopil\RabbitRs {
          * flush, returning one hash per record with `kind`, `message_id`, and
          * `message`. The queue is cleared by this call; the same records would
          * otherwise surface as exceptions at the next publish/flush/size/
-         * clear/stats operation.
+         * clear/stats operation. It remains available after an explicit close so
+         * callers can inspect failures retained during shutdown.
          *
          * @return list<array{kind: string, message_id: string, message: string}>
          */
         public function drainErrors(): array {}
+
+        /**
+         * Returns settlement error records evicted before they could be read.
+         *
+         * The counter remains readable after explicit close. It is shared by
+         * pools using the same client and may grow while another pool is open.
+         *
+         * @return int
+         */
+        public function droppedSettlementErrorsTotal(): int {}
 
         /**
          * Flushes the publish buffer, sending all buffered messages to the broker.
@@ -519,6 +541,7 @@ namespace Goopil\RabbitRs {
          *   reconnects_total: int, deliveries_total: int,
          *   duplicates_total: int, acks_total: int, rejects_total: int,
          *   dropped_publications_total: int, dropped_error_records_total: int,
+         *   dropped_settlement_errors_total: int,
          *   publish_buffered: int, publish_buffered_bytes: int,
          *   confirmation_latency_p50: int, confirmation_latency_p95: int,
          *   confirmation_latency_p99: int, settlement_latency_p50: int,

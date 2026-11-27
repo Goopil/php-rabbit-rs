@@ -46,7 +46,7 @@ Measuring this yourself? Do not observe with the management API's sampled per-qu
 
 ### Mandatory returns
 
-Mandatory routing is enabled for ordinary publishes in safe mode (`safety = "safe"`). Delayed-plugin publishes are an exception described below. When enabled:
+Mandatory routing is enabled in safe mode (`safety = "safe"`) for immediate publications and the initial publication into a TTL delay bucket. When enabled:
 
 - The broker returns unroutable messages via `basic.return` instead of silently dropping them
 - `basic.return` is processed **before** the corresponding `basic.ack` — a return takes precedence over a following ACK
@@ -56,7 +56,7 @@ In the Laravel connection configuration, `mandatory` is derived from `safety` an
 
 #### Delayed publishes
 
-Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. Publisher confirms remain enabled, but a confirm is not proof that the eventual delayed delivery reached a queue. Ensure the delayed exchange and bindings are configured and verified (see [Topology — Delay routing](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#delay-routing)). Delayed messages published through TTL bucket queues carry no `x-delay` header on the wire and remain mandatory.
+Publications carrying the `x-delay` header (delay plugin mode) are **never mandatory** on the wire, even in safe mode: the `rabbitmq_delayed_message_exchange` plugin returns every mandatory delayed publish as unroutable (`basic.return`), so mandatory routing is suppressed for plugin-routed delayed messages. In safe mode the broker still confirms acceptance, but that confirmation does **not** establish that a destination binding will exist when the delay expires. A missing or removed binding can therefore cause the delayed message not to reach its destination. Provision and maintain the bindings described in [Topology — Delay routing](https://github.com/Goopil/php-rabbit-rs/blob/main/packages/laravel-queue/docs/reference.md#delay-routing), including the bindings for custom route exchanges. TTL bucket publications carry no `x-delay` header and their initial enqueue remains mandatory in safe mode; subsequent dead-letter transfer has separate broker-side reliability requirements.
 
 ### Connection recovery
 
