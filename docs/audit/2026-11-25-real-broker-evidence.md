@@ -2,7 +2,7 @@
 
 ## Run 2026-11-26: initial plugin and TTL binding experiments
 
-- Tested revision: `778ec9d043b93110f1f6cbfee4ff3f8cfcbba51b` (`origin/main` as locally fetched); branch `test/broker-reliability`. The test files are uncommitted additions on this branch.
+- Tested revision: `778ec9d043b93110f1f6cbfee4ff3f8cfcbba51b` (`origin/main` as locally fetched); branch `test/broker-reliability`. The test files were uncommitted additions at the time of this run.
 - Environment: isolated Compose project `rabbitrs-audit-7f3e`, three healthy RabbitMQ 4.2.9 nodes, delayed-message plugin 4.2.0, Toxiproxy. PHP dependencies were installed separately in the worktree; the local extension was rebuilt with `extension-tests`.
 - Baseline `rtk ./scripts/check.sh`: failed at `cargo-deny` on `url 2.5.8`, `RUSTSEC-2026-0592`. A separate existing branch `fix/url-rustsec-2026-0592` contains the dependency fix; it was not modified here.
 - Existing `rtk ./scripts/test-laravel.sh tests/Integration/DelayedJobTest.php`: 2 passed, 3 assertions.
@@ -35,6 +35,12 @@ On 2026-11-27, `DelayedRoutingAcceptanceTest.php --filter='observes custom delay
 ## Run 2026-11-27: publish error retention
 
 The focused `PublishErrorRetentionTest.php` passed against the isolated real broker from the remediation worktree (1 test, 5 assertions): three distinct mandatory returns were accounted for, and the native publish-error eviction counter remained zero. This test covers the scenario it exercises, not the separate destructor-time or bounded-queue overflow cases.
+
+## Run 2026-11-27: pool recovery through Toxiproxy
+
+After updating the investigation branch to include main revision `1c1aea2ace67b2fc486f521495c7d9865f51f0d3`, all three `RealBrokerReliabilityTest.php` scenarios passed against the isolated lab (62 assertions). The recovery scenario publishes a control message, cuts both proxy directions, observes a non-ready pool state, accepts a second message into the local publish buffer during the outage, restores the proxy, observes a reconnect and ready state, and consumes both messages with distinct original IDs. It allows duplicate deliveries and does not acknowledge the control immediately before the cut. The tests create unique queues and proxies, verify their deletion, and do not rewrite the vhost's shared permissions.
+
+The second publication was deliberately held in the local buffer until after recovery. This proves this buffered-outage path; it does **not** establish replay of an unconfirmed publication that had already reached the broker before the cut, nor durability across process termination. Those cases remain open.
 
 ### Cleanup limitation
 

@@ -110,6 +110,52 @@ final class ReliabilityProxy
     }
 }
 
+/** Creates and deletes only the uniquely named queue owned by this test. */
+final class ReliabilityQueue
+{
+    /** @return array{int, string} */
+    private static function request(string $method, string $queueName, ?array $payload = null): array
+    {
+        $url = 'http://127.0.0.1:15672/api/queues/'.rawurlencode(ORDERS_VHOST).'/'.rawurlencode($queueName);
+        $curl = curl_init($url);
+        curl_setopt_array($curl, [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 5,
+            CURLOPT_USERPWD => 'admin:admin_lab',
+        ]);
+        if ($payload !== null) {
+            curl_setopt($curl, CURLOPT_POSTFIELDS, json_encode($payload, JSON_THROW_ON_ERROR));
+            curl_setopt($curl, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        }
+        $body = curl_exec($curl);
+        $status = curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        curl_close($curl);
+
+        return [$status, $body === false ? '' : $body];
+    }
+
+    public static function create(string $queueName, bool &$owned): void
+    {
+        [$status] = self::request('GET', $queueName);
+        Assert::assertSame(404, $status, 'The test queue name must not already exist');
+        [$status] = self::request('PUT', $queueName, [
+            'durable' => true,
+            'arguments' => ['x-queue-type' => 'quorum'],
+        ]);
+        $owned = $status === 201;
+        Assert::assertSame(201, $status, 'The test-owned queue must be created');
+    }
+
+    public static function delete(string $queueName): void
+    {
+        [$status] = self::request('DELETE', $queueName);
+        Assert::assertSame(204, $status, 'The test-owned queue must be deleted');
+        [$status] = self::request('GET', $queueName);
+        Assert::assertSame(404, $status, 'The test-owned queue must be absent');
+    }
+}
+
 it('publishes a confirmed message through an isolated lab proxy', function () {
     if (! extension_loaded('rabbit_rs')) {
         $this->fail('ext-rabbit_rs is required for real-broker reliability tests');
@@ -118,9 +164,9 @@ it('publishes a confirmed message through an isolated lab proxy', function () {
     $queueName = uniqueQueue('rabbit-rs-it-reliability');
     $proxy = ReliabilityProxy::create();
     $pool = null;
+    $queueOwned = false;
     try {
-        declareQueue($queueName);
-        grantRabbitRsConfigure();
+        ReliabilityQueue::create($queueName, $queueOwned);
         [$pool, $queue] = integrationPoolAndQueue(
             $this->app,
             $queueName,
@@ -144,8 +190,13 @@ it('publishes a confirmed message through an isolated lab proxy', function () {
                 $pool->close();
             }
         } finally {
-            deleteQueue($queueName);
-            $proxy->close();
+            try {
+                if ($queueOwned) {
+                    ReliabilityQueue::delete($queueName);
+                }
+            } finally {
+                $proxy->close();
+            }
         }
     }
 });
@@ -181,5 +232,113 @@ it('cuts and restores a real AMQP connection using its own proxy', function () {
             fclose($socket);
         }
         $proxy->close();
+    }
+});
+
+it('recovers a pool after a proxy outage and delivers an outage-buffered publication', function () {
+    if (! extension_loaded('rabbit_rs')) {
+        $this->fail('ext-rabbit_rs is required for real-broker reliability tests');
+    }
+
+    $queueName = uniqueQueue('rabbit-rs-it-recovery');
+    $proxy = ReliabilityProxy::create();
+    $pool = null;
+    $upstreamCut = false;
+    $downstreamCut = false;
+    $queueOwned = false;
+    try {
+        ReliabilityQueue::create($queueName, $queueOwned);
+        [$pool, $queue] = integrationPoolAndQueue(
+            $this->app,
+            $queueName,
+            configOverrides: ['flush_interval' => 3_600_000],
+            connectOverrides: ['block_for' => 1],
+            connectionName: 'rabbit-rs-recovery-'.$proxy->name,
+            brokerHosts: ['127.0.0.1:'.$proxy->port],
+        );
+        $states = [];
+        $pool->onConnectionState(function (string $broker, string $state, int $generation) use (&$states): void {
+            $states[] = [$broker, $state, $generation];
+        });
+
+        $beforeId = $queue->push('stdClass', ['phase' => 'before']);
+        $pool->flush();
+        $baseline = $pool->stats()['reconnects_total'];
+        expect(array_column($states, 1))->toContain('ready');
+        $faultStart = count($states);
+
+        $proxy->addTimeout('recovery-up', 'upstream');
+        $upstreamCut = true;
+        $proxy->addTimeout('recovery-down', 'downstream');
+        $downstreamCut = true;
+        $deadline = microtime(true) + 15;
+        do {
+            $pool->stats();
+            if (array_intersect(array_column(array_slice($states, $faultStart), 1), ['recovering', 'connecting', 'disconnected']) !== []) {
+                break;
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
+        expect(array_intersect(array_column(array_slice($states, $faultStart), 1), ['recovering', 'connecting', 'disconnected']))
+            ->not->toBeEmpty('The pool must observe the injected connection failure');
+
+        $duringId = $queue->push('stdClass', ['phase' => 'during']);
+        expect($duringId)->not->toBe($beforeId, 'The two publications must have distinct IDs');
+        $proxy->removeTimeout('recovery-up');
+        $upstreamCut = false;
+        $proxy->removeTimeout('recovery-down');
+        $downstreamCut = false;
+        $deadline = microtime(true) + 20;
+        do {
+            $reconnects = $pool->stats()['reconnects_total'];
+            if ($reconnects > $baseline && in_array('ready', array_column(array_slice($states, $faultStart), 1), true)) {
+                break;
+            }
+            usleep(100_000);
+        } while (microtime(true) < $deadline);
+        expect($reconnects)->toBeGreaterThan($baseline, 'The pool must reconnect after the proxy is restored');
+        expect(array_column(array_slice($states, $faultStart), 1))->toContain('ready');
+
+        $pool->flush();
+        $deadline = microtime(true) + 15;
+        $expected = [$beforeId => 'before', $duringId => 'during'];
+        $seen = [];
+        do {
+            $job = $queue->pop();
+            if ($job instanceof RabbitMqJob) {
+                $id = $job->getJobId();
+                expect($expected)->toHaveKey($id);
+                expect(json_decode($job->getRawBody(), true, flags: JSON_THROW_ON_ERROR)['data']['phase'])->toBe($expected[$id]);
+                $seen[$id] = true;
+                $job->delete();
+            }
+        } while (count($seen) < count($expected) && microtime(true) < $deadline);
+        expect(array_keys($seen))->toContain($beforeId, $duringId);
+    } finally {
+        try {
+            if ($upstreamCut) {
+                $proxy->removeTimeout('recovery-up');
+            }
+        } finally {
+            try {
+                if ($downstreamCut) {
+                    $proxy->removeTimeout('recovery-down');
+                }
+            } finally {
+                try {
+                    if ($pool !== null) {
+                        $pool->close();
+                    }
+                } finally {
+                    try {
+                        if ($queueOwned) {
+                            ReliabilityQueue::delete($queueName);
+                        }
+                    } finally {
+                        $proxy->close();
+                    }
+                }
+            }
+        }
     }
 });
