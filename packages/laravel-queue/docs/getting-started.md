@@ -7,8 +7,9 @@ The same engine is also usable without Laravel — see the [native extension get
 ## Install
 
 ```bash
-# Native extension (Linux via PIE)
+# Native extension (Linux or macOS via PIE)
 pie install goopil/rabbit-rs-native
+php --ri rabbit_rs
 
 # Laravel queue driver (service provider auto-discovered)
 composer require goopil/rabbit-rs-laravel
@@ -18,7 +19,15 @@ Details — macOS (Homebrew), Docker, manual binaries: the [installation guide](
 
 ## 1. Your first job in 3 minutes
 
-Prerequisites: the native extension installed ([Install](#install)) and a reachable RabbitMQ at `127.0.0.1:5672` — the repo's lab broker (`docker compose up -d rabbitmq` in `benchmarks/`, credentials `rabbit_rs` / `rabbit_rs_lab`) or your own (a stock install uses `guest` / `guest`).
+Prerequisites: the native extension installed ([Install](#install)) and RabbitMQ 4.2.9 or newer reachable at `127.0.0.1:5672`. For a disposable local broker, run:
+
+```bash
+docker run -d --name rabbit-rs-quickstart -p 5672:5672 -p 15672:15672 \
+  -e RABBITMQ_DEFAULT_USER=rabbit_rs -e RABBITMQ_DEFAULT_PASS=rabbit_rs_local \
+  rabbitmq:4.2.9-management
+```
+
+This disposable broker uses `rabbit_rs` / `rabbit_rs_local`; set those credentials in `.env` below. Use your own broker and credentials in other environments. The broker in `benchmarks/docker-compose.yml` uses RabbitMQ 3.13 and is not the supported-version example.
 
 Add one connection to `config/queue.php` — one connection = one broker/vhost = one native pool:
 
@@ -28,6 +37,7 @@ Add one connection to `config/queue.php` — one connection = one broker/vhost =
         'driver' => 'rabbit-rs',
         'queue' => env('RABBIT_RS_QUEUE', 'default'),
         'hosts' => env('RABBIT_RS_HOSTS', '127.0.0.1:5672'),
+        'vhost' => env('RABBIT_RS_VHOST', '/'),
         'username' => env('RABBIT_RS_USERNAME', 'guest'),
         'password' => env('RABBIT_RS_PASSWORD', 'guest'),
     ],
@@ -35,8 +45,13 @@ Add one connection to `config/queue.php` — one connection = one broker/vhost =
 ```
 
 ```bash
-QUEUE_CONNECTION=rabbit-rs   # .env
+# .env (credentials for the Docker example above)
+QUEUE_CONNECTION=rabbit-rs
+RABBIT_RS_USERNAME=rabbit_rs
+RABBIT_RS_PASSWORD=rabbit_rs_local
 ```
+
+If configuration is cached, rebuild the cache after editing `.env` or `config/queue.php`. The broker settings above use environment variables because they are explicitly wired in this connection.
 
 Every other key falls back to the package defaults — quorum queues, `safe` publishing, prefetch 1000. The full key-by-key reference (TLS, exchanges, safety modes, dead-lettering, subscriptions, …) is [Configuration](reference.md#configuration).
 
@@ -112,7 +127,7 @@ The [Supervisor config example](https://github.com/Goopil/php-rabbit-rs/blob/mai
 
 ## 2. Reliability
 
-Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and measurable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability).
+Delivery is **at-least-once**: once a message is accepted into the confirmed delivery path, silent loss is unacceptable, and duplicates are permitted and must remain identifiable. Jobs **must be idempotent** — the stable `message_id` (UUID from the Laravel payload) is the deduplication key. Full contract: [Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#reliability).
 
 The `safety` key selects the publisher guarantees (default `safe`: publisher confirms plus mandatory routing — there is no separate `mandatory` switch, it follows the safety mode). In `safe` mode every publish is tracked to ACK, return, or timeout; unconfirmed publications survive connection recovery in bounded process memory and are replayed with their original `message_id`. That replay buffer is **process memory, not durability**: it does not survive a PHP crash, and cross-process durability needs an external outbox.
 
@@ -190,10 +205,12 @@ Full reference — every connection key, `hosts` failover semantics, validation 
 | Command | Purpose |
 | ------- | ------- |
 | `php artisan rabbit-rs:work` | Supervised fan-out worker (`--connection`, `--queue`, `--workers`, `--max-restarts`, `--backoff`) |
-| `php artisan rabbit-rs:status` | Per-connection pool metrics and counters; `--format=json` for monitoring |
+| `php artisan rabbit-rs:status` | Same-process pool metrics and optional broker queue counters; `--format=json` |
 | `php artisan rabbit-rs:doctor` | One-shot health report — `ok`/`warn`/`fail` checks, non-zero exit on failure (CI-friendly) |
 | `php artisan rabbit-rs:topology` | Preflight topology check; `--fix` declares missing topology |
 | `php artisan rabbit-rs:probe` | Kubernetes probes (`startup`/`ready`/`alive`/`prestop`) over the worker statefiles; liveness never touches the broker |
+
+A fresh status command cannot see native counters from other PHP worker processes; see [Measuring duplicates](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#measuring-duplicates) for the scope and broker-side counters.
 
 Details: [Operations](reference.md#operations) (supervision, Kubernetes, metrics), [Laravel usage](reference.md#usage) (dispatch API, events, job class).
 
@@ -203,6 +220,9 @@ Details: [Operations](reference.md#operations) (supervision, Kubernetes, metrics
 
 ## Going further
 
+- [Choosing a delivery mode](delivery-modes.md) — idempotent processing, fire-and-forget, and using different modes together
+- [Migrating from laravel-queue-rabbitmq](migration-from-laravel-queue-rabbitmq.md) — map configuration and review differences before switching
+- [Using Rabbit RS with Laravel](usage.md) — dispatch jobs, run workers, handle failures, and test your application
 - [Configuration](reference.md#configuration) — every connection key, subscriptions escape hatch, safety/delay/topology modes, validation
 - [Topology management](reference.md#topology) — declare/verify/external, dead-letter wiring
 - [Operations](reference.md#operations) — systemd/Supervisor/Kubernetes, metrics, backpressure

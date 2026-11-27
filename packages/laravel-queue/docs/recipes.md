@@ -21,13 +21,13 @@ mechanics (modes, declarations, recovery order) live in
 |---|---|---|
 | Work queue (competing consumers) | Background jobs of one kind | The default: one connection, one `queue` key, `--workers=N` |
 | Weighted multi-queue | Job classes with different latency needs | `subscriptions` with `weight` / per-subscription `prefetch` |
-| Pub/sub (fan-out) | One event, several independent consumer groups | A topic exchange plus one subscription queue per group, each bound with its own routing key |
-| Delayed jobs | `Job::dispatch()->delay(...)` | `delay.mode: auto` — a documented alias for the delayed-message plugin; no TTL fallback (an unroutable delay fails terminally). `ttl` remains available as an explicit mode |
+| Pub/sub | One event, several independent consumer groups | Provision and verify the exchange and bindings for each group; see [Pub/sub](#pubsub--several-consumer-groups-one-event) |
+| Delayed jobs | `Job::dispatch()->delay(...)` | `auto` uses the plugin when verified, otherwise TTL buckets; see [Delayed messages](reference.md#delayed-messages) |
 | Request/reply (RPC) | Service-to-service call/answer | Not yet built — milestone M3, see the [ROADMAP](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/plans/ROADMAP.md) |
 
 One rule cuts across all patterns: **jobs must be idempotent.** The
 at-least-once contract redelivers anything not acknowledged, so an extra copy
-is normal, counted, and possible after any reconnect
+is possible after a reconnect; redelivery counters are only a partial signal
 ([Reliability](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/reference.md#duplicates)).
 
 ### Work queue — the default
@@ -39,7 +39,7 @@ and the default config is exactly that:
 'rabbit-rs' => [
     'driver' => 'rabbit-rs',
     'queue'  => 'orders',
-    'hosts'  => [['host' => 'rabbit-1', 'port' => 5672]],
+    'hosts'  => 'rabbit-1:5672',
 ],
 ```
 
@@ -51,29 +51,18 @@ buffering per worker, not parallelism.
 
 ### Pub/sub — several consumer groups, one event
 
-Publish to a topic exchange and let each consumer group own a queue bound with
-the routing keys it cares about. In Rabbit RS, every subscription is a queue
-on the connection's exchange:
+A pub/sub topology needs an exchange and a separate queue for each independent consumer group. Bind those queues to the exchange with routing keys that match the events they should receive.
 
-```php
-'subscriptions' => [
-    'audit'    => ['queue' => 'audit.trail',    'weight' => 1],
-    'billing'  => ['queue' => 'billing.events', 'weight' => 4],
-],
-```
+The subscription list identifies queues consumed by a connection; it does not by itself define a distinct publish binding per consumer group. Provision and verify the exchange and bindings for your routing pattern, and test delivery to every group before switching traffic. For exchanges managed outside Rabbit RS, see [Topology modes](reference.md#topology-modes).
 
-Each subscription gets its own dedicated channel and prefetch. Groups that
-should never slow each other down belong on separate *connections* — a
-subscription cannot cross brokers.
+Each subscription uses a dedicated consumer channel. Use separate connections for different brokers or virtual hosts; use separately supervised workers when groups need independent process capacity.
 
 ### Dead-lettering poison safely
 
 Two rules from the reference docs, repeated here because they bite in
 production:
 
-- `delivery_limit` (quorum queues) caps redeliveries — **`dead_letter` MUST be
-  configured when it is set**, or poison messages are silently dropped after
-  the limit.
+- `delivery_limit` caps quorum queue redeliveries and requires `dead_letter` to be configured.
 - Without any dead-letter config, Rabbit RS creates no DLQ at all.
 
 ```php
@@ -116,11 +105,10 @@ those modes promise externally managed topology.
 | Environment | Mode | Why |
 |---|---|---|
 | Local / staging, driver owns topology | `declare` | DDL is idempotent and matches the config |
-| Production with IaC (Terraform, management CLI) | `verify` | Catches drift without creating anything |
+| Production with IaC (Terraform, management CLI) | `verify` | Checks the provisioned topology without creating it |
 | Frozen platform, topology fully provisioned elsewhere | `external` | Zero declaration traffic |
 
-Whatever the mode, `rabbit-rs:topology` verifies the same promises against the
-live broker — see [Topology Mode](reference.md#topology-modes).
+Whatever the mode, `rabbit-rs:topology` checks the configured topology against the live broker. Without the management API it cannot verify bindings or queue arguments; see [Management API usage](management-api.md).
 
 ## Recipe: Broker tuning
 
@@ -145,7 +133,7 @@ design.
 - `vm_memory_high_watermark` (default 60 % of RAM): when the node crosses it,
   the broker **blocks publishers**. With confirms on, this surfaces in Rabbit
   RS as rising confirm latency and `BackpressureDetected` events (the driver's
-  bounded publish buffer fills) — never as silent loss.
+  bounded publish buffer fills). Observe failures and backpressure in the publishing process.
 - `disk_free_limit`: same publisher-blocking behavior when free disk falls
   below it.
 
@@ -157,9 +145,7 @@ Do not "fix" backpressure by weakening confirms — it is the contract working.
 If a queue is capped (via policies), set `overflow: reject-publish` in
 reliable setups: the publisher gets a nack, which the at-least-once contract
 surfaces as a visible error. The default `drop-head` silently deletes the
-oldest messages — a silent-contract violation. A capped queue plus a DLX
-(`x-overflow: reject-publish-dlx` on modern RabbitMQ) routes the rejected
-messages where you can see them.
+oldest messages — a silent-contract violation. Quorum queues do not support `reject-publish-dlx`. Review the [RabbitMQ queue length documentation](https://www.rabbitmq.com/docs/4.2/maxlength) and [quorum queue limitations](https://www.rabbitmq.com/docs/4.2/quorum-queues#length-limit) before selecting an overflow policy.
 
 ### Heartbeat and confirm timeout
 
@@ -200,8 +186,7 @@ sit on the node until acknowledged:
 ```
 
 A runaway prefetch under slow consumers is a broker memory hazard: the node
-holds every unacked delivery. Adaptive prefetch is the default-shaped answer
-when in doubt. Full option reference:
+holds every unacked delivery. Start with a fixed value and measure your workload; consider adaptive prefetch when its behavior suits your workload. Full option reference:
 [Subscriptions](reference.md#subscriptions-escape-hatch).
 
 ### Verify the effect, not the intention
@@ -212,10 +197,7 @@ php artisan rabbit-rs:status --format=json   # same-process pool + management co
 php artisan rabbit-rs:doctor                 # wiring and safety summary
 ```
 
-`rabbit-rs:status` cross-process counters (delivered / acked / redelivered
-from the management API) are the ground truth for queue depth and duplicate
-signal; `redelivered` also counts crash requeues, so treat it as an
-approximate duplicate signal, not an error rate.
+With `management_url`, `rabbit-rs:status` can report broker-side delivery, acknowledgement, and redelivery counters. Those cumulative counters are not queue depth. Redeliveries are a partial duplicate signal, not an error rate; use `messages_ready` and `messages_unacknowledged` to inspect queue depth.
 
 ## Recipe: Capacity planning
 
@@ -249,19 +231,12 @@ seconds is what aggressive recovery churn looks like.
 1. **Measure, don't extrapolate.** Run the harness on production-like
    hardware and realistic payload/job durations:
 
-   ```bash
-   ./scripts/lab-up.sh with-plugin && ./scripts/lab-ready.sh
-   ./benchmarks/run-benchmarks.sh --driver=rabbit-rs --scenario=laravel-worker
-   # Stability + memory evidence (steady and kill modes):
-   php benchmarks/driver-bench/bin/soak.php --minutes=30 --kill-every=0
-   php benchmarks/driver-bench/bin/soak.php --minutes=60 --kill-every=10
-   ```
+   Follow the setup for the workload you want to measure in the [benchmark guide](https://github.com/Goopil/php-rabbit-rs/blob/main/benchmarks/README.md) and [driver benchmark guide](https://github.com/Goopil/php-rabbit-rs/blob/main/benchmarks/driver-bench/README.md).
 
 2. **Job duration is the driver.** Steady-state throughput per worker is
    ≈ 1/mean-job-duration; scale `--workers` per connection and add consumer
-   capacity per queue. Adaptive prefetch (Round E) keeps
-   ~`target_buffer_seconds` of ready work buffered, so a burst does not starve
-   a busy subscription — tune that target, not a fixed prefetch guess.
+   capacity per queue. Tune fixed or adaptive prefetch based on observed
+   throughput, latency, and broker memory.
 
 3. **Broker capacity.** Quorum queues cost more per message (replication +
    Raft) than classic — that is the price of surviving node loss, and the
@@ -275,9 +250,10 @@ seconds is what aggressive recovery churn looks like.
    20 MB/h) so a regression fails a run instead of a pager.
 
 5. **Read backpressure as a capacity signal.** `BackpressureDetected` events
-   and rising `backpressure_total` in `rabbit-rs:status` mean the publisher
-   side is saturated: add workers or shard connections before raising
-   `confirm_timeout`.
+   and rising in-process `backpressure_total` indicate publisher saturation.
+   Investigate broker health, routing, and publish rate before changing buffer
+   limits or timeouts. A separate `rabbit-rs:status` process cannot read a
+   publisher's native counters.
 
 ### Red flags
 

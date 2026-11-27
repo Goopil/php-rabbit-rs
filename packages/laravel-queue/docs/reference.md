@@ -4,16 +4,15 @@ Reference documentation for the Laravel queue driver: configuration, usage, topo
 
 **Contents**
 
-- [Usage](#usage) — dispatch API, events, job class, Horizon
-- [Configuration](#configuration) — every connection key, validation
-- [Topology](#topology) — declare/verify/external, dead-letter wiring
-- [Operations](#operations) — diagnostics, supervisors, Kubernetes, metrics
-- [Octane Integration](octane.md) — lifecycle hooks and pitfalls (separate page)
-- [Recipes](recipes.md) — topology patterns, broker tuning, capacity planning (separate page)
+- **Everyday use:** [dispatching](#dispatching-jobs), [workers](#consuming-jobs), [events](#events), [Horizon](#laravel-horizon)
+- **Configure a connection:** [single broker](#single-broker), [all keys](#connection-reference), [environment variables](#environment-strings), [multiple brokers](#multiple-brokers-and-vhosts), [TLS](#tls)
+- **Route messages:** [subscriptions](#subscriptions-escape-hatch), [delays](#delayed-messages), [safety modes](#safety-modes), [topology](#topology), [dead-lettering](#dlq-configuration)
+- **Run in production:** [diagnostics](#diagnostics), [worker supervisor](#rabbit-rswork-supervisor), [systemd](#supervisor-systemd-configuration), [Kubernetes](#kubernetes-deployment), [monitoring](#monitoring-with-prometheus)
+- **Other guides:** [getting started](getting-started.md), [everyday usage](usage.md), [migration](migration-from-laravel-queue-rabbitmq.md), [Octane](octane.md), [recipes](recipes.md), [management API](management-api.md)
 
 ## Usage
 
-The everyday path is the [getting started](getting-started.md); this page is the reference for the driver's API and runtime behaviour: dispatching, consuming, events, the job class, and Horizon.
+For everyday tasks, see [Using Rabbit RS with Laravel](usage.md). This page is the reference for the driver's API and runtime behaviour: dispatching, consuming, events, the job class, and Horizon.
 
 ### Dispatching jobs
 
@@ -36,7 +35,7 @@ ProcessOrder::dispatch($order)->onQueue('orders.high');
 ProcessOrder::dispatch($order)->delay(now()->addMinutes(5));
 ```
 
-Delayed jobs use the configured delay mode: `auto` verifies the `rabbitmq_delayed_message_exchange` plugin against the management API at connection compile time and publishes through the `x-delayed-message` exchange only when present (otherwise it degrades to `ttl` bucket queues), `plugin` refuses the delayed publish loudly when the management API proves the plugin absent, and `ttl` uses bucketed TTL queues. See [Topology — Delay routing](#delay-routing).
+Delayed jobs use the configured delay mode: `auto` checks for the `rabbitmq_delayed_message_exchange` plugin at connection compile time and publishes through the `x-delayed-message` exchange only when present (otherwise it degrades to `ttl` bucket queues), `plugin` refuses the delayed publish loudly when the configured probe proves the plugin absent, and `ttl` uses bucketed TTL queues. See [Topology — Delay routing](#delay-routing).
 
 #### Dispatch in bulk
 
@@ -802,13 +801,11 @@ Delay configuration is per connection, with `mode`, `buckets`,
 ],
 ```
 
-- `auto` — publish delayed messages through the `x-delayed-message` exchange when the broker confirms the plugin (checked once per connection through the management API at connection compile time), degrading to the `ttl` bucket queues when the plugin is absent or unverifiable
-- `plugin` — require the plugin: the first delayed publish throws `DelayPluginMissingException` when the management API proves it absent
+- `auto` — publish delayed messages through the `x-delayed-message` exchange when the broker confirms the plugin (checked once per connection at compile time via the management API when configured, otherwise a native AMQP probe), degrading to the `ttl` bucket queues when the plugin is absent or unverifiable
+- `plugin` — require the plugin: a delayed publish throws `DelayPluginMissingException` when the configured probe proves it absent
 - `ttl` — always use TTL queue buckets
 
-> **Note:** when `safety` is `blind`, delayed jobs are **not** honored — the
-> blind pump bypasses delay routing and publishes immediately. Use `safe` or
-> `unsafe` when you need delay routing.
+> **Note:** `blind` mode routes delayed publishes through the configured delay strategy, but does not wait for a broker confirmation. A routing, topology, or transport failure after hand-off can lose the publication.
 
 See [Topology — Delay routing](#delay-routing) for details.
 
@@ -848,6 +845,8 @@ what the counters mean.
 
 ### Safety modes
 
+For practical examples of idempotent processing and using different modes together, see [Choosing a delivery mode](delivery-modes.md).
+
 The `safety` setting selects the safety mode; publisher confirms and mandatory
 routing are **derived from it**, never set independently:
 
@@ -861,7 +860,7 @@ routing are **derived from it**, never set independently:
 - `blind` — explicit fire-and-forget: publishing hands the message to a
   bounded background pump and returns without waiting for any transport
   outcome. A transport failure after the hand-off is a silent loss. Delayed
-  jobs are not honored in this mode.
+  jobs use the configured delay routing but remain unconfirmed.
 
 #### Where unroutable-publish failures surface (safe mode)
 
@@ -1091,7 +1090,7 @@ Rabbit RS supports delayed message delivery via two strategies, selected by the 
 ],
 ```
 
-In `auto` mode the driver checks the broker for the `rabbitmq_delayed_message_exchange` plugin (management API overview, once per connection per process — only when a `management_url` is configured). With the plugin present, delayed messages are published through the `x-delayed-message` exchange, same as `plugin` mode (including its declare-mode topology, see below). Without the plugin — or when the plugin state cannot be verified (no `management_url`, or the management API is unreachable) — `auto` degrades to the `ttl` bucket queues at connection compile time, so a deferred job is never routed through the main queue and never silently lost to a missing plugin.
+In `auto` mode the driver checks for the delayed-message plugin once per connection per process. It uses the management API when `management_url` is configured; otherwise it uses a native AMQP probe. If the plugin is confirmed, delayed messages use the `x-delayed-message` exchange. If it is absent or the probe is inconclusive, the connection uses TTL buckets. See [Management API usage](management-api.md#delayed-message-plugin) for probe requirements.
 
 #### Plugin mode
 
@@ -1123,7 +1122,7 @@ rabbitmq-plugins enable rabbitmq_delayed_message_exchange
 
 If the plugin is not installed, the exchange declare fails with a permanent error: in `declare` mode the pool connection fails during topology reconciliation, while in `external` and `verify` modes delayed publishes fail terminally with a transport error — the publisher stays ready and all other publishing (delayed or not) keeps working. Use `ttl` mode when the plugin cannot be installed.
 
-On the first delayed publish the driver additionally re-checks the plugin through the management API (verdict cached per connection for the process lifetime): when the API proves the plugin absent, the publish throws `DelayPluginMissingException` instead of losing the message — without the plugin every deferred publish is silently lost. When the plugin state cannot be verified (no `management_url`, or the management API is unreachable), the publish goes through unchanged with a one-time warning, so an unrelated management outage never breaks a working plugin setup.
+For a delayed publish in explicit `plugin` mode, the driver checks the plugin using the configured management API or, without one, a native AMQP probe. The verdict is cached per connection for the process lifetime. If the probe proves the plugin is absent, the driver throws `DelayPluginMissingException`. If the probe is inconclusive, it logs a warning and lets the publish proceed; the missing-plugin guard cannot protect that publish.
 
 #### TTL mode (explicit)
 
@@ -1204,7 +1203,7 @@ Operating Rabbit RS in production: diagnostics, supervisor configuration, Kubern
 
 #### rabbit-rs:status
 
-The `rabbit-rs:status` command provides a read-only snapshot of the native pool:
+The `rabbit-rs:status` command provides a snapshot of the native pool in its own PHP process, plus optional broker-side queue counters. It cannot read native metrics from other worker processes:
 
 ```bash
 php artisan rabbit-rs:status
@@ -1250,7 +1249,7 @@ One-shot health report per rabbit-rs connection, resolved through the same confi
 - **Config & environment** — extension presence and version against the composer constraint; the resolved worker class (with a warning when `worker` is inherited from the package defaults instead of the connection).
 - **Broker** — reachability (AMQP connect, auth, vhost; optional management API probe when `management_url` is set), publisher exchange/routing-key alignment, dead-letter wiring, effective safety settings.
 - **Publish outcomes** (needs a reachable management API) — reads the publish exchange's broker-side `return_unroutable` counter: cross-process evidence that survives the death of the publishing process. `fail` under `safe` (messages were published as lost — fix the exchange→queue binding), `warn` under `unsafe`/`blind` (fire-and-forget by contract). Silently skipped without a management API; a missing exchange stays the topology check's finding.
-- **Dead-letter canary** (needs a reachable management API and a configured `dead_letter`) — publishes a uniquely marked probe, rejects it terminally through a transient consumer, and verifies its arrival through the management API. The verdict is tiered: received on the configured DLQ → `ok`; found only in the doctor-owned `rabbit-rs.canary.*` DLQ (the configured DLQ's backlog is deeper than the 100-message scan window; the foreign count is reported) → `warn`; never delivered → `fail` (dead-lettered messages would vanish — real broker traffic was produced). A contested run — a full scan window, or Horizon consumers configured on the connection — reports `warn` (`CanaryInconclusiveException`) instead of failing. The canary DLQ is purged and deleted after every run.
+- **Dead-letter canary** (needs a configured `dead_letter`) — publishes a uniquely marked probe, rejects it terminally through a transient consumer, and verifies its arrival through the management API or native AMQP operations. The verdict is tiered: received on the configured DLQ → `ok`; found only in the doctor-owned `rabbit-rs.canary.*` DLQ (the configured DLQ's backlog is deeper than the 100-message scan window; the foreign count is reported) → `warn`; never delivered → `fail` (dead-lettered messages would vanish — real broker traffic was produced). A contested run — a full scan window, or Horizon consumers configured on the connection — reports `warn` (`CanaryInconclusiveException`) instead of failing. The canary DLQ is purged and deleted after every run.
 - **Horizon supervisors** — supervisor/queue alignment with the checked connection.
 - **Event listeners** — registration of the driver's events.
 
@@ -1502,7 +1501,7 @@ The `prestop` hook always exits `0`: whether or not the workers finished drainin
 
 ### Monitoring with Prometheus
 
-Rabbit RS does not include a Prometheus exporter in V1, but the status command provides the metrics needed. You can scrape them with a custom exporter or sidecar.
+Rabbit RS does not include a Prometheus exporter. Native counters are process-local: a separate status command or sidecar cannot read the counters of your application workers. Collect them in the process that owns the pool, or use RabbitMQ broker metrics for cross-process monitoring.
 
 For operating on these signals — incident playbooks, example alert rules, and a Grafana dashboard definition — see the monorepo's `docs/operations/` ([runbook.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/runbook.md), [alerts.md](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/alerts.md), [dashboard.json](https://github.com/Goopil/php-rabbit-rs/blob/main/docs/operations/dashboard.json)).
 
@@ -1536,25 +1535,11 @@ close, without consuming the publication errors retained for
 
 The snapshot also carries pool-handle state (`closed`, `pid`, `handle`) — see the `Pool::stats()` stub in `crates/rabbit-rs-php/stubs/rabbit_rs.stub.php` for the full shape.
 
-#### Sidecar exporter
+#### Collecting driver events
 
-```yaml
-# A simple sidecar that polls rabbit-rs:status --format=json
-# and exposes /metrics in Prometheus format
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: rabbit-rs-exporter
-data:
-  exporter.sh: |
-    #!/bin/bash
-    while true; do
-      php artisan rabbit-rs:status --format=json > /tmp/stats.json
-      sleep 5
-    done
-```
+Instrument the application processes that use Rabbit RS if you need their native counters. The management API can provide broker-side queue counters separately; see [Status monitoring](#status-monitoring).
 
-Alternatively, listen for the `ConnectionStateChanged` and `BackpressureDetected` events and push metrics to your monitoring system. Native events fire during publish and consume operations (`publish()`, `publishBatch()`, `flush()`, `drainErrors()`, consumer `next()`/`tryNext()`/`nextBatch()`, and `stats()`), so no polling is required:
+You can also listen for the `ConnectionStateChanged` and `BackpressureDetected` events and push metrics to your monitoring system. Native events fire during publish and consume operations (`publish()`, `publishBatch()`, `flush()`, `drainErrors()`, consumer `next()`/`tryNext()`/`nextBatch()`, and `stats()`), so no polling is required:
 
 ```php
 use Goopil\RabbitRs\Laravel\Events\ConnectionStateChanged;
