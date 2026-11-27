@@ -43,6 +43,7 @@ impl Metrics {
             duplicates_total: load(&self.inner.duplicates_total),
             acks_total: load(&self.inner.acks_total),
             rejects_total: load(&self.inner.rejects_total),
+            dropped_settlement_errors_total: load(&self.inner.dropped_settlement_errors_total),
             reconnects_total: load(&self.inner.reconnects_total),
             recovery_failures_total: load(&self.inner.recovery_failures_total),
             backpressure_total: load(&self.inner.backpressure_total),
@@ -84,6 +85,10 @@ impl Metrics {
     pub(crate) fn record_reject(&self, latency: Duration) {
         increment(&self.inner.rejects_total);
         self.inner.settlement_latency.record(latency);
+    }
+
+    pub(crate) fn record_dropped_settlement_error(&self) {
+        increment(&self.inner.dropped_settlement_errors_total);
     }
 
     pub(crate) fn record_reconnect(&self) {
@@ -141,6 +146,7 @@ struct MetricsInner {
     duplicates_total: AtomicU64,
     acks_total: AtomicU64,
     rejects_total: AtomicU64,
+    dropped_settlement_errors_total: AtomicU64,
     reconnects_total: AtomicU64,
     recovery_failures_total: AtomicU64,
     backpressure_total: AtomicU64,
@@ -172,6 +178,8 @@ pub struct MetricsSnapshot {
     pub acks_total: u64,
     /// Successful immediate releases using `basic.reject` with requeue.
     pub rejects_total: u64,
+    /// Settlement error records evicted before the consumer could drain them.
+    pub dropped_settlement_errors_total: u64,
     /// Successful connections established after the initial connection.
     pub reconnects_total: u64,
     /// Recovery generations that failed and were rolled back for a retry.

@@ -377,6 +377,16 @@ namespace Goopil\RabbitRs {
         public function drainErrors(): array {}
 
         /**
+         * Returns settlement error records evicted before they could be read.
+         *
+         * The counter remains readable after explicit close. It is shared by
+         * pools using the same client and may grow while another pool is open.
+         *
+         * @return int
+         */
+        public function droppedSettlementErrorsTotal(): int {}
+
+        /**
          * Flushes the publish buffer, sending all buffered messages to the broker.
          *
          * Outstanding pipelined drains are quiesced first (bounded by the fixed
@@ -531,6 +541,7 @@ namespace Goopil\RabbitRs {
          *   reconnects_total: int, deliveries_total: int,
          *   duplicates_total: int, acks_total: int, rejects_total: int,
          *   dropped_publications_total: int, dropped_error_records_total: int,
+         *   dropped_settlement_errors_total: int,
          *   publish_buffered: int, publish_buffered_bytes: int,
          *   confirmation_latency_p50: int, confirmation_latency_p95: int,
          *   confirmation_latency_p99: int, settlement_latency_p50: int,

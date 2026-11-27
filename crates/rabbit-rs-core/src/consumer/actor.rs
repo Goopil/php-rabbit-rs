@@ -549,14 +549,22 @@ impl ActorState {
     /// Records a settlement error without ever blocking the actor.
     ///
     /// The error channel is bounded (`ERROR_CHANNEL_CAPACITY`). When full, the
-    /// oldest error is dropped to make room — the actor must never stall
+    /// oldest error is dropped and counted to make room — the actor must never stall
     /// waiting for the embedder to drain, matching the documented contract of
     /// `ConsumerHandle::drain_errors`.
     fn record_settlement_error(&mut self, error: SettlementError) {
-        if self.error_tx.is_full() {
-            let _ = self.error_rx.try_recv();
+        let mut pending = error;
+        loop {
+            match self.error_tx.try_send(pending) {
+                Ok(()) | Err(flume::TrySendError::Disconnected(_)) => return,
+                Err(flume::TrySendError::Full(error)) => {
+                    pending = error;
+                    if self.error_rx.try_recv().is_ok() {
+                        self.metrics.record_dropped_settlement_error();
+                    }
+                }
+            }
         }
-        let _ = self.error_tx.send(error);
     }
 
     /// Settles a poison delivery — attempts above the configured maximum —
@@ -2127,5 +2135,26 @@ mod tests {
         );
         // No ack latency is recorded from a phantom token.
         assert_eq!(state.metrics.snapshot().acks_total, 0);
+    }
+
+    #[test]
+    fn settlement_error_overflow_is_counted_without_blocking() {
+        let mut state = test_state();
+        for tag in 1..=6 {
+            state.record_settlement_error(SettlementError {
+                delivery_tag: tag,
+                subscription: SubscriptionId::new("jobs"),
+                kind: ConsumerErrorKind::Transport,
+                message: format!("failure {tag}"),
+            });
+        }
+        let retained: Vec<_> = state
+            .error_rx
+            .try_iter()
+            .map(|error| error.delivery_tag)
+            .collect();
+        assert_eq!(retained, vec![3, 4, 5, 6]);
+        let metrics = serde_json::to_value(state.metrics.snapshot()).expect("serialize metrics");
+        assert_eq!(metrics["dropped_settlement_errors_total"], 2);
     }
 }

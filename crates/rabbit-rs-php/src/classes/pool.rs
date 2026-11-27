@@ -299,6 +299,7 @@ impl Pool {
     ///   reconnects_total: int, deliveries_total: int,
     ///   duplicates_total: int, acks_total: int, rejects_total: int,
     ///   dropped_publications_total: int, dropped_error_records_total: int,
+    ///   dropped_settlement_errors_total: int,
     ///   publish_buffered: int, publish_buffered_bytes: int,
     ///   confirmation_latency_p50: int, confirmation_latency_p95: int,
     ///   confirmation_latency_p99: int, settlement_latency_p50: int,
@@ -330,6 +331,10 @@ impl Pool {
             ("duplicates_total", metrics.duplicates_total),
             ("acks_total", metrics.acks_total),
             ("rejects_total", metrics.rejects_total),
+            (
+                "dropped_settlement_errors_total",
+                metrics.dropped_settlement_errors_total,
+            ),
         ] {
             stats.insert(key, i64_from_counter(value))?;
         }
@@ -386,6 +391,23 @@ impl Pool {
         self.bridge.drain();
 
         Ok(stats)
+    }
+
+    /// Returns settlement error records evicted before they could be read.
+    ///
+    /// The counter remains readable after explicit close. It is shared by
+    /// pools using the same client and may grow while another pool is open.
+    pub fn droppedSettlementErrorsTotal(&self) -> PhpResult<i64> {
+        if self.pid != std::process::id() {
+            return rabbit_exception(
+                "Goopil\\RabbitRs\\Pool::droppedSettlementErrorsTotal cannot use a pool inherited across fork",
+            );
+        }
+        Ok(i64_from_counter(
+            self.client
+                .metrics_snapshot()
+                .dropped_settlement_errors_total,
+        ))
     }
 
     /// Returns the number of pending messages in a queue on the given broker.

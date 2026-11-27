@@ -110,4 +110,16 @@ describe('publish error surfacing', function () {
 
         expect(array_column($pool->drainErrors(), 'message_id'))->toBe(['close-first', 'close-second']);
     });
+
+    it('exposes settlement error evictions after close without consuming publish errors', function () use ($noTimer) {
+        $pool = testingPool(defaultConfig(), $noTimer + [
+            'publication_outcomes' => ['returned', 'returned'],
+        ]);
+        $pool->publish(pubMessage('stats-first'));
+        $pool->publish(pubMessage('stats-second'));
+        $pool->close();
+
+        expect($pool->droppedSettlementErrorsTotal())->toBe(0)
+            ->and(array_column($pool->drainErrors(), 'message_id'))->toBe(['stats-first', 'stats-second']);
+    });
 });

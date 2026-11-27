@@ -57,6 +57,12 @@ describe('pool registry', function () {
         $pool->close();
     });
 
+    it('exposes the dropped settlement error counter in stats', function () {
+        $pool = new \Goopil\RabbitRs\Pool(poolConfig());
+        expect($pool->stats()['dropped_settlement_errors_total'])->toBe(0);
+        $pool->close();
+    });
+
     it('exposes the broker backpressure signal in stats', function () {
         // Issue #251: the keys must exist and read zero on a quiet pool;
         // connection_blocked is a 0/1 gauge, connection_blocked_total counts

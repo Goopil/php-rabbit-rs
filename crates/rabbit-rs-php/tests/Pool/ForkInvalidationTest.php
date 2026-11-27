@@ -19,6 +19,15 @@ it('invalidates inherited pools after fork and creates a child-local registry', 
 
     if ($childPid === 0) {
         try {
+            $parentPool->droppedSettlementErrorsTotal();
+            exit(14);
+        } catch (\Goopil\RabbitRs\Exception $e) {
+            if (!str_contains($e->getMessage(), 'fork')) {
+                exit(15);
+            }
+        }
+
+        try {
             $parentPool->stats();
             exit(10);
         } catch (\Goopil\RabbitRs\Exception $e) {
